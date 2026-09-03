@@ -493,7 +493,17 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 
 	// Atomic write: everything lands in a temp file first, so a crash mid-write leaves either the
 	// previous store or no store -- never a half-written one under the real name.
-	const String temp_path = p_store_path + String(".tmp");
+	//
+	// The temp file's name is unique per flush rather than a fixed "<store>.tmp". Two editors open
+	// on one project share a user:// directory, and a fixed name lets one writer truncate the file
+	// the other is about to promote. The name folds in a process-local counter and a hash of the
+	// bytes about to be written: two flushes carrying different content can never pick the same
+	// name, and two carrying identical content produce identical files, so sharing one is harmless.
+	// The read-back below is what makes that last case safe rather than merely likely.
+	static std::atomic<uint64_t> flush_counter{ 0 };
+	const String temp_path = p_store_path + String(".") +
+			String::num_uint64(bs_hash_bytes(store.ptr(), (uint64_t)store.size(), BS_ENTRY_CHECKSUM_BASIS), 16) +
+			String(".") + String::num_uint64(flush_counter.fetch_add(1)) + String(".tmp");
 	const Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
 	if (file.is_null()) {
 		const String line = "cache flush to '" + p_store_path + "' failed: cannot open '" + temp_path +
@@ -548,6 +558,10 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 		return Error::ERR_FILE_CANT_WRITE;
 	}
 
+	// On platforms whose rename cannot replace an existing file atomically, Godot's DirAccess
+	// removes the destination first, so a crash in that window leaves no store rather than the
+	// previous one. That is within the contract -- either the old entry or none, never a partial
+	// one -- and costs a cold parse on the next run, so it is not worked around here.
 	const Error rename_error = DirAccess::rename_absolute(temp_path, p_store_path);
 	if (rename_error != Error::OK) {
 		const String line = "cache flush to '" + p_store_path + "' failed to rename '" + temp_path +

@@ -14,6 +14,7 @@
 
 #include "bs_platform.h"
 
+#include <atomic>
 #include <mutex>
 
 /**

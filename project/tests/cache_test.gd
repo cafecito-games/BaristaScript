@@ -453,7 +453,8 @@ func _test_write_failure_is_logged_and_non_fatal(failures: Array[String]) -> voi
 func _test_atomic_write_leaves_the_previous_store_intact(failures: Array[String]) -> void:
 	var store := _scratch_path("atomic.bin")
 	_remove(store)
-	_remove("%s.tmp" % store)
+	for leftover in _temp_files_for(store):
+		DirAccess.remove_absolute(leftover)
 
 	var first_source := _read_source(SCRIPT_A)
 	var first := BaristaScriptParseCache.new()
@@ -472,6 +473,19 @@ func _test_atomic_write_leaves_the_previous_store_intact(failures: Array[String]
 	)
 	_expect(failures, FileAccess.get_file_as_bytes(store) == previous, "the previous store must survive the interrupted write byte for byte")
 
+	# A second interrupted flush of different content must pick a different temp
+	# name, so two writers on one project cannot truncate each other's file.
+	var third := BaristaScriptParseCache.new()
+	third.put(SCRIPT_A, first_source, _parse(first_source))
+	third.flush(store, 2, BaristaScriptParseCache.get_cache_format_version())
+	_expect(
+		failures,
+		_temp_files_for(store).size() == 2,
+		"each interrupted flush must leave its own temp file, found %s" % _temp_files_for(store)
+	)
+	for leftover in _temp_files_for(store):
+		DirAccess.remove_absolute(leftover)
+
 	var reader := BaristaScriptParseCache.new()
 	_expect(failures, reader.load(store) == COLD, "the surviving store must still load cleanly")
 	_expect(failures, reader.lookup(SCRIPT_A, first_source)["hit"], "the previous entry must still be served")
@@ -484,7 +498,8 @@ func _test_atomic_write_leaves_the_previous_store_intact(failures: Array[String]
 func _test_deferred_write_failure_never_replaces_the_previous_store(failures: Array[String]) -> void:
 	var store := _scratch_path("deferred.bin")
 	_remove(store)
-	_remove("%s.tmp" % store)
+	for leftover in _temp_files_for(store):
+		DirAccess.remove_absolute(leftover)
 
 	var first_source := _read_source(SCRIPT_A)
 	var first := BaristaScriptParseCache.new()
@@ -503,7 +518,7 @@ func _test_deferred_write_failure_never_replaces_the_previous_store(failures: Ar
 		"a short write must be reported rather than promoted"
 	)
 	_expect(failures, FileAccess.get_file_as_bytes(store) == previous, "a short write must leave the previous store byte for byte")
-	_expect(failures, not FileAccess.file_exists("%s.tmp" % store), "a refused flush must not leave its temp file behind")
+	_expect(failures, _temp_files_for(store).is_empty(), "a refused flush must not leave its temp file behind: %s" % _temp_files_for(store))
 
 	var reader := BaristaScriptParseCache.new()
 	_expect(failures, reader.load(store) == COLD, "the surviving store must still load cleanly")
@@ -765,6 +780,21 @@ func _write_bytes(path: String, bytes: PackedByteArray) -> void:
 		return
 	file.store_buffer(bytes)
 	file.close()
+
+
+## Every temp file a flush of `store` could have left behind. The name is unique
+## per flush, so this scans the directory rather than guessing one path.
+func _temp_files_for(store: String) -> PackedStringArray:
+	var found := PackedStringArray()
+	var directory := store.get_base_dir()
+	var listing := DirAccess.get_files_at(directory)
+	if listing == null:
+		return found
+	for name in listing:
+		if name.begins_with(store.get_file()) and name.ends_with(".tmp"):
+			found.append("%s/%s" % [directory, name])
+	found.sort()
+	return found
 
 
 func _remove(path: String) -> void:
