@@ -17,6 +17,8 @@ extends SceneTree
 ## Regenerate the fixtures with:
 ##   godot --headless --path project --script res://tests/cache_test.gd -- --regenerate
 
+const SuiteGuard = preload("res://tests/suite_guard.gd")
+
 const FIXTURES_ROOT := "res://tests/cache_fixtures"
 const SCRIPT_A := "%s/script_a.barista" % FIXTURES_ROOT
 const SCRIPT_B := "%s/script_b.barista" % FIXTURES_ROOT
@@ -92,14 +94,12 @@ func _initialize() -> void:
 	_test_source_override_shadows_the_file_on_disk(failures)
 	_test_dependency_edges_are_recorded_and_removed(failures)
 
-	for failure in failures:
-		push_error(failure)
 	# A GDScript parse error makes SceneTree quit 0, so CI greps for this sentinel
 	# rather than trusting the exit code: it can only be printed by a suite that
 	# actually loaded and ran.
 	if failures.is_empty():
 		print("%s %d test groups passed" % [SUCCESS_SENTINEL, TEST_COUNT])
-	quit(0 if failures.is_empty() else 1)
+	quit(SuiteGuard.report("cache_test", failures))
 
 
 # ---------------------------------------------------------------------------

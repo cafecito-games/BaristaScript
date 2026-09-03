@@ -11,7 +11,7 @@ BaristaScript is a C++17 GDExtension that makes Godot 4.7 recognize `.barista` f
 - `scons api_version=4.7 target=template_release` creates a release build.
 - `cmake -S . -B build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel` exercises the alternative CMake path.
 - `python3 tests/validate_ci.py` checks that the CI matrix matches the pinned API precision and event policy.
-- `godot --headless --path project --editor --quit` imports the fixture; then `godot --headless --path project --script res://tests/smoke_test.gd` runs the recognition smoke test.
+- `godot --headless --path project --editor --quit` imports the fixture; then `python3 tests/run_gdscript_suites.py --godot $(which godot)` runs every GDScript suite in `project/tests/` and fails when one did not actually run.
 
 Invoke Python tooling as `python3`; a bare `python` is not present on every supported development
 machine, and `.pre-commit-config.yaml` already uses `python3`.
@@ -22,7 +22,7 @@ Follow `.clang-format`: tabs with width 4, attached braces, and Godot-style C++.
 
 ## Testing Guidelines
 
-Add focused assertions to `project/tests/smoke_test.gd` for runtime-facing behavior. Name new GDScript tests `*_test.gd` and repository checks `test_*.py` or `validate_*.py`. Run CI validation, an affected build path, editor import, and the smoke test before opening a PR. No numeric coverage threshold is enforced; behavioral changes should include regression coverage.
+Add focused assertions to `project/tests/smoke_test.gd` for runtime-facing behavior. Name new GDScript tests `*_test.gd` and repository checks `test_*.py` or `validate_*.py`. A `*_test.gd` file under `project/tests/` is discovered and run by `tests/run_gdscript_suites.py` with no further wiring, and it must end with `quit(SuiteGuard.report("<suite stem>", failures))` using `project/tests/suite_guard.gd`: SceneTree quits 0 on a parse error, so the shared `BS_SUITE_OK <stem>` sentinel is the only evidence the suite ran, and the runner fails the job without it. Declare a suite that needs arguments, or a script not named `*_test.gd`, in `tests/gdscript_suites.json`. Run CI validation, an affected build path, editor import, and the suite runner before opening a PR. No numeric coverage threshold is enforced; behavioral changes should include regression coverage.
 
 ## Commit & Pull Request Guidelines
 
