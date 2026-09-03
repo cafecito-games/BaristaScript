@@ -44,6 +44,9 @@ public:
 	 *                  recovered tree from a clean one: the parser recovers and keeps building, so
 	 *                  a tree is only ever complete when nothing was reported against it.
 	 *   `has_tree`     whether a head class exists at all.
+	 *   `tokenizer_failed`  whether the source failed to tokenize. A tree still exists when it did --
+	 *                  the parser recovers, which is what an editor needs mid-edit -- so this is how
+	 *                  a consumer refuses a tree built from source that never lexed.
 	 *   `diagnostics`  one line per diagnostic, in source order, as
 	 *                  `line:column-end_line:end_column<TAB>message`.
 	 *   `nodes`        every node the run allocated, in allocation order, as

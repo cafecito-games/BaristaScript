@@ -2427,6 +2427,20 @@ private:
 	 * stay silent, and only those: it says nothing about whether the source is otherwise valid.
 	 */
 	bool current_follows_tokenizer_error = false;
+	/** The same fact about the buffered lookahead token, carried across when it becomes `current`. */
+	bool lookahead_follows_tokenizer_error = false;
+
+	/**
+	 * Sticky for the whole run: the source did not tokenize.
+	 *
+	 * The parser keeps building after a lexical failure, and deliberately: the tree it recovers is
+	 * exactly the tree an editor needs while someone is mid-way through typing a string literal, and
+	 * upstream recovers the same way. That leaves `get_tree()` non-null on source that never
+	 * tokenized, so the distinction the fail-closed contract asks for is written down here instead
+	 * of being inferred from a tree that looks ordinary. `parse()` returns `ERR_PARSE_ERROR` too;
+	 * this says *why*.
+	 */
+	bool tokenizer_failed = false;
 #ifdef DEBUG_ENABLED
 	void push_warning(const Node *p_source, BSWarning::Code p_code, const Vector<String> &p_symbols);
 	template <typename... Symbols>
@@ -2647,6 +2661,8 @@ public:
 	// c9d5e35), which is the same type in core.
 	Error parse_binary(const PackedByteArray &p_binary, const String &p_script_path);
 	ClassNode *get_tree() const { return head; }
+	/** Whether the source failed to tokenize. See the member for why a tree still exists. */
+	bool has_tokenizer_failure() const { return tokenizer_failed; }
 	bool is_tool() const { return _is_tool; }
 	ClassNode *find_class(const String &p_qualified_name) const;
 	bool has_class(const BSParser::ClassNode *p_class) const;

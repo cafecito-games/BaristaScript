@@ -260,6 +260,22 @@ void BSParser::push_error(const String &p_message, const Node *p_origin) {
 	// TODO: Improve error reporting by pointing at source code.
 	// TODO: Errors might point at more than one place at once (e.g. show previous declaration).
 	panic_mode = true;
+
+	// A diagnostic the parser derives while still standing on the token that follows a tokenizer
+	// rejection is a second, differently worded complaint about the token the tokenizer already
+	// rejected -- which the fail-closed contract forbids. `func f() -> uint:` would otherwise report
+	// both `"uint" is reserved ...` and `Expected return type or "void" after "->"`, and
+	// `var x = 1L` both the suffix rejection and `Expected expression for variable initial value`.
+	//
+	// The window is exactly right, not approximately: `current_follows_tokenizer_error` is set only
+	// when `advance()` reached `current` by skipping `ERROR` tokens, and it is cleared by the next
+	// `advance()`. Everything the parser says inside that window is about the hole the tokenizer
+	// left behind. A node-anchored diagnostic is exempt: it is about a node somewhere else in the
+	// tree, not about the token under the cursor.
+	if (current_follows_tokenizer_error && p_origin == nullptr) {
+		return;
+	}
+
 	// TODO: Improve positional information.
 	if (p_origin == nullptr) {
 		errors.push_back({ p_message, previous.start_line, previous.start_column, previous.end_line, previous.end_column });
@@ -270,6 +286,9 @@ void BSParser::push_error(const String &p_message, const Node *p_origin) {
 
 void BSParser::push_error_at(const String &p_message, const BSTokenizer::Token &p_token) {
 	panic_mode = true;
+	// Every caller of this overload is reporting an `ERROR` token, which is how a tokenizer
+	// diagnostic reaches the parser at all.
+	tokenizer_failed = true;
 	errors.push_back({ p_message, p_token.start_line, p_token.start_column, p_token.end_line, p_token.end_column });
 }
 
@@ -643,12 +662,17 @@ BSTokenizer::Token BSParser::advance() {
 		ERR_FAIL_COND_V_MSG(current.type == BSTokenizer::Token::TK_EOF, current, "BaristaScript parser bug: Trying to advance past the end of stream.");
 	}
 	previous = current;
+	// Cleared on every advance, not only when a token is scanned: the window the flag describes is
+	// "the parser has not moved past the token that followed the tokenizer's rejection", and a
+	// buffered lookahead moves past it just as a fresh scan does.
+	const bool lookahead_followed_tokenizer_error = lookahead_follows_tokenizer_error;
+	current_follows_tokenizer_error = false;
 	if (has_lookahead) {
 		current = lookahead;
 		has_lookahead = false;
+		current_follows_tokenizer_error = lookahead_followed_tokenizer_error;
 	} else {
 		current = tokenizer->scan();
-		current_follows_tokenizer_error = false;
 		while (current.type == BSTokenizer::Token::ERROR) {
 			push_error_at(current.literal, current);
 			current_follows_tokenizer_error = true;
@@ -669,8 +693,10 @@ BSTokenizer::Token BSParser::advance() {
 const BSTokenizer::Token &BSParser::peek() {
 	if (!has_lookahead) {
 		lookahead = tokenizer->scan();
+		lookahead_follows_tokenizer_error = false;
 		while (lookahead.type == BSTokenizer::Token::ERROR) {
 			push_error_at(lookahead.literal, lookahead);
+			lookahead_follows_tokenizer_error = true;
 			lookahead = tokenizer->scan();
 		}
 		has_lookahead = true;
@@ -2608,7 +2634,7 @@ BSParser::VariableNode *BSParser::parse_variable(bool p_is_static, bool p_allow_
 
 			// Parse type.
 			variable->datatype_specifier = parse_type();
-			if (variable->datatype_specifier == nullptr && !current_follows_tokenizer_error) {
+			if (variable->datatype_specifier == nullptr) {
 				push_error(R"(Expected type after ":")");
 			}
 		}
@@ -2892,7 +2918,7 @@ BSParser::ConstantNode *BSParser::parse_constant(const DeclarationModifiers &p_m
 		} else {
 			// Parse type.
 			constant->datatype_specifier = parse_type();
-			if (constant->datatype_specifier == nullptr && !current_follows_tokenizer_error) {
+			if (constant->datatype_specifier == nullptr) {
 				push_error(R"(Expected type after ":")");
 			}
 		}
@@ -2944,7 +2970,7 @@ BSParser::ParameterNode *BSParser::parse_parameter(bool p_allow_annotations) {
 			// Parse type.
 			make_completion_context(COMPLETION_TYPE_NAME, parameter);
 			parameter->datatype_specifier = parse_type();
-			if (parameter->datatype_specifier == nullptr && !current_follows_tokenizer_error) {
+			if (parameter->datatype_specifier == nullptr) {
 				push_error(R"(Expected type after ":")");
 			}
 		}
@@ -2953,7 +2979,7 @@ BSParser::ParameterNode *BSParser::parse_parameter(bool p_allow_annotations) {
 	if (match(BSTokenizer::Token::EQUAL)) {
 		// Default value.
 		parameter->initializer = parse_expression(false);
-		if (parameter->initializer == nullptr && !current_follows_tokenizer_error) {
+		if (parameter->initializer == nullptr) {
 			push_error(R"(Expected expression for parameter default value after "=".)");
 		}
 	}
@@ -3516,7 +3542,7 @@ bool BSParser::parse_function_signature(FunctionNode *p_function, SuiteNode *p_b
 	if (match(BSTokenizer::Token::FORWARD_ARROW)) {
 		make_completion_context(COMPLETION_TYPE_NAME_OR_VOID, p_function);
 		p_function->return_type = parse_type(true);
-		if (p_function->return_type == nullptr && !current_follows_tokenizer_error) {
+		if (p_function->return_type == nullptr) {
 			push_error(R"(Expected return type or "void" after "->".)");
 		}
 	}
@@ -5895,9 +5921,7 @@ BSParser::ExpressionNode *BSParser::parse_cast(ExpressionNode *p_previous_operan
 	complete_extents(cast);
 
 	if (cast->cast_type == nullptr) {
-		if (!current_follows_tokenizer_error) {
-			push_error(R"(Expected type specifier after "as".)");
-		}
+		push_error(R"(Expected type specifier after "as".)");
 		return p_previous_operand;
 	}
 
@@ -6343,7 +6367,7 @@ BSParser::ExpressionNode *BSParser::parse_type_test(ExpressionNode *p_previous_o
 		}
 	}
 
-	if (type_test->test_type == nullptr && !current_follows_tokenizer_error) {
+	if (type_test->test_type == nullptr) {
 		if (not_node == nullptr) {
 			push_error(R"(Expected type specifier after "is".)");
 		} else {

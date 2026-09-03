@@ -54,6 +54,7 @@ Dictionary render_report(const BSParser &p_parser, const BSParser::Node *p_node_
 	// complete failure the contract forbids, so the returned Error counts too.
 	report["complete"] = p_error == OK && p_parser.get_errors().is_empty();
 	report["has_tree"] = p_parser.get_tree() != nullptr;
+	report["tokenizer_failed"] = p_parser.has_tokenizer_failure();
 	report["diagnostics"] = render_diagnostics(p_parser);
 
 	PackedStringArray nodes;

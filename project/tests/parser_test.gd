@@ -100,10 +100,35 @@ func _test_undecodable_source_produces_no_tree(probe, failures: Array[String]) -
 ## parser reports the tokenizer's own message and never presents the tree as
 ## complete.
 func _test_tokenizer_diagnostic_reaches_the_parser(probe, failures: Array[String]) -> void:
-	# An unterminated string is a tokenizer diagnostic, not a parser one.
-	var report := _parse(probe, "var name = \"unterminated\n")
-	_expect(failures, not report["complete"], "tokenizer diagnostic: reported as complete")
-	_expect(failures, report["diagnostics"].size() > 0, "tokenizer diagnostic: none reported")
+	# Each of these is a tokenizer diagnostic, not a parser one. Exactly one diagnostic must come
+	# back: the parser reports what the tokenizer said and adds no differently worded complaint of
+	# its own about the same token, which is the fail-closed row for a removed D1 spelling and holds
+	# for every lexical rejection.
+	var lexical_failures := [
+		"var name = \"unterminated\n",
+		"var count = 1L\n",
+		"var count = 1UL\n",
+		"var count = 99999999999999999999\n",
+		"var value: uint = 0\n",
+		"func f() -> ulong:\n\tpass\n",
+		"var cast = 1 as long\n",
+	]
+	for source in lexical_failures:
+		var report := _parse(probe, source)
+		_expect(failures, not report["complete"],
+			"tokenizer diagnostic: reported as complete: %s" % source.strip_edges())
+		_expect(failures, report["error"] != OK,
+			"tokenizer diagnostic: returned OK: %s" % source.strip_edges())
+		_expect(failures, report["tokenizer_failed"],
+			"tokenizer diagnostic: the run does not report a lexical failure: %s" % source.strip_edges())
+		_expect(failures, report["diagnostics"].size() == 1,
+			"tokenizer diagnostic: expected exactly one, got %s for %s" % [report["diagnostics"], source.strip_edges()])
+
+	# The other side: a source that tokenizes cleanly never claims a lexical failure, however broken
+	# it is syntactically.
+	var syntactic := _parse(probe, "func a( -> void:\n\tpass\n")
+	_expect(failures, not syntactic["tokenizer_failed"],
+		"a purely syntactic error must not be reported as a lexical failure: %s" % [syntactic["diagnostics"]])
 
 
 ## A diagnostic about the very first token has no preceding token to be anchored
