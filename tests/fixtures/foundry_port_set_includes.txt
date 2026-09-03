@@ -94,3 +94,28 @@
 33:#include "core/variant/variant.h"
 35:#ifdef DEBUG_ENABLED
 38:#define CHECK_SYMBOLS(m_amount) ERR_FAIL_COND_V(symbols.size() < m_amount, String());
+
+=== modules/foundry_script/fs_cache.h ===
+31:#pragma once
+33:#include "foundry_script.h"
+35:#include "core/object/ref_counted.h"
+36:#include "core/os/safe_binary_mutex.h"
+37:#include "core/templates/hash_map.h"
+38:#include "core/templates/hash_set.h"
+39:#include "core/templates/vector.h"
+41:#ifndef FOUNDRY_SCRIPT_NO_FRONTEND
+
+=== modules/foundry_script/fs_cache.cpp ===
+31:#include "fs_cache.h"
+33:#include "foundry_script.h"
+34:#include "fs_builtin_sources.h"
+35:#include "fs_bytecode_loader.h"
+36:#include "fs_no_frontend.h"
+37:#ifndef FOUNDRY_SCRIPT_NO_FRONTEND
+38:#include "fs_analyzer.h"
+39:#include "fs_compiler.h"
+40:#include "fs_parser.h"
+41:#endif // FOUNDRY_SCRIPT_NO_FRONTEND
+43:#include "core/io/file_access.h"
+44:#include "core/templates/vector.h"
+46:#ifndef FOUNDRY_SCRIPT_NO_FRONTEND

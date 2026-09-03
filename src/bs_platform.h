@@ -28,6 +28,8 @@
 
 // core/templates/hash_map.h
 #include <godot_cpp/templates/hash_map.hpp>
+// core/templates/hash_set.h
+#include <godot_cpp/templates/hash_set.hpp>
 // core/templates/list.h
 #include <godot_cpp/templates/list.hpp>
 // core/templates/vector.h
@@ -58,6 +60,8 @@
 // core/object/script_language.h -- core declares Script and ScriptLanguage together.
 #include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/classes/script_language.hpp>
+// core/io/file_access.h
+#include <godot_cpp/classes/file_access.hpp>
 // core/io/resource.h
 #include <godot_cpp/classes/resource.hpp>
 // core/io/resource_loader.h -- a singleton in godot-cpp, static members in core.
@@ -83,6 +87,15 @@
 // Backing for the shims below; not a mapping of any upstream dependency.
 #include <godot_cpp/core/memory.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
+
+// Backing for the parse cache's on-disk store, also not a mapping of any upstream dependency:
+// upstream fs_cache is in-memory only -- its only file access is reading script sources
+// (fs_cache.cpp:407 at the pinned revision) -- so the store's atomic rename
+// (DirAccess::rename_absolute) and FileAccess's byte-array return type (PackedByteArray) are
+// BaristaScript additions. Recorded in the manifest's seam_support_headers, not as entries,
+// because there is no upstream include site to map them to.
+#include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 
 /**
  * Ported files are written against Godot's global names. godot-cpp puts everything in `godot`, so

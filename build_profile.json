@@ -1,6 +1,7 @@
 {
 	"type": "feature_profile",
 	"enabled_classes": [
+		"DirAccess",
 		"Engine",
 		"FileAccess",
 		"MultiplayerAPI",

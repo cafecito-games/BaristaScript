@@ -84,6 +84,10 @@ target_sources(${LIBNAME}
     src/barista_script_language.h
     src/barista_script_resource_loader.cpp
     src/barista_script_resource_loader.h
+    src/bs_cache.cpp
+    src/bs_cache.h
+    src/barista_script_parse_cache.cpp
+    src/barista_script_parse_cache.h
 )
 
 # Fetch a list of the xml files to use for documentation and add to our target

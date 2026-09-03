@@ -1,0 +1,19 @@
+# Parse-cache fixture: a non-trivial source, so a cold parse and a warm one
+# have something substantial to disagree about if the cache ever lies.
+const LIMIT = 32
+
+func fizzbuzz(count):
+	var lines = []
+	for index in range(1, count):
+		if index % 15 == 0:
+			lines.append("fizzbuzz")
+		elif index % 3 == 0:
+			lines.append("fizz")
+		elif index % 5 == 0:
+			lines.append("buzz")
+		else:
+			lines.append(str(index))
+	return lines
+
+func main():
+	return fizzbuzz(LIMIT)
