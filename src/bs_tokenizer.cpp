@@ -14,9 +14,10 @@
 //
 // Upstream also includes `servers/text/text_server.h` under `DEBUG_ENABLED` (fs_tokenizer.cpp:37)
 // for the `TextServer::FEATURE_UNICODE_SECURITY` confusable-identifier check at
-// fs_tokenizer.cpp:672. The platform seam guards that header out (see the
-// `servers/text/text_server.h` entry in `src/bs_platform_manifest.json`), so the check is
-// deliberately absent here; its call site is marked in `potential_identifier()` below.
+// fs_tokenizer.cpp:672. The warning registry mapped that header (see the
+// `servers/text/text_server.h` entry in `src/bs_platform_manifest.json`), so it is reachable
+// through `bs_platform.h`; the tokenizer's own use of it is a separate decision, marked at its
+// call site in `potential_identifier()` below.
 //
 // Upstream's `editor/settings/editor_settings.h` (fs_tokenizer.cpp:41) is guarded out for the same
 // reason: a GDExtension reaches editor settings through `EditorInterface`, not that header, so the
@@ -770,9 +771,11 @@ BSTokenizer::Token BSTokenizerText::potential_identifier() {
 	if (!only_ascii) {
 		// Upstream runs the `TextServer::FEATURE_UNICODE_SECURITY` confusable-identifier check here
 		// under `DEBUG_ENABLED` (fs_tokenizer.cpp:668-677), rejecting a non-ASCII identifier that
-		// is visually similar to a keyword. The platform seam guards out
-		// `servers/text/text_server.h`, so the check is absent; reinstating it belongs with the
-		// warning registry. Everything else about this branch is unchanged.
+		// is visually similar to a keyword. The seam now maps `servers/text/text_server.h`, and
+		// `BSWarning::is_confusable_identifier()` already wraps the predicate, so the header is not
+		// what is missing. This site raises a parse *error* rather than a warning, which is a
+		// diagnostic decision for the parser milestone rather than for the warning registry; the
+		// check stays out until then. Everything else about this branch is unchanged.
 
 		// Cannot be a keyword, as keywords are ASCII only.
 		return make_identifier(name);

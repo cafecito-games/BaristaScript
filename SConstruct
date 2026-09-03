@@ -44,6 +44,16 @@ Run the following command to download godot-cpp:
 env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
 
 env.Append(CPPPATH=["src/"])
+
+# The warning registry's message switch has no `default:` label on purpose, so an unhandled warning
+# code must stop the build rather than fall through. Promote the compiler's unhandled-enumerator
+# diagnostic to an error for this extension's own sources only; godot-cpp is already built by the
+# time this runs. MSVC's C4062 is off by default, so it is enabled as an error rather than promoted.
+if env.get("is_msvc", False):
+    env.Append(CXXFLAGS=["/we4062"])
+else:
+    env.Append(CXXFLAGS=["-Werror=switch"])
+
 sources = Glob("src/*.cpp")
 
 if env["target"] in ["editor", "template_debug"]:
