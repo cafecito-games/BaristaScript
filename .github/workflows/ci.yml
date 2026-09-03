@@ -5,6 +5,7 @@ name: Continuous Integration
 on:
   workflow_call:
   push:
+    branches: [main]
   pull_request:
   merge_group:
 
@@ -43,8 +44,8 @@ jobs:
         with:
           submodules: true
 
-      - name: Validate CI precision
-        run: python tests/validate_ci_precision.py
+      - name: Validate CI configuration
+        run: python tests/validate_ci.py
 
       # Lint
       #- name: Setup clang-format

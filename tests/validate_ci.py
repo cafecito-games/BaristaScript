@@ -27,7 +27,11 @@ def main() -> int:
         )
         return 1
 
-    print(f"CI precision matches the Godot 4.7 API ({api_precision})")
+    if "  push:\n    branches: [main]\n" not in workflow:
+        print("CI push events must be limited to main to avoid duplicating pull request runs")
+        return 1
+
+    print(f"CI configuration matches the Godot 4.7 API ({api_precision}) and avoids duplicate PR runs")
     return 0
 
 
