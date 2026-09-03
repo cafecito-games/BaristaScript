@@ -146,8 +146,8 @@ godot::String BaristaScriptParseCache::get_default_store_path() {
 	return BSParseCache::get_default_store_path();
 }
 
-int BaristaScriptParseCache::compute_source_digest(const godot::String &p_source) {
-	return (int)BSParseCache::compute_source_digest(p_source);
+int64_t BaristaScriptParseCache::compute_source_digest(const godot::String &p_source) {
+	return (int64_t)BSParseCache::compute_source_digest(p_source);
 }
 
 godot::String BaristaScriptParseCache::get_source_code(const godot::String &p_path) {

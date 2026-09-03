@@ -76,7 +76,8 @@ public:
 
 	static int get_cache_format_version();
 	static godot::String get_default_store_path();
-	static int compute_source_digest(const godot::String &p_source);
+	/** The 64-bit source digest, reinterpreted as a signed GDScript int. */
+	static int64_t compute_source_digest(const godot::String &p_source);
 
 	// The in-memory source-override and dependency layer (BSCache), same forwarding rule.
 	static godot::String get_source_code(const godot::String &p_path);

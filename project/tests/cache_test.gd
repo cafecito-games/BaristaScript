@@ -27,6 +27,7 @@ const TRUNCATED_STORE := "%s/truncated_store.bin" % FIXTURES_ROOT
 const CORRUPT_STORE := "%s/corrupt_store.bin" % FIXTURES_ROOT
 const BAD_MAGIC_STORE := "%s/bad_magic_store.bin" % FIXTURES_ROOT
 const DUPLICATE_KEY_STORE := "%s/duplicate_key_store.bin" % FIXTURES_ROOT
+const DUPLICATE_KEY_ACROSS_VERSIONS_STORE := "%s/duplicate_key_across_versions_store.bin" % FIXTURES_ROOT
 
 const SCRATCH_ROOT := "user://cache_test"
 
@@ -61,6 +62,7 @@ func _initialize() -> void:
 	_test_bad_magic_store_is_corrupt_never_absent(failures)
 	_test_trailing_bytes_are_corrupt_never_absent(failures)
 	_test_duplicate_key_fails_loudly(failures)
+	_test_duplicate_key_fails_loudly_across_versions(failures)
 
 	# The per-entry verdicts.
 	_test_version_mismatch_is_discarded_never_upgraded(failures)
@@ -186,6 +188,29 @@ func _test_duplicate_key_fails_loudly(failures: Array[String]) -> void:
 	)
 
 
+## A duplicate must not be able to hide behind a stale version tag: the second
+## record claiming the key is rejected as a writer bug before its version is
+## even consulted, so the store is discarded rather than quietly deduplicated.
+func _test_duplicate_key_fails_loudly_across_versions(failures: Array[String]) -> void:
+	var cache := BaristaScriptParseCache.new()
+	_expect(
+		failures,
+		cache.load(DUPLICATE_KEY_ACROSS_VERSIONS_STORE) == CORRUPT,
+		"a duplicate key whose second record is version-stale must still make the store CORRUPT"
+	)
+	_expect(failures, cache.get_entry_count() == 0, "a duplicate key must discard every entry, kept %d" % cache.get_entry_count())
+	_expect(
+		failures,
+		_report_contains(cache, "duplicate cache key '%s'" % SCRIPT_A),
+		"the duplicate must be reported as a duplicate, not as a version mismatch: %s" % cache.get_load_report()
+	)
+	_expect(
+		failures,
+		cache.lookup(SCRIPT_A, _read_source(SCRIPT_A))["reason"] == CORRUPT,
+		"a lookup against a duplicate-carrying store must report CORRUPT"
+	)
+
+
 # ---------------------------------------------------------------------------
 # Per-entry verdicts
 # ---------------------------------------------------------------------------
@@ -301,7 +326,7 @@ func _test_warm_lookup_equals_cold_parse(failures: Array[String]) -> void:
 ## same source in two checkouts -- at two different paths -- digests the same.
 func _test_digest_is_semantic_and_path_independent(failures: Array[String]) -> void:
 	var source := _read_source(SCRIPT_B)
-	var digest := BaristaScriptParseCache.compute_source_digest(source)
+	var digest: int = BaristaScriptParseCache.compute_source_digest(source)
 
 	_expect(failures, BaristaScriptParseCache.compute_source_digest(source) == digest, "the digest must be deterministic")
 	_expect(
@@ -564,6 +589,20 @@ func _regenerate() -> int:
 	duplicated.append_array(record)
 	duplicated.append_array(record)
 	_write_bytes(DUPLICATE_KEY_STORE, duplicated)
+
+	# The same key twice, the second record tagged with a version this build does
+	# not accept: a duplicate must still be a duplicate rather than a version
+	# rejection that quietly leaves one record standing.
+	_remove(scratch)
+	if single.flush(scratch, 0, version + 1) != OK:
+		push_error("could not flush the single-entry store under the next version")
+		return 1
+	var stale_record := FileAccess.get_file_as_bytes(scratch).slice(8)
+	var across_versions := one_entry.slice(0, 4)
+	across_versions.append_array(_u32(2))
+	across_versions.append_array(record)
+	across_versions.append_array(stale_record)
+	_write_bytes(DUPLICATE_KEY_ACROSS_VERSIONS_STORE, across_versions)
 
 	print("regenerated the parse cache fixtures under %s" % FIXTURES_ROOT)
 	return 0

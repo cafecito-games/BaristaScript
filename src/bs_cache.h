@@ -83,10 +83,14 @@ Vector<String> get_names();
  *	  version_tag   (uint32)   must equal CACHE_FORMAT_VERSION
  *	  key_length    (uint32)
  *	  key           (key_length bytes, UTF-8)
- *	  source_digest (uint32)
+ *	  source_digest (uint64)
  *	  payload_len   (uint32)
  *	  payload       (payload_len bytes)
- *	  entry_digest  (uint32)   hash over this entry's bytes from version_tag through payload
+ *	  entry_digest  (uint64)   hash over this entry's bytes from version_tag through payload
+ *
+ * Both digests are 64 bits because each is the sole guard on a correctness decision -- one on
+ * whether a payload still describes the source, the other on whether a record survived the trip to
+ * disk -- and a 32-bit width puts a birthday collision within reach of an ordinary project.
  */
 class BSParseCache {
 public:
@@ -95,7 +99,7 @@ public:
 	 * cached payload means; a record written under any other value is rejected as
 	 * VERSION_MISMATCH, never upgraded.
 	 */
-	static const uint32_t CACHE_FORMAT_VERSION = 1;
+	static const uint32_t CACHE_FORMAT_VERSION = 2;
 
 	static const char *const STORE_MAGIC;
 
@@ -108,7 +112,7 @@ public:
 	 * digests identically in any checkout. Foundry keys parser freshness by `source.hash()`
 	 * (fs_cache.cpp:101); this is the same idea made content-addressed.
 	 */
-	static uint32_t compute_source_digest(const String &p_source);
+	static uint64_t compute_source_digest(const String &p_source);
 
 	/** Fault points a flush can be asked to simulate, so the atomic-write contract is testable. */
 	enum class WriteFault {
@@ -118,7 +122,7 @@ public:
 	};
 
 	struct Entry {
-		uint32_t source_digest = 0;
+		uint64_t source_digest = 0;
 		Vector<uint8_t> payload;
 	};
 
@@ -195,8 +199,6 @@ class BSCache {
 	HashMap<String, String> source_overrides;
 	HashMap<String, HashSet<String>> dependencies;
 	HashMap<String, HashSet<String>> inverse_dependencies;
-
-	static BSCache *singleton;
 
 	std::mutex mutex;
 

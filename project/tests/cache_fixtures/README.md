@@ -18,6 +18,7 @@ godot --headless --path project --script res://tests/cache_test.gd -- --regenera
 | `corrupt_store.bin` | `golden_store.bin` with one byte inside the first record flipped |
 | `bad_magic_store.bin` | `golden_store.bin` with its magic clobbered |
 | `duplicate_key_store.bin` | The first record of a one-entry flush repeated, with the header's entry count set to two |
+| `duplicate_key_across_versions_store.bin` | The same, but the second record is the `CACHE_FORMAT_VERSION + 1` flush of that key |
 
 Regenerating `golden_store.bin` after a record-layout change without bumping
 `CACHE_FORMAT_VERSION` is exactly the mistake the version constant exists to

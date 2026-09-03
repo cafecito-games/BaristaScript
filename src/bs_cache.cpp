@@ -90,23 +90,28 @@ String BSParseCache::get_default_store_path() {
 }
 
 /**
- * djb2 over arbitrary bytes with a caller-chosen seed. Two seeds are used below so an entry
- * checksum can never collide with a source digest by construction. The exact function is part of
- * the on-disk contract: changing it changes every digest at once, which is a CACHE_FORMAT_VERSION
- * bump, not a silent rewrite.
+ * FNV-1a over arbitrary bytes with a caller-chosen basis. 64 bits, not 32: both hashes below are
+ * the sole guard on a correctness decision -- one decides whether a stored payload still describes
+ * the file on disk, the other whether a record survived the trip to disk intact -- and a 32-bit
+ * width leaves a birthday collision within reach of an ordinary project's worth of sources. Two
+ * distinct bases are used so an entry checksum can never collide with a source digest by
+ * construction. The exact function is part of the on-disk contract: changing it changes every
+ * digest at once, which is a CACHE_FORMAT_VERSION bump, not a silent rewrite.
  */
-static uint32_t bs_hash_bytes(const uint8_t *p_data, uint64_t p_length, uint32_t p_seed) {
-	uint32_t hash = p_seed;
+static uint64_t bs_hash_bytes(const uint8_t *p_data, uint64_t p_length, uint64_t p_basis) {
+	uint64_t hash = p_basis;
 	for (uint64_t i = 0; i < p_length; i++) {
-		hash = (hash * 33) ^ p_data[i];
+		hash ^= (uint64_t)p_data[i];
+		hash *= 1099511628211ULL;
 	}
 	return hash;
 }
 
-// Seeds for the two distinct hashes the store depends on. Named constants, not inline literals,
-// because the on-disk format is defined once.
-static constexpr uint32_t BS_SOURCE_DIGEST_SEED = 5381;
-static constexpr uint32_t BS_ENTRY_CHECKSUM_SEED = 19779;
+// Bases for the two distinct hashes the store depends on. Named constants, not inline literals,
+// because the on-disk format is defined once. BS_SOURCE_DIGEST_BASIS is FNV-1a's standard 64-bit
+// offset basis; the checksum's is a different arbitrary odd constant.
+static constexpr uint64_t BS_SOURCE_DIGEST_BASIS = 14695981039346656037ULL;
+static constexpr uint64_t BS_ENTRY_CHECKSUM_BASIS = 1469598103934665403ULL;
 
 static void bs_put_u32(Vector<uint8_t> &p_destination, uint32_t p_value) {
 	p_destination.push_back((uint8_t)(p_value & 0xFF));
@@ -120,20 +125,35 @@ static uint32_t bs_get_u32(const uint8_t *p_source, uint64_t p_offset) {
 			((uint32_t)p_source[p_offset + 2] << 16) | ((uint32_t)p_source[p_offset + 3] << 24);
 }
 
-uint32_t BSParseCache::compute_source_digest(const String &p_source) {
-	// The digest is semantic: version tag bytes then source bytes. No path, no timestamp -- the
-	// same source under the same language version digests identically in any checkout.
+static void bs_put_u64(Vector<uint8_t> &p_destination, uint64_t p_value) {
+	for (int shift = 0; shift < 64; shift += 8) {
+		p_destination.push_back((uint8_t)((p_value >> shift) & 0xFF));
+	}
+}
+
+static uint64_t bs_get_u64(const uint8_t *p_source, uint64_t p_offset) {
+	uint64_t value = 0;
+	for (int index = 0; index < 8; index++) {
+		value |= (uint64_t)p_source[p_offset + index] << (index * 8);
+	}
+	return value;
+}
+
+uint64_t BSParseCache::compute_source_digest(const String &p_source) {
+	// The digest is semantic: the version tag, then the source's byte length, then its bytes. No
+	// path and no timestamp, so the same source under the same language version digests identically
+	// in any checkout. The length is part of the digested input as well as implied by it, so two
+	// sources must collide on both a 64-bit hash and their length to be confused for each other.
 	const PackedByteArray utf8 = p_source.to_utf8_buffer();
 	Vector<uint8_t> bytes;
-	bytes.resize(4 + utf8.size());
-	bytes.write[0] = (uint8_t)(CACHE_FORMAT_VERSION & 0xFF);
-	bytes.write[1] = (uint8_t)((CACHE_FORMAT_VERSION >> 8) & 0xFF);
-	bytes.write[2] = (uint8_t)((CACHE_FORMAT_VERSION >> 16) & 0xFF);
-	bytes.write[3] = (uint8_t)((CACHE_FORMAT_VERSION >> 24) & 0xFF);
+	bs_put_u32(bytes, CACHE_FORMAT_VERSION);
+	bs_put_u64(bytes, (uint64_t)utf8.size());
+	const int prefix = bytes.size();
+	bytes.resize(prefix + utf8.size());
 	if (utf8.size() > 0) {
-		memcpy(bytes.ptrw() + 4, utf8.ptr(), utf8.size());
+		memcpy(bytes.ptrw() + prefix, utf8.ptr(), utf8.size());
 	}
-	return bs_hash_bytes(bytes.ptr(), bytes.size(), BS_SOURCE_DIGEST_SEED);
+	return bs_hash_bytes(bytes.ptr(), bytes.size(), BS_SOURCE_DIGEST_BASIS);
 }
 
 void BSParseCache::clear() {
@@ -235,37 +255,38 @@ BSMissReason BSParseCache::load(const String &p_store_path) {
 				return RecordStatus::CORRUPT_RECORD;
 			}
 
-			if (!require(4)) {
+			if (!require(8)) {
 				return RecordStatus::CORRUPT_RECORD;
 			}
-			const uint32_t source_digest = bs_get_u32(data, key_offset + key_length);
+			const uint64_t source_digest = bs_get_u64(data, key_offset + key_length);
 
 			if (!require(4)) {
 				return RecordStatus::CORRUPT_RECORD;
 			}
-			const uint32_t payload_length = bs_get_u32(data, key_offset + key_length + 4);
-			if (!require(payload_length) || !require(4)) {
+			const uint32_t payload_length = bs_get_u32(data, key_offset + key_length + 8);
+			if (!require(payload_length) || !require(8)) {
 				return RecordStatus::CORRUPT_RECORD;
 			}
-			const uint64_t payload_offset = key_offset + key_length + 8;
-			const uint32_t stored_entry_digest = bs_get_u32(data, offset - 4);
+			const uint64_t payload_offset = key_offset + key_length + 12;
+			const uint64_t stored_entry_digest = bs_get_u64(data, offset - 8);
 
 			// The checksum covers the whole record from the version tag through the payload, so a
 			// flipped bit anywhere in it -- including in the version tag itself -- is corruption.
-			const uint32_t computed_entry_digest = bs_hash_bytes(
-					data + entry_start, payload_offset + payload_length - entry_start, BS_ENTRY_CHECKSUM_SEED);
+			const uint64_t computed_entry_digest = bs_hash_bytes(
+					data + entry_start, payload_offset + payload_length - entry_start, BS_ENTRY_CHECKSUM_BASIS);
 			if (computed_entry_digest != stored_entry_digest) {
 				return RecordStatus::CORRUPT_RECORD;
 			}
 
-			if (version_tag != CACHE_FORMAT_VERSION) {
-				return RecordStatus::VERSION_REJECTED;
-			}
-
-			// A key claimed twice -- whether the earlier claim was accepted or version-rejected --
-			// means the writer is broken.
+			// A key claimed twice means the writer is broken, whatever the second claim's version
+			// tag says. This is checked before the version tag so a duplicate cannot hide behind a
+			// stale record: a store carrying one is discarded, never quietly deduplicated.
 			if (entries.has(key) || rejected.has(key)) {
 				return RecordStatus::DUPLICATE_KEY;
+			}
+
+			if (version_tag != CACHE_FORMAT_VERSION) {
+				return RecordStatus::VERSION_REJECTED;
 			}
 
 			entry.source_digest = source_digest;
@@ -357,7 +378,7 @@ BSParseCache::Lookup BSParseCache::lookup(const String &p_script_path, const Str
 			return result;
 		}
 
-		const uint32_t digest = compute_source_digest(p_source);
+		const uint64_t digest = compute_source_digest(p_source);
 		if (digest != entry->value.source_digest) {
 			entries.erase(p_script_path);
 			rejected[p_script_path] = BSMissReason::DIGEST_MISMATCH;
@@ -426,12 +447,12 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 		for (int64_t i = 0; i < key_bytes.size(); i++) {
 			store.push_back(key_bytes.ptr()[i]);
 		}
-		bs_put_u32(store, entry.source_digest);
+		bs_put_u64(store, entry.source_digest);
 		bs_put_u32(store, (uint32_t)entry.payload.size());
 		for (int64_t i = 0; i < entry.payload.size(); i++) {
 			store.push_back(entry.payload.ptr()[i]);
 		}
-		bs_put_u32(store, bs_hash_bytes(store.ptr() + entry_start, store.size() - entry_start, BS_ENTRY_CHECKSUM_SEED));
+		bs_put_u64(store, bs_hash_bytes(store.ptr() + entry_start, store.size() - entry_start, BS_ENTRY_CHECKSUM_BASIS));
 	}
 
 	// Atomic write: everything lands in a temp file first, so a crash mid-write leaves either the
@@ -504,25 +525,27 @@ Vector<String> BSParseCache::evict_entries_with_missing_files() {
 // BSCache (the in-memory layer ported from Foundry's FSCache)
 // ---------------------------------------------------------------------------
 
-BSCache *BSCache::singleton = nullptr;
-
 BSCache *BSCache::get_singleton() {
 	// Created lazily and deliberately never destroyed: the cache holds engine-backed Strings, and
 	// a destructor run during static destruction would call into the GDExtension interface after
 	// it has been unloaded -- the same hazard the seam documents for SNAME. One leaked singleton
 	// outlives the process by moments and keeps teardown order from mattering.
-	if (singleton == nullptr) {
-		singleton = memnew(BSCache);
-	}
-	return singleton;
+	//
+	// The function-local static is what makes the creation itself safe: Godot loads and reloads
+	// scripts from worker threads, so a plain `if (pointer == nullptr)` could construct two caches
+	// and leave two callers locking different mutexes while mutating the same maps. C++11
+	// guarantees this initializer runs exactly once, however many threads arrive together.
+	static BSCache *instance = memnew(BSCache);
+	return instance;
 }
 
 BSCache::BSCache() {}
 
 String BSCache::get_source_code(const String &p_path) {
-	if (singleton != nullptr) {
-		std::lock_guard<std::mutex> lock(singleton->mutex);
-		if (HashMap<String, String>::ConstIterator override = singleton->source_overrides.find(p_path)) {
+	{
+		BSCache *cache = get_singleton();
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		if (HashMap<String, String>::ConstIterator override = cache->source_overrides.find(p_path)) {
 			return override->value;
 		}
 	}
@@ -601,33 +624,28 @@ void BSCache::clear_dependency_edges(BSCache *p_cache, const String &p_path) {
 }
 
 void BSCache::remove_script(const String &p_path) {
-	if (singleton == nullptr) {
-		return;
-	}
-	std::lock_guard<std::mutex> lock(singleton->mutex);
-	clear_dependency_edges(singleton, p_path);
-	singleton->source_overrides.erase(p_path);
+	BSCache *cache = get_singleton();
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	clear_dependency_edges(cache, p_path);
+	cache->source_overrides.erase(p_path);
 }
 
 void BSCache::move_script(const String &p_from, const String &p_to) {
-	if (singleton == nullptr || p_from == p_to || p_from.is_empty()) {
+	if (p_from == p_to || p_from.is_empty()) {
 		return;
 	}
-	std::lock_guard<std::mutex> lock(singleton->mutex);
-	clear_dependency_edges(singleton, p_from);
-	singleton->source_overrides.erase(p_from);
-	if (!p_to.is_empty()) {
-		// The moved script keeps nothing of its old dependency edges; whoever reloads it records
-		// them again against the new path.
-	}
+	// The moved script keeps nothing of its old dependency edges; whoever reloads it records them
+	// again against the new path, which is why p_to is not consulted here.
+	BSCache *cache = get_singleton();
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	clear_dependency_edges(cache, p_from);
+	cache->source_overrides.erase(p_from);
 }
 
 void BSCache::clear() {
-	if (singleton == nullptr) {
-		return;
-	}
-	std::lock_guard<std::mutex> lock(singleton->mutex);
-	singleton->source_overrides.clear();
-	singleton->dependencies.clear();
-	singleton->inverse_dependencies.clear();
+	BSCache *cache = get_singleton();
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	cache->source_overrides.clear();
+	cache->dependencies.clear();
+	cache->inverse_dependencies.clear();
 }
