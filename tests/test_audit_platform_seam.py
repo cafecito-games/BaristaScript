@@ -381,6 +381,50 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("target_sources", result.stdout + result.stderr)
 
+    def test_a_cmake_bracket_comment_cannot_certify_a_proof_source(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            cmakelists = Path(scratch) / "CMakeLists.txt"
+            cmakelists.write_text(
+                "#[[\n"
+                "target_sources(${LIBNAME} PRIVATE src/bs_platform_seam.cpp src/bs_platform_shims.cpp)\n"
+                "]]\n"
+                "target_sources(${LIBNAME} PRIVATE src/register_types.cpp)\n",
+                encoding="utf-8",
+            )
+            result = run_audit("--cmakelists", str(cmakelists))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/bs_platform_seam.cpp", result.stdout + result.stderr)
+
+    def test_a_shim_named_only_in_a_comment_is_not_proof(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source = Path(scratch) / "commented_proof.cpp"
+            source.write_text(
+                '#include "bs_platform.h"\n'
+                "// This file used to expand SNAME and instantiate StringBuilder.\n"
+                "/* StringBuilder SNAME */\n"
+                'const char *hint = "SNAME StringBuilder";\n',
+                encoding="utf-8",
+            )
+            document = real_manifest()
+            document["seam_proof_sources"] = [str(source)]
+            with TemporaryManifest(document) as path:
+                result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("StringBuilder", result.stdout + result.stderr)
+
+    def test_a_mapped_header_only_included_in_a_comment_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            seam = Path(scratch) / "commented_seam.h"
+            seam.write_text(
+                "#pragma once\n"
+                "// #include <godot_cpp/templates/vector.hpp>\n"
+                "/* #include <godot_cpp/templates/list.hpp> */\n",
+                encoding="utf-8",
+            )
+            result = run_audit("--seam", str(seam))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("godot_cpp/templates/vector.hpp", result.stdout + result.stderr)
+
     def test_a_proof_source_scons_would_not_glob_is_rejected(self):
         document = real_manifest()
         document["seam_proof_sources"] = ["src/proof/bs_platform_shims.cpp"]

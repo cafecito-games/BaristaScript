@@ -203,10 +203,31 @@ def check_site_coverage(sites, claimed, failures):
             ))
 
 
+def strip_cpp_comments(text):
+    """C and C++ comments replaced by whitespace.
+
+    Every check below asks whether the compiler sees something. A comment is exactly the case where
+    the text says yes and the compiler says no, so it is removed before any of them look.
+    """
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", " ", text)
+
+
+def strip_cpp_string_literals(text):
+    """String literals emptied, leaving `#include` lines alone because their paths are quoted."""
+    lines = []
+    for line in text.splitlines():
+        if re.match(r"^\s*#\s*include\b", line):
+            lines.append(line)
+        else:
+            lines.append(re.sub(r'"(?:\\.|[^"\\])*"', '""', line))
+    return "\n".join(lines)
+
+
 def seam_includes(seam):
     if not seam.is_file():
         raise AuditError("no seam header at {}".format(seam))
-    text = seam.read_text(encoding="utf-8")
+    text = strip_cpp_comments(seam.read_text(encoding="utf-8"))
     return set(INCLUDE_PATTERN.findall(text)), text
 
 
@@ -382,7 +403,10 @@ def cmake_library_sources(text):
     argument list is read to its matching parenthesis, and only blocks naming the extension target
     count.
     """
-    stripped = re.sub(r"#[^\n]*", "", text)
+    # CMake has bracket comments as well as line comments, and a bracket comment can hide a whole
+    # call. Remove them first, longest delimiter first, then the line comments.
+    stripped = re.sub(r"#\[(=*)\[.*?\]\1\]", " ", text, flags=re.DOTALL)
+    stripped = re.sub(r"#[^\n]*", "", stripped)
     sources = None
     for match in re.finditer(r"\btarget_sources\s*\(", stripped):
         depth = 1
@@ -440,7 +464,7 @@ def check_shims_are_compiled(manifest, rows, failures):
         if not path.is_file():
             failures.append("no seam proof source at {}".format(source))
             continue
-        text += path.read_text(encoding="utf-8")
+        text += strip_cpp_string_literals(strip_cpp_comments(path.read_text(encoding="utf-8")))
     for row in rows:
         if row["resolution"] != "shimmed":
             continue
