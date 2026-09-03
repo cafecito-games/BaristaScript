@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import run_gdscript_suites as runner
+import validate_ci
 
 
 # What Godot actually prints when a suite fails to parse: the diagnostic goes to
@@ -127,6 +128,50 @@ def test_manifest_matches_the_repository(failures: list) -> None:
     }
     missing = sorted(discovered - covered)
     check(missing == [], "suites on disk are not run: %s" % missing, failures)
+
+
+WORKFLOW_HEADER = "jobs:\n  build:\n    steps:\n"
+
+
+def test_the_workflow_must_actually_run_the_suite_runner(failures: list) -> None:
+    complaint = validate_ci.check_gdscript_suite_wiring(
+        WORKFLOW_HEADER + '      - run: echo "no suites here"\n'
+    )
+    check(complaint is not None, "a workflow that runs no suite at all was accepted", failures)
+
+
+def test_a_commented_out_runner_is_not_evidence_the_suites_run(failures: list) -> None:
+    complaint = validate_ci.check_gdscript_suite_wiring(
+        WORKFLOW_HEADER
+        + "      # - run: python tests/run_gdscript_suites.py --godot \"$godot_binary\"\n"
+        + '      - run: echo "suites disabled"\n'
+    )
+    check(
+        complaint is not None,
+        "a commented-out runner invocation satisfied the CI wiring check",
+        failures,
+    )
+
+
+def test_a_quoted_direct_suite_invocation_is_rejected(failures: list) -> None:
+    for path in ('"res://tests/smoke_test.gd"', "'res://tests/smoke_test.gd'", "res://tests/smoke_test.gd"):
+        workflow = (
+            WORKFLOW_HEADER
+            + f"      - run: |\n          \"$godot_binary\" --headless --script {path}\n"
+            + "          python tests/run_gdscript_suites.py --godot \"$godot_binary\"\n"
+        )
+        complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+        check(
+            complaint is not None,
+            f"a direct suite invocation was accepted with path {path}",
+            failures,
+        )
+
+
+def test_the_checked_in_workflow_is_wired_through_the_runner(failures: list) -> None:
+    workflow = (validate_ci.ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(complaint is None, "the checked-in workflow is not wired correctly: %s" % complaint, failures)
 
 
 def main() -> int:

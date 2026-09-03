@@ -12,6 +12,44 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+SUITE_RUNNER = "tests/run_gdscript_suites.py"
+
+# `--script res://...`, with or without the shell quoting a workflow author may add.
+DIRECT_SUITE_INVOCATION = re.compile(r"""--script\s+['"]?res://\S+""")
+
+
+def executable_lines(workflow: str) -> str:
+    """The workflow with its comment-only lines removed.
+
+    A commented-out command is text a substring search would still find, so the
+    wiring checks below must not read one as evidence that CI runs anything.
+    """
+    return "\n".join(line for line in workflow.splitlines() if not line.lstrip().startswith("#"))
+
+
+def check_gdscript_suite_wiring(workflow: str) -> str | None:
+    """Return a complaint when the workflow could run a GDScript suite unguarded.
+
+    A GDScript parse error makes SceneTree quit 0, so a suite invoked straight
+    from the workflow can stop testing while the job stays green. Every suite
+    must go through tests/run_gdscript_suites.py, which demands the guard
+    sentinel that only an executed suite can print.
+    """
+    active = executable_lines(workflow)
+
+    direct_invocations = DIRECT_SUITE_INVOCATION.findall(active)
+    if direct_invocations:
+        return (
+            "CI must not invoke a GDScript suite directly "
+            f"({', '.join(sorted(set(direct_invocations)))}); "
+            f"run it through {SUITE_RUNNER} so a parse error cannot pass as green"
+        )
+
+    if SUITE_RUNNER not in active:
+        return f"CI must run the GDScript suites through {SUITE_RUNNER}"
+
+    return None
+
 
 def main() -> int:
     api_path = ROOT / "godot-cpp" / "gdextension" / "extension_api-4-7.json"
@@ -36,20 +74,9 @@ def main() -> int:
         print("CI push events must be limited to main to avoid duplicating pull request runs")
         return 1
 
-    # A GDScript parse error makes SceneTree quit 0, so a suite invoked straight from the
-    # workflow can stop testing while the job stays green. Every suite must go through
-    # tests/run_gdscript_suites.py, which demands the guard sentinel.
-    direct_invocations = re.findall(r"--script\s+res://\S+", workflow)
-    if direct_invocations:
-        print(
-            "CI must not invoke a GDScript suite directly "
-            f"({', '.join(sorted(set(direct_invocations)))}); "
-            "run it through tests/run_gdscript_suites.py so a parse error cannot pass as green"
-        )
-        return 1
-
-    if "tests/run_gdscript_suites.py" not in workflow:
-        print("CI must run the GDScript suites through tests/run_gdscript_suites.py")
+    suite_wiring_complaint = check_gdscript_suite_wiring(workflow)
+    if suite_wiring_complaint is not None:
+        print(suite_wiring_complaint)
         return 1
 
     print(f"CI configuration matches the Godot 4.7 API ({api_precision}) and avoids duplicate PR runs")
