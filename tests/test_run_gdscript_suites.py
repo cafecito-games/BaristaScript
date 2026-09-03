@@ -158,18 +158,32 @@ def test_a_commented_out_runner_is_not_evidence_the_suites_run(failures: list) -
 
 
 def test_a_quoted_direct_suite_invocation_is_rejected(failures: list) -> None:
-    for path in ('"res://tests/smoke_test.gd"', "'res://tests/smoke_test.gd'", "res://tests/smoke_test.gd"):
-        workflow = (
-            WORKFLOW_HEADER
-            + f"      - run: |\n          \"$godot_binary\" --headless --script {path}\n"
-            + "          python tests/run_gdscript_suites.py --godot \"$godot_binary\"\n"
-        )
-        complaint = validate_ci.check_gdscript_suite_wiring(workflow)
-        check(
-            complaint is not None,
-            f"a direct suite invocation was accepted with path {path}",
-            failures,
-        )
+    paths = ['"res://tests/smoke_test.gd"', "'res://tests/smoke_test.gd'", "res://tests/smoke_test.gd"]
+    for option in ("--script", "-s"):
+        for path in paths:
+            workflow = (
+                WORKFLOW_HEADER
+                + f"      - run: |\n          \"$godot_binary\" --headless {option} {path}\n"
+                + "          python tests/run_gdscript_suites.py --godot \"$godot_binary\"\n"
+            )
+            complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+            check(
+                complaint is not None,
+                f"a direct suite invocation was accepted with {option} {path}",
+                failures,
+            )
+
+
+def test_merely_naming_the_runner_is_not_running_it(failures: list) -> None:
+    workflow = (
+        WORKFLOW_HEADER + '      - run: echo "tests/run_gdscript_suites.py disabled for now"\n'
+    )
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(
+        complaint is not None,
+        "a workflow that only mentions the runner path was accepted as running it",
+        failures,
+    )
 
 
 def test_the_checked_in_workflow_is_wired_through_the_runner(failures: list) -> None:

@@ -14,8 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SUITE_RUNNER = "tests/run_gdscript_suites.py"
 
-# `--script res://...`, with or without the shell quoting a workflow author may add.
-DIRECT_SUITE_INVOCATION = re.compile(r"""--script\s+['"]?res://\S+""")
+# Godot's `--script`, its documented `-s` alias, and the quoting a workflow author may add.
+DIRECT_SUITE_INVOCATION = re.compile(r"""(?:--script|(?<![\w-])-s)\s+['"]?res://\S+""")
+
+# The runner named in a command position, so a workflow that only mentions its path -- in an
+# echo, say -- is not mistaken for one that runs it.
+SUITE_RUNNER_COMMAND = re.compile(
+    r"""(?:^|[\s|;&])(?:python3?|py)\s+['"]?[^\s'"#]*""" + re.escape(SUITE_RUNNER),
+    re.MULTILINE,
+)
 
 
 # A `#` that starts a line or follows whitespace begins a comment, in YAML and in the
@@ -50,7 +57,7 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
             f"run it through {SUITE_RUNNER} so a parse error cannot pass as green"
         )
 
-    if SUITE_RUNNER not in active:
+    if SUITE_RUNNER_COMMAND.search(active) is None:
         return f"CI must run the GDScript suites through {SUITE_RUNNER}"
 
     return None
