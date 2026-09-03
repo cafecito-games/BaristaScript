@@ -1,0 +1,188 @@
+{
+	"schema_version": 1,
+	"upstream": {
+		"repository": "cafecito-games/Foundry",
+		"revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
+		"module_root": "modules/foundry_script/",
+		"port_set": ["fs_tokenizer.h", "fs_tokenizer.cpp", "fs_parser.h", "fs_parser.cpp"],
+		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
+	},
+	"seam_header": "src/bs_platform.h",
+	"seam_support_headers": [
+		"godot_cpp/core/memory.hpp",
+		"godot_cpp/templates/local_vector.hpp"
+	],
+	"required_macros": [
+		"ERR_CONTINUE",
+		"ERR_CONTINUE_MSG",
+		"ERR_FAIL_COND",
+		"ERR_FAIL_COND_MSG",
+		"ERR_FAIL_COND_V",
+		"ERR_FAIL_COND_V_MSG",
+		"ERR_FAIL_INDEX",
+		"ERR_FAIL_INDEX_V",
+		"ERR_FAIL_INDEX_V_MSG",
+		"ERR_FAIL_NULL",
+		"ERR_FAIL_NULL_MSG",
+		"ERR_FAIL_NULL_V",
+		"ERR_FAIL_V",
+		"ERR_FAIL_V_MSG",
+		"ERR_PRINT",
+		"DEV_ASSERT"
+	],
+	"entries": [
+		{
+			"core_header": "core/config/project_settings.h",
+			"sites": ["fs_parser.cpp:38"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/project_settings.hpp"],
+			"rationale": "Foundry already reaches the setting store through ProjectSettings::get_singleton() (fs_parser.cpp:136), which is exactly godot-cpp's shape.",
+			"non_mappings": ["core's GLOBAL_GET/GLOBAL_DEF macros do not exist in godot-cpp; ported code must spell ProjectSettings::get_singleton()->get_setting_with_override()."]
+		},
+		{
+			"core_header": "core/core_constants.h",
+			"sites": ["fs_parser.cpp:39"],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "The include is vestigial: no CoreConstants symbol appears anywhere in the port set. The port drops the include rather than inventing a mapping for a dependency that is not real."
+		},
+		{
+			"core_header": "core/error/error_macros.h",
+			"sites": ["fs_tokenizer.cpp:33"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/core/error_macros.hpp"],
+			"rationale": "Every ERR_* macro the port set uses is spelled identically in godot-cpp, so the thin macro shim predicted by docs/foundry-reuse-plan.md section 3 would be a rename-free wrapper and is declined. The seam instead #errors when a required macro is undefined, so a godot-cpp bump that drops one is a compile error rather than a silent no-op.",
+			"non_mappings": ["core's ERR_FAIL_* route through _err_print_error with a Godot Error code; godot-cpp's route through the GDExtension print interface. Message text and exit behaviour are not byte-identical, so diagnostics compared by a corpus must not come from these macros."]
+		},
+		{
+			"core_header": "core/io/resource.h",
+			"sites": ["fs_parser.h:42"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/resource.hpp"]
+		},
+		{
+			"core_header": "core/io/resource_loader.h",
+			"sites": ["fs_parser.cpp:40"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/resource_loader.hpp"],
+			"non_mappings": ["core's ResourceLoader::load is a static member (fs_parser.cpp:7488); godot-cpp's is an instance method on the ResourceLoader singleton. Call sites change, so this is a header mapping, not a call-compatible one."]
+		},
+		{
+			"core_header": "core/io/resource_uid.h",
+			"sites": ["fs_parser.cpp:41"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/resource_uid.hpp"],
+			"non_mappings": ["core's ResourceUID::ensure_path is a static member (fs_parser.cpp:1150); godot-cpp's is an instance method on the ResourceUID singleton."]
+		},
+		{
+			"core_header": "core/math/math_defs.h",
+			"sites": ["fs_parser.cpp:42"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/core/math_defs.hpp", "godot_cpp/core/math.hpp"],
+			"rationale": "core reaches the Math:: free functions transitively through core/math/math_funcs.h; godot-cpp keeps them in core/math.hpp, so the seam includes both to preserve the single include."
+		},
+		{
+			"core_header": "core/object/ref_counted.h",
+			"sites": ["fs_parser.h:43"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/ref_counted.hpp", "godot_cpp/classes/ref.hpp"],
+			"rationale": "core declares RefCounted and Ref<T> in one header; godot-cpp splits Ref<T> into classes/ref.hpp, so the seam includes both."
+		},
+		{
+			"core_header": "core/object/script_language.h",
+			"sites": ["fs_parser.h:44"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/script.hpp", "godot_cpp/classes/script_language.hpp"],
+			"rationale": "The port set only needs Script (Ref<Script>, Script::get_class_static()); core declares it alongside ScriptLanguage in one header, godot-cpp splits them.",
+			"non_mappings": [
+				"ScriptInstance has no godot-cpp equivalent; the extension implements ScriptInstanceExtension instead.",
+				"Foundry's trait virtuals on ScriptLanguage are not in stock Godot (D5); BaristaScript owns its own trait registry.",
+				"core/object/script_function_state.h is engine-internal and is not reachable from a GDExtension; coroutines get their own suspended-frame object."
+			]
+		},
+		{
+			"core_header": "core/string/char_utils.h",
+			"sites": ["fs_tokenizer.cpp:34"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/variant/char_utils.hpp"],
+			"rationale": "Same classification predicates over char32_t, relocated from core/string to godot_cpp/variant."
+		},
+		{
+			"core_header": "core/string/string_builder.h",
+			"sites": ["fs_parser.h:54", "fs_parser.cpp:46"],
+			"resolution": "shimmed",
+			"shim_symbols": ["StringBuilder"],
+			"guard": "DEBUG_ENABLED",
+			"rationale": "Absent from godot-cpp. Guarding it out was rejected: it would delete FSParser::TreePrinter, the parser's only AST dump. Vendoring Godot's MIT original was also rejected: its as_string() writes through String::resize/ptrw/copy_from_unchecked, and godot-cpp's String is an opaque engine-backed handle that exposes none of them. The seam therefore reimplements the same public API over String concatenation, which is a behavioural equivalent with a different cost profile, not an alias to a near-miss type."
+		},
+		{
+			"core_header": "core/string/string_name.h",
+			"sites": ["fs_parser.h:45"],
+			"resolution": "shimmed",
+			"godot_cpp_headers": ["godot_cpp/variant/string_name.hpp"],
+			"shim_symbols": ["SNAME"],
+			"rationale": "The StringName type maps exactly, but SNAME -- used 39 times in fs_parser.cpp -- is a core macro with no godot-cpp counterpart. The seam supplies it with core's own semantics: a function-local static StringName constructed on first use."
+		},
+		{
+			"core_header": "core/string/ustring.h",
+			"sites": ["fs_parser.h:46"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/variant/string.hpp"],
+			"non_mappings": ["godot-cpp's String is an opaque byte array dispatched through _method_bindings into the GDExtension interface, so it has no ptrw/resize/copy_from_unchecked and does not work without a loaded Godot runtime. No ported frontend code can be exercised from a standalone C++ test binary."]
+		},
+		{
+			"core_header": "core/templates/hash_map.h",
+			"sites": ["fs_tokenizer.h:33", "fs_parser.h:47"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/templates/hash_map.hpp"]
+		},
+		{
+			"core_header": "core/templates/list.h",
+			"sites": ["fs_tokenizer.h:34", "fs_parser.h:48"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/templates/list.hpp"]
+		},
+		{
+			"core_header": "core/templates/vector.h",
+			"sites": ["fs_tokenizer.h:35", "fs_parser.h:49"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/templates/vector.hpp"]
+		},
+		{
+			"core_header": "core/variant/numeric_type.h",
+			"sites": ["fs_tokenizer.h:36", "fs_parser.h:50"],
+			"resolution": "deleted-D1",
+			"forbidden_symbols": ["NumericType"],
+			"rationale": "Foundry's own addition. D1 gives BaristaScript one integer type, so the numeric tower is deleted rather than ported. The seam poisons the identifier so a surviving reference is a compile error naming the decision, never a stub that lets the tower creep back."
+		},
+		{
+			"core_header": "core/variant/variant.h",
+			"sites": ["fs_tokenizer.h:37", "fs_parser.h:51"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/variant/variant.hpp"],
+			"non_mappings": ["core/variant/container_type_validate.h, which Foundry extended with numeric_type and type_arguments, has no godot-cpp equivalent and is not mapped here; BaristaScript owns its own type descriptor (D2)."]
+		},
+		{
+			"core_header": "editor/settings/editor_settings.h",
+			"sites": ["fs_tokenizer.cpp:41", "fs_parser.cpp:51"],
+			"resolution": "guarded-out",
+			"omission_reason": "tools-only",
+			"rationale": "Reached only under TOOLS_ENABLED, for editor colour and comment settings that belong to the editor-integration milestone. A GDExtension reaches editor settings through EditorInterface, not this header, so the seam maps nothing and the port drops the guarded block."
+		},
+		{
+			"core_header": "scene/main/multiplayer_api.h",
+			"sites": ["fs_parser.cpp:43"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/multiplayer_api.hpp"],
+			"rationale": "Only the RPCMode enumerators are used (fs_parser.cpp:8127, :8148); godot-cpp exposes them on the same class."
+		},
+		{
+			"core_header": "servers/text/text_server.h",
+			"sites": ["fs_tokenizer.cpp:37", "fs_parser.cpp:47"],
+			"resolution": "guarded-out",
+			"omission_reason": "debug-only",
+			"guard": "DEBUG_ENABLED",
+			"rationale": "Reached only under DEBUG_ENABLED, for the TextServer::FEATURE_UNICODE_SECURITY confusable check (fs_tokenizer.cpp:672, fs_parser.cpp:4898). The check is a warning aid, not a parse decision, and pulling the whole TextServer binding into every ported translation unit to keep it is not worth it in M1. Recorded as an explicit omission so the warning milestone can reinstate it deliberately."
+		}
+	]
+}
