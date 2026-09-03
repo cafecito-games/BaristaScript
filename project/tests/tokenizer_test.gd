@@ -16,6 +16,8 @@ extends SceneTree
 
 ## Source exercising as much of `Token::Type` as one file can. It is lexically valid rather than
 ## grammatically meaningful: the tokenizer has no opinion about what the tokens mean.
+const SuiteGuard = preload("res://tests/suite_guard.gd")
+
 const KITCHEN_SINK := """@export
 @cafecito.test.timeout
 namespace app
@@ -123,11 +125,9 @@ func _initialize() -> void:
 	_test_malformed_utf8_names_the_offending_byte(probe)
 	_test_integer_range_is_exact(probe)
 
-	for failure in failures:
-		push_error(failure)
 	if failures.is_empty():
 		print("tokenizer contract: all assertions passed")
-	quit(0 if failures.is_empty() else 1)
+	quit(SuiteGuard.report("tokenizer_test", failures))
 
 
 func _test_positions_are_one_based_and_end_exclusive(probe: BaristaScriptTokenizerProbe) -> void:

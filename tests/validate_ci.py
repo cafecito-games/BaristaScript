@@ -36,6 +36,22 @@ def main() -> int:
         print("CI push events must be limited to main to avoid duplicating pull request runs")
         return 1
 
+    # A GDScript parse error makes SceneTree quit 0, so a suite invoked straight from the
+    # workflow can stop testing while the job stays green. Every suite must go through
+    # tests/run_gdscript_suites.py, which demands the guard sentinel.
+    direct_invocations = re.findall(r"--script\s+res://\S+", workflow)
+    if direct_invocations:
+        print(
+            "CI must not invoke a GDScript suite directly "
+            f"({', '.join(sorted(set(direct_invocations)))}); "
+            "run it through tests/run_gdscript_suites.py so a parse error cannot pass as green"
+        )
+        return 1
+
+    if "tests/run_gdscript_suites.py" not in workflow:
+        print("CI must run the GDScript suites through tests/run_gdscript_suites.py")
+        return 1
+
     print(f"CI configuration matches the Godot 4.7 API ({api_precision}) and avoids duplicate PR runs")
     return 0
 

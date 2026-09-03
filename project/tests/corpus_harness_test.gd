@@ -6,6 +6,7 @@
 extends SceneTree
 
 const Harness = preload("res://tests/corpus_harness.gd")
+const SuiteGuard = preload("res://tests/suite_guard.gd")
 
 const FIXTURES_ROOT := "res://tests/corpus_fixtures"
 const PARSE_ERROR := "parse error: unexpected token '}'"
@@ -32,11 +33,9 @@ func _initialize() -> void:
 	_test_unreadable_directory_is_harness_error(failures)
 	_test_runner_process_arguments(failures)
 
-	for failure in failures:
-		push_error(failure)
 	if failures.is_empty():
 		print("corpus harness fail-closed contract: all assertions passed")
-	quit(0 if failures.is_empty() else 1)
+	quit(SuiteGuard.report("corpus_harness_test", failures))
 
 
 func _test_paired_case_passes(failures: Array[String]) -> void:
