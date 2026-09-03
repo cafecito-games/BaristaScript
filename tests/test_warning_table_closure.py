@@ -110,6 +110,13 @@ class WarningTableClosureTest(unittest.TestCase):
         self.assertIn("static_assert(sizeof(default_warning_levels)", self.header)
         self.assertIn("static_assert(sizeof(names)", self.source)
 
+    def test_both_build_systems_promote_the_unhandled_enumerator_diagnostic(self):
+        """Without the flag a missing case is a warning that scrolls past, not a build failure."""
+        for build_file in ("SConstruct", "CMakeLists.txt"):
+            text = (ROOT / build_file).read_text(encoding="utf-8")
+            self.assertIn("-Werror=switch", text, "{} does not promote -Wswitch".format(build_file))
+            self.assertIn("/we4062", text, "{} does not promote MSVC C4062".format(build_file))
+
 
 if __name__ == "__main__":
     result = unittest.main(argv=[sys.argv[0], "-v"], exit=False).result

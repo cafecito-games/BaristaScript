@@ -27,8 +27,12 @@
  *   - `default_warning_levels` is the only default table; a `static_assert` ties its length to
  *     `WARNING_MAX`.
  *   - `get_name_from_code()` holds the only name table, likewise `static_assert`-ed.
- *   - `get_message()` is one exhaustive `switch` with no `default:` label, so a code with no
- *     message is a compile diagnostic at the switch rather than a runtime "unknown warning" string.
+ *   - `get_message()` is one `switch` with no `default:` label. A `default:` is what would let an
+ *     unhandled code fall through to a runtime "unknown warning" string, so there is none; the
+ *     build promotes the compiler's unhandled-enumerator diagnostic to an error
+ *     (`-Werror=switch`, MSVC `/we4062`, set in `SConstruct` and `CMakeLists.txt`), which is what
+ *     makes "exhaustive" a build guarantee rather than a comment. `tests/test_warning_table_closure.py`
+ *     asserts the same property against the source, so a toolchain that drops the flag still fails.
  *
  * There is no second switch and no parallel array. Deleting an enumerator -- which is what a
  * language delta does -- makes every surviving `BSWarning::THAT_CODE` reference an error at its own
@@ -282,14 +286,35 @@ public:
 	static Code get_code_from_name(const String &p_name);
 
 	/**
-	 * True when the span names a real region of a source of `p_source_line_count` lines.
+	 * The length in characters of each line of `p_source`, indexed from 0 for line 1 -- the shape
+	 * `has_valid_position()` needs to check a column.
+	 *
+	 * Splitting is on `\n` with a trailing `\r` removed, so a CRLF source measures the same as an
+	 * LF one, and a source ending in a newline has a final empty line, as an editor would show it.
+	 * An empty source is one empty line, which is what lets `EMPTY_FILE` have a position at all.
+	 */
+	static PackedInt32Array line_lengths_of(const String &p_source);
+
+	/**
+	 * True when the span names a real region of a source whose lines are `p_line_lengths`.
+	 *
+	 * Line *and* column are checked. A column may stand one past the last character of its line --
+	 * that is the end-of-line position, and the exclusive end of a span covering the whole line --
+	 * so column `c` on a line of length `L` is valid when `1 <= c <= L + 1`. A span may be
+	 * zero-width when it begins and ends at the same place: a diagnostic at end-of-file or on an
+	 * empty file has nothing to underline, and rejecting it would make a real warning unemittable.
+	 * It may not run backwards.
+	 *
+	 * Taking the lengths rather than a line count is the point. A count can only catch a warning on
+	 * a line that does not exist; it cannot catch column 400 of a 12-character line, which is the
+	 * same class of producer bug and just as unusable to an editor.
 	 *
 	 * The registry never clamps. A caller holding an out-of-range span has a producer bug, and the
 	 * only two honest answers are to fix the producer or to drop the warning -- silently moving it
 	 * to line 1 would put a diagnostic on code that did not cause it. `to_validate_dictionary()`
 	 * refuses rather than emits.
 	 */
-	bool has_valid_position(int p_source_line_count) const;
+	bool has_valid_position(const PackedInt32Array &p_line_lengths) const;
 
 	/**
 	 * The effective level for `p_code` given `p_setting`, the raw value read from the project
@@ -311,9 +336,9 @@ public:
 	 * `end_line`, `code`, `string_code`, `message`, and nothing else
 	 * (godotengine/godot 4.7-stable `core/object/script_language_extension.h:341-352`). This is the
 	 * single place the column span is dropped. Returns an empty dictionary, loudly, when the span
-	 * does not fit `p_source_line_count`.
+	 * does not fit `p_line_lengths`.
 	 */
-	Dictionary to_validate_dictionary(int p_source_line_count) const;
+	Dictionary to_validate_dictionary(const PackedInt32Array &p_line_lengths) const;
 
 	/**
 	 * Total order over warnings: (start_line, start_column, code) first, as the milestone requires,
@@ -372,8 +397,9 @@ public:
 	String get_message(int p_code, const PackedStringArray &p_symbols) const;
 	Dictionary resolve_level(int p_code, const Variant &p_setting) const;
 	Dictionary resolve_level_from_project_settings(int p_code) const;
-	bool has_valid_position(int p_code, int p_start_line, int p_start_column, int p_end_line, int p_end_column, int p_source_line_count) const;
-	Dictionary to_validate_dictionary(const Dictionary &p_warning, int p_source_line_count) const;
+	PackedInt32Array line_lengths_of(const String &p_source) const;
+	bool has_valid_position(int p_code, int p_start_line, int p_start_column, int p_end_line, int p_end_column, const PackedInt32Array &p_line_lengths) const;
+	Dictionary to_validate_dictionary(const Dictionary &p_warning, const PackedInt32Array &p_line_lengths) const;
 	Array sort_warnings(const Array &p_warnings) const;
 	bool unicode_security_available() const;
 	bool is_confusable_identifier(const String &p_identifier) const;

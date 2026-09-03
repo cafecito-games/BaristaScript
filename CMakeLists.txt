@@ -92,6 +92,13 @@ endif()
 
 target_link_libraries(${LIBNAME} PRIVATE godot-cpp)
 
+# See the SConstruct note: an unhandled warning code in bs_warning.cpp's message switch is a build
+# error, not a diagnostic that scrolls past.
+target_compile_options(${LIBNAME} PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/we4062>
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Werror=switch>
+)
+
 # Require at least C++17 for this target
 set_property(TARGET ${LIBNAME} PROPERTY CXX_STANDARD 17)
 

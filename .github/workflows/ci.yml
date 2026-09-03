@@ -113,7 +113,10 @@ jobs:
           "$godot_binary" --headless --path project --script res://tests/smoke_test.gd
           "$godot_binary" --headless --path project --script res://tests/corpus_runner.gd -- --allow-empty
           "$godot_binary" --headless --path project --script res://tests/corpus_harness_test.gd
-          "$godot_binary" --headless --path project --script res://tests/warning_registry_test.gd
+          # A GDScript parse error makes SceneTree quit 0, so the sentinel is what proves the
+          # suite ran rather than failed to load.
+          "$godot_binary" --headless --path project --script res://tests/warning_registry_test.gd | tee "$RUNNER_TEMP/warning_registry.log"
+          grep -q '^BS_WARNING_REGISTRY_OK ' "$RUNNER_TEMP/warning_registry.log"
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save

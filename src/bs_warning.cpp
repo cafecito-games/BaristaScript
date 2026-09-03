@@ -257,25 +257,49 @@ BSWarning::Code BSWarning::get_code_from_name(const String &p_name) {
 	return WARNING_MAX;
 }
 
-bool BSWarning::has_valid_position(int p_source_line_count) const {
-	if (p_source_line_count < 0) {
+PackedInt32Array BSWarning::line_lengths_of(const String &p_source) {
+	PackedInt32Array lengths;
+	const PackedStringArray lines = p_source.split("\n");
+	for (int i = 0; i < lines.size(); i++) {
+		String line = lines[i];
+		if (line.ends_with("\r")) {
+			line = line.substr(0, line.length() - 1);
+		}
+		lengths.push_back(line.length());
+	}
+	// `String::split()` on an empty string yields nothing, but an empty source is still one empty
+	// line -- that is the line EMPTY_FILE points at.
+	if (lengths.is_empty()) {
+		lengths.push_back(0);
+	}
+	return lengths;
+}
+
+bool BSWarning::has_valid_position(const PackedInt32Array &p_line_lengths) const {
+	const int line_count = p_line_lengths.size();
+	if (line_count < 1) {
 		return false;
 	}
 	if (code < 0 || code >= WARNING_MAX) {
 		return false;
 	}
-	if (start_line < 1 || start_line > p_source_line_count) {
+	if (start_line < 1 || start_line > line_count) {
 		return false;
 	}
-	if (end_line < start_line || end_line > p_source_line_count) {
+	if (end_line < start_line || end_line > line_count) {
 		return false;
 	}
-	if (start_column < 1 || end_column < 1) {
+	// A column stands between characters, so the last valid column on a line of length L is L + 1:
+	// the end-of-line position, which is also the exclusive end of a span covering the whole line.
+	if (start_column < 1 || start_column > p_line_lengths[start_line - 1] + 1) {
 		return false;
 	}
-	// The end is exclusive, so a span that begins and ends on one line must cover at least one
-	// column. Across lines the end column stands on its own line and only has to be a real column.
-	if (end_line == start_line && end_column <= start_column) {
+	if (end_column < 1 || end_column > p_line_lengths[end_line - 1] + 1) {
+		return false;
+	}
+	// The end is exclusive, so on one line it may equal the start -- a zero-width position, which
+	// is the only thing a diagnostic at end-of-file has to point at -- but it may not precede it.
+	if (end_line == start_line && end_column < start_column) {
 		return false;
 	}
 	return true;
@@ -326,11 +350,11 @@ BSWarning::LevelSource BSWarning::resolve_level_from_project_settings(Code p_cod
 	return source;
 }
 
-Dictionary BSWarning::to_validate_dictionary(int p_source_line_count) const {
+Dictionary BSWarning::to_validate_dictionary(const PackedInt32Array &p_line_lengths) const {
 	Dictionary result;
-	ERR_FAIL_COND_V_MSG(!has_valid_position(p_source_line_count), result,
+	ERR_FAIL_COND_V_MSG(!has_valid_position(p_line_lengths), result,
 			vformat(R"(BaristaScript warning "%s" has a position outside the source (lines %d-%d, columns %d-%d, source has %d line(s)); refusing to emit it.)",
-					get_name_from_code(code), start_line, end_line, start_column, end_column, p_source_line_count));
+					get_name_from_code(code), start_line, end_line, start_column, end_column, p_line_lengths.size()));
 
 	// Stock Godot reads exactly these five keys and drops the rest, so the column span stops here.
 	result["start_line"] = start_line;
@@ -494,18 +518,22 @@ Dictionary BaristaScriptWarningRegistry::resolve_level_from_project_settings(int
 	return result;
 }
 
-bool BaristaScriptWarningRegistry::has_valid_position(int p_code, int p_start_line, int p_start_column, int p_end_line, int p_end_column, int p_source_line_count) const {
+PackedInt32Array BaristaScriptWarningRegistry::line_lengths_of(const String &p_source) const {
+	return BSWarning::line_lengths_of(p_source);
+}
+
+bool BaristaScriptWarningRegistry::has_valid_position(int p_code, int p_start_line, int p_start_column, int p_end_line, int p_end_column, const PackedInt32Array &p_line_lengths) const {
 	BSWarning warning;
 	warning.code = (BSWarning::Code)p_code;
 	warning.start_line = p_start_line;
 	warning.start_column = p_start_column;
 	warning.end_line = p_end_line;
 	warning.end_column = p_end_column;
-	return warning.has_valid_position(p_source_line_count);
+	return warning.has_valid_position(p_line_lengths);
 }
 
-Dictionary BaristaScriptWarningRegistry::to_validate_dictionary(const Dictionary &p_warning, int p_source_line_count) const {
-	return warning_from_dictionary(p_warning).to_validate_dictionary(p_source_line_count);
+Dictionary BaristaScriptWarningRegistry::to_validate_dictionary(const Dictionary &p_warning, const PackedInt32Array &p_line_lengths) const {
+	return warning_from_dictionary(p_warning).to_validate_dictionary(p_line_lengths);
 }
 
 Array BaristaScriptWarningRegistry::sort_warnings(const Array &p_warnings) const {
@@ -540,8 +568,9 @@ void BaristaScriptWarningRegistry::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_message", "code", "symbols"), &BaristaScriptWarningRegistry::get_message);
 	ClassDB::bind_method(D_METHOD("resolve_level", "code", "setting"), &BaristaScriptWarningRegistry::resolve_level);
 	ClassDB::bind_method(D_METHOD("resolve_level_from_project_settings", "code"), &BaristaScriptWarningRegistry::resolve_level_from_project_settings);
-	ClassDB::bind_method(D_METHOD("has_valid_position", "code", "start_line", "start_column", "end_line", "end_column", "source_line_count"), &BaristaScriptWarningRegistry::has_valid_position);
-	ClassDB::bind_method(D_METHOD("to_validate_dictionary", "warning", "source_line_count"), &BaristaScriptWarningRegistry::to_validate_dictionary);
+	ClassDB::bind_method(D_METHOD("line_lengths_of", "source"), &BaristaScriptWarningRegistry::line_lengths_of);
+	ClassDB::bind_method(D_METHOD("has_valid_position", "code", "start_line", "start_column", "end_line", "end_column", "line_lengths"), &BaristaScriptWarningRegistry::has_valid_position);
+	ClassDB::bind_method(D_METHOD("to_validate_dictionary", "warning", "line_lengths"), &BaristaScriptWarningRegistry::to_validate_dictionary);
 	ClassDB::bind_method(D_METHOD("sort_warnings", "warnings"), &BaristaScriptWarningRegistry::sort_warnings);
 	ClassDB::bind_method(D_METHOD("unicode_security_available"), &BaristaScriptWarningRegistry::unicode_security_available);
 	ClassDB::bind_method(D_METHOD("is_confusable_identifier", "identifier"), &BaristaScriptWarningRegistry::is_confusable_identifier);
