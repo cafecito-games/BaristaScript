@@ -35,8 +35,10 @@
 // core/templates/vector.h
 #include <godot_cpp/templates/vector.hpp>
 
-// core/string/ustring.h -- opaque and engine-backed; see the manifest's non-mapping note.
+// core/string/ustring.h -- opaque and engine-backed; see the manifest's non-mapping note. core
+// declares vformat here too; godot-cpp keeps it in variant/utility_functions.hpp.
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 // core/string/string_name.h -- the type maps; the SNAME macro is shimmed below.
 #include <godot_cpp/variant/string_name.hpp>
 // core/string/char_utils.h
@@ -50,6 +52,8 @@
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/core/math_defs.hpp>
 
+// core/object/object.h -- only PropertyInfo is used; godot-cpp keeps it under core/, not classes/.
+#include <godot_cpp/core/property_info.hpp>
 // core/object/ref_counted.h -- core declares RefCounted and Ref<T> together.
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
@@ -68,6 +72,12 @@
 #include <godot_cpp/classes/project_settings.hpp>
 // scene/main/multiplayer_api.h -- only the RPCMode enumerators are used.
 #include <godot_cpp/classes/multiplayer_api.hpp>
+// servers/text/text_server.h -- the confusable-identifier check M1 guarded out, reinstated by the
+// warning registry through the public interface rather than the engine-internal TS macro. core
+// reaches the primary interface through TS; godot-cpp goes through TextServerManager, so the seam
+// includes both headers. See the decision recorded in src/bs_warning.h.
+#include <godot_cpp/classes/text_server.hpp>
+#include <godot_cpp/classes/text_server_manager.hpp>
 
 // Backing for the shims below; not a mapping of any upstream dependency.
 #include <godot_cpp/core/memory.hpp>

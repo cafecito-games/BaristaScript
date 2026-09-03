@@ -12,6 +12,7 @@
 #include "barista_script_language.h"
 #include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
+#include "bs_warning.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
@@ -36,6 +37,12 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);
 	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
+#ifdef DEBUG_ENABLED
+	// The warning registry only exists in debug builds, like the warnings it names. Its binding is
+	// the only way `project/tests/warning_registry_test.gd` can reach it: godot-cpp's String and
+	// Variant are engine-backed, so there is no standalone C++ test binary to reach it from.
+	GDREGISTER_CLASS(barista_script::BaristaScriptWarningRegistry);
+#endif // DEBUG_ENABLED
 
 	language = memnew(barista_script::BaristaScriptLanguage);
 	const godot::Error registration_error = godot::Engine::get_singleton()->register_script_language(language);

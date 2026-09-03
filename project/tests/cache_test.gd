@@ -31,6 +31,11 @@ const DUPLICATE_KEY_ACROSS_VERSIONS_STORE := "%s/duplicate_key_across_versions_s
 
 const SCRATCH_ROOT := "user://cache_test"
 
+## Printed only when every assertion passed. CI greps for it because a GDScript
+## parse error exits 0 and would otherwise read as a pass.
+const SUCCESS_SENTINEL := "BS_PARSE_CACHE_OK"
+const TEST_COUNT := 24
+
 # Mirrors the BSMissReason enum. get_miss_reason_names() is the single source of
 # truth; these constants only give the assertions readable names, and
 # _test_miss_reason_vocabulary_is_closed proves they still agree.
@@ -89,8 +94,11 @@ func _initialize() -> void:
 
 	for failure in failures:
 		push_error(failure)
+	# A GDScript parse error makes SceneTree quit 0, so CI greps for this sentinel
+	# rather than trusting the exit code: it can only be printed by a suite that
+	# actually loaded and ran.
 	if failures.is_empty():
-		print("parse cache fail-closed contract: all assertions passed")
+		print("%s %d test groups passed" % [SUCCESS_SENTINEL, TEST_COUNT])
 	quit(0 if failures.is_empty() else 1)
 
 

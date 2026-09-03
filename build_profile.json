@@ -12,6 +12,8 @@
 		"ResourceUID",
 		"ScriptExtension",
 		"ScriptLanguageExtension",
-		"ScriptLanguageExtensionProfilingInfo"
+		"ScriptLanguageExtensionProfilingInfo",
+		"TextServer",
+		"TextServerManager"
 	]
 }

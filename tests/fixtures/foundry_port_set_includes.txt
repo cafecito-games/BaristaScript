@@ -73,6 +73,19 @@
 58:#endif // DEBUG_ENABLED
 60:#ifdef TOOLS_ENABLED
 
+=== modules/foundry_script/fs_warning.h ===
+31:#pragma once
+33:#ifdef DEBUG_ENABLED
+35:#include "core/object/object.h"
+36:#include "core/string/ustring.h"
+37:#include "core/templates/vector.h"
+
+=== modules/foundry_script/fs_warning.cpp ===
+31:#include "fs_warning.h"
+33:#include "core/variant/variant.h"
+35:#ifdef DEBUG_ENABLED
+38:#define CHECK_SYMBOLS(m_amount) ERR_FAIL_COND_V(symbols.size() < m_amount, String());
+
 === modules/foundry_script/fs_cache.h ===
 31:#pragma once
 33:#include "foundry_script.h"

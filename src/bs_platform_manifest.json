@@ -4,7 +4,7 @@
 		"repository": "cafecito-games/Foundry",
 		"revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
 		"module_root": "modules/foundry_script/",
-		"port_set": ["fs_tokenizer.h", "fs_tokenizer.cpp", "fs_parser.h", "fs_parser.cpp", "fs_cache.h", "fs_cache.cpp"],
+		"port_set": ["fs_tokenizer.h", "fs_tokenizer.cpp", "fs_parser.h", "fs_parser.cpp", "fs_warning.h", "fs_warning.cpp", "fs_cache.h", "fs_cache.cpp"],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
 	"seam_header": "src/bs_platform.h",
@@ -95,6 +95,14 @@
 			"rationale": "core reaches the Math:: free functions transitively through core/math/math_funcs.h; godot-cpp keeps them in core/math.hpp, so the seam includes both to preserve the single include."
 		},
 		{
+			"core_header": "core/object/object.h",
+			"sites": ["fs_warning.h:35"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/core/property_info.hpp"],
+			"rationale": "fs_warning.h reaches into core's object header for one type, PropertyInfo, which it uses to describe a per-warning project setting (fs_warning.cpp:203). godot-cpp keeps PropertyInfo in core/property_info.hpp rather than in a classes/ binding, with the same constructor signature and the same PROPERTY_HINT_ENUM hint, so the one call site ports unchanged.",
+			"non_mappings": ["core's Object, ObjectDB, ClassDB and the GDCLASS/GDVIRTUAL machinery in this header have no godot-cpp counterpart under this name; a GDExtension gets godot_cpp/classes/object.hpp and GDCLASS from godot_cpp/core/class_db.hpp instead. The port set touches none of them, so the seam maps only PropertyInfo.", "PNAME(), which core defines in core/string/ustring.h:763 as (m_value) and fs_warning.cpp wraps around every warning name, marks a string for the editor's translation extractor. godot-cpp has neither the macro nor the extractor, so the port drops the marker at its call sites rather than the seam expanding a missing macro to nothing."]
+		},
+		{
 			"core_header": "core/object/ref_counted.h",
 			"sites": ["fs_parser.h:43", "fs_cache.h:35"],
 			"resolution": "mapped",
@@ -145,10 +153,10 @@
 		},
 		{
 			"core_header": "core/string/ustring.h",
-			"sites": ["fs_parser.h:46"],
+			"sites": ["fs_parser.h:46", "fs_warning.h:36"],
 			"resolution": "mapped",
-			"godot_cpp_headers": ["godot_cpp/variant/string.hpp"],
-			"non_mappings": ["godot-cpp's String is an opaque byte array dispatched through _method_bindings into the GDExtension interface, so it has no ptrw/resize/copy_from_unchecked and does not work without a loaded Godot runtime. No ported frontend code can be exercised from a standalone C++ test binary."]
+			"godot_cpp_headers": ["godot_cpp/variant/string.hpp", "godot_cpp/variant/utility_functions.hpp"],
+			"non_mappings": ["core declares vformat() in this header; godot-cpp declares it in variant/utility_functions.hpp, so the seam includes both to preserve the single include. fs_warning.cpp calls it 33 times.", "godot-cpp's String is an opaque byte array dispatched through _method_bindings into the GDExtension interface, so it has no ptrw/resize/copy_from_unchecked and does not work without a loaded Godot runtime. No ported frontend code can be exercised from a standalone C++ test binary."]
 		},
 		{
 			"core_header": "core/templates/hash_set.h",
@@ -170,7 +178,7 @@
 		},
 		{
 			"core_header": "core/templates/vector.h",
-			"sites": ["fs_tokenizer.h:35", "fs_parser.h:49", "fs_cache.h:39", "fs_cache.cpp:44"],
+			"sites": ["fs_tokenizer.h:35", "fs_parser.h:49", "fs_warning.h:37", "fs_cache.h:39", "fs_cache.cpp:44"],
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/templates/vector.hpp"]
 		},
@@ -183,7 +191,7 @@
 		},
 		{
 			"core_header": "core/variant/variant.h",
-			"sites": ["fs_tokenizer.h:37", "fs_parser.h:51"],
+			"sites": ["fs_tokenizer.h:37", "fs_parser.h:51", "fs_warning.cpp:33"],
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/variant/variant.hpp"],
 			"non_mappings": ["core/variant/container_type_validate.h, which Foundry extended with numeric_type and type_arguments, has no godot-cpp equivalent and is not mapped here; BaristaScript owns its own type descriptor (D2)."]
@@ -205,10 +213,11 @@
 		{
 			"core_header": "servers/text/text_server.h",
 			"sites": ["fs_tokenizer.cpp:37", "fs_parser.cpp:47"],
-			"resolution": "guarded-out",
-			"omission_reason": "debug-only",
+			"resolution": "mapped",
 			"guard": "DEBUG_ENABLED",
-			"rationale": "Reached only under DEBUG_ENABLED, for the TextServer::FEATURE_UNICODE_SECURITY confusable check (fs_tokenizer.cpp:672, fs_parser.cpp:4898). The check is a warning aid, not a parse decision, and pulling the whole TextServer binding into every ported translation unit to keep it is not worth it in M1. Recorded as an explicit omission so the warning milestone can reinstate it deliberately."
+			"godot_cpp_headers": ["godot_cpp/classes/text_server.hpp", "godot_cpp/classes/text_server_manager.hpp"],
+			"rationale": "M1 guarded this out as debug-only and routed the decision to the warning milestone, which took it: the confusable-identifier check behind BSWarning::CONFUSABLE_IDENTIFIER (fs_parser.cpp:4898) is reinstated, because a warning code no consumer can raise is a code the registry lies about. The route is public -- TextServerManager::get_primary_interface() yields the Ref<TextServer> that carries has_feature(), spoof_check() and is_confusable(), the same three calls Foundry makes through the engine-internal TS macro -- so the engine header is not needed and only the bindings are. The cost is paid in build_profile.json, which now enables TextServer and TextServerManager; see src/bs_warning.h for the decision in full.",
+			"non_mappings": ["core's TS macro (TextServerManager::get_singleton()->get_primary_interface()) is engine-internal and absent from godot-cpp; ported code spells the two calls out. Foundry's other site, the keyword-confusable check at fs_tokenizer.cpp:672, raises a parse error rather than a warning, so whether to keep it stays a tokenizer decision -- the header it needs is mapped either way."]
 		}
 	]
 }
