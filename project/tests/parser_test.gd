@@ -61,6 +61,7 @@ func _initialize() -> void:
 	_test_parsing_twice_is_identical(probe, failures)
 	_test_cold_and_cache_warm_parses_agree(probe, failures)
 	_test_two_parsers_do_not_interfere(probe, failures)
+	_test_a_reused_parser_carries_nothing_over(probe, failures)
 	_test_positions_are_one_based_and_end_exclusive(probe, failures)
 
 	# GRAMMAR section 5: the precedence table, asserted against explicit grouping.
@@ -76,7 +77,7 @@ func _initialize() -> void:
 	# rather than trusting the exit code: it can only be printed by a suite that
 	# actually loaded and ran.
 	if failures.is_empty():
-		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 21])
+		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 22])
 	quit(0 if failures.is_empty() else 1)
 
 
@@ -109,9 +110,9 @@ func _test_tokenizer_diagnostic_reaches_the_parser(probe, failures: Array[String
 		"var count = 1L\n",
 		"var count = 1UL\n",
 		"var count = 99999999999999999999\n",
-		"var value: uint = 0\n",
 		"func f() -> ulong:\n\tpass\n",
 		"var cast = 1 as long\n",
+		"var tested = 1 is uint\n",
 	]
 	for source in lexical_failures:
 		var report := _parse(probe, source)
@@ -124,11 +125,23 @@ func _test_tokenizer_diagnostic_reaches_the_parser(probe, failures: Array[String
 		_expect(failures, report["diagnostics"].size() == 1,
 			"tokenizer diagnostic: expected exactly one, got %s for %s" % [report["diagnostics"], source.strip_edges()])
 
-	# The other side: a source that tokenizes cleanly never claims a lexical failure, however broken
-	# it is syntactically.
-	var syntactic := _parse(probe, "func a( -> void:\n\tpass\n")
-	_expect(failures, not syntactic["tokenizer_failed"],
-		"a purely syntactic error must not be reported as a lexical failure: %s" % [syntactic["diagnostics"]])
+	# The other side. `tokenizer_failed` names a *lexical* failure, so a source that tokenizes
+	# cleanly must never claim one, however broken it is afterwards -- including a reserved spelling
+	# in a type position the parser owns, which lexes perfectly well as `RESERVED_TYPE_NAME` and is
+	# rejected by the parser.
+	var lexically_clean := [
+		"func a( -> void:\n\tpass\n",
+		"var value: uint = 0\n",
+		"var typed: Array[ulong] = []\n",
+		"type Alias = long\n",
+	]
+	for source in lexically_clean:
+		var report := _parse(probe, source)
+		_expect(failures, not report["complete"],
+			"a rejected source must not be reported as complete: %s" % source.strip_edges())
+		_expect(failures, not report["tokenizer_failed"],
+			"a lexically clean source must not be reported as a lexical failure: %s -- %s"
+			% [source.strip_edges(), report["diagnostics"]])
 
 
 ## A diagnostic about the very first token has no preceding token to be anchored
@@ -386,6 +399,31 @@ func _test_two_parsers_do_not_interfere(probe, failures: Array[String]) -> void:
 	var after := _parse(probe, source)
 	_expect(failures, before["nodes"] == after["nodes"], "an unrelated parse changed this one's nodes")
 	_expect(failures, before["diagnostics"] == after["diagnostics"], "an unrelated parse changed this one's diagnostics")
+
+
+## A parser is reusable: nothing from one run reaches the next. The probe builds a
+## fresh `BSParser` per call, so this drives the reuse through the one path that
+## shares an instance -- the token-buffer replay of a source parsed cold first.
+func _test_a_reused_parser_carries_nothing_over(probe, failures: Array[String]) -> void:
+	var broken := "func a( -> void:\n\tpass\n"
+	var clean := "func a() -> void:\n\tpass\n"
+
+	var buffer: PackedByteArray = probe.tokenize_to_buffer(clean.to_utf8_buffer(), false)
+	var reports: Array = probe.reused_parse_reports(broken.to_utf8_buffer(), buffer, PATH)
+	_expect(failures, reports.size() == 2, "the reuse probe did not return both reports")
+	if reports.size() != 2:
+		return
+
+	var first: Dictionary = reports[0]
+	var second: Dictionary = reports[1]
+	_expect(failures, not first["complete"], "the broken control parsed cleanly")
+	_expect(failures, second["complete"],
+		"the second parse carried diagnostics from the first: %s" % [second["diagnostics"]])
+	_expect(failures, not second["tokenizer_failed"], "the second parse claimed the first run's lexical failure")
+
+	var fresh: Dictionary = probe.parse_token_buffer(buffer, PATH)
+	_expect(failures, _node_kinds(second) == _node_kinds(fresh),
+		"the second parse exposed nodes from the first")
 
 
 ## Positions keep the tokenizer's convention unchanged across the boundary:

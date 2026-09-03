@@ -2415,6 +2415,14 @@ private:
 	 * at unrelated punctuation (fs_parser.cpp:634 @ c9d5e35). The offending token knows where it is.
 	 */
 	void push_error_at(const String &p_message, const BSTokenizer::Token &p_token);
+	/**
+	 * Reports a tokenizer diagnostic carried on an `ERROR` token, at that token's span.
+	 *
+	 * Separate from `push_error_at()` because it is what makes the run a *lexical* failure. A
+	 * parser-owned rejection also wants a token's span -- `reject_reserved_type_name()` points at
+	 * the spelling rather than at the punctuation before it -- and must not be mistaken for one.
+	 */
+	void push_tokenizer_error(const BSTokenizer::Token &p_error_token);
 
 	/**
 	 * True when the token now in `current` was reached by skipping one or more `ERROR` tokens that

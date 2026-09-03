@@ -286,10 +286,12 @@ void BSParser::push_error(const String &p_message, const Node *p_origin) {
 
 void BSParser::push_error_at(const String &p_message, const BSTokenizer::Token &p_token) {
 	panic_mode = true;
-	// Every caller of this overload is reporting an `ERROR` token, which is how a tokenizer
-	// diagnostic reaches the parser at all.
-	tokenizer_failed = true;
 	errors.push_back({ p_message, p_token.start_line, p_token.start_column, p_token.end_line, p_token.end_column });
+}
+
+void BSParser::push_tokenizer_error(const BSTokenizer::Token &p_error_token) {
+	tokenizer_failed = true;
+	push_error_at(p_error_token.literal, p_error_token);
 }
 
 Vector<const BSParser::ParserError *> BSParser::get_errors_in_source_order() const {
@@ -567,7 +569,7 @@ Error BSParser::parse(const String &p_source_code, const String &p_script_path, 
 			// At the token's own span: there is no `previous` here at all, so upstream's
 			// `push_error()` reports the very first diagnostic in a file at 0:0
 			// (fs_parser.cpp:547 @ c9d5e35), which is not a position in any source.
-			push_error_at(current.literal, current);
+			push_tokenizer_error(current);
 			current_follows_tokenizer_error = true;
 		}
 		current = tokenizer->scan();
@@ -610,6 +612,12 @@ Error BSParser::parse(const String &p_source_code, const String &p_script_path, 
 }
 
 Error BSParser::parse_binary(const PackedByteArray &p_binary, const String &p_script_path) {
+	// `parse()` clears first and this did not (fs_parser.cpp:5750 @ c9d5e35), so a `BSParser` reused
+	// across a text parse and a buffer parse -- or across two buffer parses -- carried the first
+	// run's diagnostics and nodes into the second, and could reject well-formed input for an error
+	// that belonged to source it had already finished with.
+	clear();
+
 	BSTokenizerBuffer *buffer_tokenizer = memnew(BSTokenizerBuffer);
 	Error err = buffer_tokenizer->set_code_buffer(p_binary);
 
@@ -635,7 +643,7 @@ Error BSParser::parse_binary(const PackedByteArray &p_binary, const String &p_sc
 			// At the token's own span: there is no `previous` here at all, so upstream's
 			// `push_error()` reports the very first diagnostic in a file at 0:0
 			// (fs_parser.cpp:547 @ c9d5e35), which is not a position in any source.
-			push_error_at(current.literal, current);
+			push_tokenizer_error(current);
 			current_follows_tokenizer_error = true;
 		}
 		current = tokenizer->scan();
@@ -674,7 +682,7 @@ BSTokenizer::Token BSParser::advance() {
 	} else {
 		current = tokenizer->scan();
 		while (current.type == BSTokenizer::Token::ERROR) {
-			push_error_at(current.literal, current);
+			push_tokenizer_error(current);
 			current_follows_tokenizer_error = true;
 			current = tokenizer->scan();
 		}
@@ -695,7 +703,7 @@ const BSTokenizer::Token &BSParser::peek() {
 		lookahead = tokenizer->scan();
 		lookahead_follows_tokenizer_error = false;
 		while (lookahead.type == BSTokenizer::Token::ERROR) {
-			push_error_at(lookahead.literal, lookahead);
+			push_tokenizer_error(lookahead);
 			lookahead_follows_tokenizer_error = true;
 			lookahead = tokenizer->scan();
 		}

@@ -13,6 +13,7 @@
 #include "bs_tokenizer_buffer.h"
 
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/array.hpp>
 
 using namespace godot;
 
@@ -93,6 +94,7 @@ Dictionary render_report(const BSParser &p_parser, const BSParser::Node *p_node_
 void BaristaScriptParserProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("parse_text", "source_utf8", "script_path"), &BaristaScriptParserProbe::parse_text);
 	ClassDB::bind_method(D_METHOD("parse_token_buffer", "token_buffer", "script_path"), &BaristaScriptParserProbe::parse_token_buffer);
+	ClassDB::bind_method(D_METHOD("reused_parse_reports", "source_utf8", "token_buffer", "script_path"), &BaristaScriptParserProbe::reused_parse_reports);
 	ClassDB::bind_method(D_METHOD("tokenize_to_buffer", "source_utf8", "compress"), &BaristaScriptParserProbe::tokenize_to_buffer);
 	ClassDB::bind_method(D_METHOD("node_type_names"), &BaristaScriptParserProbe::node_type_names);
 	ClassDB::bind_method(D_METHOD("removed_type_name_diagnostic", "spelling"), &BaristaScriptParserProbe::removed_type_name_diagnostic);
@@ -128,6 +130,22 @@ Dictionary BaristaScriptParserProbe::parse_token_buffer(const PackedByteArray &p
 	BSParser parser;
 	const Error error = parser.parse_binary(p_token_buffer, p_script_path);
 	return render_report(parser, parser.list, error);
+}
+
+Array BaristaScriptParserProbe::reused_parse_reports(const PackedByteArray &p_source_utf8, const PackedByteArray &p_token_buffer, const String &p_script_path) const {
+	Array reports;
+	BSParser parser;
+
+	String source;
+	String decode_error;
+	if (BSTokenizer::decode_source(p_source_utf8, &source, &decode_error)) {
+		const Error first_error = parser.parse(source, p_script_path, false);
+		reports.push_back(render_report(parser, parser.list, first_error));
+	}
+
+	const Error second_error = parser.parse_binary(p_token_buffer, p_script_path);
+	reports.push_back(render_report(parser, parser.list, second_error));
+	return reports;
 }
 
 PackedByteArray BaristaScriptParserProbe::tokenize_to_buffer(const PackedByteArray &p_source_utf8, bool p_compress) const {

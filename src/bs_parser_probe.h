@@ -66,6 +66,16 @@ public:
 	 */
 	godot::Dictionary parse_token_buffer(const godot::PackedByteArray &p_token_buffer, const godot::String &p_script_path) const;
 
+	/**
+	 * Two reports from **one** `BSParser`: a text parse of `p_source_utf8`, then a buffer parse of
+	 * `p_token_buffer` on the same instance.
+	 *
+	 * Every other method here builds a fresh parser per call, which is exactly what a reuse defect
+	 * hides behind. `BSParser` is reused in the compiler, so "nothing from one run reaches the next"
+	 * has to be assertable, and this is the only way to assert it from GDScript.
+	 */
+	godot::Array reused_parse_reports(const godot::PackedByteArray &p_source_utf8, const godot::PackedByteArray &p_token_buffer, const godot::String &p_script_path) const;
+
 	/** The compiled token buffer for this source, which is what a cache-warm parse replays. */
 	godot::PackedByteArray tokenize_to_buffer(const godot::PackedByteArray &p_source_utf8, bool p_compress) const;
 
