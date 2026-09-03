@@ -203,6 +203,38 @@ def test_a_runner_whose_status_is_swallowed_is_rejected(failures: list) -> None:
         )
 
 
+def test_a_continue_on_error_runner_step_is_rejected(failures: list) -> None:
+    workflow = (
+        WORKFLOW_HEADER
+        + "      - name: Run the GDScript suites\n"
+        + "        continue-on-error: true\n"
+        + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary"\n'
+    )
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(
+        complaint is not None,
+        "a continue-on-error step running the suite guard was accepted",
+        failures,
+    )
+
+
+def test_continue_on_error_on_an_unrelated_step_is_allowed(failures: list) -> None:
+    workflow = (
+        WORKFLOW_HEADER
+        + "      - name: Something optional\n"
+        + "        continue-on-error: true\n"
+        + "        run: echo optional\n"
+        + "      - name: Run the GDScript suites\n"
+        + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary"\n'
+    )
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(
+        complaint is None,
+        "continue-on-error on an unrelated step was blamed on the runner: %s" % complaint,
+        failures,
+    )
+
+
 def test_a_real_runner_invocation_is_accepted(failures: list) -> None:
     workflow = (
         WORKFLOW_HEADER

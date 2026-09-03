@@ -23,6 +23,39 @@ DIRECT_SUITE_INVOCATION = re.compile(r"""(?:--script|(?<![\w-])-s)\s+['"]?res://
 # `|| true`, `; true` and friends turn the runner's non-zero exit into a green step.
 SUPPRESSED_STATUS = re.compile(r"\|\||;\s*true\b|&&\s*true\b")
 
+CONTINUE_ON_ERROR = re.compile(r"continue-on-error:\s*true\b")
+
+STEP_START = re.compile(r"^(\s*)-\s")
+
+
+def runner_steps(workflow: str) -> list[str]:
+    """The workflow steps that invoke the suite runner, each as its own text block."""
+    lines = workflow.splitlines()
+    steps: list[str] = []
+    for index, line in enumerate(lines):
+        if SUITE_RUNNER not in line:
+            continue
+        start = index
+        indent = None
+        while start >= 0:
+            match = STEP_START.match(lines[start])
+            if match is not None:
+                indent = len(match.group(1))
+                break
+            start -= 1
+        if indent is None:
+            start = index
+            indent = 0
+        end = start + 1
+        while end < len(lines):
+            match = STEP_START.match(lines[end])
+            if match is not None and len(match.group(1)) <= indent:
+                break
+            end += 1
+        steps.append("\n".join(lines[start:end]))
+    return steps
+
+
 SUITE_RUNNER_COMMAND = re.compile(
     r"""(?:^|[\s|;&])(?:python3?|py)\s+['"]?[^\s'"#]*"""
     + re.escape(SUITE_RUNNER)
@@ -79,6 +112,12 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
         return (
             f"CI must let {SUITE_RUNNER} fail the job; its exit status is the guard, "
             "so it may not be followed by ||, ; true, or a discarded status"
+        )
+
+    if all(CONTINUE_ON_ERROR.search(step) for step in runner_steps(active)):
+        return (
+            f"the workflow step running {SUITE_RUNNER} sets continue-on-error, which hides the "
+            "suite guard's failure and returns the job to green"
         )
 
     return None
