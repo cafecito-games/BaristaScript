@@ -303,9 +303,14 @@ BSMissReason BSParseCache::load(const String &p_store_path) {
 			}
 
 			case RecordStatus::CORRUPT_RECORD: {
+				// Never partially deserialize: a store damaged anywhere is not trustworthy
+				// anywhere, so the records that happened to parse before the damage go too. Serving
+				// a prefix would make a truncated store indistinguishable from a smaller healthy
+				// one, which is the "malformed is never absent" rule failing quietly.
 				const String line = "cache store '" + p_store_path + "' is truncated or corrupt at byte " +
 						String::num((int64_t)entry_start) + " of " + String::num((int64_t)size) +
-						"; discarding it and every entry after it";
+						"; discarding the whole store";
+				clear();
 				load_report.push_back(line);
 				ERR_PRINT(line);
 				store_corrupt = true;
@@ -319,7 +324,8 @@ BSMissReason BSParseCache::load(const String &p_store_path) {
 	if (offset != size) {
 		const String line = "cache store '" + p_store_path + "' has " + String::num((int64_t)(size - offset)) +
 				" trailing bytes after its declared " + String::num((int64_t)entry_count) +
-				" entries; discarding it";
+				" entries; discarding the whole store";
+		clear();
 		load_report.push_back(line);
 		ERR_PRINT(line);
 		store_corrupt = true;

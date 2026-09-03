@@ -109,6 +109,7 @@ jobs:
           "$godot_binary" --headless --path project --script res://tests/smoke_test.gd
           "$godot_binary" --headless --path project --script res://tests/corpus_runner.gd -- --allow-empty
           "$godot_binary" --headless --path project --script res://tests/corpus_harness_test.gd
+          "$godot_binary" --headless --path project --script res://tests/cache_test.gd
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save

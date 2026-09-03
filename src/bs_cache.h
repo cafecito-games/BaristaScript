@@ -148,7 +148,9 @@ public:
 	 *                   duplicate key (the writer is broken; reported loudly via ERR_PRINT)
 	 *   VERSION_MISMATCH is never returned here; the version tag is per entry, so it is reported
 	 *                   by lookup() for the entries it actually affects
-	 * A corrupt tail keeps the entries that parsed intact before it and drops the rest.
+	 * COLD is also the verdict for a store that read cleanly: nothing was rejected at the store
+	 * level. Structural damage anywhere discards the whole store -- never a partial deserialization
+	 * -- and every later lookup against it reports CORRUPT rather than a cold miss.
 	 */
 	BSMissReason load(const String &p_store_path);
 

@@ -1,0 +1,3 @@
+# Parse-cache fixture: the smaller of the two cached sources.
+func greet(name):
+	return "hello, " + name
