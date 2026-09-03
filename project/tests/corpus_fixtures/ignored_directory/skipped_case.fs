@@ -1,0 +1,2 @@
+func skipped() -> void:
+	pass
