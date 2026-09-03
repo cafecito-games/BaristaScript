@@ -4,7 +4,7 @@
 		"repository": "cafecito-games/Foundry",
 		"revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
 		"module_root": "modules/foundry_script/",
-		"port_set": ["fs_tokenizer.h", "fs_tokenizer.cpp", "fs_parser.h", "fs_parser.cpp", "fs_warning.h", "fs_warning.cpp"],
+		"port_set": ["fs_tokenizer.h", "fs_tokenizer.cpp", "fs_tokenizer_buffer.h", "fs_tokenizer_buffer.cpp", "fs_parser.h", "fs_parser.cpp", "fs_warning.h", "fs_warning.cpp"],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
 	"seam_header": "src/bs_platform.h",
@@ -57,6 +57,24 @@
 			"godot_cpp_headers": ["godot_cpp/core/error_macros.hpp"],
 			"rationale": "Every ERR_* macro the port set uses is spelled identically in godot-cpp, so the thin macro shim predicted by docs/foundry-reuse-plan.md section 3 would be a rename-free wrapper and is declined. The seam instead #errors when a required macro is undefined, so a godot-cpp bump that drops one is a compile error rather than a silent no-op.",
 			"non_mappings": ["core's ERR_FAIL_* route through _err_print_error with a Godot Error code; godot-cpp's route through the GDExtension print interface. Message text and exit behaviour are not byte-identical, so diagnostics compared by a corpus must not come from these macros."]
+		},
+		{
+			"core_header": "core/io/compression.h",
+			"sites": ["fs_tokenizer_buffer.cpp:33"],
+			"resolution": "shimmed",
+			"godot_cpp_headers": ["godot_cpp/classes/file_access.hpp"],
+			"shim_symbols": ["BSCompression"],
+			"rationale": "godot-cpp has no Compression class, but it does have the same codec: PackedByteArray::compress/decompress take a mode enumerator that FileAccess spells as COMPRESSION_ZSTD. The shim is a rename over exactly that, and it keeps core's contract that decompression is told the expected size up front rather than growing a buffer.",
+			"non_mappings": ["core's Compression::decompress returns the decompressed length; godot-cpp's returns an empty array on failure, which is indistinguishable from decompressing to nothing. The caller compares the result size against the size its own header recorded, so a truncated or corrupt block is a data error rather than a short read."]
+		},
+		{
+			"core_header": "core/io/marshalls.h",
+			"sites": ["fs_tokenizer_buffer.cpp:34"],
+			"resolution": "shimmed",
+			"godot_cpp_headers": ["godot_cpp/variant/packed_byte_array.hpp", "godot_cpp/variant/utility_functions.hpp"],
+			"shim_symbols": ["BSMarshalls"],
+			"rationale": "Absent from godot-cpp, and the four functions the tokenizer buffer uses split into two cases. encode_uint32/decode_uint32 are byte-order definitions -- core writes a uint32 little-endian, byte by byte -- so reimplementing them is exact rather than approximate. encode_variant/decode_variant reach the same serializer through UtilityFunctions::var_to_bytes/bytes_to_var, which is core's encode_variant with p_full_objects = false: the mode the buffer already asked for, because a constant is never an object.",
+			"non_mappings": ["core's decode_variant reports how many bytes one value consumed through an r_len out-parameter; UtilityFunctions::bytes_to_var does not, and the seam does not invent one. BSTokenizerBuffer length-prefixes each pooled constant instead, so the framing a reader needs is written down rather than guessed.", "core's encode_variant can be called with a null buffer to size an encoding before writing it; godot-cpp's always allocates. The buffer writer appends the encoded block directly, so the sizing pass has no consumer here."]
 		},
 		{
 			"core_header": "core/io/resource.h",

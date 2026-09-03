@@ -1,0 +1,1 @@
+The "L" integer literal suffix is reserved. BaristaScript has one integer type, "int"; write "123".

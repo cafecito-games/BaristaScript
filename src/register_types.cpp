@@ -11,6 +11,7 @@
 #include "barista_script.h"
 #include "barista_script_language.h"
 #include "barista_script_resource_loader.h"
+#include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
 
 #include <godot_cpp/classes/engine.hpp>
@@ -35,6 +36,10 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);
+	// The tokenizer's test surface. godot-cpp's String/Variant only work inside a loaded Godot
+	// runtime, so the ported frontend is exercised from headless Godot rather than from a
+	// standalone C++ test binary, and it has to be a registered class to be reachable at all.
+	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
 #ifdef DEBUG_ENABLED
 	// The warning registry only exists in debug builds, like the warnings it names. Its binding is
 	// the only way `project/tests/warning_registry_test.gd` can reach it: godot-cpp's String and
