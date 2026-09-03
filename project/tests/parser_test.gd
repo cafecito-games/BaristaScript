@@ -46,6 +46,7 @@ func _initialize() -> void:
 	_test_tokenizer_diagnostic_reaches_the_parser(probe, failures)
 	_test_a_leading_tokenizer_diagnostic_has_a_real_position(probe, failures)
 	_test_a_colon_without_a_type_is_rejected(probe, failures)
+	_test_a_default_value_marker_without_an_expression_is_rejected(probe, failures)
 	_test_syntax_error_recovers_and_marks_the_tree_incomplete(probe, failures)
 	_test_import_before_namespace_names_the_rule(probe, failures)
 	_test_namespace_used_twice_is_rejected(probe, failures)
@@ -75,7 +76,7 @@ func _initialize() -> void:
 	# rather than trusting the exit code: it can only be printed by a suite that
 	# actually loaded and ran.
 	if failures.is_empty():
-		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 20])
+		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 21])
 	quit(0 if failures.is_empty() else 1)
 
 
@@ -128,15 +129,35 @@ func _test_a_colon_without_a_type_is_rejected(probe, failures: Array[String]) ->
 		_expect(failures, inferred["complete"],
 			"the inferred form must stay accepted: %s -- %s" % [source.strip_edges(), inferred["diagnostics"]])
 
-	# `var declared:` is deliberately absent: a `var` whose `:` is followed by a newline is the
-	# property-accessor form (docs/GRAMMAR.md section 4.4), a different construct with its own
-	# diagnostic. `const` and a parameter have no such form, so a bare `:` there is a missing type.
-	for source in ["const DECLARED:\n", "func f(value:) -> void:\n\tpass\n"]:
+	# A `var` whose `:` is followed by a NEWLINE is the property-accessor form (docs/GRAMMAR.md
+	# section 4.4), a different construct with its own diagnostic, so the `var` case is spelled with
+	# a `;` -- which ends the statement and leaves the annotation with nothing to annotate.
+	for source in ["var declared:;\n", "const DECLARED:\n", "func f(value:) -> void:\n\tpass\n"]:
 		var report := _parse(probe, source)
 		_expect(failures, not report["complete"],
 			"a `:` with no type must be rejected: %s" % source.strip_edges())
 		_expect(failures, _any_diagnostic_contains(report, "Expected type"),
 			"a `:` with no type must name the missing type: %s -- %s" % [source.strip_edges(), report["diagnostics"]])
+
+
+## `parse_expression()` returns null to mean "no prefix rule matched" and leaves
+## the diagnostic to its caller by contract (see `parse_precedence`). A caller that
+## forgets turns malformed source into a well-formed node -- here, a parameter that
+## asked for a default value and got none.
+func _test_a_default_value_marker_without_an_expression_is_rejected(probe, failures: Array[String]) -> void:
+	for source in ["func f(value =) -> void:\n\tpass\n", "signal changed(value =)\n", "func f(value: int =) -> void:\n\tpass\n"]:
+		var report := _parse(probe, source)
+		_expect(failures, not report["complete"],
+			"a default-value marker with no expression must be rejected: %s" % source.strip_edges())
+		_expect(failures, _any_diagnostic_contains(report, "Expected expression"),
+			"a default-value marker with no expression must say so: %s -- %s" % [source.strip_edges(), report["diagnostics"]])
+
+	# A signal parameter is rejected for having a default at all, so only the function form is a
+	# positive control here.
+	for source in ["func f(value = 1) -> void:\n\tpass\n", "func f(value: int = 1) -> void:\n\tpass\n"]:
+		var accepted := _parse(probe, source)
+		_expect(failures, accepted["complete"],
+			"a real default value must stay accepted: %s -- %s" % [source.strip_edges(), accepted["diagnostics"]])
 
 
 ## The parser recovers from a syntax error and keeps building, which is what

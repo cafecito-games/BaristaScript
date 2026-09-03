@@ -2608,6 +2608,9 @@ BSParser::VariableNode *BSParser::parse_variable(bool p_is_static, bool p_allow_
 
 			// Parse type.
 			variable->datatype_specifier = parse_type();
+			if (variable->datatype_specifier == nullptr && !current_follows_tokenizer_error) {
+				push_error(R"(Expected type after ":")");
+			}
 		}
 	}
 
@@ -2950,6 +2953,9 @@ BSParser::ParameterNode *BSParser::parse_parameter(bool p_allow_annotations) {
 	if (match(BSTokenizer::Token::EQUAL)) {
 		// Default value.
 		parameter->initializer = parse_expression(false);
+		if (parameter->initializer == nullptr && !current_follows_tokenizer_error) {
+			push_error(R"(Expected expression for parameter default value after "=".)");
+		}
 	}
 
 	for (AnnotationNode *&annotation : pending_annotations) {
