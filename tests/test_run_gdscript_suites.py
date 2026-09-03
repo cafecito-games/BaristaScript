@@ -175,15 +175,26 @@ def test_a_quoted_direct_suite_invocation_is_rejected(failures: list) -> None:
 
 
 def test_merely_naming_the_runner_is_not_running_it(failures: list) -> None:
+    non_executions = [
+        '      - run: echo "tests/run_gdscript_suites.py disabled for now"\n',
+        "      - run: python tests/run_gdscript_suites.py --list\n",
+    ]
+    for line in non_executions:
+        complaint = validate_ci.check_gdscript_suite_wiring(WORKFLOW_HEADER + line)
+        check(
+            complaint is not None,
+            "a workflow that launches no suite was accepted: %s" % line.strip(),
+            failures,
+        )
+
+
+def test_a_real_runner_invocation_is_accepted(failures: list) -> None:
     workflow = (
-        WORKFLOW_HEADER + '      - run: echo "tests/run_gdscript_suites.py disabled for now"\n'
+        WORKFLOW_HEADER
+        + '      - run: python tests/run_gdscript_suites.py --godot "$godot_binary"\n'
     )
     complaint = validate_ci.check_gdscript_suite_wiring(workflow)
-    check(
-        complaint is not None,
-        "a workflow that only mentions the runner path was accepted as running it",
-        failures,
-    )
+    check(complaint is None, "a real runner invocation was rejected: %s" % complaint, failures)
 
 
 def test_the_checked_in_workflow_is_wired_through_the_runner(failures: list) -> None:

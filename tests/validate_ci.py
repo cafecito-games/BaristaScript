@@ -18,9 +18,12 @@ SUITE_RUNNER = "tests/run_gdscript_suites.py"
 DIRECT_SUITE_INVOCATION = re.compile(r"""(?:--script|(?<![\w-])-s)\s+['"]?res://\S+""")
 
 # The runner named in a command position, so a workflow that only mentions its path -- in an
-# echo, say -- is not mistaken for one that runs it.
+# echo, say -- is not mistaken for one that runs it. `--godot` is what makes the invocation
+# run the suites; `--list` only prints them.
 SUITE_RUNNER_COMMAND = re.compile(
-    r"""(?:^|[\s|;&])(?:python3?|py)\s+['"]?[^\s'"#]*""" + re.escape(SUITE_RUNNER),
+    r"""(?:^|[\s|;&])(?:python3?|py)\s+['"]?[^\s'"#]*"""
+    + re.escape(SUITE_RUNNER)
+    + r"""(?P<arguments>[^\n]*)""",
     re.MULTILINE,
 )
 
@@ -57,8 +60,16 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
             f"run it through {SUITE_RUNNER} so a parse error cannot pass as green"
         )
 
-    if SUITE_RUNNER_COMMAND.search(active) is None:
-        return f"CI must run the GDScript suites through {SUITE_RUNNER}"
+    executions = [
+        match
+        for match in SUITE_RUNNER_COMMAND.finditer(active)
+        if "--godot" in match.group("arguments") and "--list" not in match.group("arguments")
+    ]
+    if not executions:
+        return (
+            f"CI must run the GDScript suites through {SUITE_RUNNER} --godot <binary>; "
+            "naming the runner, or running it in --list mode, launches no suite"
+        )
 
     return None
 
