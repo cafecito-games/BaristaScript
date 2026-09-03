@@ -1,6 +1,9 @@
 # Godot auto generated files
 *.gen.*
 .godot/
+!/project/.godot/
+/project/.godot/*
+!/project/.godot/extension_list.cfg
 
 # Ignore build outputs but keep GDExtension descriptors and UID sidecars.
 /bin/
