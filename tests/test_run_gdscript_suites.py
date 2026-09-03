@@ -235,6 +235,45 @@ def test_continue_on_error_on_an_unrelated_step_is_allowed(failures: list) -> No
     )
 
 
+def test_the_runner_named_as_an_argument_is_not_an_invocation(failures: list) -> None:
+    disguised = [
+        '      - run: echo python tests/run_gdscript_suites.py --godot "$godot_binary"\n',
+        '      - run: cat tests/run_gdscript_suites.py --godot "$godot_binary"\n',
+    ]
+    for line in disguised:
+        complaint = validate_ci.check_gdscript_suite_wiring(WORKFLOW_HEADER + line)
+        check(
+            complaint is not None,
+            "the runner named inside another command was read as an invocation: %s" % line.strip(),
+            failures,
+        )
+
+
+def test_a_non_literal_continue_on_error_is_rejected(failures: list) -> None:
+    for value in ("true", "${{ true }}", "${{ github.event_name == 'push' }}"):
+        workflow = (
+            WORKFLOW_HEADER
+            + "      - name: Run the GDScript suites\n"
+            + f"        continue-on-error: {value}\n"
+            + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary"\n'
+        )
+        complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+        check(
+            complaint is not None,
+            "continue-on-error: %s on the guard's step was accepted" % value,
+            failures,
+        )
+
+
+def test_an_environment_prefixed_invocation_is_still_an_invocation(failures: list) -> None:
+    workflow = (
+        WORKFLOW_HEADER
+        + '      - run: PYTHONUNBUFFERED=1 python3 tests/run_gdscript_suites.py --godot "$binary"\n'
+    )
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(complaint is None, "an env-prefixed invocation was rejected: %s" % complaint, failures)
+
+
 def test_a_real_runner_invocation_is_accepted(failures: list) -> None:
     workflow = (
         WORKFLOW_HEADER
