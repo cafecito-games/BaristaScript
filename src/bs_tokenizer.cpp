@@ -8,16 +8,18 @@
 
 #include "bs_tokenizer.h"
 
+#include <cstdint>
+
 // Upstream includes `core/error/error_macros.h` and `core/string/char_utils.h` here
 // (fs_tokenizer.cpp:33-34); both are mapped by the seam, so `bs_platform.h` is the whole include
 // block.
 //
 // Upstream also includes `servers/text/text_server.h` under `DEBUG_ENABLED` (fs_tokenizer.cpp:37)
 // for the `TextServer::FEATURE_UNICODE_SECURITY` confusable-identifier check at
-// fs_tokenizer.cpp:672. The warning registry mapped that header (see the
-// `servers/text/text_server.h` entry in `src/bs_platform_manifest.json`), so it is reachable
-// through `bs_platform.h`; the tokenizer's own use of it is a separate decision, marked at its
-// call site in `potential_identifier()` below.
+// fs_tokenizer.cpp:672, which the warning registry mapped (see the `servers/text/text_server.h`
+// entry in `src/bs_platform_manifest.json`) and which is therefore reachable through
+// `bs_platform.h`. That check is reinstated here as `confusable_keyword()`; see the decision at its
+// call site in `potential_identifier()`.
 //
 // Upstream's `editor/settings/editor_settings.h` (fs_tokenizer.cpp:41) is guarded out for the same
 // reason: a GDExtension reaches editor settings through `EditorInterface`, not that header, so the
@@ -39,137 +41,157 @@ constexpr uint64_t INTEGER_MINIMUM_MAGNITUDE = 9223372036854775807ULL + 1ULL;
 
 } // namespace
 
-static const char *token_names[] = {
-	"Empty", // EMPTY,
+// One token name together with the token type it answers for. A table indexed by an enum is
+// silently wrong the moment the enum gains or loses a value, and this port does both (D1 adds
+// `RESERVED_TYPE_NAME` and removes `AS_BANG`), so two edits that cancel would keep the row count
+// right while every name after them named the wrong token. The alignment is proved at compile time
+// below rather than assumed.
+struct TokenName {
+	BSTokenizer::Token::Type type;
+	const char *name;
+};
+
+constexpr bool token_names_are_aligned(const TokenName *p_names, size_t p_count) {
+	for (size_t i = 0; i < p_count; i++) {
+		if (p_names[i].type != (BSTokenizer::Token::Type)i) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static constexpr TokenName token_names[] = {
+	{ BSTokenizer::Token::EMPTY, "Empty" }, // EMPTY
 	// Basic
-	"Annotation", // ANNOTATION
-	"Identifier", // IDENTIFIER,
-	"Reserved type name", // RESERVED_TYPE_NAME,
-	"Literal", // LITERAL,
+	{ BSTokenizer::Token::ANNOTATION, "Annotation" }, // ANNOTATION
+	{ BSTokenizer::Token::IDENTIFIER, "Identifier" }, // IDENTIFIER
+	{ BSTokenizer::Token::RESERVED_TYPE_NAME, "Reserved type name" }, // RESERVED_TYPE_NAME
+	{ BSTokenizer::Token::LITERAL, "Literal" }, // LITERAL
 	// Comparison
-	"<", // LESS,
-	"<=", // LESS_EQUAL,
-	">", // GREATER,
-	">=", // GREATER_EQUAL,
-	"==", // EQUAL_EQUAL,
-	"!=", // BANG_EQUAL,
+	{ BSTokenizer::Token::LESS, "<" }, // LESS
+	{ BSTokenizer::Token::LESS_EQUAL, "<=" }, // LESS_EQUAL
+	{ BSTokenizer::Token::GREATER, ">" }, // GREATER
+	{ BSTokenizer::Token::GREATER_EQUAL, ">=" }, // GREATER_EQUAL
+	{ BSTokenizer::Token::EQUAL_EQUAL, "==" }, // EQUAL_EQUAL
+	{ BSTokenizer::Token::BANG_EQUAL, "!=" }, // BANG_EQUAL
 	// Logical
-	"and", // AND,
-	"or", // OR,
-	"not", // NOT,
-	"&&", // AMPERSAND_AMPERSAND,
-	"||", // PIPE_PIPE,
-	"!", // BANG,
+	{ BSTokenizer::Token::AND, "and" }, // AND
+	{ BSTokenizer::Token::OR, "or" }, // OR
+	{ BSTokenizer::Token::NOT, "not" }, // NOT
+	{ BSTokenizer::Token::AMPERSAND_AMPERSAND, "&&" }, // AMPERSAND_AMPERSAND
+	{ BSTokenizer::Token::PIPE_PIPE, "||" }, // PIPE_PIPE
+	{ BSTokenizer::Token::BANG, "!" }, // BANG
 	// Bitwise
-	"&", // AMPERSAND,
-	"|", // PIPE,
-	"~", // TILDE,
-	"^", // CARET,
-	"<<", // LESS_LESS,
-	">>", // GREATER_GREATER,
+	{ BSTokenizer::Token::AMPERSAND, "&" }, // AMPERSAND
+	{ BSTokenizer::Token::PIPE, "|" }, // PIPE
+	{ BSTokenizer::Token::TILDE, "~" }, // TILDE
+	{ BSTokenizer::Token::CARET, "^" }, // CARET
+	{ BSTokenizer::Token::LESS_LESS, "<<" }, // LESS_LESS
+	{ BSTokenizer::Token::GREATER_GREATER, ">>" }, // GREATER_GREATER
 	// Math
-	"+", // PLUS,
-	"-", // MINUS,
-	"*", // STAR,
-	"**", // STAR_STAR,
-	"/", // SLASH,
-	"%", // PERCENT,
+	{ BSTokenizer::Token::PLUS, "+" }, // PLUS
+	{ BSTokenizer::Token::MINUS, "-" }, // MINUS
+	{ BSTokenizer::Token::STAR, "*" }, // STAR
+	{ BSTokenizer::Token::STAR_STAR, "**" }, // STAR_STAR
+	{ BSTokenizer::Token::SLASH, "/" }, // SLASH
+	{ BSTokenizer::Token::PERCENT, "%" }, // PERCENT
 	// Assignment
-	"=", // EQUAL,
-	"+=", // PLUS_EQUAL,
-	"-=", // MINUS_EQUAL,
-	"*=", // STAR_EQUAL,
-	"**=", // STAR_STAR_EQUAL,
-	"/=", // SLASH_EQUAL,
-	"%=", // PERCENT_EQUAL,
-	"<<=", // LESS_LESS_EQUAL,
-	">>=", // GREATER_GREATER_EQUAL,
-	"&=", // AMPERSAND_EQUAL,
-	"|=", // PIPE_EQUAL,
-	"^=", // CARET_EQUAL,
+	{ BSTokenizer::Token::EQUAL, "=" }, // EQUAL
+	{ BSTokenizer::Token::PLUS_EQUAL, "+=" }, // PLUS_EQUAL
+	{ BSTokenizer::Token::MINUS_EQUAL, "-=" }, // MINUS_EQUAL
+	{ BSTokenizer::Token::STAR_EQUAL, "*=" }, // STAR_EQUAL
+	{ BSTokenizer::Token::STAR_STAR_EQUAL, "**=" }, // STAR_STAR_EQUAL
+	{ BSTokenizer::Token::SLASH_EQUAL, "/=" }, // SLASH_EQUAL
+	{ BSTokenizer::Token::PERCENT_EQUAL, "%=" }, // PERCENT_EQUAL
+	{ BSTokenizer::Token::LESS_LESS_EQUAL, "<<=" }, // LESS_LESS_EQUAL
+	{ BSTokenizer::Token::GREATER_GREATER_EQUAL, ">>=" }, // GREATER_GREATER_EQUAL
+	{ BSTokenizer::Token::AMPERSAND_EQUAL, "&=" }, // AMPERSAND_EQUAL
+	{ BSTokenizer::Token::PIPE_EQUAL, "|=" }, // PIPE_EQUAL
+	{ BSTokenizer::Token::CARET_EQUAL, "^=" }, // CARET_EQUAL
 	// Control flow
-	"if", // IF,
-	"elif", // ELIF,
-	"else", // ELSE,
-	"for", // FOR,
-	"while", // WHILE,
-	"break", // BREAK,
-	"continue", // CONTINUE,
-	"pass", // PASS,
-	"return", // RETURN,
-	"match", // MATCH,
-	"when", // WHEN,
+	{ BSTokenizer::Token::IF, "if" }, // IF
+	{ BSTokenizer::Token::ELIF, "elif" }, // ELIF
+	{ BSTokenizer::Token::ELSE, "else" }, // ELSE
+	{ BSTokenizer::Token::FOR, "for" }, // FOR
+	{ BSTokenizer::Token::WHILE, "while" }, // WHILE
+	{ BSTokenizer::Token::BREAK, "break" }, // BREAK
+	{ BSTokenizer::Token::CONTINUE, "continue" }, // CONTINUE
+	{ BSTokenizer::Token::PASS, "pass" }, // PASS
+	{ BSTokenizer::Token::RETURN, "return" }, // RETURN
+	{ BSTokenizer::Token::MATCH, "match" }, // MATCH
+	{ BSTokenizer::Token::WHEN, "when" }, // WHEN
 	// Keywords
-	"abstract", // ABSTRACT,
-	"as", // AS,
-	"assert", // ASSERT,
-	"await", // AWAIT,
-	"breakpoint", // BREAKPOINT,
-	"class", // CLASS,
-	"class_name", // CLASS_NAME,
-	"enum_name", // ENUM_NAME,
-	"const", // TK_CONST,
-	"enum", // ENUM,
-	"extends", // EXTENDS,
-	"final", // FINAL,
-	"func", // FUNC,
-	"import", // IMPORT,
-	"in", // TK_IN,
-	"is", // IS,
-	"namespace", // NAMESPACE
-	"preload", // PRELOAD,
-	"self", // SELF,
-	"signal", // SIGNAL,
-	"static", // STATIC,
-	"super", // SUPER,
-	"trait", // TRAIT,
-	"trait_name", // TRAIT_NAME,
-	"tuple", // TUPLE,
-	"tuple_name", // TUPLE_NAME,
-	"uses", // USES,
-	"var", // VAR,
-	"void", // TK_VOID,
-	"yield", // YIELD,
+	{ BSTokenizer::Token::ABSTRACT, "abstract" }, // ABSTRACT
+	{ BSTokenizer::Token::AS, "as" }, // AS
+	{ BSTokenizer::Token::ASSERT, "assert" }, // ASSERT
+	{ BSTokenizer::Token::AWAIT, "await" }, // AWAIT
+	{ BSTokenizer::Token::BREAKPOINT, "breakpoint" }, // BREAKPOINT
+	{ BSTokenizer::Token::CLASS, "class" }, // CLASS
+	{ BSTokenizer::Token::CLASS_NAME, "class_name" }, // CLASS_NAME
+	{ BSTokenizer::Token::ENUM_NAME, "enum_name" }, // ENUM_NAME
+	{ BSTokenizer::Token::TK_CONST, "const" }, // TK_CONST
+	{ BSTokenizer::Token::ENUM, "enum" }, // ENUM
+	{ BSTokenizer::Token::EXTENDS, "extends" }, // EXTENDS
+	{ BSTokenizer::Token::FINAL, "final" }, // FINAL
+	{ BSTokenizer::Token::FUNC, "func" }, // FUNC
+	{ BSTokenizer::Token::IMPORT, "import" }, // IMPORT
+	{ BSTokenizer::Token::TK_IN, "in" }, // TK_IN
+	{ BSTokenizer::Token::IS, "is" }, // IS
+	{ BSTokenizer::Token::NAMESPACE, "namespace" }, // NAMESPACE
+	{ BSTokenizer::Token::PRELOAD, "preload" }, // PRELOAD
+	{ BSTokenizer::Token::SELF, "self" }, // SELF
+	{ BSTokenizer::Token::SIGNAL, "signal" }, // SIGNAL
+	{ BSTokenizer::Token::STATIC, "static" }, // STATIC
+	{ BSTokenizer::Token::SUPER, "super" }, // SUPER
+	{ BSTokenizer::Token::TRAIT, "trait" }, // TRAIT
+	{ BSTokenizer::Token::TRAIT_NAME, "trait_name" }, // TRAIT_NAME
+	{ BSTokenizer::Token::TUPLE, "tuple" }, // TUPLE
+	{ BSTokenizer::Token::TUPLE_NAME, "tuple_name" }, // TUPLE_NAME
+	{ BSTokenizer::Token::USES, "uses" }, // USES
+	{ BSTokenizer::Token::VAR, "var" }, // VAR
+	{ BSTokenizer::Token::TK_VOID, "void" }, // TK_VOID
+	{ BSTokenizer::Token::YIELD, "yield" }, // YIELD
 	// Punctuation
-	"[", // BRACKET_OPEN,
-	"]", // BRACKET_CLOSE,
-	"{", // BRACE_OPEN,
-	"}", // BRACE_CLOSE,
-	"(", // PARENTHESIS_OPEN,
-	")", // PARENTHESIS_CLOSE,
-	",", // COMMA,
-	";", // SEMICOLON,
-	".", // PERIOD,
-	"..", // PERIOD_PERIOD,
-	"...", // PERIOD_PERIOD_PERIOD,
-	":", // COLON,
-	"$", // DOLLAR,
-	"->", // FORWARD_ARROW,
-	"_", // UNDERSCORE,
+	{ BSTokenizer::Token::BRACKET_OPEN, "[" }, // BRACKET_OPEN
+	{ BSTokenizer::Token::BRACKET_CLOSE, "]" }, // BRACKET_CLOSE
+	{ BSTokenizer::Token::BRACE_OPEN, "{" }, // BRACE_OPEN
+	{ BSTokenizer::Token::BRACE_CLOSE, "}" }, // BRACE_CLOSE
+	{ BSTokenizer::Token::PARENTHESIS_OPEN, "(" }, // PARENTHESIS_OPEN
+	{ BSTokenizer::Token::PARENTHESIS_CLOSE, ")" }, // PARENTHESIS_CLOSE
+	{ BSTokenizer::Token::COMMA, "," }, // COMMA
+	{ BSTokenizer::Token::SEMICOLON, ";" }, // SEMICOLON
+	{ BSTokenizer::Token::PERIOD, "." }, // PERIOD
+	{ BSTokenizer::Token::PERIOD_PERIOD, ".." }, // PERIOD_PERIOD
+	{ BSTokenizer::Token::PERIOD_PERIOD_PERIOD, "..." }, // PERIOD_PERIOD_PERIOD
+	{ BSTokenizer::Token::COLON, ":" }, // COLON
+	{ BSTokenizer::Token::DOLLAR, "$" }, // DOLLAR
+	{ BSTokenizer::Token::FORWARD_ARROW, "->" }, // FORWARD_ARROW
+	{ BSTokenizer::Token::UNDERSCORE, "_" }, // UNDERSCORE
 	// Whitespace
-	"Newline", // NEWLINE,
-	"Indent", // INDENT,
-	"Dedent", // DEDENT,
+	{ BSTokenizer::Token::NEWLINE, "Newline" }, // NEWLINE
+	{ BSTokenizer::Token::INDENT, "Indent" }, // INDENT
+	{ BSTokenizer::Token::DEDENT, "Dedent" }, // DEDENT
 	// Constants
-	"PI", // CONST_PI,
-	"TAU", // CONST_TAU,
-	"INF", // CONST_INF,
-	"NaN", // CONST_NAN,
+	{ BSTokenizer::Token::CONST_PI, "PI" }, // CONST_PI
+	{ BSTokenizer::Token::CONST_TAU, "TAU" }, // CONST_TAU
+	{ BSTokenizer::Token::CONST_INF, "INF" }, // CONST_INF
+	{ BSTokenizer::Token::CONST_NAN, "NaN" }, // CONST_NAN
 	// Error message improvement
-	"VCS conflict marker", // VCS_CONFLICT_MARKER,
-	"`", // BACKTICK,
-	"?", // QUESTION_MARK,
+	{ BSTokenizer::Token::VCS_CONFLICT_MARKER, "VCS conflict marker" }, // VCS_CONFLICT_MARKER
+	{ BSTokenizer::Token::BACKTICK, "`" }, // BACKTICK
+	{ BSTokenizer::Token::QUESTION_MARK, "?" }, // QUESTION_MARK
 	// Special
-	"Error", // ERROR,
-	"End of file", // EOF,
+	{ BSTokenizer::Token::ERROR, "Error" }, // ERROR
+	{ BSTokenizer::Token::TK_EOF, "End of file" }, // TK_EOF
 };
 
 // Avoid desync.
 static_assert(sizeof(token_names) / sizeof(token_names[0]) == BSTokenizer::Token::TK_MAX, "Amount of token names don't match the amount of token types.");
+static_assert(token_names_are_aligned(token_names, sizeof(token_names) / sizeof(token_names[0])), "A token name is not at its own token type's index.");
 
 const char *BSTokenizer::Token::get_name() const {
 	ERR_FAIL_INDEX_V_MSG(type, TK_MAX, "<error>", "Using token type out of the enum.");
-	return token_names[type];
+	return token_names[type].name;
 }
 
 String BSTokenizer::Token::get_debug_name() const {
@@ -305,7 +327,7 @@ bool BSTokenizer::Token::is_node_name() const {
 
 String BSTokenizer::get_token_name(Token::Type p_token_type) {
 	ERR_FAIL_INDEX_V_MSG(p_token_type, Token::TK_MAX, "<error>", "Using token type out of the enum.");
-	return token_names[p_token_type];
+	return token_names[p_token_type].name;
 }
 
 bool BSTokenizer::decode_source(const PackedByteArray &p_utf8, String *r_source, String *r_error) {
@@ -535,11 +557,13 @@ bool BSTokenizerText::_is_type_position() const {
 		case Token::AS:
 		case Token::IS:
 			return true;
-		case Token::COLON:
-			// A Python-style dictionary entry is the one construct that spells a value after ":",
-			// and it is always inside "{". Everywhere else a ":" followed by a name introduces a
-			// type.
-			return paren_stack.is_empty() || paren_stack.back()->get() != '{';
+		// A ":" is deliberately NOT a type position. It was one until the parser milestone, on the
+		// reasoning that a block always begins with a NEWLINE so a ":" followed by a name could
+		// only be an annotation. That is false: docs/GRAMMAR.md section 6 gives `block` a
+		// single-line alternative, so `if ready: long()` and `func g(): uint()` put an ordinary
+		// expression right after the ":" -- and the rule rejected a legal identifier there. The
+		// tokenizer cannot tell the two apart without parsing, so the decision belongs to the
+		// parser, which makes it in `BSParser::reject_reserved_type_name()`.
 		default:
 			return false;
 	}
@@ -720,6 +744,30 @@ String BSTokenizer::removed_type_name_diagnostic(const String &p_spelling) {
 	return vformat(R"("%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".)", p_spelling);
 }
 
+String BSTokenizer::confusable_keyword(const String &p_identifier) {
+	TextServerManager *manager = TextServerManager::get_singleton();
+	if (manager == nullptr) {
+		return String();
+	}
+	const Ref<TextServer> text_server = manager->get_primary_interface();
+	if (text_server.is_null() || !text_server->has_feature(TextServer::FEATURE_UNICODE_SECURITY)) {
+		return String();
+	}
+	PackedStringArray keyword_list;
+	for (const String &keyword : get_keyword_spellings()) {
+		keyword_list.push_back(keyword);
+	}
+	const int64_t confusable = text_server->is_confusable(p_identifier, keyword_list);
+	if (confusable < 0 || confusable >= keyword_list.size()) {
+		return String();
+	}
+	return keyword_list[(int)confusable];
+}
+
+String BSTokenizer::confusable_keyword_diagnostic(const String &p_identifier, const String &p_keyword) {
+	return vformat(R"(Identifier "%s" is visually similar to the BaristaScript keyword "%s" and thus not allowed.)", p_identifier, p_keyword);
+}
+
 Vector<String> BSTokenizer::get_keyword_spellings() {
 #define KEYWORD_GROUP_IGNORE(group)
 #define KEYWORD_APPEND(keyword, token_type) spellings.push_back(keyword);
@@ -769,16 +817,27 @@ BSTokenizer::Token BSTokenizerText::potential_identifier() {
 	}
 
 	if (!only_ascii) {
-		// Upstream runs the `TextServer::FEATURE_UNICODE_SECURITY` confusable-identifier check here
-		// under `DEBUG_ENABLED` (fs_tokenizer.cpp:668-677), rejecting a non-ASCII identifier that
-		// is visually similar to a keyword. The seam now maps `servers/text/text_server.h`, and
-		// `BSWarning::is_confusable_identifier()` already wraps the predicate, so the header is not
-		// what is missing. This site raises a parse *error* rather than a warning, which is a
-		// diagnostic decision for the parser milestone rather than for the warning registry; the
-		// check stays out until then. Everything else about this branch is unchanged.
+		// Kept here in case the order with push_error matters.
+		Token id = make_identifier(name);
+
+#ifdef DEBUG_ENABLED
+		// The decision issue #6 recorded and left to the parser milestone: this check is reinstated.
+		// It is upstream's (fs_tokenizer.cpp:668-677 @ c9d5e35), reached through the same public
+		// TextServer route the warning registry uses rather than through the engine-internal `TS`
+		// macro. It stays an *error* and not a `CONFUSABLE_IDENTIFIER` warning because the two ask
+		// different questions: the warning asks whether an identifier mixes scripts in a way Unicode
+		// security profiles call a spoof, while this asks whether it impersonates a keyword -- and a
+		// name that reads as `class` but is not `class` has no legitimate use, so the language
+		// refuses it rather than mentioning it. `docs/GRAMMAR.md` section 2.4 defers identifier
+		// validity to the Unicode identifier profile, which this enforces.
+		const String confusable = confusable_keyword(name);
+		if (!confusable.is_empty()) {
+			push_error(confusable_keyword_diagnostic(name, confusable));
+		}
+#endif // DEBUG_ENABLED
 
 		// Cannot be a keyword, as keywords are ASCII only.
-		return make_identifier(name);
+		return id;
 	}
 
 	// Define some helper macros for the switch case.

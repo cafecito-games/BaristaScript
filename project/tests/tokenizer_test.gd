@@ -244,11 +244,11 @@ func _test_reserved_table_is_the_only_source_of_truth(probe: BaristaScriptTokeni
 			"%s is both a keyword and a reserved spelling; the table must give it one role" % spelling
 		)
 
-	# Every spelling the table calls reserved must actually be rejected in a type position, with the
-	# message that names it. A table entry that produced no diagnostic would be the exact regression
-	# D1 guards against.
+	# Every spelling the table calls reserved must actually be rejected in a type position the
+	# tokenizer settles, with the message that names it. A table entry that produced no diagnostic
+	# would be the exact regression D1 guards against.
 	for spelling in reserved:
-		var diagnostic: String = probe.first_diagnostic(("var value: %s = 1\n" % spelling).to_utf8_buffer())
+		var diagnostic: String = probe.first_diagnostic(("func f() -> %s:\n\tpass\n" % spelling).to_utf8_buffer())
 		_expect(
 			diagnostic == '"%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".' % spelling,
 			"reserved spelling %s must report its own removal, got: %s" % [spelling, diagnostic]
@@ -261,22 +261,49 @@ func _test_reserved_table_is_the_only_source_of_truth(probe: BaristaScriptTokeni
 ## spelling arriving in a type as an anonymous `Identifier` that silently becomes a user type -- so
 ## they get their own token type either way.
 func _test_removed_spellings_are_rejected_in_type_positions(probe: BaristaScriptTokenizerProbe) -> void:
-	var type_positions := [
+	# The positions the token stream itself settles: nothing but a type may follow `->`, `as` or
+	# `is`, so the tokenizer rejects without needing to know what is being parsed.
+	var tokenizer_settled := [
 		"func f() -> %s:\n\tpass\n",
-		"func f(value: %s) -> void:\n\tpass\n",
-		"var declared: %s = 1\n",
-		"const DECLARED: %s = 1\n",
 		"func f(value: Variant) -> void:\n\tvar cast = value as %s\n",
 		"func f(value: Variant) -> void:\n\tvar flag = value is %s\n",
 	]
 	for spelling in probe.reserved_spellings():
-		for template in type_positions:
+		for template in tokenizer_settled:
 			var source: String = template % spelling
 			var diagnostic: String = probe.first_diagnostic(source.to_utf8_buffer())
 			_expect(
 				diagnostic == '"%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".' % spelling,
 				"%s in a type position must be rejected: %s -> %s" % [spelling, source.strip_edges(), diagnostic]
 			)
+
+	# The other side of the boundary. A `:` is *not* a type position the tokenizer can settle:
+	# docs/GRAMMAR.md section 6 gives `block` a single-line alternative, so `func g(): uint()` puts
+	# an ordinary expression right after the `:` and rejecting there would reject a legal name. The
+	# tokenizer therefore stays silent and hands over a `Reserved type name` token; the rejection is
+	# `BSParser::reject_reserved_type_name()`'s, asserted in project/tests/parser_test.gd. Both
+	# halves are checked here so the boundary cannot move in only one of the two files.
+	var parser_settled := [
+		"func f(value: %s) -> void:\n\tpass\n",
+		"var declared: %s = 1\n",
+		"const DECLARED: %s = 1\n",
+		"var declared: Array[%s] = []\n",
+	]
+	var parser := BaristaScriptParserProbe.new()
+	for spelling in probe.reserved_spellings():
+		for template in parser_settled:
+			var source: String = template % spelling
+			_expect(
+				probe.first_diagnostic(source.to_utf8_buffer()).is_empty(),
+				"the tokenizer must defer this type position to the parser: %s" % source.strip_edges()
+			)
+			var report: Dictionary = parser.parse_text(source.to_utf8_buffer(), "res://tokenizer_test.barista")
+			var expected := '"%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".' % spelling
+			var rejected := false
+			for diagnostic in report["diagnostics"]:
+				if (diagnostic as String).ends_with(expected):
+					rejected = true
+			_expect(rejected, "the parser must reject this type position: %s -> %s" % [source.strip_edges(), report["diagnostics"]])
 
 
 ## The other half of the same rule: a removed spelling used as an ordinary name is accepted, and is
@@ -314,7 +341,7 @@ func _test_removed_spellings_stay_usable_as_names(probe: BaristaScriptTokenizerP
 ## which part of the line the compiler objected to.
 func _test_removal_diagnostics_name_the_spelling(probe: BaristaScriptTokenizerProbe) -> void:
 	for spelling in probe.reserved_spellings():
-		var diagnostic: String = probe.first_diagnostic(("var value: %s = 1\n" % spelling).to_utf8_buffer())
+		var diagnostic: String = probe.first_diagnostic(("func f() -> %s:\n\tpass\n" % spelling).to_utf8_buffer())
 		_expect(
 			diagnostic.contains('"%s"' % spelling),
 			"the %s diagnostic must name the spelling, got: %s" % [spelling, diagnostic]

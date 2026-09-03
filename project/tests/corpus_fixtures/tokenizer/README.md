@@ -12,7 +12,7 @@ godot --headless --path project --script res://tests/corpus_runner.gd -- \
 
 | Fail-closed row | Cases |
 |---|---|
-| `uint`/`ulong`/`long` reserved in a type | `reserved_type_uint`, `reserved_type_ulong`, `reserved_type_long`, `reserved_type_return`, `reserved_type_parameter`, `reserved_type_cast`, `reserved_type_test`, with `reserved_name_as_identifier` and `reserved_name_in_dictionary` proving they stay usable as ordinary names |
+| `uint`/`ulong`/`long` reserved in a type | `reserved_type_return`, `reserved_type_cast`, `reserved_type_test` for the positions the tokenizer settles; `deferred_to_parser_var_annotation`, `deferred_to_parser_ulong_annotation`, `deferred_to_parser_long_annotation`, `deferred_to_parser_parameter` for the positions it hands to the parser; with `reserved_name_as_identifier` and `reserved_name_in_dictionary` proving they stay usable as ordinary names |
 | `U`/`L`/`UL` literal suffix reserved | `suffix_unsigned`, `suffix_long`, `suffix_unsigned_long`, `suffix_lowercase_misordered` (each diagnostic names the suffix as the source wrote it) |
 | `as!` reserved | `as_bang`, with `as_with_whitespace` proving `as !x` is untouched |
 | Integer literal out of signed 64-bit range | `integer_above_range`, `integer_below_range`, `integer_hex_above_range`, with `integer_range_boundaries` proving both endpoints are accepted |
@@ -23,9 +23,15 @@ godot --headless --path project --script res://tests/corpus_runner.gd -- \
 and 7.1): they are rejected wherever a type is meant and stay ordinary names everywhere else,
 exactly as `int` does. Either way they lex as their own `RESERVED_TYPE_NAME` token, never as an
 anonymous identifier a type could later swallow. The tokenizer rejects them in the type positions
-the token stream itself settles -- after `->`, `as`, `is`, and after a `:` outside a `{`. A type
-argument (`Array[uint]`) and a `type` alias are type positions only the parser can see, and are its
-to reject.
+the token stream itself settles -- after `->`, `as` and `is`, where nothing but a type may follow.
+
+Every other type position is the parser's, and the four `deferred_to_parser_*` cases are the
+positive controls that pin that boundary: the tokenizer must produce **no** diagnostic there, and
+`project/tests/parser_test.gd` asserts the rejection that does happen. A `:` is on the parser's side
+because docs/GRAMMAR.md section 6 gives `block` a single-line alternative -- `func g(): uint()`
+spells an ordinary expression right after the `:`, so a tokenizer that rejected there would reject a
+legal name. A type argument (`Array[uint]`), a `type` alias, and every position that declares a type
+name are on the parser's side for the same reason: only a parser knows which it is looking at.
 
 `comment_at_eof` is a positive control rather than a rejection: BaristaScript has no block-comment
 form (docs/GRAMMAR.md section 2.1), so a `#` comment running to end of file is terminated, not

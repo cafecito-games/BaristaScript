@@ -1,10 +1,12 @@
 {
 	"type": "feature_profile",
 	"enabled_classes": [
+		"ClassDB",
 		"DirAccess",
 		"Engine",
 		"FileAccess",
 		"MultiplayerAPI",
+		"MultiplayerPeer",
 		"OS",
 		"ProjectSettings",
 		"ResourceFormatLoader",

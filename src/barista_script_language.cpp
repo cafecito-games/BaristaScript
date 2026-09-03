@@ -9,10 +9,50 @@
 #include "barista_script_language.h"
 
 #include "barista_script.h"
+#include "bs_tokenizer.h"
 
 #include <godot_cpp/variant/packed_int32_array.hpp>
 
 namespace barista_script {
+
+BaristaScriptInternedStrings::BaristaScriptInternedStrings() :
+		_init("_init"),
+		_static_init("_static_init"),
+		_notification("_notification"),
+		_set("_set"),
+		_get("_get"),
+		_get_property_list("_get_property_list"),
+		_validate_property("_validate_property"),
+		_property_can_revert("_property_can_revert"),
+		_property_get_revert("_property_get_revert"),
+		_script_source("script/source") {
+}
+
+const BaristaScriptInternedStrings &BaristaScriptLanguage::get_interned_strings() {
+	// Allocated once and never destroyed, for the reason `SNAME` in bs_platform.h is: a
+	// `StringName` destructor that ran during static destruction would run after the extension was
+	// unloaded and the interface function pointers were gone.
+	static BaristaScriptInternedStrings *strings = memnew(BaristaScriptInternedStrings);
+	return *strings;
+}
+
+godot::List<godot::MethodInfo> BaristaScriptLanguage::get_public_function_list() {
+	godot::List<godot::MethodInfo> functions;
+	const BaristaScriptLanguage *language = get_singleton();
+	if (language == nullptr) {
+		// The parser can run before the language is registered -- a resource loader may parse during
+		// extension start-up -- and an unregistered language publishes no functions.
+		return functions;
+	}
+	const godot::TypedArray<godot::Dictionary> published = language->_get_public_functions();
+	for (int i = 0; i < published.size(); i++) {
+		const godot::Dictionary entry = published[i];
+		godot::MethodInfo info;
+		info.name = entry.get("name", godot::String());
+		functions.push_back(info);
+	}
+	return functions;
+}
 
 BaristaScriptLanguage *BaristaScriptLanguage::singleton = nullptr;
 
@@ -51,7 +91,18 @@ godot::String BaristaScriptLanguage::_get_extension() const {
 void BaristaScriptLanguage::_finish() {}
 
 godot::PackedStringArray BaristaScriptLanguage::_get_reserved_words() const {
-	return {};
+	// The tokenizer's keyword table is the only reserved-word list in the tree. `BSTokenizer`
+	// exposes it as two views -- the keywords proper and the spellings D1 reserved as type names
+	// (docs/GRAMMAR.md section 2.5) -- so that this surface is a projection of that table rather
+	// than a second copy of it.
+	godot::PackedStringArray words;
+	for (const godot::String &keyword : BSTokenizer::get_keyword_spellings()) {
+		words.push_back(keyword);
+	}
+	for (const godot::String &reserved : BSTokenizer::get_reserved_spellings()) {
+		words.push_back(reserved);
+	}
+	return words;
 }
 
 bool BaristaScriptLanguage::_is_control_flow_keyword(const godot::String &) const {

@@ -12,6 +12,7 @@
 #include "barista_script_language.h"
 #include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
+#include "bs_parser_probe.h"
 #include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
 
@@ -43,6 +44,8 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
 	// The parse cache's test surface, a registered class for the same reason.
 	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
+	// The parser's test surface, likewise.
+	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
 #ifdef DEBUG_ENABLED
 	// The warning registry only exists in debug builds, like the warnings it names. Its binding is
 	// the only way `project/tests/warning_registry_test.gd` can reach it: godot-cpp's String and
