@@ -180,10 +180,13 @@ BSGlobalClass resolve(const String *p_source, const String &p_path, LocalVector<
 	}
 
 	BSParser parser;
+	// Declarations only. Bodies are not this function's business -- a class must keep its name,
+	// base and icon while a function inside it is being typed -- and `bs_source_parses()` is where
+	// the whole file is held to account.
 	if (parser.parse(source, canonical_path, false, false) != OK) {
-		// Fail closed. See the header: a file that reported a diagnostic may have lost the
-		// `namespace` line that qualifies its name, and a class registered under a truncated name
-		// is worse than one that is absent until the file compiles. `parse()` returns
+		// Fail closed on the part that is parsed. A head that reported a diagnostic may have lost
+		// the `namespace` line that qualifies its name, and a class registered under a truncated
+		// name is worse than one that is absent until the file compiles. `parse()` returns
 		// `ERR_PARSE_ERROR` exactly when it reported something (bs_parser.cpp:609-613), and it
 		// reports into its own diagnostic list rather than the engine's error stream, so this path
 		// prints nothing.
@@ -195,7 +198,7 @@ BSGlobalClass resolve(const String *p_source, const String &p_path, LocalVector<
 		return global_class;
 	}
 
-	global_class.parsed = true;
+	global_class.declarations_parsed = true;
 	global_class.kind = declaration_kind_of(head);
 	global_class.icon_path = head->simplified_icon_path;
 	global_class.is_tool = parser.is_tool();
@@ -292,6 +295,11 @@ BSGlobalClass bs_resolve_global_class_from_source(const String &p_source, const 
 BSGlobalClass bs_resolve_global_class(const String &p_path) {
 	LocalVector<String> visited;
 	return resolve(nullptr, p_path, visited);
+}
+
+bool bs_source_parses(const String &p_source, const String &p_path) {
+	BSParser parser;
+	return parser.parse(p_source, BaristaScript::canonicalize_path(p_path), false) == OK;
 }
 
 } // namespace barista_script

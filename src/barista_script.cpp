@@ -101,13 +101,14 @@ bool BaristaScript::_is_tool() const {
 }
 
 bool BaristaScript::_is_valid() const {
-	// At M2 a script is valid exactly when the front end accepts its source; there is nothing
-	// further to compile yet. This is load-bearing rather than cosmetic:
-	// `ClassDB::can_instantiate` short-circuits on `Script::is_valid()` before it ever looks at
-	// `Script::is_abstract()` (`core/object/class_db.cpp:865` at 4.7.2-stable), so a global class
-	// whose script never claims validity is reported non-instantiable for the wrong reason and the
-	// abstractness gate is never exercised.
-	return resolve_global_class().parsed;
+	// The *whole* source, function bodies included -- deliberately a stricter question than the one
+	// `_get_global_class_name()` asks, which reads declarations only so that a class keeps its name
+	// and base while its body is mid-edit. `ClassDB::can_instantiate` short-circuits on
+	// `Script::is_valid()` before it ever looks at `Script::is_abstract()`
+	// (`core/object/class_db.cpp:865` at 4.7.2-stable), so this is what keeps a file that does not
+	// parse from being offered as instantiable, and what lets the abstractness gate be reached at
+	// all for a file that does.
+	return bs_source_parses(source_code, canonicalize_path(get_path()));
 }
 
 bool BaristaScript::_is_abstract() const {

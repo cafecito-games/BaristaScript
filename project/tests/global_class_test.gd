@@ -30,134 +30,134 @@ const CLASS_CACHE_PATH := "res://.godot/global_script_class_cache.cfg"
 const EXPECTED := {
 	# A namespaced global class: the qualified name, always.
 	"namespaced_weapon.barista": {
-		"parsed": true, "name": "app.combat.Weapon", "base_type": "Node",
+		"declarations_parsed": true, "name": "app.combat.Weapon", "base_type": "Node",
 		"icon_path": "res://icon.svg", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# The flat control: no namespace, so no leading dot and no empty segment.
 	"flat_weapon.barista": {
-		"parsed": true, "name": "FlatWeapon", "base_type": "Node",
+		"declarations_parsed": true, "name": "FlatWeapon", "base_type": "Node",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# No `extends`: the implicit base.
 	"implicit_base.barista": {
-		"parsed": true, "name": "ImplicitBase", "base_type": "RefCounted",
+		"declarations_parsed": true, "name": "ImplicitBase", "base_type": "RefCounted",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# `abstract` on an instantiable kind: the flag comes from the source, the kind does not change.
 	"abstract_weapon.barista": {
-		"parsed": true, "name": "AbstractWeapon", "base_type": "Node",
+		"declarations_parsed": true, "name": "AbstractWeapon", "base_type": "Node",
 		"icon_path": "", "is_abstract": true, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	"tool_weapon.barista": {
-		"parsed": true, "name": "ToolWeapon", "base_type": "Node",
+		"declarations_parsed": true, "name": "ToolWeapon", "base_type": "Node",
 		"icon_path": "", "is_abstract": false, "is_tool": true,
 		"kind_name": "class_name",
 	},
 	# A namespaced `enum_name` file: empty base and abstract, so it is a type and not a script.
 	"damage_kind.barista": {
-		"parsed": true, "name": "app.combat.DamageKind", "base_type": "",
+		"declarations_parsed": true, "name": "app.combat.DamageKind", "base_type": "",
 		"icon_path": "", "is_abstract": true, "is_tool": false,
 		"kind_name": "enum_name",
 	},
 	"grid_position.barista": {
-		"parsed": true, "name": "GridPosition", "base_type": "",
+		"declarations_parsed": true, "name": "GridPosition", "base_type": "",
 		"icon_path": "", "is_abstract": true, "is_tool": false,
 		"kind_name": "tuple_name",
 	},
 	"damageable.barista": {
-		"parsed": true, "name": "Damageable", "base_type": "",
+		"declarations_parsed": true, "name": "Damageable", "base_type": "",
 		"icon_path": "", "is_abstract": true, "is_tool": false,
 		"kind_name": "trait_name",
 	},
 	# A generic `class_name`: named, but not the engine's to instantiate (GRAMMAR D6).
 	"boxed.barista": {
-		"parsed": true, "name": "Boxed", "base_type": "",
+		"declarations_parsed": true, "name": "Boxed", "base_type": "",
 		"icon_path": "", "is_abstract": true, "is_tool": false,
 		"kind_name": "generic class_name",
 	},
 	# No head declaration: a script, not a global class. The base is still known.
 	"plain_script.barista": {
-		"parsed": true, "name": "", "base_type": "Node",
+		"declarations_parsed": true, "name": "", "base_type": "Node",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "none",
 	},
 	# A head that does not parse: no name, and nothing else either.
 	"broken_head.barista": {
-		"parsed": false, "name": "", "base_type": "",
+		"declarations_parsed": false, "name": "", "base_type": "",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "none",
 	},
 	# A body that does not parse under a well-formed head. Resolution reads declarations only, as
 	# stock does, so a class keeps its name while its body is mid-edit.
 	"broken_body.barista": {
-		"parsed": true, "name": "BrokenBody", "base_type": "Node",
+		"declarations_parsed": true, "name": "BrokenBody", "base_type": "Node",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# `enum_name` with `extends`: reported, and never with a base, which would make it instantiable.
 	"enum_with_extends.barista": {
-		"parsed": false, "name": "", "base_type": "",
+		"declarations_parsed": false, "name": "", "base_type": "",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "none",
 	},
 	# A namespace segment that is not an identifier: no name at all, never a partial dotted string.
 	"invalid_namespace.barista": {
-		"parsed": false, "name": "", "base_type": "",
+		"declarations_parsed": false, "name": "", "base_type": "",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "none",
 	},
 	"path_base.barista": {
-		"parsed": true, "name": "PathBase", "base_type": "Node2D",
+		"declarations_parsed": true, "name": "PathBase", "base_type": "Node2D",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# `extends "res://…"`: the base file's own base, resolved without the analyzer.
 	"path_derived.barista": {
-		"parsed": true, "name": "PathDerived", "base_type": "Node2D",
+		"declarations_parsed": true, "name": "PathDerived", "base_type": "Node2D",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# The same through a path relative to the extending file.
 	"relative_derived.barista": {
-		"parsed": true, "name": "RelativeDerived", "base_type": "Node2D",
+		"declarations_parsed": true, "name": "RelativeDerived", "base_type": "Node2D",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	"chain_tail.barista": {
-		"parsed": true, "name": "ChainTail", "base_type": "RefCounted",
+		"declarations_parsed": true, "name": "ChainTail", "base_type": "RefCounted",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	"chain_middle.barista": {
-		"parsed": true, "name": "ChainMiddle", "base_type": "RefCounted",
+		"declarations_parsed": true, "name": "ChainMiddle", "base_type": "RefCounted",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# `extends "res://…".Inner`: one hop into another file's inner class.
 	"inner_derived.barista": {
-		"parsed": true, "name": "InnerDerived", "base_type": "Node2D",
+		"declarations_parsed": true, "name": "InnerDerived", "base_type": "Node2D",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# Two consecutive path-qualified inner-class hops. The walk reparses into one reused parser
 	# between them, so anything it carries across that reparse must not point into the freed tree.
 	"chain_head.barista": {
-		"parsed": true, "name": "ChainHead", "base_type": "Node2D",
+		"declarations_parsed": true, "name": "ChainHead", "base_type": "Node2D",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	# Two files that extend each other. Resolution terminates and reports no base.
 	"cycle_a.barista": {
-		"parsed": true, "name": "CycleA", "base_type": "",
+		"declarations_parsed": true, "name": "CycleA", "base_type": "",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
 	"cycle_b.barista": {
-		"parsed": true, "name": "CycleB", "base_type": "",
+		"declarations_parsed": true, "name": "CycleB", "base_type": "",
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
@@ -184,6 +184,9 @@ const EXPECTED_INSTANTIABLE := {
 	"CycleA": true,
 	"ChainHead": true,
 	"InnerDerived": true,
+	# A well-formed head over a body that does not parse: registered, so the editor does not lose
+	# the class mid-edit, but never instantiable, because the script is not valid.
+	"BrokenBody": false,
 	"AbstractWeapon": false,
 	"app.combat.DamageKind": false,
 	"GridPosition": false,
@@ -204,6 +207,7 @@ func _initialize() -> void:
 	_check_resolutions(probe, failures)
 	_check_language_agrees(probe, failures)
 	_check_vocabulary_closure(probe, failures)
+	_check_source_validity(probe, failures)
 	_check_qualified_name_builder(probe, failures)
 	_check_handled_type(probe, failures)
 	_check_script_surface(failures)
@@ -263,6 +267,11 @@ func _check_resolutions(probe: Object, failures: Array[String]) -> void:
 					file_name, report["kind_name"], report["base_type"]])
 			if not report["is_abstract"]:
 				failures.append("%s: a %s declaration is not abstract" % [file_name, report["kind_name"]])
+
+		# Declaration parsing is deliberately more forgiving than validity. Whole-file parsing is the
+		# stricter of the two, so it may never accept a source the declaration parse rejected.
+		if probe.source_parses(source, path) and not report["declarations_parsed"]:
+			failures.append("%s: the whole file parses but its declarations do not" % file_name)
 
 		# A name is either empty or fully qualified; a partially built dotted string is neither.
 		var name: String = report["name"]
@@ -327,6 +336,28 @@ func _check_vocabulary_closure(probe: Object, failures: Array[String]) -> void:
 		failures.append("the enumerator count is accepted as a declaration kind")
 	if probe.declaration_kind_index_is_valid(-1):
 		failures.append("-1 is accepted as a declaration kind")
+
+
+## `Script::is_valid()` asks about the whole file, not only its declarations.
+func _check_source_validity(probe: Object, failures: Array[String]) -> void:
+	var expectations := {
+		"flat_weapon.barista": true,
+		"namespaced_weapon.barista": true,
+		"damage_kind.barista": true,
+		"plain_script.barista": true,
+		# The head parses, so the class is still reported; the body does not, so the script is not
+		# valid and `ClassDB.can_instantiate` refuses it.
+		"broken_body.barista": false,
+		"broken_head.barista": false,
+		"invalid_namespace.barista": false,
+		"enum_with_extends.barista": false,
+	}
+	for file_name in expectations:
+		var path := "%s/%s" % [FIXTURE_DIRECTORY, file_name]
+		var parses: bool = probe.source_parses(FileAccess.get_file_as_string(path), path)
+		if parses != expectations[file_name]:
+			failures.append("%s: the whole file parses = %s, expected %s" % [
+				file_name, parses, expectations[file_name]])
 
 
 func _check_qualified_name_builder(probe: Object, failures: Array[String]) -> void:

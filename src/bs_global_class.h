@@ -78,16 +78,17 @@ String bs_build_qualified_global_name(const String &p_namespace, const StringNam
  */
 struct BSGlobalClass {
 	/**
-	 * Whether the front end accepted the source at all.
+	 * Whether the *declaration* parse this resolution performs accepted the source.
 	 *
-	 * Everything else here is empty or false when this is false, so it is the one field that tells
-	 * "this file declares nothing" from "this file did not parse". `BaristaScript::_is_valid()`
-	 * reports it: at M2 a script is valid exactly when it parses, because there is nothing further
-	 * to compile yet. `ClassDB::can_instantiate` consults `Script::is_valid()` before
-	 * `Script::is_abstract()` (`core/object/class_db.cpp:865` at 4.7.2-stable), so a script that
-	 * never claims validity can never be reported instantiable, whatever its base says.
+	 * Everything else here is empty or false when this is false, so it is the field that tells
+	 * "this file declares nothing" from "this file's head did not parse". It is deliberately not
+	 * the same question as `Script::is_valid()`: resolution parses declarations only
+	 * (`p_parse_body = false`), because a class must keep its name, base and icon while its
+	 * function bodies are mid-edit -- that is the error tolerance the warning block at
+	 * `foundry_script.cpp:4697-4708` demands, and what stock GDScript does. `bs_source_parses()`
+	 * answers the stricter question.
 	 */
-	bool parsed = false;
+	bool declarations_parsed = false;
 	String name;
 	String base_type;
 	String icon_path;
@@ -124,5 +125,20 @@ BSGlobalClass bs_resolve_global_class_from_source(const String &p_source, const 
  * (`foundry_script.cpp:4670`).
  */
 BSGlobalClass bs_resolve_global_class(const String &p_path);
+
+/**
+ * Whether the whole source parses, function bodies included.
+ *
+ * This is `Script::is_valid()`'s question, and it is strictly stronger than
+ * `BSGlobalClass::declarations_parsed`: a file whose head is well formed over a body that is not
+ * still contributes a global class (so the editor does not lose it mid-edit) but is not a script
+ * anything may run. `ClassDB::can_instantiate` short-circuits on `Script::is_valid()` before it
+ * ever reaches `Script::is_abstract()` (`core/object/class_db.cpp:865` at 4.7.2-stable), so this is
+ * what keeps a broken file from being offered as instantiable -- exactly as an uncompilable
+ * GDScript is registered but not instantiable.
+ *
+ * At M2 "valid" means "the front end accepted it"; M4 tightens it to "it compiled".
+ */
+bool bs_source_parses(const String &p_source, const String &p_path);
 
 } // namespace barista_script

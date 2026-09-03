@@ -40,8 +40,9 @@ public:
 	 * `bs_resolve_global_class(p_path)` -- the path-reading entry point the language uses --
 	 * rendered as the reported `Dictionary` plus the two fields the engine never sees:
 	 *
-	 *   `parsed`     whether the front end accepted the source, which is what tells a file that
-	 *                declares nothing from a file that did not parse.
+	 *   `declarations_parsed`  whether the declaration parse accepted the source, which is what
+	 *                          tells a file that declares nothing from one whose head did not
+	 *                          parse. See `source_parses()` for the stricter question.
 	 *   `kind`       the `BSDeclarationKind` index the resolution decided on.
 	 *   `kind_name`  its one spelling, from `bs_declaration_kind_name()`.
 	 */
@@ -49,6 +50,9 @@ public:
 
 	/** The same report for source text that is not on disk, as `BaristaScript` resolves its own. */
 	godot::Dictionary resolve_source(const godot::String &p_source, const godot::String &p_path) const;
+
+	/** `bs_source_parses()` -- the whole-file parse behind `BaristaScript::_is_valid()`. */
+	bool source_parses(const godot::String &p_source, const godot::String &p_path) const;
 
 	/**
 	 * What the registered `BaristaScriptLanguage` reports for `p_path`.

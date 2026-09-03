@@ -26,7 +26,7 @@ Dictionary render(const BSGlobalClass &p_global_class) {
 	// The fields the engine never sees. `kind` is what `is_abstract` and `base_type` were
 	// computed from, and stock's class cache has no key to persist it in
 	// (docs/foundry-reuse-plan.md section 5.6), so it is reported here and nowhere else.
-	report["parsed"] = p_global_class.parsed;
+	report["declarations_parsed"] = p_global_class.declarations_parsed;
 	report["kind"] = (int)p_global_class.kind;
 	report["kind_name"] = bs_declaration_kind_name(p_global_class.kind);
 	return report;
@@ -37,6 +37,7 @@ Dictionary render(const BSGlobalClass &p_global_class) {
 void BaristaScriptGlobalClassProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("resolve_path", "path"), &BaristaScriptGlobalClassProbe::resolve_path);
 	ClassDB::bind_method(D_METHOD("resolve_source", "source", "path"), &BaristaScriptGlobalClassProbe::resolve_source);
+	ClassDB::bind_method(D_METHOD("source_parses", "source", "path"), &BaristaScriptGlobalClassProbe::source_parses);
 	ClassDB::bind_method(D_METHOD("language_global_class_name", "path"), &BaristaScriptGlobalClassProbe::language_global_class_name);
 	ClassDB::bind_method(D_METHOD("language_handles_global_class_type", "type"), &BaristaScriptGlobalClassProbe::language_handles_global_class_type);
 	ClassDB::bind_method(D_METHOD("declaration_kind_names"), &BaristaScriptGlobalClassProbe::declaration_kind_names);
@@ -51,6 +52,10 @@ Dictionary BaristaScriptGlobalClassProbe::resolve_path(const String &p_path) con
 
 Dictionary BaristaScriptGlobalClassProbe::resolve_source(const String &p_source, const String &p_path) const {
 	return render(bs_resolve_global_class_from_source(p_source, p_path));
+}
+
+bool BaristaScriptGlobalClassProbe::source_parses(const String &p_source, const String &p_path) const {
+	return bs_source_parses(p_source, p_path);
 }
 
 Dictionary BaristaScriptGlobalClassProbe::language_global_class_name(const String &p_path) const {
