@@ -109,7 +109,15 @@ void resolve_base_type(const BSParser::ClassNode *p_head, const String &p_path, 
 		}
 		r_visited.push_back(extends_path);
 
-		Vector<BSParser::IdentifierNode *> extend_classes = subclass->extends;
+		// The names, not the nodes. `BSParser::parse()` clears first (bs_parser.cpp:509), so the
+		// `subparser.parse()` below frees the very tree `subclass->extends` points into on every
+		// hop after the first -- and a chain with two consecutive path-qualified inner classes has
+		// such a hop. Carrying pointers across it reads freed memory and loses the base type.
+		Vector<StringName> extend_names;
+		for (int i = 0; i < subclass->extends.size(); i++) {
+			extend_names.push_back(subclass->extends[i]->name);
+		}
+
 		const Ref<FileAccess> subfile = FileAccess::open(extends_path, FileAccess::READ);
 		if (subfile.is_null()) {
 			return;
@@ -127,15 +135,15 @@ void resolve_base_type(const BSParser::ClassNode *p_head, const String &p_path, 
 			return;
 		}
 
-		while (extend_classes.size() > 0) {
+		while (extend_names.size() > 0) {
 			bool found = false;
 			for (int i = 0; i < subclass->members.size(); i++) {
 				if (subclass->members[i].type != BSParser::ClassNode::Member::CLASS) {
 					continue;
 				}
 				const BSParser::ClassNode *inner_class = subclass->members[i].m_class;
-				if (inner_class->identifier != nullptr && inner_class->identifier->name == extend_classes[0]->name) {
-					extend_classes.remove_at(0);
+				if (inner_class->identifier != nullptr && inner_class->identifier->name == extend_names[0]) {
+					extend_names.remove_at(0);
 					found = true;
 					subclass = inner_class;
 					break;

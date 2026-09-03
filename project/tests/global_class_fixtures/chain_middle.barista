@@ -1,0 +1,4 @@
+class_name ChainMiddle
+
+class Middle extends "res://tests/global_class_fixtures/chain_tail.barista".Tail:
+	pass

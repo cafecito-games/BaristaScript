@@ -1,0 +1,4 @@
+class_name ChainTail
+
+class Tail extends Node2D:
+	pass

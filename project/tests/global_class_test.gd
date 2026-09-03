@@ -127,6 +127,29 @@ const EXPECTED := {
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
+	"chain_tail.barista": {
+		"parsed": true, "name": "ChainTail", "base_type": "RefCounted",
+		"icon_path": "", "is_abstract": false, "is_tool": false,
+		"kind_name": "class_name",
+	},
+	"chain_middle.barista": {
+		"parsed": true, "name": "ChainMiddle", "base_type": "RefCounted",
+		"icon_path": "", "is_abstract": false, "is_tool": false,
+		"kind_name": "class_name",
+	},
+	# `extends "res://…".Inner`: one hop into another file's inner class.
+	"inner_derived.barista": {
+		"parsed": true, "name": "InnerDerived", "base_type": "Node2D",
+		"icon_path": "", "is_abstract": false, "is_tool": false,
+		"kind_name": "class_name",
+	},
+	# Two consecutive path-qualified inner-class hops. The walk reparses into one reused parser
+	# between them, so anything it carries across that reparse must not point into the freed tree.
+	"chain_head.barista": {
+		"parsed": true, "name": "ChainHead", "base_type": "Node2D",
+		"icon_path": "", "is_abstract": false, "is_tool": false,
+		"kind_name": "class_name",
+	},
 	# Two files that extend each other. Resolution terminates and reports no base.
 	"cycle_a.barista": {
 		"parsed": true, "name": "CycleA", "base_type": "",
@@ -159,6 +182,8 @@ const EXPECTED_INSTANTIABLE := {
 	"PathDerived": true,
 	"RelativeDerived": true,
 	"CycleA": true,
+	"ChainHead": true,
+	"InnerDerived": true,
 	"AbstractWeapon": false,
 	"app.combat.DamageKind": false,
 	"GridPosition": false,
