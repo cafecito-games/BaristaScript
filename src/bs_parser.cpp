@@ -542,9 +542,14 @@ Error BSParser::parse(const String &p_source_code, const String &p_script_path, 
 	current = tokenizer->scan();
 	// Avoid error or newline as the first token.
 	// The latter can mess with the parser when opening files filled exclusively with comments and newlines.
+	current_follows_tokenizer_error = false;
 	while (current.type == BSTokenizer::Token::ERROR || current.type == BSTokenizer::Token::NEWLINE) {
 		if (current.type == BSTokenizer::Token::ERROR) {
-			push_error(current.literal);
+			// At the token's own span: there is no `previous` here at all, so upstream's
+			// `push_error()` reports the very first diagnostic in a file at 0:0
+			// (fs_parser.cpp:547 @ c9d5e35), which is not a position in any source.
+			push_error_at(current.literal, current);
+			current_follows_tokenizer_error = true;
 		}
 		current = tokenizer->scan();
 	}
@@ -605,9 +610,14 @@ Error BSParser::parse_binary(const PackedByteArray &p_binary, const String &p_sc
 	current = tokenizer->scan();
 	// Avoid error or newline as the first token.
 	// The latter can mess with the parser when opening files filled exclusively with comments and newlines.
+	current_follows_tokenizer_error = false;
 	while (current.type == BSTokenizer::Token::ERROR || current.type == BSTokenizer::Token::NEWLINE) {
 		if (current.type == BSTokenizer::Token::ERROR) {
-			push_error(current.literal);
+			// At the token's own span: there is no `previous` here at all, so upstream's
+			// `push_error()` reports the very first diagnostic in a file at 0:0
+			// (fs_parser.cpp:547 @ c9d5e35), which is not a position in any source.
+			push_error_at(current.literal, current);
+			current_follows_tokenizer_error = true;
 		}
 		current = tokenizer->scan();
 	}
@@ -2879,6 +2889,9 @@ BSParser::ConstantNode *BSParser::parse_constant(const DeclarationModifiers &p_m
 		} else {
 			// Parse type.
 			constant->datatype_specifier = parse_type();
+			if (constant->datatype_specifier == nullptr && !current_follows_tokenizer_error) {
+				push_error(R"(Expected type after ":")");
+			}
 		}
 	}
 
@@ -2928,6 +2941,9 @@ BSParser::ParameterNode *BSParser::parse_parameter(bool p_allow_annotations) {
 			// Parse type.
 			make_completion_context(COMPLETION_TYPE_NAME, parameter);
 			parameter->datatype_specifier = parse_type();
+			if (parameter->datatype_specifier == nullptr && !current_follows_tokenizer_error) {
+				push_error(R"(Expected type after ":")");
+			}
 		}
 	}
 
