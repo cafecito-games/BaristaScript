@@ -37,7 +37,7 @@
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/classes/project_settings.hpp"],
 			"rationale": "Foundry already reaches the setting store through ProjectSettings::get_singleton() (fs_parser.cpp:136), which is exactly godot-cpp's shape.",
-			"non_mappings": ["core's GLOBAL_GET/GLOBAL_DEF macros do not exist in godot-cpp; ported code must spell ProjectSettings::get_singleton()->get_setting_with_override()."]
+			"non_mappings": ["core's GLOBAL_GET/GLOBAL_DEF macros appear nowhere in godot-cpp; ported code must spell ProjectSettings::get_singleton()->get_setting_with_override() (gen/include/godot_cpp/classes/project_settings.hpp:57,62)."]
 		},
 		{
 			"core_header": "core/core_constants.h",
@@ -65,14 +65,14 @@
 			"sites": ["fs_parser.cpp:40"],
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/classes/resource_loader.hpp"],
-			"non_mappings": ["core's ResourceLoader::load is a static member (fs_parser.cpp:7488); godot-cpp's is an instance method on the ResourceLoader singleton. Call sites change, so this is a header mapping, not a call-compatible one."]
+			"non_mappings": ["core's ResourceLoader::load is a static member (fs_parser.cpp:7488); godot-cpp's is an instance method on the singleton (gen/include/godot_cpp/classes/resource_loader.hpp:72,77) and drops core's trailing Error out-parameter. Call sites change, so this is a header mapping, not a call-compatible one."]
 		},
 		{
 			"core_header": "core/io/resource_uid.h",
 			"sites": ["fs_parser.cpp:41"],
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/classes/resource_uid.hpp"],
-			"non_mappings": ["core's ResourceUID::ensure_path is a static member (fs_parser.cpp:1150); godot-cpp's is an instance method on the ResourceUID singleton."]
+			"rationale": "ResourceUID::ensure_path is a static member in both trees (godot-cpp at gen/include/godot_cpp/classes/resource_uid.hpp:65), so the one call site at fs_parser.cpp:1150 ports unchanged."
 		},
 		{
 			"core_header": "core/math/math_defs.h",
@@ -95,7 +95,7 @@
 			"godot_cpp_headers": ["godot_cpp/classes/script.hpp", "godot_cpp/classes/script_language.hpp"],
 			"rationale": "The port set only needs Script (Ref<Script>, Script::get_class_static()); core declares it alongside ScriptLanguage in one header, godot-cpp splits them.",
 			"non_mappings": [
-				"ScriptInstance has no godot-cpp equivalent; the extension implements ScriptInstanceExtension instead.",
+				"ScriptInstance has no godot-cpp equivalent -- gen/include/godot_cpp/classes/ holds script.hpp, script_language.hpp, script_extension.hpp and script_language_extension.hpp and nothing else -- so the extension implements ScriptInstanceExtension instead.",
 				"Foundry's trait virtuals on ScriptLanguage are not in stock Godot (D5); BaristaScript owns its own trait registry.",
 				"core/object/script_function_state.h is engine-internal and is not reachable from a GDExtension; coroutines get their own suspended-frame object."
 			]
@@ -113,7 +113,7 @@
 			"resolution": "shimmed",
 			"shim_symbols": ["StringBuilder"],
 			"guard": "DEBUG_ENABLED",
-			"rationale": "Absent from godot-cpp. Guarding it out was rejected: it would delete FSParser::TreePrinter, the parser's only AST dump. Vendoring Godot's MIT original was also rejected: its as_string() writes through String::resize/ptrw/copy_from_unchecked, and godot-cpp's String is an opaque engine-backed handle that exposes none of them. The seam therefore reimplements the same public API over String concatenation, which is a behavioural equivalent with a different cost profile, not an alias to a near-miss type."
+			"rationale": "Absent from godot-cpp. Guarding it out was rejected: it would delete FSParser::TreePrinter, the parser's only AST dump. Vendoring Godot's MIT original was rejected on inspection rather than on principle: as_string() builds its result with String::resize_uninitialized, which godot-cpp's String does not have (it exposes resize, ptr and ptrw at gen/include/godot_cpp/variant/string.hpp:417,496,497, but no uninitialized resize), so the vendored copy would need editing -- and an edited vendor loses the upstream diffability that is vendoring's only advantage. The seam therefore reimplements the public API over String concatenation: the same observable behaviour, including the empty-append and empty-result rules, with a different cost profile. That is a shim, not an alias to a near-miss type."
 		},
 		{
 			"core_header": "core/string/string_name.h",

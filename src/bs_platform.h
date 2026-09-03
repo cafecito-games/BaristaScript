@@ -11,17 +11,17 @@
 /**
  * The single compatibility seam between BaristaScript's ported Foundry frontend and godot-cpp.
  *
- * Foundry's frontend is engine-module code: it spells its dependencies as `core/...` includes and
+ * Foundry's frontend is engine-module code: it spells its dependencies as `core/` includes and
  * relies on Godot's core headers being on the include path. A GDExtension has godot-cpp instead,
  * which mirrors most of those types under different paths and, in a few places, does not mirror
  * them at all. This header is the only place that difference is written down. A ported file
- * replaces its whole `core/*` include block with `#include "bs_platform.h"` and changes nothing
+ * replaces its whole `core/` include block with `#include "bs_platform.h"` and changes nothing
  * else; no ported file may include a godot-cpp header directly for a type mapped here.
  *
  * The mapping is audited, not asserted. `src/bs_platform_manifest.json` records every upstream
- * `core/*` dependency of the port set with its resolution, and `tests/audit_platform_seam.py`
+ * upstream dependency of the port set with its resolution, and `tests/audit_platform_seam.py`
  * checks that record against the godot-cpp header set the build will actually generate. What the
- * seam refuses to do matters more than what it does: it never aliases a `core/*` type to a
+ * seam refuses to do matters more than what it does: it never aliases an upstream type to a
  * near-miss godot-cpp type, and it never expands a missing macro to nothing. A gap is a compile
  * error here, not a behaviour change three milestones later.
  */
@@ -122,11 +122,17 @@ using namespace godot;
 	}())
 
 /**
- * `core/string/string_builder.h` is absent from godot-cpp, and Godot's own implementation cannot be
- * vendored: its `as_string()` writes through `String::resize`, `ptrw` and `copy_from_unchecked`,
- * none of which godot-cpp's opaque `String` exposes. This is a reimplementation of the same public
- * API over ordinary concatenation -- the same results, a different cost profile -- rather than an
- * alias to a near-miss type. `FSParser::TreePrinter` is its only consumer.
+ * `core/string/string_builder.h` is absent from godot-cpp. Godot's own implementation was read
+ * before this was written: its `as_string()` builds the result with `String::resize_uninitialized`,
+ * which godot-cpp's `String` does not have -- it offers `resize`, `ptr` and `ptrw`, but no
+ * uninitialized resize -- so a vendored copy would have to be edited, and an edited vendor loses
+ * the upstream diffability that was the reason to vendor.
+ *
+ * What follows reimplements the public API over ordinary concatenation. The observable behaviour is
+ * Godot's, deliberately: appending an empty `String` is a no-op that does not count towards
+ * `num_strings_appended()`, appending an empty C string does count, and an empty builder stringifies
+ * to `""`. The cost profile is not Godot's -- this concatenates instead of writing once into a
+ * presized buffer. `FSParser::TreePrinter` is the only consumer and runs under `DEBUG_ENABLED`.
  */
 class StringBuilder {
 	uint32_t string_length = 0;
@@ -134,13 +140,21 @@ class StringBuilder {
 
 public:
 	StringBuilder &append(const String &p_string) {
+		if (p_string.is_empty()) {
+			return *this;
+		}
 		string_length += (uint32_t)p_string.length();
 		strings.push_back(p_string);
 		return *this;
 	}
 
 	StringBuilder &append(const char *p_cstring) {
-		return append(String(p_cstring));
+		// Godot counts an empty C string as an append even though it adds no characters, so this
+		// does not delegate to the String overload, which skips empties.
+		const String converted = String(p_cstring);
+		string_length += (uint32_t)converted.length();
+		strings.push_back(converted);
+		return *this;
 	}
 
 	StringBuilder &operator+(const String &p_string) {
@@ -168,6 +182,9 @@ public:
 	}
 
 	String as_string() const {
+		if (string_length == 0) {
+			return String();
+		}
 		String result;
 		for (uint32_t i = 0; i < strings.size(); i++) {
 			result += strings[i];
