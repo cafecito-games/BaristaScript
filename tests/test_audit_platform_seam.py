@@ -291,6 +291,68 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("StringBuilder", result.stdout + result.stderr)
 
+    def test_a_site_the_upstream_capture_contradicts_is_rejected(self):
+        """fs_parser.cpp:38 is core/config/project_settings.h; claiming it for anything else fails."""
+        document = real_manifest()
+        for entry in document["entries"]:
+            if entry["core_header"] == "core/templates/vector.h":
+                entry["sites"] = ["fs_parser.cpp:38"]
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fs_parser.cpp:38", result.stdout + result.stderr)
+
+    def test_a_site_at_a_line_with_no_include_is_rejected(self):
+        document = real_manifest()
+        document["entries"][0]["sites"] = ["fs_parser.cpp:1"]
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no include at fs_parser.cpp:1", result.stdout + result.stderr)
+
+    def test_an_upstream_dependency_no_entry_explains_is_rejected(self):
+        document = real_manifest()
+        dropped = document["entries"].pop(0)
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(dropped["core_header"], result.stdout + result.stderr)
+
+    def test_an_absent_site_fixture_is_rejected(self):
+        document = real_manifest()
+        document["upstream"]["site_fixture"] = "tests/fixtures/never_captured.txt"
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("never_captured.txt", result.stdout + result.stderr)
+
+    def test_an_empty_site_fixture_is_rejected_rather_than_vacuously_passing(self):
+        document = real_manifest()
+        with tempfile.TemporaryDirectory() as scratch:
+            fixture = Path(scratch) / "empty_fixture.txt"
+            fixture.write_text("# nothing was captured\n", encoding="utf-8")
+            document["upstream"]["site_fixture"] = str(fixture)
+            with TemporaryManifest(document) as path:
+                result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a usable capture", result.stdout + result.stderr)
+
+    def test_a_proof_source_cmake_does_not_compile_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            cmakelists = Path(scratch) / "CMakeLists.txt"
+            cmakelists.write_text("target_sources(x PRIVATE src/register_types.cpp)\n", encoding="utf-8")
+            result = run_audit("--cmakelists", str(cmakelists))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("target_sources", result.stdout + result.stderr)
+
+    def test_a_proof_source_scons_would_not_glob_is_rejected(self):
+        document = real_manifest()
+        document["seam_proof_sources"] = ["src/proof/bs_platform_shims.cpp"]
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/*.cpp", result.stdout + result.stderr)
+
     def test_site_outside_the_declared_port_set_is_rejected(self):
         document = real_manifest()
         document["entries"][0]["sites"] = ["fs_analyzer.cpp:12"]
@@ -344,8 +406,16 @@ class VocabularyClosureTest(unittest.TestCase):
         document["seam_support_headers"] = ["godot_cpp/templates/vector.hpp"]
         return document
 
+    SYNTHETIC_FIXTURE = (
+        "=== modules/foundry_script/fs_tokenizer.h ===\n"
+        '35:#include "core/templates/vector.h"\n'
+    )
+
     def run_against_synthetic_seam(self, document):
         with tempfile.TemporaryDirectory() as scratch:
+            fixture = Path(scratch) / "synthetic_fixture.txt"
+            fixture.write_text(self.SYNTHETIC_FIXTURE, encoding="utf-8")
+            document["upstream"]["site_fixture"] = str(fixture)
             manifest = Path(scratch) / "manifest.json"
             manifest.write_text(json.dumps(document, indent=2), encoding="utf-8")
             seam = Path(scratch) / "synthetic_seam.h"

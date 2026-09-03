@@ -65,6 +65,9 @@ add_library(${LIBNAME} SHARED)
 
 target_sources(${LIBNAME}
     PRIVATE
+    src/bs_platform.h
+    src/bs_platform_seam.cpp
+    src/bs_platform_shims.cpp
     src/register_types.cpp
     src/register_types.h
     src/barista_script.cpp

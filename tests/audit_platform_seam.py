@@ -64,6 +64,12 @@ FORBIDDEN_FIELDS = {
 OMISSION_REASONS = ("debug-only", "tools-only", "unreferenced")
 
 INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+[<"]([^>"]+)[>"]', re.MULTILINE)
+FIXTURE_SECTION_PATTERN = re.compile(r"^=== \S+/(\S+) ===$")
+FIXTURE_INCLUDE_PATTERN = re.compile(r'^(\d+):\s*#\s*include\s+"([^"]+)"$')
+
+# Includes of the port set's own headers. They are upstream file names, not engine dependencies, so
+# the seam has nothing to say about them.
+PORT_INTERNAL_PREFIXES = ("fs_", "foundry_script.")
 API_VERSION_PATTERN = re.compile(r'"api_version"\]\s*=\s*"([0-9]+\.[0-9]+)"')
 
 
@@ -161,6 +167,42 @@ def godot_cpp_header_index(godot_cpp, api_version, build_profile):
     return checked_in | predicted, drift
 
 
+def load_site_fixture(path):
+    """The verbatim capture of the upstream include preambles, as {"file:line": header}.
+
+    The manifest's `sites` are claims about someone else's source tree, which this repository cannot
+    reach at audit time. The fixture is that source tree's own output, checked in, so the claims can
+    be verified instead of trusted.
+    """
+    if not path.is_file():
+        raise AuditError("no upstream site fixture at {}".format(path))
+    sites = {}
+    current = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        section = FIXTURE_SECTION_PATTERN.match(line)
+        if section:
+            current = section.group(1)
+            continue
+        include = FIXTURE_INCLUDE_PATTERN.match(line)
+        if include and current is not None:
+            sites["{}:{}".format(current, include.group(1))] = include.group(2)
+    if not sites:
+        raise AuditError("{} names no include sites; it is not a usable capture".format(path))
+    return sites
+
+
+def check_site_coverage(sites, claimed, failures):
+    """Every upstream dependency in the capture is accounted for by some manifest entry."""
+    for site in sorted(sites):
+        header = sites[site]
+        if header.startswith(PORT_INTERNAL_PREFIXES):
+            continue
+        if site not in claimed:
+            failures.append("{} includes {} at {}, which no manifest entry explains".format(
+                site.rsplit(":", 1)[0], header, site
+            ))
+
+
 def seam_includes(seam):
     if not seam.is_file():
         raise AuditError("no seam header at {}".format(seam))
@@ -203,7 +245,7 @@ def string_list(entry, field, failures, core_header):
     return value
 
 
-def check_entry(entry, index, seam_headers, seam_text, port_set, failures):
+def check_entry(entry, index, seam_headers, seam_text, port_set, sites, claimed, failures):
     core_header = entry.get("core_header")
     if not isinstance(core_header, str) or not core_header:
         failures.append("an entry has no 'core_header'")
@@ -230,6 +272,15 @@ def check_entry(entry, index, seam_headers, seam_text, port_set, failures):
         source = site.rsplit(":", 1)[0]
         if source not in port_set:
             failures.append("{}: site {!r} is outside the declared port set".format(core_header, site))
+            continue
+        if site not in sites:
+            failures.append("{}: the upstream capture has no include at {}".format(core_header, site))
+        elif sites[site] != core_header:
+            failures.append(
+                "{}: the upstream capture has {} at {}, not {}".format(core_header, sites[site], site, core_header)
+            )
+        else:
+            claimed.add(site)
 
     detail = ""
     if resolution == "mapped":
@@ -323,6 +374,26 @@ def check_required_macros(macros, godot_cpp, seam_text, failures):
             failures.append("the seam does not assert that {} is defined".format(macro))
 
 
+def check_builds_compile_the_proof_sources(manifest, cmakelists, failures):
+    """Both supported builds have to compile the proof sources, not just one of them.
+
+    SCons globs `src/*.cpp`, so a proof source anywhere else is silently dropped from that build.
+    CMake lists its sources explicitly, so one missing from `target_sources` is silently dropped
+    from that one. Either way the seam would stop being proven while the audit still passed.
+    """
+    sources = as_string_list(manifest.get("seam_proof_sources"))
+    if not cmakelists.is_file():
+        failures.append("no CMakeLists.txt at {}".format(cmakelists))
+        return
+    text = cmakelists.read_text(encoding="utf-8")
+    for source in sources:
+        path = Path(source)
+        if path.parent.as_posix() != "src" or path.suffix != ".cpp":
+            failures.append("{} is not matched by SConstruct's src/*.cpp glob".format(source))
+        if source not in text:
+            failures.append("{} is not listed in CMakeLists.txt's target_sources".format(source))
+
+
 def check_shims_are_compiled(manifest, rows, failures):
     """A shim nothing compiles is a shim that rots.
 
@@ -358,6 +429,7 @@ def main(argv=None):
     parser.add_argument("--godot-cpp", type=Path, default=ROOT / "godot-cpp")
     parser.add_argument("--build-profile", type=Path, default=ROOT / "build_profile.json")
     parser.add_argument("--sconstruct", type=Path, default=ROOT / "SConstruct")
+    parser.add_argument("--cmakelists", type=Path, default=ROOT / "CMakeLists.txt")
     parser.add_argument("--api-version", default=None)
     parser.add_argument("--print-index", action="store_true", help="print the godot-cpp header set and exit")
     arguments = parser.parse_args(argv)
@@ -371,6 +443,10 @@ def main(argv=None):
         manifest = load_manifest(arguments.manifest)
         seam = arguments.seam or ROOT / manifest["seam_header"]
         seam_headers, seam_text = seam_includes(seam)
+        fixture = manifest["upstream"].get("site_fixture")
+        if not isinstance(fixture, str) or not fixture:
+            raise AuditError("{} declares no 'site_fixture'".format(arguments.manifest))
+        sites = load_site_fixture(ROOT / fixture)
     except AuditError as error:
         print("audit failed: {}".format(error), file=sys.stderr)
         return 1
@@ -385,6 +461,7 @@ def main(argv=None):
 
     rows = []
     seen = set()
+    claimed = set()
     for entry in manifest["entries"]:
         if not isinstance(entry, dict):
             failures.append("an entry is {}, not an object".format(type(entry).__name__))
@@ -395,12 +472,14 @@ def main(argv=None):
             continue
         if isinstance(core_header, str):
             seen.add(core_header)
-        row = check_entry(entry, index, seam_headers, seam_text, port_set, failures)
+        row = check_entry(entry, index, seam_headers, seam_text, port_set, sites, claimed, failures)
         if row is not None:
             rows.append(row)
 
+    check_site_coverage(sites, claimed, failures)
     check_required_macros(manifest["required_macros"], arguments.godot_cpp, seam_text, failures)
     check_shims_are_compiled(manifest, rows, failures)
+    check_builds_compile_the_proof_sources(manifest, arguments.cmakelists, failures)
 
     allowed = set(as_string_list(manifest.get("seam_support_headers")))
     for entry in manifest["entries"]:
