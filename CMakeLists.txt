@@ -88,6 +88,13 @@ target_sources(${LIBNAME}
     src/bs_cache.h
     src/barista_script_parse_cache.cpp
     src/barista_script_parse_cache.h
+    src/bs_diagnostic_names.cpp
+    src/bs_diagnostic_names.h
+    src/bs_parser.cpp
+    src/bs_parser.h
+    src/bs_parser_data_type.cpp
+    src/bs_parser_probe.cpp
+    src/bs_parser_probe.h
 )
 
 # Fetch a list of the xml files to use for documentation and add to our target
