@@ -1,0 +1,13 @@
+{
+	"type": "feature_profile",
+	"enabled_classes": [
+		"Engine",
+		"FileAccess",
+		"OS",
+		"ResourceFormatLoader",
+		"ResourceLoader",
+		"ScriptExtension",
+		"ScriptLanguageExtension",
+		"ScriptLanguageExtensionProfilingInfo"
+	]
+}
