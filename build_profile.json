@@ -3,9 +3,12 @@
 	"enabled_classes": [
 		"Engine",
 		"FileAccess",
+		"MultiplayerAPI",
 		"OS",
+		"ProjectSettings",
 		"ResourceFormatLoader",
 		"ResourceLoader",
+		"ResourceUID",
 		"ScriptExtension",
 		"ScriptLanguageExtension",
 		"ScriptLanguageExtensionProfilingInfo"

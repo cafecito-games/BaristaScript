@@ -1,0 +1,74 @@
+# Foundry port-set include preambles, captured verbatim.
+#
+# Producer:   git show <revision>:modules/foundry_script/<file>
+# Repository: cafecito-games/Foundry
+# Revision:   c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6
+#
+# Each section reproduces every preprocessor directive in the first 60 lines of the file --
+# the whole include preamble -- prefixed by its 1-based line number, so that every "sites"
+# entry in src/bs_platform_manifest.json can be checked against the real upstream source.
+
+=== modules/foundry_script/fs_tokenizer.h ===
+31:#pragma once
+33:#include "core/templates/hash_map.h"
+34:#include "core/templates/list.h"
+35:#include "core/templates/vector.h"
+36:#include "core/variant/numeric_type.h"
+37:#include "core/variant/variant.h"
+
+=== modules/foundry_script/fs_tokenizer.cpp ===
+31:#include "fs_tokenizer.h"
+33:#include "core/error/error_macros.h"
+34:#include "core/string/char_utils.h"
+36:#ifdef DEBUG_ENABLED
+37:#include "servers/text/text_server.h"
+38:#endif
+40:#ifdef TOOLS_ENABLED
+41:#include "editor/settings/editor_settings.h"
+42:#endif
+
+=== modules/foundry_script/fs_parser.h ===
+31:#pragma once
+33:#include "fs_cache.h"
+34:#include "fs_tokenizer.h"
+36:#ifdef DEBUG_ENABLED
+37:#ifndef FOUNDRY_SCRIPT_NO_FRONTEND
+38:#include "fs_warning.h"
+39:#endif // FOUNDRY_SCRIPT_NO_FRONTEND
+40:#endif // DEBUG_ENABLED
+42:#include "core/io/resource.h"
+43:#include "core/object/ref_counted.h"
+44:#include "core/object/script_language.h"
+45:#include "core/string/string_name.h"
+46:#include "core/string/ustring.h"
+47:#include "core/templates/hash_map.h"
+48:#include "core/templates/list.h"
+49:#include "core/templates/vector.h"
+50:#include "core/variant/numeric_type.h"
+51:#include "core/variant/variant.h"
+53:#ifdef DEBUG_ENABLED
+54:#include "core/string/string_builder.h"
+55:#endif
+
+=== modules/foundry_script/fs_parser.cpp ===
+31:#include "fs_parser.h"
+33:#include "foundry_script.h"
+34:#include "fs_analyzer.h"
+35:#include "fs_cache.h"
+36:#include "fs_tokenizer_buffer.h"
+38:#include "core/config/project_settings.h"
+39:#include "core/core_constants.h"
+40:#include "core/io/resource_loader.h"
+41:#include "core/io/resource_uid.h"
+42:#include "core/math/math_defs.h"
+43:#include "scene/main/multiplayer_api.h"
+45:#ifdef DEBUG_ENABLED
+46:#include "core/string/string_builder.h"
+47:#include "servers/text/text_server.h"
+48:#endif
+50:#ifdef TOOLS_ENABLED
+51:#include "editor/settings/editor_settings.h"
+52:#endif
+54:#ifdef DEBUG_ENABLED
+58:#endif // DEBUG_ENABLED
+60:#ifdef TOOLS_ENABLED
