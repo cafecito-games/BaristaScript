@@ -60,7 +60,7 @@ exact diagnostic text).
 | `analyzer/features` | 529 | High |
 | `runtime/errors` | 259 | High |
 | `parser/errors` | 182 | **Verbatim** — the parser is unchanged |
-| `parser/features` | 134 | **Verbatim** |
+| `parser/features` | 133 | **Verbatim** (135 `.fs`, two of them `.notest.fs` helpers) |
 | `analyzer/warnings` | 71 | High |
 | `refactor` | 60 | Medium — depends on editor integration |
 | `lsp` | 44 | Medium |
@@ -275,7 +275,10 @@ vendor any missing container. *Exit: an empty translation unit including `bs_pla
 the extension.* This is the milestone that de-risks everything after it.
 
 **M2 — Tokenizer + parser.** Port both verbatim through the seam. Bring over
-`tests/scripts/parser/**` (345 cases) unchanged. *Exit: 345/345 parser cases green.*
+`tests/scripts/parser/**`, which is **344** cases and not the 345 this plan first quoted: 133
+`features` + 182 `errors` + 29 `warnings`, matching the 344 `.out` files exactly. The two remaining
+`.fs` in `features/` are `.notest.fs` helper sources with no `.out`, not cases. Sixteen of the 344
+are triaged for D1, four of them by deletion. *Exit: 340/340 parser cases green* (issue #10).
 
 **M3 — Type model + analyzer.** Port the type model and analyzer, dropping the numeric apparatus
 (D1) rather than porting it. Bring over `analyzer/**` (1,571 cases) minus the 113 deleted numeric

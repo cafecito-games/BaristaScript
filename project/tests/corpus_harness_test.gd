@@ -335,18 +335,33 @@ func _test_runner_process_arguments(failures: Array[String]) -> void:
 		"unknown argument must be a named harness error with exit code 2"
 	)
 
-	var default_corpus := _run_runner_process([])
+	# The empty-corpus contract is asserted against a corpus that is genuinely
+	# empty. It used to be asserted against the default root, which was empty
+	# only because the real corpus had not landed yet; asserting it there again
+	# would mean the assertion silently stopped testing the day it did.
+	var empty_corpus := _run_runner_process(["--corpus", "%s/empty_corpus" % FIXTURES_ROOT])
 	_expect(
 		failures,
-		default_corpus["exit_code"] == Harness.ExitCode.CASES_FAILED and String(default_corpus["output"]).contains("no cases discovered"),
-		"the empty default corpus must fail without --allow-empty"
+		empty_corpus["exit_code"] == Harness.ExitCode.CASES_FAILED and String(empty_corpus["output"]).contains("no cases discovered"),
+		"an empty corpus must fail without --allow-empty"
 	)
 
-	var allowed_corpus := _run_runner_process(["--allow-empty"])
+	var allowed_corpus := _run_runner_process(["--corpus", "%s/empty_corpus" % FIXTURES_ROOT, "--allow-empty"])
 	_expect(
 		failures,
 		allowed_corpus["exit_code"] == Harness.ExitCode.PASSED,
-		"the empty default corpus must pass with --allow-empty"
+		"an empty corpus must pass with --allow-empty"
+	)
+
+	# The default root is what a bare `corpus_runner.gd` run means, so it has to
+	# resolve to the real corpus rather than to a path that no longer exists.
+	var default_corpus := _run_runner_process([])
+	_expect(
+		failures,
+		default_corpus["exit_code"] == Harness.ExitCode.PASSED
+			and String(default_corpus["output"]).contains("%s " % Harness.SUMMARY_PREFIX)
+			and not String(default_corpus["output"]).contains("no cases discovered"),
+		"the default corpus root must discover the committed corpus: %s" % default_corpus["output"]
 	)
 
 

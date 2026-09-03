@@ -1,0 +1,22 @@
+# `type` is a contextual keyword: it introduces an alias only at file or class scope, where the
+# next token is a name. Everywhere else it stays an ordinary identifier.
+type Unsigned = String | bool
+type Meters = float
+type MaybeName = String? | int
+
+
+class Inner:
+	type Local = int | float
+
+	func describe() -> String:
+		return "inner"
+
+
+func test():
+	var type = 5
+	print(type)
+
+	var mask = 0b0011
+	print(mask | 0b0100)
+
+	print(Inner.new().describe())

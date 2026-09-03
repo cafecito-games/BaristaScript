@@ -14,6 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SUITE_RUNNER = "tests/run_gdscript_suites.py"
 
+BASELINE_PATH = ROOT / "tests" / "corpus_baseline.json"
+SUITES_MANIFEST_PATH = ROOT / "tests" / "gdscript_suites.json"
+
+# Printed by project/tests/corpus_harness.gd, which reads it from
+# src/bs_corpus_sentinels.h. Read from the same header here so the pattern this
+# file derives cannot drift from the line the harness prints.
+SENTINEL_HEADER = ROOT / "src" / "bs_corpus_sentinels.h"
+
+CASE_EXTENSION = ".barista"
+HELPER_SUFFIX = ".notest" + CASE_EXTENSION
+
 # Godot's `--script`, its documented `-s` alias, and the quoting a workflow author may add.
 DIRECT_SUITE_INVOCATION = re.compile(r"""(?:--script|(?<![\w-])-s)\s+['"]?res://\S+""")
 
@@ -148,6 +159,108 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
     return None
 
 
+def summary_prefix() -> str:
+    match = re.search(
+        r'SUMMARY_PREFIX\s*=\s*"([^"]+)"', SENTINEL_HEADER.read_text(encoding="utf-8")
+    )
+    if match is None:
+        raise SystemExit(f"could not read SUMMARY_PREFIX from {SENTINEL_HEADER}")
+    return match.group(1)
+
+
+def count_corpus(root: Path) -> tuple[int, int]:
+    """The cases and the skipped helpers actually on disk under `root`.
+
+    Counted the way project/tests/corpus_harness.gd counts them, so the number
+    committed in the baseline is checked against the tree rather than against
+    another copy of itself.
+    """
+    cases = 0
+    helpers = 0
+    for path in root.rglob("*" + CASE_EXTENSION):
+        if path.name.endswith(HELPER_SUFFIX):
+            helpers += 1
+        else:
+            cases += 1
+    return cases, helpers
+
+
+def check_corpus_baseline() -> str | None:
+    """Return a complaint when the corpus baseline, the tree and the CI pin disagree.
+
+    The baseline is the one committed number, and it is only worth committing if
+    every way of losing cases is a failure. Three things have to agree: how many
+    case files are on disk, what tests/corpus_baseline.json records, and the
+    anchored summary line tests/gdscript_suites.json pins. Cases quietly
+    vanishing then fails on the first, a case quietly starting to fail fails on
+    the third, and a case the baseline records as expected-fail that starts
+    passing fails on the third too -- the pinned pass count is exact, so drift in
+    either direction is a red build.
+    """
+    baseline = json.loads(BASELINE_PATH.read_text())
+    manifest = json.loads(SUITES_MANIFEST_PATH.read_text())
+    expectations = {
+        entry.get("script", "") + " " + " ".join(entry.get("args", [])): entry.get("expect", "")
+        for entry in manifest.get("extra_invocations", [])
+    }
+    prefix = summary_prefix()
+
+    for name, corpus in sorted(baseline["corpora"].items()):
+        root_uri = corpus["root"]
+        if not root_uri.startswith("res://"):
+            return f"corpus {name!r} root {root_uri!r} is not a res:// path"
+        root = ROOT / "project" / root_uri[len("res://") :]
+        if not root.is_dir():
+            return f"corpus {name!r} root {root} does not exist"
+
+        cases, helpers = count_corpus(root)
+        if cases != corpus["total"] or helpers != corpus["skipped"]:
+            return (
+                f"corpus {name!r} holds {cases} cases and {helpers} skipped helpers, but "
+                f"{BASELINE_PATH.name} records {corpus['total']} and {corpus['skipped']}; a case "
+                "that vanishes must never shrink the corpus quietly"
+            )
+
+        expected_failures = corpus["expected_failures"]
+        unknown = sorted(set(expected_failures) - {
+            path.relative_to(root).as_posix() for path in root.rglob("*" + CASE_EXTENSION)
+        })
+        if unknown:
+            return (
+                f"corpus {name!r} records expected failures that are not cases: "
+                + ", ".join(unknown)
+            )
+
+        passing = corpus["total"] - len(expected_failures)
+        required = (
+            f"^{re.escape(prefix)} {passing}/{corpus['total']} "
+            f"skipped={corpus['skipped']}$"
+        )
+        key = f"{root_uri} --corpus {root_uri}"
+        pinned = expectations.get(key)
+        if pinned is None:
+            pinned = next(
+                (
+                    expect
+                    for invocation, expect in expectations.items()
+                    if root_uri in invocation
+                ),
+                None,
+            )
+        if pinned is None:
+            return (
+                f"{SUITES_MANIFEST_PATH.name} has no invocation running corpus {name!r} at "
+                f"{root_uri}; an unrun corpus is not a baseline"
+            )
+        if pinned != required:
+            return (
+                f"corpus {name!r} is pinned as {pinned!r} but the baseline requires {required!r}; "
+                "the pin is what makes the number mean anything, so it may not be a loose match "
+                "and it may not lag the baseline"
+            )
+    return None
+
+
 def main() -> int:
     api_path = ROOT / "godot-cpp" / "gdextension" / "extension_api-4-7.json"
     workflow_path = ROOT / ".github" / "workflows" / "ci.yml"
@@ -174,6 +287,11 @@ def main() -> int:
     suite_wiring_complaint = check_gdscript_suite_wiring(workflow)
     if suite_wiring_complaint is not None:
         print(suite_wiring_complaint)
+        return 1
+
+    baseline_complaint = check_corpus_baseline()
+    if baseline_complaint is not None:
+        print(baseline_complaint)
         return 1
 
     print(f"CI configuration matches the Godot 4.7 API ({api_precision}) and avoids duplicate PR runs")

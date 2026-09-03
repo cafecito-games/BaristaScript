@@ -49,6 +49,7 @@ jobs:
         run: |
           python tests/validate_ci.py
           python tests/test_run_gdscript_suites.py
+          python tests/test_corpus_baseline.py
 
       - name: Audit the platform seam
         shell: bash

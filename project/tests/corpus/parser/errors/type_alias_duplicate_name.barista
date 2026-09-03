@@ -1,0 +1,2 @@
+const Unsigned = 1
+type Unsigned = String | bool

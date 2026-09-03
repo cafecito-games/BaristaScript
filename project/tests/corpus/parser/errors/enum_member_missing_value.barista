@@ -1,0 +1,2 @@
+enum MissingValue:
+	A
