@@ -262,20 +262,28 @@ func _evaluate(case_path: String) -> Dictionary:
 	return _evaluate_with_language(case_path)
 
 
-## Production evaluation: compile the case source with the registered
-## BaristaScript frontend. The scaffold is recognition-only, so every readable
-## source currently succeeds; the tokenizer/parser milestone replaces the body
-## of this function, not its contract.
+## Production evaluation: run the case source through the BaristaScript
+## frontend and report its first diagnostic, or the success sentinel when it
+## reports none.
+##
+## The source is handed over as raw bytes rather than as a String on purpose. A
+## String has already been decoded, and malformed UTF-8 has already become
+## U+FFFD by then -- which is exactly the substitution the frontend must report
+## instead of absorbing. The frontend currently reaches the tokenizer; the
+## parser milestone extends this function, it does not change its contract.
 func _evaluate_with_language(case_path: String) -> Dictionary:
-	var source_file := FileAccess.open(case_path, FileAccess.READ)
-	if source_file == null:
+	var source_bytes := FileAccess.get_file_as_bytes(case_path)
+	var open_error := FileAccess.get_open_error()
+	if open_error != OK:
 		return {
 			"ok": false,
-			"output": "source %s is unreadable (error %d)" % [case_path, FileAccess.get_open_error()],
+			"output": "source %s is unreadable (error %d)" % [case_path, open_error],
 			"source_unreadable": true,
 		}
-	source_file.close()
-	return {"ok": true, "output": ""}
+	var diagnostic: String = BaristaScriptTokenizerProbe.new().first_diagnostic(source_bytes)
+	if diagnostic.is_empty():
+		return {"ok": true, "output": ""}
+	return {"ok": false, "output": diagnostic}
 
 
 func _failure(

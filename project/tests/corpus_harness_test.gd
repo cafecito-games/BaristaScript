@@ -146,10 +146,14 @@ func _test_fsignore_directory_is_skipped_and_counted(failures: Array[String]) ->
 		".fsignore must skip the directory and report the skipped count: %s" % _text(direct)
 	)
 
+	# The assertion is on the skipped count, not on the case total: sibling fixture directories
+	# (the tokenizer contract cases, and whatever later milestones add) legitimately change how
+	# many cases the tree holds, and pinning that number here would make an unrelated fixture
+	# addition look like an .fsignore regression.
 	var full_tree := _run_harness(FIXTURES_ROOT)
 	_expect(
 		failures,
-		_last_line(full_tree) == "%s 2/6 skipped=2" % Harness.SUMMARY_PREFIX,
+		_last_line(full_tree).ends_with(" skipped=2"),
 		"full fixture tree must count the ignored case and the helper as skipped: %s" % _last_line(full_tree)
 	)
 	_expect(

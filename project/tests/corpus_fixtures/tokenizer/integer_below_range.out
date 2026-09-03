@@ -1,0 +1,1 @@
+Integer literal is out of range for "int", the only integer type; BaristaScript stores every integer on one signed 64-bit carrier.
