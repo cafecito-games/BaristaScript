@@ -43,7 +43,8 @@ bool is_layout_token(BSTokenizer::Token::Type p_type) {
 // name on replay, so comparing those would compare the reconstruction rather than the round trip.
 bool carries_literal(BSTokenizer::Token::Type p_type) {
 	return p_type == BSTokenizer::Token::ANNOTATION || p_type == BSTokenizer::Token::IDENTIFIER ||
-			p_type == BSTokenizer::Token::LITERAL || p_type == BSTokenizer::Token::ERROR;
+			p_type == BSTokenizer::Token::RESERVED_TYPE_NAME || p_type == BSTokenizer::Token::LITERAL ||
+			p_type == BSTokenizer::Token::ERROR;
 }
 
 String render_significant_token(const BSTokenizer::Token &p_token) {

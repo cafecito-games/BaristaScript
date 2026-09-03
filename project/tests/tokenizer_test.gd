@@ -116,7 +116,8 @@ func _initialize() -> void:
 	_test_tokenizing_twice_is_identical(probe)
 	_test_tokenizers_do_not_interfere(probe)
 	_test_reserved_table_is_the_only_source_of_truth(probe)
-	_test_removed_spellings_are_never_free_identifiers(probe)
+	_test_removed_spellings_are_rejected_in_type_positions(probe)
+	_test_removed_spellings_stay_usable_as_names(probe)
 	_test_removal_diagnostics_name_the_spelling(probe)
 	_test_as_bang_is_not_as_followed_by_bang(probe)
 	_test_malformed_utf8_names_the_offending_byte(probe)
@@ -243,8 +244,9 @@ func _test_reserved_table_is_the_only_source_of_truth(probe: BaristaScriptTokeni
 			"%s is both a keyword and a reserved spelling; the table must give it one role" % spelling
 		)
 
-	# Every spelling the table calls reserved must actually be rejected, and with the message that
-	# names it. A table entry that produced no diagnostic would be the exact regression D1 guards.
+	# Every spelling the table calls reserved must actually be rejected in a type position, with the
+	# message that names it. A table entry that produced no diagnostic would be the exact regression
+	# D1 guards against.
 	for spelling in reserved:
 		var diagnostic: String = probe.first_diagnostic(("var value: %s = 1\n" % spelling).to_utf8_buffer())
 		_expect(
@@ -253,22 +255,58 @@ func _test_reserved_table_is_the_only_source_of_truth(probe: BaristaScriptTokeni
 		)
 
 
-func _test_removed_spellings_are_never_free_identifiers(probe: BaristaScriptTokenizerProbe) -> void:
-	# Not only in type position: a removed spelling must never come back as an ordinary identifier
-	# token anywhere, or a ported Foundry Script file would silently change meaning.
+## `uint`, `ulong` and `long` are reserved *type names*, not keywords: they are rejected wherever a
+## type is meant and stay ordinary names everywhere else, exactly as `int` does
+## (docs/GRAMMAR.md sections 2.5 and 7.1). What must never happen is the middle case -- a removed
+## spelling arriving in a type as an anonymous `Identifier` that silently becomes a user type -- so
+## they get their own token type either way.
+func _test_removed_spellings_are_rejected_in_type_positions(probe: BaristaScriptTokenizerProbe) -> void:
+	var type_positions := [
+		"func f() -> %s:\n\tpass\n",
+		"func f(value: %s) -> void:\n\tpass\n",
+		"var declared: %s = 1\n",
+		"const DECLARED: %s = 1\n",
+		"func f(value: Variant) -> void:\n\tvar cast = value as %s\n",
+		"func f(value: Variant) -> void:\n\tvar flag = value is %s\n",
+	]
 	for spelling in probe.reserved_spellings():
-		for template in ["var %s = 1\n", "func %s() -> void:\n\tpass\n", "var value = %s\n"]:
+		for template in type_positions:
 			var source: String = template % spelling
 			var diagnostic: String = probe.first_diagnostic(source.to_utf8_buffer())
 			_expect(
-				diagnostic.begins_with('"%s" is reserved.' % spelling),
-				"%s in %s must be rejected, got: %s" % [spelling, source.strip_edges(), diagnostic]
+				diagnostic == '"%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".' % spelling,
+				"%s in a type position must be rejected: %s -> %s" % [spelling, source.strip_edges(), diagnostic]
 			)
+
+
+## The other half of the same rule: a removed spelling used as an ordinary name is accepted, and is
+## never handed on as a plain identifier that a type could later swallow.
+func _test_removed_spellings_stay_usable_as_names(probe: BaristaScriptTokenizerProbe) -> void:
+	var name_positions := [
+		"var %s = 1\n",
+		"func %s() -> void:\n\tpass\n",
+		"func f() -> void:\n\tvar value = %s + 1\n",
+		"func f(value: Variant) -> void:\n\tvar mapping = {\"key\": %s}\n",
+		"func f() -> void:\n\tcall(argument = %s)\n",
+		"func f() -> void:\n\tvar value = self.%s\n",
+	]
+	for spelling in probe.reserved_spellings():
+		for template in name_positions:
+			var source: String = template % spelling
+			_expect(
+				probe.first_diagnostic(source.to_utf8_buffer()).is_empty(),
+				"%s as an ordinary name must be accepted: %s -> %s"
+				% [spelling, source.strip_edges(), probe.first_diagnostic(source.to_utf8_buffer())]
+			)
+			var seen_reserved := false
 			for line in probe.dump_tokens(source.to_utf8_buffer()):
 				_expect(
-					not line.begins_with("Identifier\t") or not line.ends_with(":%s" % spelling),
-					"%s must never be tokenized as an identifier: %s" % [spelling, line]
+					not (line.begins_with("Identifier\t") and line.ends_with(":%s" % spelling)),
+					"%s must never lex as a plain identifier: %s" % [spelling, line]
 				)
+				if line.begins_with("Reserved type name\t") and line.ends_with(":%s" % spelling):
+					seen_reserved = true
+			_expect(seen_reserved, "%s must lex as a reserved type name in: %s" % [spelling, source.strip_edges()])
 
 
 ## Every D1 removal must name the spelling it is rejecting, in the form the source wrote it.

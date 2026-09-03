@@ -40,7 +40,7 @@ public:
 	// Layout version of the token buffer only. It is deliberately independent of any compiled
 	// bytecode format version: the two formats change for different reasons and are read by
 	// different loaders. Increment it whenever `Token::Type` or the layout below changes.
-	static constexpr uint32_t TOKENIZER_VERSION = 1;
+	static constexpr uint32_t TOKENIZER_VERSION = 2;
 	static constexpr uint32_t TOKEN_BYTE_MASK = 0x80;
 	static constexpr uint32_t TOKEN_BITS = 8;
 	static constexpr uint32_t TOKEN_MASK = (1 << (TOKEN_BITS - 1)) - 1;

@@ -38,7 +38,10 @@ int BSTokenizerBuffer::_token_to_binary(const Token &p_token, PackedByteArray &r
 
 	switch (p_token.type) {
 		case Token::ANNOTATION:
-		case Token::IDENTIFIER: {
+		case Token::IDENTIFIER:
+		// A reserved type name carries its spelling the same way an identifier does, so it pools
+		// the same way; without this its spelling would not survive a round trip.
+		case Token::RESERVED_TYPE_NAME: {
 			// Add identifier to map.
 			uint32_t identifier_pos;
 			StringName id = p_token.get_identifier();
@@ -116,7 +119,8 @@ BSTokenizer::Token BSTokenizerBuffer::_binary_to_token(const uint8_t *p_buffer) 
 
 	switch (token.type) {
 		case Token::ANNOTATION:
-		case Token::IDENTIFIER: {
+		case Token::IDENTIFIER:
+		case Token::RESERVED_TYPE_NAME: {
 			// Get name from map.
 			uint32_t identifier_pos = token_type >> TOKEN_BITS;
 			if (unlikely(identifier_pos >= uint32_t(identifiers.size()))) {

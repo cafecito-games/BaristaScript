@@ -43,6 +43,7 @@ static const char *token_names[] = {
 	// Basic
 	"Annotation", // ANNOTATION
 	"Identifier", // IDENTIFIER,
+	"Reserved type name", // RESERVED_TYPE_NAME,
 	"Literal", // LITERAL,
 	// Comparison
 	"<", // LESS,
@@ -182,6 +183,8 @@ String BSTokenizer::Token::get_debug_name() const {
 bool BSTokenizer::Token::can_precede_bin_op() const {
 	switch (type) {
 		case IDENTIFIER:
+		// A removed type spelling used as an ordinary name is a value like any other identifier.
+		case RESERVED_TYPE_NAME:
 		case LITERAL:
 		case SELF:
 		case BRACKET_CLOSE:
@@ -222,6 +225,9 @@ bool BSTokenizer::Token::is_identifier() const {
 	// These are only exceptions for stuff that already is on the engine's API.
 	switch (type) {
 		case IDENTIFIER:
+		// (D1) `uint`, `ulong` and `long` are reserved type names, not keywords: outside a type
+		// they stay ordinary identifiers, exactly as `int` is (docs/GRAMMAR.md section 2.5).
+		case RESERVED_TYPE_NAME:
 		case MATCH: // Used in String.match().
 		case WHEN: // New keyword, avoid breaking existing code.
 		case USES: // Contextual trait declaration keyword.
@@ -240,6 +246,7 @@ bool BSTokenizer::Token::is_node_name() const {
 	// This is meant to allow keywords with the $ notation, but not as general identifiers.
 	switch (type) {
 		case IDENTIFIER:
+		case RESERVED_TYPE_NAME:
 		case ABSTRACT:
 		case AND:
 		case AS:
@@ -521,6 +528,22 @@ BSTokenizer::Token BSTokenizerText::make_identifier(const StringName &p_identifi
 	return identifier;
 }
 
+bool BSTokenizerText::_is_type_position() const {
+	switch (last_token.type) {
+		case Token::FORWARD_ARROW:
+		case Token::AS:
+		case Token::IS:
+			return true;
+		case Token::COLON:
+			// A Python-style dictionary entry is the one construct that spells a value after ":",
+			// and it is always inside "{". Everywhere else a ":" followed by a name introduces a
+			// type.
+			return paren_stack.is_empty() || paren_stack.back()->get() != '{';
+		default:
+			return false;
+	}
+}
+
 BSTokenizer::Token BSTokenizerText::make_error(const String &p_message) {
 	Token error = make_token(Token::ERROR);
 	error.literal = p_message;
@@ -690,9 +713,11 @@ BSTokenizer::Token BSTokenizerText::annotation() {
 #define MIN_KEYWORD_LENGTH 2
 #define MAX_KEYWORD_LENGTH 10
 
-// The diagnostic every removed integer spelling reports. One string, so the three spellings cannot
-// drift apart, and the wording is the one docs/GRAMMAR.md section 2.5 specifies.
-#define REMOVED_TYPE_NAME_MESSAGE R"("%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".)"
+String BSTokenizer::removed_type_name_diagnostic(const String &p_spelling) {
+	// The wording docs/GRAMMAR.md section 2.5 specifies, in one place, so the tokenizer and the
+	// type positions the parser owns cannot word the same rejection differently.
+	return vformat(R"("%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".)", p_spelling);
+}
 
 Vector<String> BSTokenizer::get_keyword_spellings() {
 #define KEYWORD_GROUP_IGNORE(group)
@@ -774,7 +799,12 @@ BSTokenizer::Token BSTokenizerText::potential_identifier() {
 		static_assert(keyword_length <= MAX_KEYWORD_LENGTH, "There's a keyword longer than the defined maximum length");  \
 		static_assert(keyword_length >= MIN_KEYWORD_LENGTH, "There's a keyword shorter than the defined minimum length"); \
 		if (keyword_length == len && name == keyword) {                                                                   \
-			return make_error(vformat(REMOVED_TYPE_NAME_MESSAGE, name));                                                  \
+			if (_is_type_position()) {                                                                                    \
+				return make_error(removed_type_name_diagnostic(name));                                                    \
+			}                                                                                                             \
+			Token reserved = make_token(Token::RESERVED_TYPE_NAME);                                                       \
+			reserved.literal = StringName(name);                                                                          \
+			return reserved;                                                                                              \
 		}                                                                                                                 \
 	}
 
@@ -815,7 +845,6 @@ BSTokenizer::Token BSTokenizerText::potential_identifier() {
 #undef KEYWORD
 }
 
-#undef REMOVED_TYPE_NAME_MESSAGE
 #undef MAX_KEYWORD_LENGTH
 #undef MIN_KEYWORD_LENGTH
 #undef KEYWORDS

@@ -48,6 +48,12 @@ public:
 			// Basic
 			ANNOTATION,
 			IDENTIFIER,
+			// A spelling D1 removed from the type system (`uint`, `ulong`, `long`). It is not a
+			// keyword: `Token::is_identifier()` accepts it, so it stays usable as an ordinary
+			// name exactly as `int` is (docs/GRAMMAR.md section 2.5). Giving it its own type is
+			// what lets a type position recognize it and reject it, here or in the parser,
+			// instead of it arriving as an anonymous identifier that silently becomes a user type.
+			RESERVED_TYPE_NAME,
 			LITERAL,
 			// Comparison
 			LESS,
@@ -207,8 +213,7 @@ public:
 	static String get_token_name(Token::Type p_token_type);
 
 	/**
-	 * Every word the tokenizer takes out of identifier space, in one order: the keyword spellings
-	 * first, then the D1 spellings the language reserves without giving them a token type.
+	 * The keyword spellings, and separately the spellings D1 reserved as type names.
 	 *
 	 * This is a view onto the single keyword table in `bs_tokenizer.cpp`, not a second copy, so
 	 * `BaristaScriptLanguage::_get_reserved_words()` can be wired to it later without the two
@@ -216,6 +221,12 @@ public:
 	 */
 	static Vector<String> get_keyword_spellings();
 	static Vector<String> get_reserved_spellings();
+
+	/**
+	 * The diagnostic a removed type spelling reports, defined once so the tokenizer and the type
+	 * positions the parser owns cannot word it differently.
+	 */
+	static String removed_type_name_diagnostic(const String &p_spelling);
 
 	/**
 	 * Decodes UTF-8 source bytes, refusing malformed input instead of substituting U+FFFD.
@@ -311,6 +322,22 @@ class BSTokenizerText : public BSTokenizer {
 	Token make_token(Token::Type p_type);
 	Token make_literal(const Variant &p_literal);
 	Token make_identifier(const StringName &p_identifier);
+	/**
+	 * Whether the token about to be produced stands in a type position.
+	 *
+	 * The tokenizer cannot parse, so it recognizes only the positions the token stream itself
+	 * settles: after `->`, `as` or `is`, where nothing but a type may follow, and after a `:` that
+	 * is not inside a `{`. That last one is exact rather than a guess -- `block` begins with a
+	 * NEWLINE (docs/GRAMMAR.md section 6), so a `:` followed by a name is never a block header; a
+	 * named call argument is spelled `name = value`, not `name: value` (section 5.5), so a `:`
+	 * inside `(` is a parameter or payload-field annotation; and the one construct that does spell
+	 * a value after `:` is the Python-style dictionary entry, which is always inside `{`.
+	 *
+	 * Type positions the token stream does not settle -- a type argument (`Array[uint]`), a `type`
+	 * alias -- are left to the parser, which knows what it is parsing. Being incomplete here costs
+	 * a diagnostic the parser will produce anyway; guessing here would cost a rejected value.
+	 */
+	bool _is_type_position() const;
 	Token check_vcs_marker(char32_t p_test, Token::Type p_double_type);
 	void push_paren(char32_t p_char);
 	bool pop_paren(char32_t p_expected);
