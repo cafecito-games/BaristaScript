@@ -452,7 +452,7 @@ func _fixture_case_paths() -> Array[String]:
 	directory.list_dir_begin()
 	var entry := directory.get_next()
 	while not entry.is_empty():
-		if entry.ends_with(".fs"):
+		if entry.ends_with(".barista"):
 			paths.append("%s/%s" % [root, entry])
 		entry = directory.get_next()
 	directory.list_dir_end()

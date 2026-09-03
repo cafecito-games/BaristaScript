@@ -1,0 +1,1 @@
+type Absorbing = Variant | int

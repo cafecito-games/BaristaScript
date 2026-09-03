@@ -1,0 +1,1 @@
+"Variant" cannot be a member of a type union, since it already admits every type. Write "Variant" on its own instead.

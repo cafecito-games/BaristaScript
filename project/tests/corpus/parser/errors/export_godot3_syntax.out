@@ -1,0 +1,1 @@
+The "export" keyword was removed in Godot 4. Use an export annotation ("@export", "@export_range", etc.) instead.

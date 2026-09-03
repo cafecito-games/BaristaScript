@@ -12,6 +12,7 @@
 #include "barista_script_language.h"
 #include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
+#include "bs_corpus_sentinels.h"
 #include "bs_global_class_probe.h"
 #include "bs_parser_probe.h"
 #include "bs_tokenizer_probe.h"
@@ -43,6 +44,9 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	// Godot runtime, so the ported frontend is exercised from headless Godot rather than from a
 	// standalone C++ test binary, and it has to be a registered class to be reachable at all.
 	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
+	// The corpus sentinels, so the GDScript harness reads the same two literals the C++ side and
+	// the Python tooling do rather than restating them.
+	GDREGISTER_CLASS(barista_script::BaristaScriptCorpusSentinels);
 #ifdef DEBUG_ENABLED
 	// The front-end's test surfaces, registered for the same reason -- and only in debug builds.
 	// Nothing but the GDScript suites reaches them, and those run against `template_debug`, so

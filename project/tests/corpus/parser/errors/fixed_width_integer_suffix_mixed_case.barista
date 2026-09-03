@@ -1,0 +1,3 @@
+func test():
+	# D1 reserves the suffix whatever its case; the diagnostic quotes it as written.
+	var _value = 1uL

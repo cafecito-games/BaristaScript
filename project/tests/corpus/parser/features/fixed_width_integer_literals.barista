@@ -1,0 +1,14 @@
+# D1 (docs/GRAMMAR.md section 0.2) removes Foundry's four-type integer tower. The literal suffixes
+# are reserved rather than freed (section 2.5), so ported Foundry Script fails loudly here instead
+# of silently changing meaning, and reintroducing a numeric tower later stays additive.
+#
+# Upstream's features/fixed_width_integer_literals.fs @ c9d5e35 asserted that all four widths and
+# every suffix form parsed and printed. This case is that assertion inverted: the first suffix in
+# the file is rejected, with the wording GRAMMAR section 2.5 specifies.
+func test():
+	print(42U)
+	print(42L)
+	print(42UL)
+	print(0xFFFFU)
+	print(0b1010UL)
+	print(1_000_000L)

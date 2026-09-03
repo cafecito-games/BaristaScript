@@ -1,0 +1,1 @@
+"yield" was removed in Godot 4. Use "await" instead.
