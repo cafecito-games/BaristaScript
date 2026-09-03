@@ -10,8 +10,11 @@ BaristaScript is a C++17 GDExtension that makes Godot 4.7 recognize `.barista` f
 - `scons api_version=4.7 target=template_debug` builds the debug extension into `project/bin/<platform>/`.
 - `scons api_version=4.7 target=template_release` creates a release build.
 - `cmake -S . -B build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel` exercises the alternative CMake path.
-- `python tests/validate_ci.py` checks that the CI matrix matches the pinned API precision and event policy.
+- `python3 tests/validate_ci.py` checks that the CI matrix matches the pinned API precision and event policy.
 - `godot --headless --path project --editor --quit` imports the fixture; then `godot --headless --path project --script res://tests/smoke_test.gd` runs the recognition smoke test.
+
+Invoke Python tooling as `python3`; a bare `python` is not present on every supported development
+machine, and `.pre-commit-config.yaml` already uses `python3`.
 
 ## Coding Style & Naming Conventions
 
@@ -27,7 +30,7 @@ History uses short, imperative Conventional Commit subjects such as `feat:`, `fi
 
 ## Licensing Headers
 
-The project is MIT licensed to Cafecito Games LLC. Every C++, Python, and GDScript source file carries the header produced by `scripts/add_license_header.py`; run it with no arguments to fill in any missing headers, or with `--check` to report them without editing. `prek install` wires the `.pre-commit-config.yaml` hook that adds the header at commit time, failing the commit when it had to modify a file so the change can be re-staged. Third-party and generated trees (`godot-cpp/`, `build/`, `bin/`, `src/gen/`) and the upstream-derived `methods.py` are excluded.
+The project is MIT licensed to Cafecito Games LLC. Every C++, Python, and GDScript source file carries the header produced by `scripts/add_license_header.py`; run `python3 scripts/add_license_header.py` to fill in any missing headers, or `python3 scripts/add_license_header.py --check` to report them without editing. `prek install` wires the `.pre-commit-config.yaml` hook that adds the header at commit time, failing the commit when it had to modify a file so the change can be re-staged. Third-party and generated trees (`godot-cpp/`, `build/`, `bin/`, `src/gen/`) and the upstream-derived `methods.py` are excluded.
 
 ## Generated Files
 
