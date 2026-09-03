@@ -29,7 +29,11 @@ godot::Ref<godot::Script> BaristaScript::_get_base_script() const {
 }
 
 godot::StringName BaristaScript::_get_global_name() const {
-	return {};
+	// The qualified name, always: `namespace app.combat` + `class_name Weapon` is
+	// `app.combat.Weapon` here exactly as it is in the global class registry, because both come
+	// from `bs_build_qualified_global_name()`.
+	const godot::String name = resolve_global_class().name;
+	return name.is_empty() ? godot::StringName() : godot::StringName(name);
 }
 
 bool BaristaScript::_inherits_script(const godot::Ref<godot::Script> &) const {
@@ -97,11 +101,23 @@ bool BaristaScript::_is_tool() const {
 }
 
 bool BaristaScript::_is_valid() const {
-	return false;
+	// At M2 a script is valid exactly when the front end accepts its source; there is nothing
+	// further to compile yet. This is load-bearing rather than cosmetic:
+	// `ClassDB::can_instantiate` short-circuits on `Script::is_valid()` before it ever looks at
+	// `Script::is_abstract()` (`core/object/class_db.cpp:865` at 4.7.2-stable), so a global class
+	// whose script never claims validity is reported non-instantiable for the wrong reason and the
+	// abstractness gate is never exercised.
+	return resolve_global_class().parsed;
 }
 
 bool BaristaScript::_is_abstract() const {
-	return false;
+	// The gate. `CreateDialog::_should_hide_type` and `ClassDB::can_instantiate`'s script fallback
+	// both consult the script object rather than the `is_abstract` flag cached in
+	// `global_script_class_cache.cfg`, which is measured to be ignored
+	// (docs/namespace-engine-support.md section 5). This is what keeps a `trait_name`, `enum_name`
+	// or `tuple_name` file out of the Create Node dialog, and it is the *same* computation the
+	// language reports, not a second opinion about it.
+	return resolve_global_class().is_abstract;
 }
 
 godot::ScriptLanguage *BaristaScript::_get_language() const {
@@ -156,6 +172,10 @@ godot::Variant BaristaScript::_get_rpc_config() const {
 
 bool BaristaScript::_instance_has(godot::Object *) const {
 	return false;
+}
+
+BSGlobalClass BaristaScript::resolve_global_class() const {
+	return bs_resolve_global_class_from_source(source_code, canonicalize_path(get_path()));
 }
 
 godot::String BaristaScript::canonicalize_path(const godot::String &p_path) {

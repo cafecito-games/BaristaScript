@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "bs_global_class.h"
+
 #include <godot_cpp/classes/script_extension.hpp>
 #include <godot_cpp/classes/script_language.hpp>
 
@@ -71,6 +73,17 @@ public:
 	 * milestones add their extensions rather than a second rule appearing at a comparison site.
 	 */
 	static godot::String canonicalize_path(const godot::String &p_path);
+
+	/**
+	 * The global class this script's own source declares.
+	 *
+	 * The script and the language answer the same question from the same function:
+	 * `BaristaScriptLanguage::_get_global_class_name()` resolves a path on disk, this resolves the
+	 * source text the script is holding -- which, mid-edit, is the one the editor cares about --
+	 * and both land in `bs_resolve_global_class_from_source`. Two independent answers to "is this
+	 * file instantiable?" is the defect this arrangement exists to prevent.
+	 */
+	BSGlobalClass resolve_global_class() const;
 	static bool is_canonically_equal_paths(const godot::String &p_path_a, const godot::String &p_path_b) {
 		return canonicalize_path(p_path_a) == canonicalize_path(p_path_b);
 	}

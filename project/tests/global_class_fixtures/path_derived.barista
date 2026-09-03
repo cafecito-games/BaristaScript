@@ -1,0 +1,2 @@
+class_name PathDerived
+extends "res://tests/global_class_fixtures/path_base.barista"

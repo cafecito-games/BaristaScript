@@ -1,0 +1,128 @@
+/**************************************************************************/
+/*  bs_global_class.h                                                     */
+/*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
+#pragma once
+
+#include "bs_platform.h"
+
+namespace barista_script {
+
+/**
+ * What a `.barista` file's head declaration is, as one closed vocabulary.
+ *
+ * A file contributes at most one global name, and what that name *is* -- a script you can attach
+ * to a node, a contract, or a type -- decides whether the editor may offer it. Writing that
+ * question down once is the point: the engine sees the answer twice, through
+ * `BaristaScriptLanguage::_get_global_class_name()`'s `is_abstract` and through
+ * `BaristaScript::_is_abstract()`, and two independent answers is exactly the defect that would
+ * put an `enum_name` file in the Create Node dialog.
+ *
+ * `MAX` is the count, never a kind. Every `switch` over this enum handles every enumerator with no
+ * `default:` label; the build promotes the compiler's unhandled-enumerator diagnostic to an error
+ * (`-Werror=switch` in SConstruct and CMakeLists.txt), so adding a kind fails the build at each
+ * consumer rather than falling through to a wrong answer at one of them.
+ */
+enum class BSDeclarationKind {
+	NONE, // No head declaration; the file is a script, not a global class.
+	CLASS, // `class_name`, non-generic. The only kind the engine may instantiate.
+	GENERIC_CLASS, // `class_name Box[T]`. D2 monomorphizes it, so the bare name has no runtime type.
+	TRAIT, // `trait_name`.
+	ENUM, // `enum_name`.
+	TUPLE, // `tuple_name`.
+	MAX,
+};
+
+/** The name of a declaration kind. The only place a kind is spelled in text. */
+String bs_declaration_kind_name(BSDeclarationKind p_kind);
+
+/**
+ * Whether a file declaring this kind is something the editor may instantiate.
+ *
+ * `trait_name` declares a contract and `enum_name`/`tuple_name` declare types
+ * (`docs/namespace-engine-support.md` section 5), so none of the three is a script a node can
+ * carry. Nor is a generic `class_name`: `docs/GRAMMAR.md` section 3.2 (D6) keeps it out of the
+ * engine's table because D2's monomorphized specializations are the things that exist at runtime,
+ * and the table has one slot per name. This is the single predicate behind both the reported
+ * `is_abstract` and `BaristaScript::_is_abstract()`.
+ */
+bool bs_declaration_kind_is_instantiable(BSDeclarationKind p_kind);
+
+/**
+ * The qualified global name a namespace and an identifier make.
+ *
+ * Namespaces are dot-joined and class identifiers cannot contain dots, so the qualified name is the
+ * registry key and splitting it back apart is a `rfind`
+ * (`docs/namespace-engine-support.md` section 1). This is the only place the two parts are joined:
+ * the parser builds `ClassNode::qualified_global_name` with it, and so does everything that reports
+ * a global name. An empty namespace yields the bare identifier -- never a leading dot, never an
+ * empty segment.
+ */
+String bs_build_qualified_global_name(const String &p_namespace, const StringName &p_identifier);
+
+/**
+ * Everything one `.barista` file tells the engine's global class registry.
+ *
+ * This is the whole set stock reads: `ScriptLanguageExtension::_get_global_class_name` returns
+ * `name`, `base_type`, `icon_path`, `is_abstract` and `is_tool`, and
+ * `EditorFileSystem::_register_global_class_script`
+ * (`editor/file_system/editor_file_system.cpp:2571` at 4.7.2-stable) passes them through
+ * unexamined. `kind` is not reported to the engine -- stock's class cache writes a fixed key set,
+ * so a GDExtension cannot persist it (`docs/foundry-reuse-plan.md` section 5.6) -- it is what
+ * `is_abstract` and `base_type` were computed *from*, kept so a single resolution answers every
+ * consumer.
+ */
+struct BSGlobalClass {
+	/**
+	 * Whether the front end accepted the source at all.
+	 *
+	 * Everything else here is empty or false when this is false, so it is the one field that tells
+	 * "this file declares nothing" from "this file did not parse". `BaristaScript::_is_valid()`
+	 * reports it: at M2 a script is valid exactly when it parses, because there is nothing further
+	 * to compile yet. `ClassDB::can_instantiate` consults `Script::is_valid()` before
+	 * `Script::is_abstract()` (`core/object/class_db.cpp:865` at 4.7.2-stable), so a script that
+	 * never claims validity can never be reported instantiable, whatever its base says.
+	 */
+	bool parsed = false;
+	String name;
+	String base_type;
+	String icon_path;
+	bool is_abstract = false;
+	bool is_tool = false;
+	BSDeclarationKind kind = BSDeclarationKind::NONE;
+
+	/** The `Dictionary` shape `ScriptLanguageExtension::_get_global_class_name` returns. */
+	Dictionary to_dictionary() const;
+};
+
+/**
+ * The global class `p_source` declares, resolved without the analyzer.
+ *
+ * Error tolerance is the contract, not a nicety: this runs during the editor's first scan, when a
+ * file's dependencies may not exist yet, so it must never fail and never reach for the analyzer
+ * (the warning at `foundry_script.cpp:4697-4708` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6).
+ * Where BaristaScript diverges from upstream is which way it fails: a source that reports any
+ * diagnostic contributes **no** name at all, rather than a best-effort one. A half-parsed file can
+ * have lost the `namespace` line that qualifies its name, and a global class registered under a
+ * name that is a prefix of its real one is worse than a global class that is missing until the file
+ * compiles.
+ *
+ * `p_path` is used for diagnostics and to resolve a relative `extends` path; it is not read from
+ * disk.
+ */
+BSGlobalClass bs_resolve_global_class_from_source(const String &p_source, const String &p_path);
+
+/**
+ * The same, reading `p_path` from disk. A file that cannot be opened declares nothing.
+ *
+ * Two calls on unchanged source return identical results: nothing here caches, mutates, or
+ * registers anything, and a recursive `extends` chain terminates on a cycle through a visited list
+ * (`foundry_script.cpp:4670`).
+ */
+BSGlobalClass bs_resolve_global_class(const String &p_path);
+
+} // namespace barista_script

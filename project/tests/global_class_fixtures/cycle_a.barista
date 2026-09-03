@@ -1,0 +1,2 @@
+class_name CycleA
+extends "res://tests/global_class_fixtures/cycle_b.barista"

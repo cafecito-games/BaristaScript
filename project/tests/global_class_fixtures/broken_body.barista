@@ -1,0 +1,6 @@
+# A well-formed head over a body that does not parse. Resolution reads declarations only, exactly
+# as stock does, so the class still contributes its name while the body is being edited.
+class_name BrokenBody
+extends Node
+
+func (:

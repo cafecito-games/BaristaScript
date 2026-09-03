@@ -13,6 +13,7 @@
 #include "barista_script.h"
 #include "barista_script_language.h"
 #include "bs_cache.h"
+#include "bs_global_class.h"
 #include "bs_tokenizer_buffer.h"
 
 /**
@@ -1655,7 +1656,7 @@ void BSParser::parse_class_name() {
 	reject_reserved_type_name();
 	if (consume(BSTokenizer::Token::IDENTIFIER, R"(Expected identifier for the global class name after "class_name".)")) {
 		current_class->identifier = parse_identifier();
-		current_class->qualified_global_name = current_class->namespace_name.is_empty() ? String(current_class->identifier->name) : current_class->namespace_name + "." + String(current_class->identifier->name);
+		current_class->qualified_global_name = bs_build_qualified_global_name(current_class->namespace_name, current_class->identifier->name);
 		current_class->fqcn = current_class->qualified_global_name;
 	}
 
@@ -1684,7 +1685,7 @@ void BSParser::parse_trait_name() {
 		current_class->is_trait = true;
 		current_class->trait_name_used = true;
 		current_class->identifier = parse_identifier();
-		current_class->qualified_global_name = current_class->namespace_name.is_empty() ? String(current_class->identifier->name) : current_class->namespace_name + "." + String(current_class->identifier->name);
+		current_class->qualified_global_name = bs_build_qualified_global_name(current_class->namespace_name, current_class->identifier->name);
 		current_class->fqcn = current_class->qualified_global_name;
 	}
 
@@ -1740,7 +1741,7 @@ void BSParser::parse_enum_name(bool p_can_register_enum_file) {
 
 	if (!has_conflict && enum_node != nullptr && enum_node->identifier != nullptr) {
 		current_class->identifier = enum_node->identifier;
-		current_class->qualified_global_name = current_class->namespace_name.is_empty() ? String(current_class->identifier->name) : current_class->namespace_name + "." + String(current_class->identifier->name);
+		current_class->qualified_global_name = bs_build_qualified_global_name(current_class->namespace_name, current_class->identifier->name);
 		current_class->fqcn = current_class->qualified_global_name;
 	}
 }
@@ -1780,7 +1781,7 @@ void BSParser::parse_tuple_name(bool p_can_register_tuple_file) {
 
 	if (!has_conflict && tuple_node != nullptr && tuple_node->identifier != nullptr) {
 		current_class->identifier = tuple_node->identifier;
-		current_class->qualified_global_name = current_class->namespace_name.is_empty() ? String(current_class->identifier->name) : current_class->namespace_name + "." + String(current_class->identifier->name);
+		current_class->qualified_global_name = bs_build_qualified_global_name(current_class->namespace_name, current_class->identifier->name);
 		current_class->fqcn = current_class->qualified_global_name;
 	}
 }

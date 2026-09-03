@@ -1,0 +1,6 @@
+# A namespaced `enum_name` file: a type, not a script.
+namespace app.combat
+
+enum_name DamageKind:
+	FIRE = 0
+	ICE = 1

@@ -12,6 +12,7 @@
 #include "barista_script_language.h"
 #include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
+#include "bs_global_class_probe.h"
 #include "bs_parser_probe.h"
 #include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
@@ -38,15 +39,18 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);
-	// The tokenizer's test surface. godot-cpp's String/Variant only work inside a loaded Godot
-	// runtime, so the ported frontend is exercised from headless Godot rather than from a
+	// The parse cache's engine-facing handle. godot-cpp's String/Variant only work inside a loaded
+	// Godot runtime, so the ported frontend is exercised from headless Godot rather than from a
 	// standalone C++ test binary, and it has to be a registered class to be reachable at all.
-	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
-	// The parse cache's test surface, a registered class for the same reason.
 	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
-	// The parser's test surface, likewise.
-	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
 #ifdef DEBUG_ENABLED
+	// The front-end's test surfaces, registered for the same reason -- and only in debug builds.
+	// Nothing but the GDScript suites reaches them, and those run against `template_debug`, so
+	// registering them unconditionally would publish test-only classes from `template_release` and
+	// buy nothing.
+	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
+	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
+	GDREGISTER_CLASS(barista_script::BaristaScriptGlobalClassProbe);
 	// The warning registry only exists in debug builds, like the warnings it names. Its binding is
 	// the only way `project/tests/warning_registry_test.gd` can reach it: godot-cpp's String and
 	// Variant are engine-backed, so there is no standalone C++ test binary to reach it from.

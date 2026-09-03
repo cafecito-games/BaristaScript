@@ -1,0 +1,2 @@
+class_name RelativeDerived
+extends "path_base.barista"

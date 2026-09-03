@@ -1,0 +1,3 @@
+# The flat control for the namespaced fixture: no namespace, so no leading dot.
+class_name FlatWeapon
+extends Node

@@ -1,0 +1,1 @@
+tuple_name GridPosition(x: int, y: int)

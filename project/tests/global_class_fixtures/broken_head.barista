@@ -1,0 +1,3 @@
+# A head declaration that does not parse. `class_name` needs an identifier.
+class_name 42
+extends Node
