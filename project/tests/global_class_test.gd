@@ -73,9 +73,10 @@ const EXPECTED := {
 		"icon_path": "", "is_abstract": true, "is_tool": false,
 		"kind_name": "trait_name",
 	},
-	# A generic `class_name`: named, but not the engine's to instantiate (GRAMMAR D6).
+	# A generic `class_name`: named and based, but not the engine's to instantiate (GRAMMAR D6).
+	# The base is kept because a concrete class specializing it through a path inherits it.
 	"boxed.barista": {
-		"declarations_parsed": true, "name": "Boxed", "base_type": "",
+		"declarations_parsed": true, "name": "Boxed", "base_type": "RefCounted",
 		"icon_path": "", "is_abstract": true, "is_tool": false,
 		"kind_name": "generic class_name",
 	},
@@ -150,6 +151,17 @@ const EXPECTED := {
 		"icon_path": "", "is_abstract": false, "is_tool": false,
 		"kind_name": "class_name",
 	},
+	"generic_node.barista": {
+		"declarations_parsed": true, "name": "GenericNode", "base_type": "Node",
+		"icon_path": "", "is_abstract": true, "is_tool": false,
+		"kind_name": "generic class_name",
+	},
+	# A concrete class specializing a path-qualified generic base: it inherits that base.
+	"specialized.barista": {
+		"declarations_parsed": true, "name": "Specialized", "base_type": "Node",
+		"icon_path": "", "is_abstract": false, "is_tool": false,
+		"kind_name": "class_name",
+	},
 	# Two files that extend each other. Resolution terminates and reports no base.
 	"cycle_a.barista": {
 		"declarations_parsed": true, "name": "CycleA", "base_type": "",
@@ -187,6 +199,10 @@ const EXPECTED_INSTANTIABLE := {
 	# A well-formed head over a body that does not parse: registered, so the editor does not lose
 	# the class mid-edit, but never instantiable, because the script is not valid.
 	"BrokenBody": false,
+	"Specialized": true,
+	# A generic class over a Node base: abstractness alone keeps it out of the Create Node dialog,
+	# so it does not need its base blanked to be non-instantiable.
+	"GenericNode": false,
 	"AbstractWeapon": false,
 	"app.combat.DamageKind": false,
 	"GridPosition": false,
@@ -258,15 +274,15 @@ func _check_resolutions(probe: Object, failures: Array[String]) -> void:
 		if from_source != report:
 			failures.append("%s: resolving the source text differs from resolving the file" % file_name)
 
-		# The instantiability predicate, consumed. Nothing that is not instantiable may carry a base
-		# or claim to be concrete: those are the two gates that keep it out of the Create Node dialog.
+		# The two predicates, consumed. A declaration that is not a script has no base -- the
+		# inheritance gate -- and one that is not instantiable is abstract -- the gate the editor
+		# actually consults. Together they are what keeps such a declaration out of Create Node.
 		var kind: int = report["kind"]
-		if not probe.declaration_kind_is_instantiable(kind):
-			if report["base_type"] != "":
-				failures.append("%s: a %s declaration reports base %s" % [
-					file_name, report["kind_name"], report["base_type"]])
-			if not report["is_abstract"]:
-				failures.append("%s: a %s declaration is not abstract" % [file_name, report["kind_name"]])
+		if not probe.declaration_kind_declares_a_script(kind) and report["base_type"] != "":
+			failures.append("%s: a %s declaration reports base %s" % [
+				file_name, report["kind_name"], report["base_type"]])
+		if not probe.declaration_kind_is_instantiable(kind) and not report["is_abstract"]:
+			failures.append("%s: a %s declaration is not abstract" % [file_name, report["kind_name"]])
 
 		# Declaration parsing is deliberately more forgiving than validity. Whole-file parsing is the
 		# stricter of the two, so it may never accept a source the declaration parse rejected.
@@ -318,6 +334,12 @@ func _check_vocabulary_closure(probe: Object, failures: Array[String]) -> void:
 		var instantiable: bool = probe.declaration_kind_is_instantiable(index)
 		if instantiable and kind_name != "none" and kind_name != "class_name":
 			failures.append("%s is reported instantiable" % kind_name)
+		# Instantiability implies script-ness; a kind that is not a script can never be one.
+		var declares_a_script: bool = probe.declaration_kind_declares_a_script(index)
+		if instantiable and not declares_a_script:
+			failures.append("%s is instantiable but is not a script" % kind_name)
+		if declares_a_script and kind_name != "none" and kind_name != "class_name" and kind_name != "generic class_name":
+			failures.append("%s is reported to declare a script" % kind_name)
 		if not KIND_WITNESS.has(kind_name):
 			failures.append("no fixture witnesses the declaration kind %s" % kind_name)
 			continue

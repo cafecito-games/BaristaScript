@@ -208,14 +208,16 @@ BSGlobalClass resolve(const String *p_source, const String &p_path, LocalVector<
 	// with this same value rather than deciding again.
 	global_class.is_abstract = !bs_declaration_kind_is_instantiable(global_class.kind) || head->is_abstract;
 
-	if (bs_declaration_kind_is_instantiable(global_class.kind)) {
+	if (bs_declaration_kind_declares_a_script(global_class.kind)) {
 		resolve_base_type(head, canonical_path, global_class.base_type, r_visited);
 	}
 	// Otherwise the base stays empty: an `enum_name` or `tuple_name` file declares a type and a
 	// `trait_name` file a contract, so none of them has a base class.
 	// `EditorData::script_class_is_parent` (editor/editor_data.cpp:1038) resolves an empty base to
 	// `false`, which is the second of the two gates that keep such a declaration out of the Create
-	// Node dialog.
+	// Node dialog. A generic `class_name` is not in that set -- it is a script, and `is_abstract`
+	// alone keeps it out of the dialog -- because a concrete class specializing it through a path
+	// resolves its own base by walking through this one.
 
 	if (head->identifier != nullptr) {
 		global_class.name = bs_build_qualified_global_name(head->namespace_name, head->identifier->name);
@@ -244,6 +246,22 @@ String bs_declaration_kind_name(BSDeclarationKind p_kind) {
 			break;
 	}
 	ERR_FAIL_V_MSG(String(), "BSDeclarationKind::MAX is the enumerator count, not a declaration kind.");
+}
+
+bool bs_declaration_kind_declares_a_script(BSDeclarationKind p_kind) {
+	switch (p_kind) {
+		case BSDeclarationKind::NONE:
+		case BSDeclarationKind::CLASS:
+		case BSDeclarationKind::GENERIC_CLASS:
+			return true;
+		case BSDeclarationKind::TRAIT:
+		case BSDeclarationKind::ENUM:
+		case BSDeclarationKind::TUPLE:
+			return false;
+		case BSDeclarationKind::MAX:
+			break;
+	}
+	ERR_FAIL_V_MSG(false, "BSDeclarationKind::MAX is the enumerator count, not a declaration kind.");
 }
 
 bool bs_declaration_kind_is_instantiable(BSDeclarationKind p_kind) {

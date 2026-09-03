@@ -53,6 +53,20 @@ String bs_declaration_kind_name(BSDeclarationKind p_kind);
 bool bs_declaration_kind_is_instantiable(BSDeclarationKind p_kind);
 
 /**
+ * Whether a file declaring this kind is a script at all, and therefore has a base class.
+ *
+ * Strictly weaker than instantiability, and the distinction is load-bearing. An `enum_name` or
+ * `tuple_name` file declares a type and a `trait_name` file a contract: none of them is a script,
+ * so none has a base, which is the inheritance gate of
+ * `docs/namespace-engine-support.md` section 5. A generic `class_name` *is* a script -- D2
+ * monomorphizes it, so only the bare name has no runtime type -- and it keeps its base, both
+ * because the base is true and because a concrete class specializing it through a path
+ * (`extends "res://box.barista"[int]`) resolves its own base by walking through it. Blanking a
+ * generic base would silently strip that derived class of its native base.
+ */
+bool bs_declaration_kind_declares_a_script(BSDeclarationKind p_kind);
+
+/**
  * The qualified global name a namespace and an identifier make.
  *
  * Namespaces are dot-joined and class identifiers cannot contain dots, so the qualified name is the

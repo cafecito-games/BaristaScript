@@ -43,6 +43,7 @@ void BaristaScriptGlobalClassProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("declaration_kind_names"), &BaristaScriptGlobalClassProbe::declaration_kind_names);
 	ClassDB::bind_method(D_METHOD("declaration_kind_index_is_valid", "kind"), &BaristaScriptGlobalClassProbe::declaration_kind_index_is_valid);
 	ClassDB::bind_method(D_METHOD("declaration_kind_is_instantiable", "kind"), &BaristaScriptGlobalClassProbe::declaration_kind_is_instantiable);
+	ClassDB::bind_method(D_METHOD("declaration_kind_declares_a_script", "kind"), &BaristaScriptGlobalClassProbe::declaration_kind_declares_a_script);
 	ClassDB::bind_method(D_METHOD("build_qualified_global_name", "namespace_name", "identifier"), &BaristaScriptGlobalClassProbe::build_qualified_global_name);
 }
 
@@ -88,6 +89,12 @@ bool BaristaScriptGlobalClassProbe::declaration_kind_is_instantiable(int p_kind)
 	ERR_FAIL_COND_V_MSG(!declaration_kind_index_is_valid(p_kind), false,
 			vformat("%d is not a BSDeclarationKind.", p_kind));
 	return bs_declaration_kind_is_instantiable((BSDeclarationKind)p_kind);
+}
+
+bool BaristaScriptGlobalClassProbe::declaration_kind_declares_a_script(int p_kind) const {
+	ERR_FAIL_COND_V_MSG(!declaration_kind_index_is_valid(p_kind), false,
+			vformat("%d is not a BSDeclarationKind.", p_kind));
+	return bs_declaration_kind_declares_a_script((BSDeclarationKind)p_kind);
 }
 
 String BaristaScriptGlobalClassProbe::build_qualified_global_name(const String &p_namespace, const String &p_identifier) const {

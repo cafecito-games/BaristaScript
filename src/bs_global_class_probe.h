@@ -83,6 +83,9 @@ public:
 	 */
 	bool declaration_kind_is_instantiable(int p_kind) const;
 
+	/** `bs_declaration_kind_declares_a_script()` by kind index, on the same terms. */
+	bool declaration_kind_declares_a_script(int p_kind) const;
+
 	/** `bs_build_qualified_global_name()`, the one place a namespace and an identifier are joined. */
 	godot::String build_qualified_global_name(const godot::String &p_namespace, const godot::String &p_identifier) const;
 };
