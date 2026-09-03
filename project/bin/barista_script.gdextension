@@ -1,0 +1,57 @@
+[configuration]
+
+entry_symbol = "barista_script_library_init"
+compatibility_minimum = "4.7"
+reloadable = false
+
+[libraries]
+; Relative paths ensure that our GDExtension can be placed anywhere in the project directory.
+macos.single.debug = "./macos/libbarista_script.macos.template_debug.dylib"
+macos.double.debug = "./macos/libbarista_script.macos.template_debug.double.dylib"
+macos.single.release = "./macos/libbarista_script.macos.template_release.dylib"
+macos.double.release = "./macos/libbarista_script.macos.template_release.double.dylib"
+
+ios.arm64.single.debug = "./ios/libbarista_script.ios.template_debug.arm64.dylib"
+ios.arm64.double.debug = "./ios/libbarista_script.ios.template_debug.arm64.double.dylib"
+ios.arm64.single.release = "./ios/libbarista_script.ios.template_release.arm64.dylib"
+ios.arm64.double.release = "./ios/libbarista_script.ios.template_release.arm64.double.dylib"
+
+windows.x86_32.single.debug = "./windows/barista_script.windows.template_debug.x86_32.dll"
+windows.x86_32.double.debug = "./windows/barista_script.windows.template_debug.x86_32.double.dll"
+windows.x86_32.single.release = "./windows/barista_script.windows.template_release.x86_32.dll"
+windows.x86_32.double.release = "./windows/barista_script.windows.template_release.x86_32.double.dll"
+
+windows.x86_64.single.debug = "./windows/barista_script.windows.template_debug.x86_64.dll"
+windows.x86_64.double.debug = "./windows/barista_script.windows.template_debug.x86_64.double.dll"
+windows.x86_64.single.release = "./windows/barista_script.windows.template_release.x86_64.dll"
+windows.x86_64.double.release = "./windows/barista_script.windows.template_release.x86_64.double.dll"
+
+linux.x86_64.single.debug = "./linux/libbarista_script.linux.template_debug.x86_64.so"
+linux.x86_64.double.debug = "./linux/libbarista_script.linux.template_debug.x86_64.double.so"
+linux.x86_64.single.release = "./linux/libbarista_script.linux.template_release.x86_64.so"
+linux.x86_64.double.release = "./linux/libbarista_script.linux.template_release.x86_64.double.so"
+
+linux.arm64.single.debug = "./linux/libbarista_script.linux.template_debug.arm64.so"
+linux.arm64.double.debug = "./linux/libbarista_script.linux.template_debug.arm64.double.so"
+linux.arm64.single.release = "./linux/libbarista_script.linux.template_release.arm64.so"
+linux.arm64.double.release = "./linux/libbarista_script.linux.template_release.arm64.double.so"
+
+linux.rv64.single.debug = "./linux/libbarista_script.linux.template_debug.rv64.so"
+linux.rv64.double.debug = "./linux/libbarista_script.linux.template_debug.rv64.double.so"
+linux.rv64.single.release = "./linux/libbarista_script.linux.template_release.rv64.so"
+linux.rv64.double.release = "./linux/libbarista_script.linux.template_release.rv64.double.so"
+
+android.x86_64.single.debug = "./android/libbarista_script.android.template_debug.x86_64.so"
+android.x86_64.double.debug = "./android/libbarista_script.android.template_debug.x86_64.double.so"
+android.x86_64.single.release = "./android/libbarista_script.android.template_release.x86_64.so"
+android.x86_64.double.release = "./android/libbarista_script.android.template_release.x86_64.double.so"
+
+android.arm64.single.debug = "./android/libbarista_script.android.template_debug.arm64.so"
+android.arm64.double.debug = "./android/libbarista_script.android.template_debug.arm64.double.so"
+android.arm64.single.release = "./android/libbarista_script.android.template_release.arm64.so"
+android.arm64.double.release = "./android/libbarista_script.android.template_release.arm64.double.so"
+
+web.wasm32.single.debug = "./web/libbarista_script.web.template_debug.wasm32.nothreads.wasm"
+web.wasm32.double.debug = "./web/libbarista_script.web.template_debug.wasm32.double.nothreads.wasm"
+web.wasm32.single.release = "./web/libbarista_script.web.template_release.wasm32.nothreads.wasm"
+web.wasm32.double.release = "./web/libbarista_script.web.template_release.wasm32.double.nothreads.wasm"
