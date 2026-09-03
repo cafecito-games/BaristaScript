@@ -17,8 +17,11 @@ extends SceneTree
 ## This suite deliberately holds no corpus. Issue #10 imports the 340 real
 ## parser cases; what is asserted here is the contract this port owes them.
 
-## Printed only when every assertion passed. CI greps for it because a GDScript
-## parse error exits 0 and would otherwise read as a pass.
+const SuiteGuard = preload("res://tests/suite_guard.gd")
+
+## Printed only when every assertion passed, alongside the shared guard sentinel
+## SuiteGuard prints. A GDScript parse error exits 0, so a sentinel only executed
+## code can produce is what tells "the suite passed" from "the suite never ran".
 const SUCCESS_SENTINEL := "BS_PARSER_OK"
 
 const PATH := "res://tests/parser_fixture.barista"
@@ -72,14 +75,9 @@ func _initialize() -> void:
 	_test_node_type_vocabulary_is_closed(probe, failures)
 	_test_node_type_names_are_distinct(probe, failures)
 
-	for failure in failures:
-		push_error(failure)
-	# A GDScript parse error makes SceneTree quit 0, so CI greps for this sentinel
-	# rather than trusting the exit code: it can only be printed by a suite that
-	# actually loaded and ran.
 	if failures.is_empty():
 		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 23])
-	quit(0 if failures.is_empty() else 1)
+	quit(SuiteGuard.report("parser_test", failures))
 
 
 # ---------------------------------------------------------------------------

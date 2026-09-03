@@ -18,6 +18,8 @@ extends SceneTree
 ## entry fails here even when it compiles.
 
 # `BSWarning::WarnLevel`.
+const SuiteGuard = preload("res://tests/suite_guard.gd")
+
 const LEVEL_IGNORE := 0
 const LEVEL_WARN := 1
 const LEVEL_ERROR := 2
@@ -177,13 +179,11 @@ func _initialize() -> void:
 	_test_ordering_is_idempotent(registry, count)
 	_test_confusable_identifier_check(registry)
 
-	for failure in _failures:
-		push_error(failure)
 	if _failures.is_empty():
 		print("BS_WARNING_REGISTRY_OK %d codes" % count)
 	else:
 		print("BS_WARNING_REGISTRY_FAILED %d failure(s)" % _failures.size())
-	quit(0 if _failures.is_empty() else 1)
+	quit(SuiteGuard.report("warning_registry_test", _failures))
 
 
 func _check(condition: bool, message: String) -> void:

@@ -1,0 +1,25 @@
+{
+  "comment": [
+    "Extra Godot script invocations that run_gdscript_suites.py cannot discover on its own.",
+    "Every project/tests/*_test.gd file is discovered and run automatically; it needs no entry",
+    "here, and it is guarded by default because the runner demands the shared",
+    "'BS_SUITE_OK <stem>' sentinel that project/tests/suite_guard.gd prints.",
+    "Add an entry below only for a script that is not named *_test.gd, or an override when a",
+    "discovered suite needs command-line arguments or prints a different sentinel."
+  ],
+  "overrides": {},
+  "extra_invocations": [
+    {
+      "name": "corpus_runner (empty default corpus)",
+      "script": "res://tests/corpus_runner.gd",
+      "args": ["--allow-empty"],
+      "expect": "^BS_CORPUS 0/0 skipped=0$"
+    },
+    {
+      "name": "corpus_runner (tokenizer fixtures)",
+      "script": "res://tests/corpus_runner.gd",
+      "args": ["--corpus", "res://tests/corpus_fixtures/tokenizer"],
+      "expect": "^BS_CORPUS 23/23 skipped=0$"
+    }
+  ]
+}

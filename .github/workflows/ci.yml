@@ -45,7 +45,10 @@ jobs:
           submodules: true
 
       - name: Validate CI configuration
-        run: python tests/validate_ci.py
+        shell: bash
+        run: |
+          python tests/validate_ci.py
+          python tests/test_run_gdscript_suites.py
 
       - name: Audit the platform seam
         shell: bash
@@ -115,19 +118,10 @@ jobs:
 
           "$godot_binary" --headless --path project --editor --quit
           grep -q 'example.barista::BaristaScript' project/.godot/editor/filesystem_cache*
-          "$godot_binary" --headless --path project --script res://tests/smoke_test.gd
-          "$godot_binary" --headless --path project --script res://tests/corpus_runner.gd -- --allow-empty
-          "$godot_binary" --headless --path project --script res://tests/corpus_harness_test.gd
-          # A GDScript parse error makes SceneTree quit 0, so the sentinel is what proves the
-          # suite ran rather than failed to load.
-          "$godot_binary" --headless --path project --script res://tests/warning_registry_test.gd | tee "$RUNNER_TEMP/warning_registry.log"
-          grep -q '^BS_WARNING_REGISTRY_OK ' "$RUNNER_TEMP/warning_registry.log"
-          "$godot_binary" --headless --path project --script res://tests/tokenizer_test.gd
-          "$godot_binary" --headless --path project --script res://tests/corpus_runner.gd -- --corpus res://tests/corpus_fixtures/tokenizer
-          "$godot_binary" --headless --path project --script res://tests/cache_test.gd | tee "$RUNNER_TEMP/parse_cache.log"
-          grep -q '^BS_PARSE_CACHE_OK ' "$RUNNER_TEMP/parse_cache.log"
-          "$godot_binary" --headless --path project --script res://tests/parser_test.gd | tee "$RUNNER_TEMP/parser.log"
-          grep -q '^BS_PARSER_OK ' "$RUNNER_TEMP/parser.log"
+          # A GDScript parse error makes SceneTree quit 0, so no suite may be invoked directly
+          # here: the runner discovers every project/tests/*_test.gd and fails the job unless the
+          # run printed the guard sentinel that only executed code can produce.
+          python tests/run_gdscript_suites.py --godot "$godot_binary"
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save

@@ -6,6 +6,8 @@
 
 extends SceneTree
 
+const SuiteGuard = preload("res://tests/suite_guard.gd")
+
 
 func _initialize() -> void:
 	var failures: Array[String] = []
@@ -24,6 +26,4 @@ func _initialize() -> void:
 		if script.can_instantiate():
 			failures.append("recognition-only script can instantiate")
 
-	for failure in failures:
-		push_error(failure)
-	quit(0 if failures.is_empty() else 1)
+	quit(SuiteGuard.report("smoke_test", failures))
