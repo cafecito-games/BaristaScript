@@ -95,6 +95,11 @@ jobs:
         run: |
           scons api_version=4.7 target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
 
+      - name: Probe the removed-warning-code compile error
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        run: python tests/test_warning_code_removal.py
+
       - name: Verify editor recognition
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash

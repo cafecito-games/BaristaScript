@@ -37,12 +37,10 @@
  * There is no second switch and no parallel array. Deleting an enumerator -- which is what a
  * language delta does -- makes every surviving `BSWarning::THAT_CODE` reference an error at its own
  * call site ("no member named ... in 'BSWarning'"), which is the fail-closed behaviour the
- * milestone asks for. Verified by hand rather than by a test, because the proof is the absence of a
- * translation unit, in the manner of `bs_platform.h`'s NumericType note:
- *
- *     BSWarning warning;
- *     warning.code = BSWarning::REMOVED_CODE;  // error: no member named 'REMOVED_CODE' in
- *                                              // 'barista_script::BSWarning'
+ * milestone asks for. The proof is the absence of a translation unit, so it is asserted by
+ * compiling one: `tests/test_warning_code_removal.py` syntax-checks a reference to a live code,
+ * which must succeed, against a reference to a code that does not exist, which must fail naming the
+ * identifier.
  *
  * As of this milestone no delta in `docs/GRAMMAR.md` §0.2 removes a code. D1 (one integer type)
  * deletes Foundry's numeric tower, but Foundry spends no warning on it -- there is no `uint`,
