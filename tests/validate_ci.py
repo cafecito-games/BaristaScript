@@ -54,47 +54,50 @@ def executable_lines(workflow: str) -> list[str]:
     return [COMMENT_TAIL.sub("", line) for line in workflow.splitlines()]
 
 
-def runner_invocations(lines: list[str]) -> list[str]:
-    """The text following each command that actually runs the suite runner.
+def line_invocations(line: str) -> list[str]:
+    """The text following each command in `line` that actually runs the suite runner.
 
     The returned text is the rest of the shell line, so a caller can see both the
     runner's own arguments and whatever the line does with its exit status.
     """
+    body = COMMAND_LINE_PREFIX.sub("", line)
+    pieces = COMMAND_SEPARATOR.split(body)
     invocations: list[str] = []
-    for line in lines:
-        body = COMMAND_LINE_PREFIX.sub("", line)
-        pieces = COMMAND_SEPARATOR.split(body)
-        for index in range(0, len(pieces), 2):
-            match = SUITE_RUNNER_COMMAND.match(pieces[index].strip())
-            if match is not None:
-                invocations.append(match.group("arguments") + "".join(pieces[index + 1 :]))
+    for index in range(0, len(pieces), 2):
+        match = SUITE_RUNNER_COMMAND.match(pieces[index].strip())
+        if match is not None:
+            invocations.append(match.group("arguments") + "".join(pieces[index + 1 :]))
     return invocations
 
 
-def runner_steps(lines: list[str]) -> list[str]:
-    """The workflow steps that invoke the suite runner, each as its own text block."""
-    steps: list[str] = []
-    for index, line in enumerate(lines):
-        if SUITE_RUNNER not in line:
-            continue
+def enclosing_step(lines: list[str], index: int) -> str:
+    """The workflow step containing `lines[index]`, as its own text block."""
+    start = index
+    indent = 0
+    while start >= 0:
+        match = STEP_START.match(lines[start])
+        if match is not None:
+            indent = len(match.group(1))
+            break
+        start -= 1
+    if start < 0:
         start = index
-        indent = 0
-        while start >= 0:
-            match = STEP_START.match(lines[start])
-            if match is not None:
-                indent = len(match.group(1))
-                break
-            start -= 1
-        if start < 0:
-            start = index
-        end = start + 1
-        while end < len(lines):
-            match = STEP_START.match(lines[end])
-            if match is not None and len(match.group(1)) <= indent:
-                break
-            end += 1
-        steps.append("\n".join(lines[start:end]))
-    return steps
+    end = start + 1
+    while end < len(lines):
+        match = STEP_START.match(lines[end])
+        if match is not None and len(match.group(1)) <= indent:
+            break
+        end += 1
+    return "\n".join(lines[start:end])
+
+
+def runner_invocations(lines: list[str]) -> list[tuple[str, str]]:
+    """Every suite-runner command, paired with the workflow step that holds it."""
+    invocations: list[tuple[str, str]] = []
+    for index, line in enumerate(lines):
+        for arguments in line_invocations(line):
+            invocations.append((arguments, enclosing_step(lines, index)))
+    return invocations
 
 
 def check_gdscript_suite_wiring(workflow: str) -> str | None:
@@ -118,8 +121,8 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
         )
 
     invocations = [
-        arguments
-        for arguments in runner_invocations(lines)
+        (arguments, step)
+        for arguments, step in runner_invocations(lines)
         if "--godot" in arguments and "--list" not in arguments
     ]
     if not invocations:
@@ -128,17 +131,18 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
             "naming the runner, or running it in --list mode, launches no suite"
         )
 
-    # A guard whose non-zero status is swallowed is no guard at all.
-    if all(SUPPRESSED_STATUS.search(arguments) for arguments in invocations):
+    # A guard whose non-zero status is swallowed is no guard at all, so at least one
+    # invocation must be able to fail the job: unsuppressed in the shell, and in a step
+    # that does not continue on error.
+    effective = [
+        arguments
+        for arguments, step in invocations
+        if not SUPPRESSED_STATUS.search(arguments) and not CONTINUE_ON_ERROR.search(step)
+    ]
+    if not effective:
         return (
-            f"CI must let {SUITE_RUNNER} fail the job; its exit status is the guard, "
-            "so it may not be followed by ||, ; true, or a discarded status"
-        )
-
-    if all(CONTINUE_ON_ERROR.search(step) for step in runner_steps(lines)):
-        return (
-            f"the workflow step running {SUITE_RUNNER} sets continue-on-error, which hides the "
-            "suite guard's failure and returns the job to green"
+            f"CI must let {SUITE_RUNNER} fail the job; its exit status is the guard, so no "
+            "invocation may be followed by ||, ; true, or sit in a continue-on-error step"
         )
 
     return None

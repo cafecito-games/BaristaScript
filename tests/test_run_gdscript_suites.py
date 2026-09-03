@@ -274,6 +274,35 @@ def test_an_environment_prefixed_invocation_is_still_an_invocation(failures: lis
     check(complaint is None, "an env-prefixed invocation was rejected: %s" % complaint, failures)
 
 
+def test_every_invocation_being_suppressed_differently_is_still_rejected(failures: list) -> None:
+    workflow = (
+        WORKFLOW_HEADER
+        + "      - name: Guarded but ignored\n"
+        + "        continue-on-error: true\n"
+        + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary"\n'
+        + "      - name: Guarded but swallowed\n"
+        + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary" || true\n'
+    )
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(
+        complaint is not None,
+        "a workflow whose every runner invocation is suppressed was accepted",
+        failures,
+    )
+
+
+def test_one_effective_invocation_among_suppressed_ones_is_enough(failures: list) -> None:
+    workflow = (
+        WORKFLOW_HEADER
+        + "      - name: Advisory rerun\n"
+        + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary" || true\n'
+        + "      - name: Run the GDScript suites\n"
+        + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary"\n'
+    )
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(complaint is None, "an effective invocation was overlooked: %s" % complaint, failures)
+
+
 def test_a_real_runner_invocation_is_accepted(failures: list) -> None:
     workflow = (
         WORKFLOW_HEADER
