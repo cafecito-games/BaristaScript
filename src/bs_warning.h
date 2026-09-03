@@ -326,7 +326,17 @@ public:
 	 */
 	static LevelSource resolve_level(Code p_code, const Variant &p_setting, WarnLevel &r_level);
 
-	/// `resolve_level()` against the live `ProjectSettings`, which is where the setting really lives.
+	/**
+	 * `resolve_level()` against the live `ProjectSettings`, which is where the setting really lives.
+	 *
+	 * Declares the base setting with its declared default on first use. That is what makes a
+	 * per-feature override ("....windows", "....mobile") resolve at all, since `ProjectSettings`
+	 * matches an override against a base name it already knows. The consequence, stated plainly:
+	 * once the base exists, this path cannot tell an unset setting from one explicitly set to the
+	 * declared default, and reports both as `LEVEL_FROM_DECLARED_DEFAULT`. The level is identical
+	 * either way, and the distinction stays exact on `resolve_level(Code, Variant)`, where "absent"
+	 * is representable.
+	 */
 	static LevelSource resolve_level_from_project_settings(Code p_code, WarnLevel &r_level);
 
 	/**

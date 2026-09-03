@@ -338,16 +338,38 @@ BSWarning::LevelSource BSWarning::resolve_level_from_project_settings(Code p_cod
 	}
 
 	const String setting_path = get_setting_path_from_code(p_code);
+	const int declared_default = (int)default_warning_levels[p_code];
 	if (!settings->has_setting(setting_path)) {
-		r_level = default_warning_levels[p_code];
-		return LEVEL_FROM_DECLARED_DEFAULT;
+		// Declare the base setting, the way the engine's own script languages do. This is not a
+		// convenience: ProjectSettings resolves a per-feature override -- "....windows",
+		// "....mobile" -- against the base name, so a project that configures only an override is
+		// invisible while the base is missing, and asking for a name ProjectSettings does not know
+		// warns. Testing has_setting() alone would therefore report a configured project as
+		// unconfigured and hand back the declared default it did not ask for.
+		settings->set_setting(setting_path, declared_default);
+		settings->set_initial_value(setting_path, declared_default);
+		settings->set_as_basic(setting_path, true);
+		// add_property_info() accepts only these four keys and warns about anything else, so the
+		// PropertyInfo is narrowed here rather than handed over whole.
+		const PropertyInfo info = get_property_info(p_code);
+		Dictionary hint;
+		hint["name"] = info.name;
+		hint["type"] = info.type;
+		hint["hint"] = info.hint;
+		hint["hint_string"] = info.hint_string;
+		settings->add_property_info(hint);
 	}
 
 	const LevelSource source = resolve_level(p_code, settings->get_setting_with_override(setting_path), r_level);
 	if (source == LEVEL_SETTING_MALFORMED) {
 		ERR_PRINT(vformat(R"(Project setting "%s" is not a BaristaScript warning level (0 = Ignore, 1 = Warn, 2 = Error).)", setting_path));
+		return source;
 	}
-	return source;
+	// The base setting now always exists, so "absent" is no longer representable on this path: a
+	// value equal to the declared default is reported as the default whether the project asked for
+	// it or not. The distinction survives where it is representable and where the fail-closed
+	// contract is asserted -- resolve_level(Code, Variant) -- and it changes no level either way.
+	return (int)r_level == declared_default ? LEVEL_FROM_DECLARED_DEFAULT : LEVEL_FROM_PROJECT_SETTING;
 }
 
 Dictionary BSWarning::to_validate_dictionary(const PackedInt32Array &p_line_lengths) const {

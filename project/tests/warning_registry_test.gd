@@ -397,6 +397,45 @@ func _test_project_settings_path_round_trip(registry: Object) -> void:
 	)
 	_check(not malformed.has("level"), "a malformed project setting still produced a level")
 
+	# A per-feature override ("....windows", "....macos") is a configured project even though the
+	# base name alone is absent from it. ProjectSettings resolves it against the base, so the
+	# registry has to declare the base to see the override at all.
+	var feature := ""
+	for candidate in ["windows", "macos", "linux", "android", "ios", "web"]:
+		if OS.has_feature(candidate):
+			feature = candidate
+			break
+	if feature.is_empty():
+		print("BS_WARNING_REGISTRY_NOTE no platform feature tag matched; feature overrides untested")
+	else:
+		var override_path := "%s.%s" % [setting_path, feature]
+		ProjectSettings.set_setting(setting_path, null)
+		ProjectSettings.set_setting(override_path, LEVEL_IGNORE)
+		var overridden: Dictionary = registry.resolve_level_from_project_settings(code)
+		_check(
+			overridden.get("level", -1) == LEVEL_IGNORE,
+			"the %s override was ignored; the level resolved to %s"
+			% [feature, str(overridden.get("level", null))]
+		)
+		_check(
+			overridden.get("source", -1) == LEVEL_FROM_PROJECT_SETTING,
+			"the %s override did not read as a configured setting" % feature
+		)
+
+		# And a malformed override fails loudly rather than falling back to the default. The error
+		# on stderr is the test passing.
+		ProjectSettings.set_setting(override_path, "ignore")
+		var malformed_override: Dictionary = registry.resolve_level_from_project_settings(code)
+		_check(
+			malformed_override.get("source", -1) == LEVEL_SETTING_MALFORMED,
+			"a malformed %s override was accepted" % feature
+		)
+		_check(
+			not malformed_override.has("level"),
+			"a malformed %s override still produced a level" % feature
+		)
+		ProjectSettings.set_setting(override_path, null)
+
 	ProjectSettings.set_setting(setting_path, previous if had_setting else null)
 
 
