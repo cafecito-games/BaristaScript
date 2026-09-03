@@ -332,6 +332,7 @@ class FailClosedTest(unittest.TestCase):
             fixture = Path(scratch) / "empty_fixture.txt"
             fixture.write_text("# nothing was captured\n", encoding="utf-8")
             document["upstream"]["site_fixture"] = str(fixture)
+            document["upstream"]["port_set"] = ["fs_tokenizer.h"]
             with TemporaryManifest(document) as path:
                 result = run_audit("--manifest", str(path))
         self.assertNotEqual(result.returncode, 0)
@@ -439,7 +440,35 @@ class FailClosedTest(unittest.TestCase):
         with TemporaryManifest(document) as path:
             result = run_audit("--manifest", str(path))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("src/*.cpp", result.stdout + result.stderr)
+        self.assertIn("src/proof/bs_platform_shims.cpp", result.stdout + result.stderr)
+
+    def test_the_scons_globs_are_read_rather_than_assumed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            sconstruct = Path(scratch) / "SConstruct"
+            sconstruct.write_text(
+                'localEnv["api_version"] = "4.7"\n'
+                'sources = Glob("src/legacy/*.cpp")\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--sconstruct", str(sconstruct))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/legacy/*.cpp", result.stdout + result.stderr)
+
+    def test_a_sconstruct_that_globs_nothing_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            sconstruct = Path(scratch) / "SConstruct"
+            sconstruct.write_text('localEnv["api_version"] = "4.7"\n', encoding="utf-8")
+            result = run_audit("--sconstruct", str(sconstruct))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("declares no Glob()", result.stdout + result.stderr)
+
+    def test_a_port_set_file_absent_from_the_capture_is_rejected(self):
+        document = real_manifest()
+        document["upstream"]["port_set"].append("fs_tokenizer_buffer.cpp")
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fs_tokenizer_buffer.cpp", result.stdout + result.stderr)
 
     def test_site_outside_the_declared_port_set_is_rejected(self):
         document = real_manifest()
@@ -504,6 +533,7 @@ class VocabularyClosureTest(unittest.TestCase):
             fixture = Path(scratch) / "synthetic_fixture.txt"
             fixture.write_text(self.SYNTHETIC_FIXTURE, encoding="utf-8")
             document["upstream"]["site_fixture"] = str(fixture)
+            document["upstream"]["port_set"] = ["fs_tokenizer.h"]
             manifest = Path(scratch) / "manifest.json"
             manifest.write_text(json.dumps(document, indent=2), encoding="utf-8")
             seam = Path(scratch) / "synthetic_seam.h"

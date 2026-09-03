@@ -26,7 +26,7 @@ import hashlib
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -177,18 +177,20 @@ def load_site_fixture(path):
     if not path.is_file():
         raise AuditError("no upstream site fixture at {}".format(path))
     sites = {}
+    captured = set()
     current = None
     for line in path.read_text(encoding="utf-8").splitlines():
         section = FIXTURE_SECTION_PATTERN.match(line)
         if section:
             current = section.group(1)
+            captured.add(current)
             continue
         include = FIXTURE_INCLUDE_PATTERN.match(line)
         if include and current is not None:
             sites["{}:{}".format(current, include.group(1))] = include.group(2)
     if not sites:
         raise AuditError("{} names no include sites; it is not a usable capture".format(path))
-    return sites
+    return sites, captured
 
 
 def check_site_coverage(sites, claimed, failures):
@@ -437,7 +439,20 @@ def cmake_library_sources(text):
     return sources
 
 
-def check_builds_compile_the_proof_sources(manifest, cmakelists, failures):
+def scons_source_globs(sconstruct):
+    """The patterns SConstruct actually globs for library sources, or None when it globs nothing.
+
+    Assuming `src/*.cpp` would make this check agree with itself rather than with the build, so the
+    patterns are read from the file that decides them.
+    """
+    if not sconstruct.is_file():
+        return None
+    text = re.sub(r"#[^\n]*", "", sconstruct.read_text(encoding="utf-8"))
+    patterns = set(re.findall(r'\bGlob\(\s*"([^"]+)"', text))
+    return patterns or None
+
+
+def check_builds_compile_the_proof_sources(manifest, cmakelists, sconstruct, failures):
     """Both supported builds have to compile the proof sources, not just one of them.
 
     SCons globs `src/*.cpp`, so a proof source anywhere else is silently dropped from that build.
@@ -445,6 +460,17 @@ def check_builds_compile_the_proof_sources(manifest, cmakelists, failures):
     from that one. Either way the seam would stop being proven while the audit still passed.
     """
     sources = as_string_list(manifest.get("seam_proof_sources"))
+    globbed = scons_source_globs(sconstruct)
+    if globbed is None:
+        failures.append("{} declares no Glob() of source files".format(sconstruct))
+    else:
+        for source in sources:
+            if not any(PurePosixPath(source).match(pattern) for pattern in globbed):
+                failures.append(
+                    "{} is matched by none of SConstruct's source globs ({})".format(
+                        source, ", ".join(sorted(globbed))
+                    )
+                )
     if not cmakelists.is_file():
         failures.append("no CMakeLists.txt at {}".format(cmakelists))
         return
@@ -453,9 +479,6 @@ def check_builds_compile_the_proof_sources(manifest, cmakelists, failures):
         failures.append("{} has no target_sources(${{LIBNAME}} ...) block".format(cmakelists))
         return
     for source in sources:
-        path = Path(source)
-        if path.parent.as_posix() != "src" or path.suffix != ".cpp":
-            failures.append("{} is not matched by SConstruct's src/*.cpp glob".format(source))
         if source not in listed:
             failures.append("{} is not listed in CMakeLists.txt's target_sources".format(source))
 
@@ -512,7 +535,7 @@ def main(argv=None):
         fixture = manifest["upstream"].get("site_fixture")
         if not isinstance(fixture, str) or not fixture:
             raise AuditError("{} declares no 'site_fixture'".format(arguments.manifest))
-        sites = load_site_fixture(ROOT / fixture)
+        sites, captured = load_site_fixture(ROOT / fixture)
     except AuditError as error:
         print("audit failed: {}".format(error), file=sys.stderr)
         return 1
@@ -524,6 +547,8 @@ def main(argv=None):
     port_set = set(as_string_list(manifest["upstream"].get("port_set")))
     if not port_set:
         failures.append("the manifest declares no upstream port set")
+    for source in sorted(port_set - captured):
+        failures.append("{} is in the port set but has no section in the upstream capture".format(source))
 
     rows = []
     seen = set()
@@ -545,7 +570,7 @@ def main(argv=None):
     check_site_coverage(sites, claimed, failures)
     check_required_macros(manifest["required_macros"], arguments.godot_cpp, seam_text, failures)
     check_shims_are_compiled(manifest, rows, failures)
-    check_builds_compile_the_proof_sources(manifest, arguments.cmakelists, failures)
+    check_builds_compile_the_proof_sources(manifest, arguments.cmakelists, arguments.sconstruct, failures)
 
     allowed = set(as_string_list(manifest.get("seam_support_headers")))
     for entry in manifest["entries"]:
