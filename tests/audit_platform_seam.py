@@ -374,6 +374,32 @@ def check_required_macros(macros, godot_cpp, seam_text, failures):
             failures.append("the seam does not assert that {} is defined".format(macro))
 
 
+def cmake_library_sources(text):
+    """The arguments of every `target_sources(${LIBNAME} ...)` call, or None when there are none.
+
+    Searching the file as one string would accept a path that appears only in a comment, in an
+    unrelated variable, or on another target, so the call is parsed: comments are stripped, the
+    argument list is read to its matching parenthesis, and only blocks naming the extension target
+    count.
+    """
+    stripped = re.sub(r"#[^\n]*", "", text)
+    sources = None
+    for match in re.finditer(r"\btarget_sources\s*\(", stripped):
+        depth = 1
+        index = match.end()
+        while index < len(stripped) and depth:
+            if stripped[index] == "(":
+                depth += 1
+            elif stripped[index] == ")":
+                depth -= 1
+            index += 1
+        arguments = stripped[match.end() : index - 1].split()
+        if not arguments or arguments[0] != "${LIBNAME}":
+            continue
+        sources = (sources or set()) | set(arguments[1:])
+    return sources
+
+
 def check_builds_compile_the_proof_sources(manifest, cmakelists, failures):
     """Both supported builds have to compile the proof sources, not just one of them.
 
@@ -385,12 +411,15 @@ def check_builds_compile_the_proof_sources(manifest, cmakelists, failures):
     if not cmakelists.is_file():
         failures.append("no CMakeLists.txt at {}".format(cmakelists))
         return
-    text = cmakelists.read_text(encoding="utf-8")
+    listed = cmake_library_sources(cmakelists.read_text(encoding="utf-8"))
+    if listed is None:
+        failures.append("{} has no target_sources(${{LIBNAME}} ...) block".format(cmakelists))
+        return
     for source in sources:
         path = Path(source)
         if path.parent.as_posix() != "src" or path.suffix != ".cpp":
             failures.append("{} is not matched by SConstruct's src/*.cpp glob".format(source))
-        if source not in text:
+        if source not in listed:
             failures.append("{} is not listed in CMakeLists.txt's target_sources".format(source))
 
 

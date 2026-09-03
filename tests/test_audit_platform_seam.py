@@ -345,6 +345,42 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("target_sources", result.stdout + result.stderr)
 
+    def test_a_proof_source_only_mentioned_in_a_cmake_comment_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            cmakelists = Path(scratch) / "CMakeLists.txt"
+            cmakelists.write_text(
+                "target_sources(${LIBNAME}\n"
+                "    PRIVATE\n"
+                "    # src/bs_platform_seam.cpp\n"
+                "    # src/bs_platform_shims.cpp\n"
+                "    src/register_types.cpp\n"
+                ")\n",
+                encoding="utf-8",
+            )
+            result = run_audit("--cmakelists", str(cmakelists))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/bs_platform_seam.cpp", result.stdout + result.stderr)
+
+    def test_a_proof_source_listed_on_another_target_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            cmakelists = Path(scratch) / "CMakeLists.txt"
+            cmakelists.write_text(
+                "target_sources(${LIBNAME} PRIVATE src/register_types.cpp)\n"
+                "target_sources(some_other_target PRIVATE src/bs_platform_seam.cpp src/bs_platform_shims.cpp)\n",
+                encoding="utf-8",
+            )
+            result = run_audit("--cmakelists", str(cmakelists))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/bs_platform_shims.cpp", result.stdout + result.stderr)
+
+    def test_a_cmakelists_with_no_library_target_sources_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            cmakelists = Path(scratch) / "CMakeLists.txt"
+            cmakelists.write_text("project(barista_script)\n", encoding="utf-8")
+            result = run_audit("--cmakelists", str(cmakelists))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("target_sources", result.stdout + result.stderr)
+
     def test_a_proof_source_scons_would_not_glob_is_rejected(self):
         document = real_manifest()
         document["seam_proof_sources"] = ["src/proof/bs_platform_shims.cpp"]
