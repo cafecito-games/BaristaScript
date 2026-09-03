@@ -66,6 +66,7 @@ func _initialize() -> void:
 
 	# GRAMMAR section 5: the precedence table, asserted against explicit grouping.
 	_test_precedence_and_associativity(probe, failures)
+	_test_bracketed_types_span_lines(probe, failures)
 
 	# Vocabulary closure.
 	_test_node_type_vocabulary_is_closed(probe, failures)
@@ -77,7 +78,7 @@ func _initialize() -> void:
 	# rather than trusting the exit code: it can only be printed by a suite that
 	# actually loaded and ran.
 	if failures.is_empty():
-		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 22])
+		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 23])
 	quit(0 if failures.is_empty() else 1)
 
 
@@ -519,6 +520,42 @@ func _test_precedence_and_associativity(probe, failures: Array[String]) -> void:
 	_expect(failures,
 		_expression_tree(probe, "a if b else c if d else e") == _expression_tree(probe, "a if b else (c if d else e)"),
 		"associativity: the ternary is not right-associative")
+
+
+## Inside an open bracket pair the tokenizer is in multiline mode: newlines and
+## indentation are ignored and no layout tokens are produced (docs/GRAMMAR.md
+## section 2.1). Expression brackets get that from `parse_precedence`; a type's
+## argument list has to ask for it, and every bracketed type form asks.
+##
+## The trailing `var after = 1` is load-bearing: the failure mode is not only that
+## the bracketed type is rejected, but that the tokenizer is left with an indent
+## level nothing closes, so the *next* declaration disappears too.
+func _test_bracketed_types_span_lines(probe, failures: Array[String]) -> void:
+	var forms := [
+		"var values: Array[\n\tint\n] = []\n",
+		"var table: Dictionary[\n\tString,\n\tint\n] = {}\n",
+		"var call: Callable[[\n\tint\n], void]\n",
+		"var sig: Signal[[\n\tint\n]]\n",
+		"var work: Coroutine[\n\tint\n]\n",
+		"var handle: Type[\n\tNode\n]\n",
+		"var nested: Array[\n\tArray[\n\t\tint\n\t]\n]\n",
+	]
+	for form in forms:
+		var source: String = form + "var after = 1\n"
+		var report := _parse(probe, source)
+		_expect(failures, report["complete"],
+			"a bracketed type spanning lines must be accepted: %s -- %s" % [form.strip_edges(), report["diagnostics"]])
+		# The declaration after it must survive: an unbalanced multiline mode swallows it.
+		var variables := 0
+		for node in report["nodes"]:
+			if (node as String).begins_with("VARIABLE\t"):
+				variables += 1
+		_expect(failures, variables == 2,
+			"the declaration after a multiline bracketed type was lost: %s" % form.strip_edges())
+
+	# The single-line spelling must keep parsing exactly as it did.
+	var single := _parse(probe, "var values: Array[int] = []\nvar after = 1\n")
+	_expect(failures, single["complete"], "the single-line form regressed: %s" % [single["diagnostics"]])
 
 
 # ---------------------------------------------------------------------------

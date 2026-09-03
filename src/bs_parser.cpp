@@ -6780,6 +6780,9 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 	// A type-argument list binds to the last name of the chain, so the same loop serves both the
 	// unqualified head (`Box[int]`) and the qualified one (`Outer.Box[int]`). `type` is cleared when an
 	// argument fails to parse, which the callers below turn into a null return.
+	// The caller opens the bracket and enables multiline mode for it (docs/GRAMMAR.md section 2.1);
+	// this pops that mode before consuming the closing "]", because consuming advances and a
+	// multiline advance would swallow the NEWLINE that ends the declaration.
 	auto parse_collection_type_arguments = [&]() {
 		type->type_arguments_chain_index = type->type_chain.size() - 1;
 		bool first_pass = true;
@@ -6795,12 +6798,26 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 			}
 			first_pass = false;
 		} while (match(BSTokenizer::Token::COMMA));
+		pop_multiline();
 		consume(BSTokenizer::Token::BRACKET_CLOSE, R"(Expected closing "]" after collection type.)");
 	};
 
 	bool parsed_type_arguments = false;
 
-	if (match(BSTokenizer::Token::BRACKET_OPEN)) {
+	// Inside an open bracket pair the tokenizer is in multiline mode: newlines and indentation are
+	// ignored and no layout tokens are produced (docs/GRAMMAR.md section 2.1). Expression brackets
+	// get this from `parse_precedence`; a *type*'s argument list did not, so
+	// `var values: Array[\n\tint\n] = []` -- formatting that section blesses -- was rejected.
+	//
+	// The mode has to go on before the `[` is consumed, exactly as `parse_precedence` does it.
+	// Consuming scans the next token, and if that token is the newline after the `[` the tokenizer
+	// processes it in single-line mode: it queues the following line's INDENT, which
+	// `push_multiline()` then quietly drains along with the newline -- leaving an indent level on
+	// the tokenizer's stack that nothing will ever close, so the first newline after the `]` reports
+	// a DEDENT the class body reads as the end of the file.
+	if (check(BSTokenizer::Token::BRACKET_OPEN)) {
+		push_multiline(true);
+		advance();
 		const bool is_type_handle = type->type_chain.size() == 1 && type_element->name == SNAME("Type");
 		const bool is_callable_type = type->type_chain.size() == 1 && (type_element->name == SNAME("Callable") || type_element->name == SNAME("AsyncCallable"));
 		const bool is_signal_type = type->type_chain.size() == 1 && type_element->name == SNAME("Signal");
@@ -6861,6 +6878,7 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 				push_error("Signal signatures cannot specify a return type.");
 				parse_type(true);
 			}
+			pop_multiline();
 			consume(BSTokenizer::Token::BRACKET_CLOSE, R"(Expected closing "]" after signature type.)");
 			if (match(BSTokenizer::Token::QUESTION_MARK)) {
 				type->is_nullable = true;
@@ -6890,6 +6908,7 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 					}
 				}
 			}
+			pop_multiline();
 			consume(BSTokenizer::Token::BRACKET_CLOSE, R"(Expected closing "]" after Coroutine result type.)");
 			if (match(BSTokenizer::Token::QUESTION_MARK)) {
 				type->is_nullable = true;
@@ -6918,6 +6937,7 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 					}
 				}
 			}
+			pop_multiline();
 			consume(BSTokenizer::Token::BRACKET_CLOSE, R"(Expected closing "]" after Type argument.)");
 			if (match(BSTokenizer::Token::QUESTION_MARK)) {
 				type->is_nullable = true;
@@ -6965,9 +6985,12 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 		type_element = parse_identifier();
 		type->type_chain.push_back(type_element);
 
-		if (!parsed_type_arguments && match(BSTokenizer::Token::BRACKET_OPEN)) {
+		if (!parsed_type_arguments && check(BSTokenizer::Token::BRACKET_OPEN)) {
 			// Only the generic/typed-collection argument list is reachable after a dotted chain; the
-			// built-in signature forms above stay unqualified.
+			// built-in signature forms above stay unqualified. Multiline goes on before the `[` is
+			// consumed, for the reason spelled out at the unqualified form above.
+			push_multiline(true);
+			advance();
 			parse_collection_type_arguments();
 			if (type == nullptr) {
 				return nullptr;
