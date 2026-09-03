@@ -1715,6 +1715,12 @@ void BSTokenizerText::_skip_whitespace() {
 }
 
 BSTokenizer::Token BSTokenizerText::scan() {
+	// A line continuation scans the next token through a recursive call, so only the outermost one
+	// clears this: the inner call must not throw away a newline the outer one withheld.
+	if (continuation_scan_depth == 0) {
+		withheld_newline = Token();
+	}
+
 	if (has_error()) {
 		return pop_error();
 	}
@@ -1727,6 +1733,10 @@ BSTokenizer::Token BSTokenizerText::scan() {
 			// Don't return newline tokens on multiline mode.
 			return last_newline;
 		}
+		// Multiline mode: the token is built but not returned. The compiled buffer's writer reads
+		// it from here so that the replay can regenerate this NEWLINE at the position it really
+		// had.
+		withheld_newline = last_newline;
 	}
 
 	// Check for potential errors after skipping whitespace().

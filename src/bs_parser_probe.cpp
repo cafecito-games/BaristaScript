@@ -104,6 +104,7 @@ void BaristaScriptParserProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("removed_type_name_diagnostic", "spelling"), &BaristaScriptParserProbe::removed_type_name_diagnostic);
 	ClassDB::bind_method(D_METHOD("nested_source", "prefix", "open", "close", "suffix", "depth"), &BaristaScriptParserProbe::nested_source);
 	ClassDB::bind_method(D_METHOD("max_nesting_depth"), &BaristaScriptParserProbe::max_nesting_depth);
+	ClassDB::bind_method(D_METHOD("tokenizer_format_version"), &BaristaScriptParserProbe::tokenizer_format_version);
 }
 
 Dictionary BaristaScriptParserProbe::parse_text(const PackedByteArray &p_source_utf8, const String &p_script_path) const {
@@ -204,6 +205,10 @@ PackedByteArray BaristaScriptParserProbe::nested_source(const String &p_prefix, 
 
 int BaristaScriptParserProbe::max_nesting_depth() const {
 	return BSParser::MAX_NESTING_DEPTH;
+}
+
+int BaristaScriptParserProbe::tokenizer_format_version() const {
+	return int(BSTokenizerBuffer::TOKENIZER_VERSION);
 }
 
 } // namespace barista_script
