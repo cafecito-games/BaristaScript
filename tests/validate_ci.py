@@ -18,13 +18,18 @@ SUITE_RUNNER = "tests/run_gdscript_suites.py"
 DIRECT_SUITE_INVOCATION = re.compile(r"""--script\s+['"]?res://\S+""")
 
 
+# A `#` that starts a line or follows whitespace begins a comment, in YAML and in the
+# shell blocks the workflow embeds.
+COMMENT_TAIL = re.compile(r"(?:^|(?<=\s))#.*$")
+
+
 def executable_lines(workflow: str) -> str:
-    """The workflow with its comment-only lines removed.
+    """The workflow with its comments -- whole-line and inline -- removed.
 
     A commented-out command is text a substring search would still find, so the
     wiring checks below must not read one as evidence that CI runs anything.
     """
-    return "\n".join(line for line in workflow.splitlines() if not line.lstrip().startswith("#"))
+    return "\n".join(COMMENT_TAIL.sub("", line) for line in workflow.splitlines())
 
 
 def check_gdscript_suite_wiring(workflow: str) -> str | None:

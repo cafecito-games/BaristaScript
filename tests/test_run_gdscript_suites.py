@@ -141,16 +141,20 @@ def test_the_workflow_must_actually_run_the_suite_runner(failures: list) -> None
 
 
 def test_a_commented_out_runner_is_not_evidence_the_suites_run(failures: list) -> None:
-    complaint = validate_ci.check_gdscript_suite_wiring(
-        WORKFLOW_HEADER
-        + "      # - run: python tests/run_gdscript_suites.py --godot \"$godot_binary\"\n"
-        + '      - run: echo "suites disabled"\n'
-    )
-    check(
-        complaint is not None,
-        "a commented-out runner invocation satisfied the CI wiring check",
-        failures,
-    )
+    commented_forms = [
+        "      # - run: python tests/run_gdscript_suites.py --godot \"$godot_binary\"\n",
+        '      - run: echo "hi"  # python tests/run_gdscript_suites.py --godot "$godot_binary"\n',
+        "      - run: |\n          echo hi # python tests/run_gdscript_suites.py\n",
+    ]
+    for commented in commented_forms:
+        complaint = validate_ci.check_gdscript_suite_wiring(
+            WORKFLOW_HEADER + commented + '      - run: echo "suites disabled"\n'
+        )
+        check(
+            complaint is not None,
+            "a commented-out runner invocation satisfied the CI wiring check: %s" % commented.strip(),
+            failures,
+        )
 
 
 def test_a_quoted_direct_suite_invocation_is_rejected(failures: list) -> None:
