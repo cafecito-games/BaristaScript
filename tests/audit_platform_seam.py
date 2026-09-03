@@ -242,6 +242,19 @@ def defines_symbol(seam_text, symbol):
     return any(re.search(pattern, seam_text, re.MULTILINE) for pattern in patterns)
 
 
+def asserts_macro(seam_text, macro):
+    """True when the seam refuses to compile without `macro`.
+
+    Mentioning the name is not the same as depending on it, so this looks for the guard itself:
+    `!defined(macro)` in an `#if`, or an `#ifndef` on the macro.
+    """
+    patterns = (
+        r"!\s*defined\s*\(\s*{}\s*\)".format(re.escape(macro)),
+        r"^\s*#\s*ifndef\s+{}\s*$".format(re.escape(macro)),
+    )
+    return any(re.search(pattern, seam_text, re.MULTILINE) for pattern in patterns)
+
+
 def poisons_symbol(seam_text, symbol):
     """True when the seam redirects `symbol` at something that does not exist."""
     return re.search(r"^\s*#\s*define\s+{}\s+\S+".format(re.escape(symbol)), seam_text, re.MULTILINE) is not None
@@ -391,7 +404,7 @@ def check_required_macros(macros, godot_cpp, seam_text, failures):
     for macro in sorted(as_string_list(macros)):
         if not re.search(r"^\s*#\s*define\s+{}\b".format(re.escape(macro)), text, re.MULTILINE):
             failures.append("godot-cpp no longer defines {}".format(macro))
-        if macro not in seam_text:
+        if not asserts_macro(seam_text, macro):
             failures.append("the seam does not assert that {} is defined".format(macro))
 
 

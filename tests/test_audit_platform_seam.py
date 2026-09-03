@@ -425,6 +425,14 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("godot_cpp/templates/vector.hpp", result.stdout + result.stderr)
 
+    def test_a_macro_the_seam_only_mentions_is_not_asserted(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            seam = Path(scratch) / "unasserted_seam.h"
+            seam.write_text("#pragma once\nint ERR_FAIL_COND;\n", encoding="utf-8")
+            result = run_audit("--seam", str(seam))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not assert that ERR_FAIL_COND", result.stdout + result.stderr)
+
     def test_a_proof_source_scons_would_not_glob_is_rejected(self):
         document = real_manifest()
         document["seam_proof_sources"] = ["src/proof/bs_platform_shims.cpp"]
