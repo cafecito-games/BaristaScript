@@ -62,6 +62,11 @@
 #include <godot_cpp/classes/resource_uid.hpp>
 // core/config/project_settings.h
 #include <godot_cpp/classes/project_settings.hpp>
+// core/io/compression.h -- only the ZSTD mode is used; godot-cpp spells it on FileAccess.
+#include <godot_cpp/classes/file_access.hpp>
+// core/io/marshalls.h -- godot-cpp has no marshalls header; see the BSMarshalls shim below.
+#include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 // scene/main/multiplayer_api.h -- only the RPCMode enumerators are used.
 #include <godot_cpp/classes/multiplayer_api.hpp>
 
@@ -194,6 +199,71 @@ public:
 
 	operator String() const {
 		return as_string();
+	}
+};
+
+/**
+ * `core/io/marshalls.h` is absent from godot-cpp, and the four functions the tokenizer buffer uses
+ * split into two very different cases.
+ *
+ * The fixed-width integer codecs are byte-order definitions, not engine behaviour: core writes a
+ * `uint32_t` little-endian, byte by byte, and reads it back the same way. Reimplementing that is
+ * exact, so `encode_uint32`/`decode_uint32` below are the same function core has.
+ *
+ * `encode_variant`/`decode_variant` are not. godot-cpp reaches the same serializer through
+ * `UtilityFunctions::var_to_bytes` / `bytes_to_var`, which is core's `encode_variant` with
+ * `p_full_objects = false` -- the mode the buffer already asked for, because a constant is never an
+ * object. What godot-cpp does not expose is core's `r_len` out-parameter, so a reader cannot learn
+ * how many bytes one value consumed. The seam does not invent one: it hands back the encoded block
+ * and leaves framing to the caller, and `BSTokenizerBuffer` length-prefixes each constant for
+ * exactly that reason. A shim that guessed the length would be the near-miss the seam forbids.
+ */
+struct BSMarshalls {
+	static void encode_uint32(uint32_t p_value, uint8_t *p_bytes) {
+		for (int i = 0; i < 4; i++) {
+			p_bytes[i] = uint8_t(p_value & 0xFF);
+			p_value >>= 8;
+		}
+	}
+
+	static uint32_t decode_uint32(const uint8_t *p_bytes) {
+		uint32_t value = 0;
+		for (int i = 3; i >= 0; i--) {
+			value <<= 8;
+			value |= uint32_t(p_bytes[i]);
+		}
+		return value;
+	}
+
+	static PackedByteArray encode_variant(const Variant &p_variant) {
+		// `false` is core's `p_full_objects = false`: object references are never encoded.
+		return UtilityFunctions::var_to_bytes(p_variant);
+	}
+
+	static Variant decode_variant(const PackedByteArray &p_bytes) {
+		// Mirrors core's `decode_variant(..., p_allow_objects = false)`; a malformed block decodes
+		// to `nil` rather than to an object the buffer never wrote.
+		return UtilityFunctions::bytes_to_var(p_bytes);
+	}
+};
+
+/**
+ * `core/io/compression.h` is absent from godot-cpp as a class, but the operation is not: the same
+ * ZSTD codec is reachable as `PackedByteArray::compress`/`decompress`, taking the mode enumerator
+ * from `FileAccess::COMPRESSION_ZSTD`. The shim is a rename over exactly that, and it keeps core's
+ * contract that decompression is told the expected size up front rather than growing a buffer.
+ *
+ * `decompress` returns an empty array on failure, which is indistinguishable from decompressing to
+ * nothing; the caller checks the size against the header value it already has, so a truncated or
+ * corrupt block is a data error rather than a short read.
+ */
+struct BSCompression {
+	static PackedByteArray compress_zstd(const PackedByteArray &p_bytes) {
+		return p_bytes.compress(FileAccess::COMPRESSION_ZSTD);
+	}
+
+	static PackedByteArray decompress_zstd(const PackedByteArray &p_bytes, int64_t p_decompressed_size) {
+		return p_bytes.decompress(p_decompressed_size, FileAccess::COMPRESSION_ZSTD);
 	}
 };
 

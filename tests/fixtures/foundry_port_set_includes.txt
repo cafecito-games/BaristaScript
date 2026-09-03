@@ -27,6 +27,15 @@
 41:#include "editor/settings/editor_settings.h"
 42:#endif
 
+=== modules/foundry_script/fs_tokenizer_buffer.h ===
+31:#pragma once
+33:#include "fs_tokenizer.h"
+
+=== modules/foundry_script/fs_tokenizer_buffer.cpp ===
+31:#include "fs_tokenizer_buffer.h"
+33:#include "core/io/compression.h"
+34:#include "core/io/marshalls.h"
+
 === modules/foundry_script/fs_parser.h ===
 31:#pragma once
 33:#include "fs_cache.h"

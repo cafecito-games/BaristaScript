@@ -11,6 +11,7 @@
 #include "barista_script.h"
 #include "barista_script_language.h"
 #include "barista_script_resource_loader.h"
+#include "bs_tokenizer_probe.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
@@ -34,6 +35,10 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);
+	// The tokenizer's test surface. godot-cpp's String/Variant only work inside a loaded Godot
+	// runtime, so the ported frontend is exercised from headless Godot rather than from a
+	// standalone C++ test binary, and it has to be a registered class to be reachable at all.
+	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
 
 	language = memnew(barista_script::BaristaScriptLanguage);
 	const godot::Error registration_error = godot::Engine::get_singleton()->register_script_language(language);

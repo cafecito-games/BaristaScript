@@ -68,6 +68,12 @@ target_sources(${LIBNAME}
     src/bs_platform.h
     src/bs_platform_seam.cpp
     src/bs_platform_shims.cpp
+    src/bs_tokenizer.cpp
+    src/bs_tokenizer.h
+    src/bs_tokenizer_buffer.cpp
+    src/bs_tokenizer_buffer.h
+    src/bs_tokenizer_probe.cpp
+    src/bs_tokenizer_probe.h
     src/register_types.cpp
     src/register_types.h
     src/barista_script.cpp

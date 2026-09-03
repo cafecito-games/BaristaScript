@@ -464,11 +464,12 @@ class FailClosedTest(unittest.TestCase):
 
     def test_a_port_set_file_absent_from_the_capture_is_rejected(self):
         document = real_manifest()
-        document["upstream"]["port_set"].append("fs_tokenizer_buffer.cpp")
+        # A module file that is genuinely outside the port set, so the capture cannot contain it.
+        document["upstream"]["port_set"].append("fs_analyzer.cpp")
         with TemporaryManifest(document) as path:
             result = run_audit("--manifest", str(path))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fs_tokenizer_buffer.cpp", result.stdout + result.stderr)
+        self.assertIn("fs_analyzer.cpp", result.stdout + result.stderr)
 
     def test_site_outside_the_declared_port_set_is_rejected(self):
         document = real_manifest()

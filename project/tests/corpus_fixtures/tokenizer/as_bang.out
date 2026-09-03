@@ -1,0 +1,1 @@
+"as!" is reserved. It reinterprets between integer widths, which BaristaScript does not distinguish.

@@ -34,4 +34,18 @@ const StringName &prove_sname() {
 	return SNAME("BaristaScript");
 }
 
+Variant prove_marshalls() {
+	uint8_t bytes[4] = {};
+	BSMarshalls::encode_uint32(0x01020304u, bytes);
+	if (BSMarshalls::decode_uint32(bytes) != 0x01020304u) {
+		return Variant();
+	}
+	return BSMarshalls::decode_variant(BSMarshalls::encode_variant(Variant(1)));
+}
+
+PackedByteArray prove_compression() {
+	const PackedByteArray compressed = BSCompression::compress_zstd(PackedByteArray());
+	return BSCompression::decompress_zstd(compressed, 0);
+}
+
 } // namespace bs_platform_seam
