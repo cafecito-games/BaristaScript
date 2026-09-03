@@ -67,6 +67,8 @@ target_sources(${LIBNAME}
     PRIVATE
     src/bs_platform.h
     src/bs_platform_seam.cpp
+    src/bs_warning.cpp
+    src/bs_warning.h
     src/bs_platform_shims.cpp
     src/register_types.cpp
     src/register_types.h

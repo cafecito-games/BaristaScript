@@ -53,6 +53,10 @@ jobs:
           python tests/audit_platform_seam.py
           python tests/test_audit_platform_seam.py
 
+      - name: Check the warning table closure
+        shell: bash
+        run: python tests/test_warning_table_closure.py
+
       # Lint
       #- name: Setup clang-format
       #  shell: bash
@@ -109,6 +113,7 @@ jobs:
           "$godot_binary" --headless --path project --script res://tests/smoke_test.gd
           "$godot_binary" --headless --path project --script res://tests/corpus_runner.gd -- --allow-empty
           "$godot_binary" --headless --path project --script res://tests/corpus_harness_test.gd
+          "$godot_binary" --headless --path project --script res://tests/warning_registry_test.gd
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save
