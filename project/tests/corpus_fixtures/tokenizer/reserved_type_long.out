@@ -1,1 +1,0 @@
-"long" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".

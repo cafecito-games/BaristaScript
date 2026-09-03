@@ -555,11 +555,13 @@ bool BSTokenizerText::_is_type_position() const {
 		case Token::AS:
 		case Token::IS:
 			return true;
-		case Token::COLON:
-			// A Python-style dictionary entry is the one construct that spells a value after ":",
-			// and it is always inside "{". Everywhere else a ":" followed by a name introduces a
-			// type.
-			return paren_stack.is_empty() || paren_stack.back()->get() != '{';
+		// A ":" is deliberately NOT a type position. It was one until the parser milestone, on the
+		// reasoning that a block always begins with a NEWLINE so a ":" followed by a name could
+		// only be an annotation. That is false: docs/GRAMMAR.md section 6 gives `block` a
+		// single-line alternative, so `if ready: long()` and `func g(): uint()` put an ordinary
+		// expression right after the ":" -- and the rule rejected a legal identifier there. The
+		// tokenizer cannot tell the two apart without parsing, so the decision belongs to the
+		// parser, which makes it in `BSParser::reject_reserved_type_name()`.
 		default:
 			return false;
 	}

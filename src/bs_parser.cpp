@@ -268,6 +268,11 @@ void BSParser::push_error(const String &p_message, const Node *p_origin) {
 	}
 }
 
+void BSParser::push_error_at(const String &p_message, const BSTokenizer::Token &p_token) {
+	panic_mode = true;
+	errors.push_back({ p_message, p_token.start_line, p_token.start_column, p_token.end_line, p_token.end_column });
+}
+
 Vector<const BSParser::ParserError *> BSParser::get_errors_in_source_order() const {
 	// The emission index is the final tiebreaker, so two diagnostics at the same position keep the
 	// order they were reported in.
@@ -633,8 +638,10 @@ BSTokenizer::Token BSParser::advance() {
 		has_lookahead = false;
 	} else {
 		current = tokenizer->scan();
+		current_follows_tokenizer_error = false;
 		while (current.type == BSTokenizer::Token::ERROR) {
-			push_error(current.literal);
+			push_error_at(current.literal, current);
+			current_follows_tokenizer_error = true;
 			current = tokenizer->scan();
 		}
 	}
@@ -653,7 +660,7 @@ const BSTokenizer::Token &BSParser::peek() {
 	if (!has_lookahead) {
 		lookahead = tokenizer->scan();
 		while (lookahead.type == BSTokenizer::Token::ERROR) {
-			push_error(lookahead.literal);
+			push_error_at(lookahead.literal, lookahead);
 			lookahead = tokenizer->scan();
 		}
 		has_lookahead = true;
@@ -797,7 +804,7 @@ void BSParser::reject_reserved_type_name() {
 	// `Token::RESERVED_TYPE_NAME` everywhere else, because only a parser knows whether a name stands
 	// in a type position. This is where the rest is decided.
 	//
-	// It reports and does not consume. The caller's own `consume(IDENTIFIER)` then takes the token as
+	// It reports at the token's own span and does not consume. The caller's own `consume(IDENTIFIER)` then takes the token as
 	// it always would (`check(IDENTIFIER)` accepts `RESERVED_TYPE_NAME`, since the spelling is still a
 	// legal ordinary name), so the tree keeps the shape it would have had and exactly one diagnostic
 	// is produced -- not a rejection here plus a derived "expected a type" from the caller.
@@ -805,7 +812,9 @@ void BSParser::reject_reserved_type_name() {
 	// The message comes from `BSTokenizer::removed_type_name_diagnostic()`, which is its only
 	// definition, so the tokenizer's rejection and this one cannot word the same rule differently.
 	if (current.type == BSTokenizer::Token::RESERVED_TYPE_NAME) {
-		push_error(BSTokenizer::removed_type_name_diagnostic(current.get_identifier()));
+		// Reported at the spelling's own span, not at `previous`: the reader has to be pointed at
+		// the name, not at the `:` or `[` that happened to precede it.
+		push_error_at(BSTokenizer::removed_type_name_diagnostic(current.get_identifier()), current);
 	}
 }
 
@@ -3485,7 +3494,7 @@ bool BSParser::parse_function_signature(FunctionNode *p_function, SuiteNode *p_b
 	if (match(BSTokenizer::Token::FORWARD_ARROW)) {
 		make_completion_context(COMPLETION_TYPE_NAME_OR_VOID, p_function);
 		p_function->return_type = parse_type(true);
-		if (p_function->return_type == nullptr) {
+		if (p_function->return_type == nullptr && !current_follows_tokenizer_error) {
 			push_error(R"(Expected return type or "void" after "->".)");
 		}
 	}
@@ -5864,7 +5873,9 @@ BSParser::ExpressionNode *BSParser::parse_cast(ExpressionNode *p_previous_operan
 	complete_extents(cast);
 
 	if (cast->cast_type == nullptr) {
-		push_error(R"(Expected type specifier after "as".)");
+		if (!current_follows_tokenizer_error) {
+			push_error(R"(Expected type specifier after "as".)");
+		}
 		return p_previous_operand;
 	}
 
@@ -6310,7 +6321,7 @@ BSParser::ExpressionNode *BSParser::parse_type_test(ExpressionNode *p_previous_o
 		}
 	}
 
-	if (type_test->test_type == nullptr) {
+	if (type_test->test_type == nullptr && !current_follows_tokenizer_error) {
 		if (not_node == nullptr) {
 			push_error(R"(Expected type specifier after "is".)");
 		} else {
@@ -8457,6 +8468,10 @@ void BSParser::TreePrinter::push_text(const String &p_text) {
 }
 
 void BSParser::TreePrinter::print_annotation(const AnnotationNode *p_annotation) {
+	if (p_annotation == nullptr) {
+		push_text("<invalid annotation>");
+		return;
+	}
 	push_text(p_annotation->name);
 	push_text(" (");
 	for (int i = 0; i < p_annotation->arguments.size(); i++) {
@@ -8469,6 +8484,10 @@ void BSParser::TreePrinter::print_annotation(const AnnotationNode *p_annotation)
 }
 
 void BSParser::TreePrinter::print_annotation_declaration(AnnotationDeclarationNode *p_annotation_declaration) {
+	if (p_annotation_declaration == nullptr) {
+		push_text("<invalid annotation declaration>");
+		return;
+	}
 	push_text("Annotation ");
 	if (p_annotation_declaration->identifier == nullptr) {
 		push_text("<unnamed>");
@@ -8524,6 +8543,10 @@ void BSParser::TreePrinter::print_annotation_declaration(AnnotationDeclarationNo
 }
 
 void BSParser::TreePrinter::print_array(ArrayNode *p_array) {
+	if (p_array == nullptr) {
+		push_text("<invalid array>");
+		return;
+	}
 	push_text("[ ");
 	for (int i = 0; i < p_array->elements.size(); i++) {
 		if (i > 0) {
@@ -8535,12 +8558,20 @@ void BSParser::TreePrinter::print_array(ArrayNode *p_array) {
 }
 
 void BSParser::TreePrinter::print_assert(AssertNode *p_assert) {
+	if (p_assert == nullptr) {
+		push_text("<invalid assert>");
+		return;
+	}
 	push_text("Assert ( ");
 	print_expression(p_assert->condition);
 	push_line(" )");
 }
 
 void BSParser::TreePrinter::print_assignment(AssignmentNode *p_assignment) {
+	if (p_assignment == nullptr) {
+		push_text("<invalid assignment>");
+		return;
+	}
 	switch (p_assignment->assignee->type) {
 		case Node::IDENTIFIER:
 			print_identifier(static_cast<IdentifierNode *>(p_assignment->assignee));
@@ -8596,11 +8627,19 @@ void BSParser::TreePrinter::print_assignment(AssignmentNode *p_assignment) {
 }
 
 void BSParser::TreePrinter::print_await(AwaitNode *p_await) {
+	if (p_await == nullptr) {
+		push_text("<invalid await>");
+		return;
+	}
 	push_text("Await ");
 	print_expression(p_await->to_await);
 }
 
 void BSParser::TreePrinter::print_binary_op(BinaryOpNode *p_binary_op) {
+	if (p_binary_op == nullptr) {
+		push_text("<invalid binary op>");
+		return;
+	}
 	// Surround in parenthesis for disambiguation.
 	push_text("(");
 	print_expression(p_binary_op->left_operand);
@@ -8672,6 +8711,10 @@ void BSParser::TreePrinter::print_binary_op(BinaryOpNode *p_binary_op) {
 }
 
 void BSParser::TreePrinter::print_call(CallNode *p_call) {
+	if (p_call == nullptr) {
+		push_text("<invalid call>");
+		return;
+	}
 	if (p_call->is_super) {
 		push_text("super");
 		if (p_call->callee != nullptr) {
@@ -8692,12 +8735,20 @@ void BSParser::TreePrinter::print_call(CallNode *p_call) {
 }
 
 void BSParser::TreePrinter::print_cast(CastNode *p_cast) {
+	if (p_cast == nullptr) {
+		push_text("<invalid cast>");
+		return;
+	}
 	print_expression(p_cast->operand);
 	push_text(" AS ");
 	print_type(p_cast->cast_type);
 }
 
 void BSParser::TreePrinter::print_class(ClassNode *p_class) {
+	if (p_class == nullptr) {
+		push_text("<invalid class>");
+		return;
+	}
 	for (const AnnotationNode *E : p_class->annotations) {
 		print_annotation(E);
 	}
@@ -8787,6 +8838,10 @@ void BSParser::TreePrinter::print_class(ClassNode *p_class) {
 }
 
 void BSParser::TreePrinter::print_constant(ConstantNode *p_constant) {
+	if (p_constant == nullptr) {
+		push_text("<invalid constant>");
+		return;
+	}
 	push_text("Constant ");
 	print_identifier(p_constant->identifier);
 
@@ -8804,6 +8859,10 @@ void BSParser::TreePrinter::print_constant(ConstantNode *p_constant) {
 }
 
 void BSParser::TreePrinter::print_dictionary(DictionaryNode *p_dictionary) {
+	if (p_dictionary == nullptr) {
+		push_text("<invalid dictionary>");
+		return;
+	}
 	push_line("{");
 	increase_indent();
 	for (int i = 0; i < p_dictionary->elements.size(); i++) {
@@ -8887,6 +8946,10 @@ void BSParser::TreePrinter::print_expression(ExpressionNode *p_expression) {
 }
 
 void BSParser::TreePrinter::print_enum(EnumNode *p_enum) {
+	if (p_enum == nullptr) {
+		push_text("<invalid enum>");
+		return;
+	}
 	push_text("Enum ");
 	if (p_enum->identifier != nullptr) {
 		print_identifier(p_enum->identifier);
@@ -8912,6 +8975,10 @@ void BSParser::TreePrinter::print_enum(EnumNode *p_enum) {
 }
 
 void BSParser::TreePrinter::print_for(ForNode *p_for) {
+	if (p_for == nullptr) {
+		push_text("<invalid for>");
+		return;
+	}
 	push_text("For ");
 	print_identifier(p_for->variable);
 	push_text(" IN ");
@@ -8926,6 +8993,10 @@ void BSParser::TreePrinter::print_for(ForNode *p_for) {
 }
 
 void BSParser::TreePrinter::print_function(FunctionNode *p_function, const String &p_context) {
+	if (p_function == nullptr) {
+		push_text("<invalid function>");
+		return;
+	}
 	for (const AnnotationNode *E : p_function->annotations) {
 		print_annotation(E);
 	}
@@ -8957,6 +9028,10 @@ void BSParser::TreePrinter::print_function(FunctionNode *p_function, const Strin
 }
 
 void BSParser::TreePrinter::print_get_node(GetNodeNode *p_get_node) {
+	if (p_get_node == nullptr) {
+		push_text("<invalid get node>");
+		return;
+	}
 	if (p_get_node->use_dollar) {
 		push_text("$");
 	}
@@ -8964,6 +9039,10 @@ void BSParser::TreePrinter::print_get_node(GetNodeNode *p_get_node) {
 }
 
 void BSParser::TreePrinter::print_identifier(IdentifierNode *p_identifier) {
+	if (p_identifier == nullptr) {
+		push_text("<invalid identifier>");
+		return;
+	}
 	if (p_identifier != nullptr) {
 		push_text(p_identifier->name);
 	} else {
@@ -8972,6 +9051,10 @@ void BSParser::TreePrinter::print_identifier(IdentifierNode *p_identifier) {
 }
 
 void BSParser::TreePrinter::print_if(IfNode *p_if, bool p_is_elif) {
+	if (p_if == nullptr) {
+		push_text("<invalid if>");
+		return;
+	}
 	if (p_is_elif) {
 		push_text("Elif ");
 	} else {
@@ -8999,6 +9082,10 @@ void BSParser::TreePrinter::print_if(IfNode *p_if, bool p_is_elif) {
 }
 
 void BSParser::TreePrinter::print_lambda(LambdaNode *p_lambda) {
+	if (p_lambda == nullptr) {
+		push_text("<invalid lambda>");
+		return;
+	}
 	print_function(p_lambda->function, "Lambda");
 	push_text("| captures [ ");
 	for (int i = 0; i < p_lambda->captures.size(); i++) {
@@ -9011,6 +9098,10 @@ void BSParser::TreePrinter::print_lambda(LambdaNode *p_lambda) {
 }
 
 void BSParser::TreePrinter::print_literal(LiteralNode *p_literal) {
+	if (p_literal == nullptr) {
+		push_text("<invalid literal>");
+		return;
+	}
 	// Prefix for string types.
 	switch (p_literal->value.get_type()) {
 		case Variant::NODE_PATH:
@@ -9039,6 +9130,10 @@ void BSParser::TreePrinter::print_literal(LiteralNode *p_literal) {
 }
 
 void BSParser::TreePrinter::print_match(MatchNode *p_match) {
+	if (p_match == nullptr) {
+		push_text("<invalid match>");
+		return;
+	}
 	push_text("Match ");
 	print_expression(p_match->test);
 	push_line(" :");
@@ -9051,6 +9146,10 @@ void BSParser::TreePrinter::print_match(MatchNode *p_match) {
 }
 
 void BSParser::TreePrinter::print_match_branch(MatchBranchNode *p_match_branch) {
+	if (p_match_branch == nullptr) {
+		push_text("<invalid match branch>");
+		return;
+	}
 	for (int i = 0; i < p_match_branch->patterns.size(); i++) {
 		if (i > 0) {
 			push_text(" , ");
@@ -9066,6 +9165,10 @@ void BSParser::TreePrinter::print_match_branch(MatchBranchNode *p_match_branch) 
 }
 
 void BSParser::TreePrinter::print_match_pattern(PatternNode *p_match_pattern) {
+	if (p_match_pattern == nullptr) {
+		push_text("<invalid match pattern>");
+		return;
+	}
 	switch (p_match_pattern->pattern_type) {
 		case PatternNode::PT_LITERAL:
 			print_literal(p_match_pattern->literal);
@@ -9135,6 +9238,10 @@ void BSParser::TreePrinter::print_match_pattern(PatternNode *p_match_pattern) {
 }
 
 void BSParser::TreePrinter::print_parameter(ParameterNode *p_parameter) {
+	if (p_parameter == nullptr) {
+		push_text("<invalid parameter>");
+		return;
+	}
 	print_identifier(p_parameter->identifier);
 	if (p_parameter->datatype_specifier != nullptr) {
 		push_text(" : ");
@@ -9147,12 +9254,20 @@ void BSParser::TreePrinter::print_parameter(ParameterNode *p_parameter) {
 }
 
 void BSParser::TreePrinter::print_preload(PreloadNode *p_preload) {
+	if (p_preload == nullptr) {
+		push_text("<invalid preload>");
+		return;
+	}
 	push_text(R"(Preload ( ")");
 	push_text(p_preload->resolved_path);
 	push_text(R"(" )");
 }
 
 void BSParser::TreePrinter::print_return(ReturnNode *p_return) {
+	if (p_return == nullptr) {
+		push_text("<invalid return>");
+		return;
+	}
 	push_text("Return");
 	if (p_return->return_value != nullptr) {
 		push_text(" ");
@@ -9162,6 +9277,10 @@ void BSParser::TreePrinter::print_return(ReturnNode *p_return) {
 }
 
 void BSParser::TreePrinter::print_self(SelfNode *p_self) {
+	if (p_self == nullptr) {
+		push_text("<invalid self>");
+		return;
+	}
 	push_text("Self(");
 	if (p_self->current_class->identifier != nullptr) {
 		print_identifier(p_self->current_class->identifier);
@@ -9172,6 +9291,10 @@ void BSParser::TreePrinter::print_self(SelfNode *p_self) {
 }
 
 void BSParser::TreePrinter::print_signal(SignalNode *p_signal) {
+	if (p_signal == nullptr) {
+		push_text("<invalid signal>");
+		return;
+	}
 	push_text("Signal ");
 	print_identifier(p_signal->identifier);
 	push_text("( ");
@@ -9182,6 +9305,10 @@ void BSParser::TreePrinter::print_signal(SignalNode *p_signal) {
 }
 
 void BSParser::TreePrinter::print_subscript(SubscriptNode *p_subscript) {
+	if (p_subscript == nullptr) {
+		push_text("<invalid subscript>");
+		return;
+	}
 	print_expression(p_subscript->base);
 	if (p_subscript->is_attribute) {
 		push_text(".");
@@ -9197,6 +9324,10 @@ void BSParser::TreePrinter::print_subscript(SubscriptNode *p_subscript) {
 }
 
 void BSParser::TreePrinter::print_statement(Node *p_statement) {
+	if (p_statement == nullptr) {
+		push_text("<invalid statement>");
+		return;
+	}
 	switch (p_statement->type) {
 		case Node::ASSERT:
 			print_assert(static_cast<AssertNode *>(p_statement));
@@ -9252,12 +9383,20 @@ void BSParser::TreePrinter::print_statement(Node *p_statement) {
 }
 
 void BSParser::TreePrinter::print_suite(SuiteNode *p_suite) {
+	if (p_suite == nullptr) {
+		push_text("<invalid suite>");
+		return;
+	}
 	for (int i = 0; i < p_suite->statements.size(); i++) {
 		print_statement(p_suite->statements[i]);
 	}
 }
 
 void BSParser::TreePrinter::print_ternary_op(TernaryOpNode *p_ternary_op) {
+	if (p_ternary_op == nullptr) {
+		push_text("<invalid ternary op>");
+		return;
+	}
 	// Surround in parenthesis for disambiguation.
 	push_text("(");
 	print_expression(p_ternary_op->true_expr);
@@ -9269,6 +9408,10 @@ void BSParser::TreePrinter::print_ternary_op(TernaryOpNode *p_ternary_op) {
 }
 
 void BSParser::TreePrinter::print_tuple(TupleNode *p_tuple) {
+	if (p_tuple == nullptr) {
+		push_text("<invalid tuple>");
+		return;
+	}
 	push_text("Tuple ");
 	if (p_tuple->identifier != nullptr) {
 		print_identifier(p_tuple->identifier);
@@ -9296,6 +9439,10 @@ void BSParser::TreePrinter::print_tuple(TupleNode *p_tuple) {
 }
 
 void BSParser::TreePrinter::print_tuple_literal(TupleLiteralNode *p_tuple_literal) {
+	if (p_tuple_literal == nullptr) {
+		push_text("<invalid tuple literal>");
+		return;
+	}
 	push_text("( ");
 	for (int i = 0; i < p_tuple_literal->elements.size(); i++) {
 		if (i > 0) {
@@ -9307,6 +9454,10 @@ void BSParser::TreePrinter::print_tuple_literal(TupleLiteralNode *p_tuple_litera
 }
 
 void BSParser::TreePrinter::print_type_alias(TypeAliasNode *p_type_alias) {
+	if (p_type_alias == nullptr) {
+		push_text("<invalid type alias>");
+		return;
+	}
 	push_text("Type Alias ");
 	if (p_type_alias->identifier != nullptr) {
 		print_identifier(p_type_alias->identifier);
@@ -9319,6 +9470,10 @@ void BSParser::TreePrinter::print_type_alias(TypeAliasNode *p_type_alias) {
 }
 
 void BSParser::TreePrinter::print_type(TypeNode *p_type) {
+	if (p_type == nullptr) {
+		push_text("<invalid type>");
+		return;
+	}
 	if (p_type->is_union) {
 		for (int i = 0; i < p_type->union_member_types.size(); i++) {
 			if (i > 0) {
@@ -9381,6 +9536,10 @@ void BSParser::TreePrinter::print_type_parameters(const Vector<TypeParameterNode
 }
 
 void BSParser::TreePrinter::print_type_test(TypeTestNode *p_test) {
+	if (p_test == nullptr) {
+		push_text("<invalid type test>");
+		return;
+	}
 	print_expression(p_test->operand);
 	push_text(" IS ");
 	print_type(p_test->test_type);
@@ -9399,6 +9558,10 @@ void BSParser::TreePrinter::print_type_test(TypeTestNode *p_test) {
 }
 
 void BSParser::TreePrinter::print_unary_op(UnaryOpNode *p_unary_op) {
+	if (p_unary_op == nullptr) {
+		push_text("<invalid unary op>");
+		return;
+	}
 	// Surround in parenthesis for disambiguation.
 	push_text("(");
 	switch (p_unary_op->operation) {
@@ -9421,6 +9584,10 @@ void BSParser::TreePrinter::print_unary_op(UnaryOpNode *p_unary_op) {
 }
 
 void BSParser::TreePrinter::print_variable(VariableNode *p_variable) {
+	if (p_variable == nullptr) {
+		push_text("<invalid variable>");
+		return;
+	}
 	for (const AnnotationNode *E : p_variable->annotations) {
 		print_annotation(E);
 	}
@@ -9494,6 +9661,10 @@ void BSParser::TreePrinter::print_variable(VariableNode *p_variable) {
 }
 
 void BSParser::TreePrinter::print_variable_destructure(VariableDestructureNode *p_destructure) {
+	if (p_destructure == nullptr) {
+		push_text("<invalid variable destructure>");
+		return;
+	}
 	for (const AnnotationNode *E : p_destructure->annotations) {
 		print_annotation(E);
 	}
@@ -9525,6 +9696,10 @@ void BSParser::TreePrinter::print_variable_destructure(VariableDestructureNode *
 }
 
 void BSParser::TreePrinter::print_while(WhileNode *p_while) {
+	if (p_while == nullptr) {
+		push_text("<invalid while>");
+		return;
+	}
 	push_text("While ");
 	print_expression(p_while->condition);
 	push_line(" :");

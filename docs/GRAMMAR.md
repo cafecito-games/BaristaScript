@@ -945,9 +945,17 @@ From lowest to highest. Higher binds tighter.
 | 22| `PREC_SUBSCRIPT`            | `[` … `]` subscript / type args                    | left |
 | 23| `PREC_PRIMARY`              | literals, identifiers, grouping, primaries         | —    |
 
-> `**` sits at `PREC_POWER` and binds tighter than unary sign, so `-2 ** 2` parses as
-> `-(2 ** 2)`. Because every binary operator recurses with `precedence + 1`, `**` is
+> `**` sits at `PREC_POWER` and binds tighter than unary sign, so `-a ** b` parses as
+> `-(a ** b)`. Because every binary operator recurses with `precedence + 1`, `**` is
 > **left**-associative.
+>
+> A *numeric literal* is the exception, and deliberately: a `+` or `-` immediately followed by a
+> digit is part of the literal whenever the preceding token cannot end a value (§2.6.1), so `-2`
+> never becomes a unary operator for `**` to bind tighter than, and `-2 ** 2` is `(-2) ** 2`. This
+> is not a precedence rule and cannot be changed by one — it is what makes
+> `-9223372036854775808`, the lower bound §7.1 states, writable at all: as unary minus applied to
+> `9223372036854775808` the magnitude has no `int` to live in. Foundry Script and GDScript lex it
+> the same way.
 
 ### 5.3 Prefix (null-denotation) forms
 

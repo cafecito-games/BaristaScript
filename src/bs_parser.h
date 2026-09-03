@@ -2407,6 +2407,26 @@ private:
 	void clear();
 
 	void push_error(const String &p_message, const Node *p_origin = nullptr);
+	/**
+	 * Reports a diagnostic at a token's own span rather than at `previous`.
+	 *
+	 * A tokenizer diagnostic arrives on an `ERROR` token that `advance()` skips, so by the time it
+	 * is reported `previous` is whatever preceded the malformed text -- upstream points the reader
+	 * at unrelated punctuation (fs_parser.cpp:634 @ c9d5e35). The offending token knows where it is.
+	 */
+	void push_error_at(const String &p_message, const BSTokenizer::Token &p_token);
+
+	/**
+	 * True when the token now in `current` was reached by skipping one or more `ERROR` tokens that
+	 * `advance()` has already reported.
+	 *
+	 * A type position the tokenizer settles (`->`, `as`, `is`) rejects a D1-removed spelling itself
+	 * and consumes it, which leaves the parser looking at a hole. Deriving "Expected type specifier"
+	 * from that hole would be a second, differently worded complaint about a token the tokenizer
+	 * already rejected -- which the fail-closed contract forbids. The flag is what lets those sites
+	 * stay silent, and only those: it says nothing about whether the source is otherwise valid.
+	 */
+	bool current_follows_tokenizer_error = false;
 #ifdef DEBUG_ENABLED
 	void push_warning(const Node *p_source, BSWarning::Code p_code, const Vector<String> &p_symbols);
 	template <typename... Symbols>

@@ -351,16 +351,18 @@ class BSTokenizerText : public BSTokenizer {
 	 * Whether the token about to be produced stands in a type position.
 	 *
 	 * The tokenizer cannot parse, so it recognizes only the positions the token stream itself
-	 * settles: after `->`, `as` or `is`, where nothing but a type may follow, and after a `:` that
-	 * is not inside a `{`. That last one is exact rather than a guess -- `block` begins with a
-	 * NEWLINE (docs/GRAMMAR.md section 6), so a `:` followed by a name is never a block header; a
-	 * named call argument is spelled `name = value`, not `name: value` (section 5.5), so a `:`
-	 * inside `(` is a parameter or payload-field annotation; and the one construct that does spell
-	 * a value after `:` is the Python-style dictionary entry, which is always inside `{`.
+	 * settles: after `->`, `as` or `is`, where nothing but a type may follow.
 	 *
-	 * Type positions the token stream does not settle -- a type argument (`Array[uint]`), a `type`
-	 * alias -- are left to the parser, which knows what it is parsing. Being incomplete here costs
-	 * a diagnostic the parser will produce anyway; guessing here would cost a rejected value.
+	 * A `:` is not one of them, though it was until the parser milestone. The reasoning then was
+	 * that a block always begins with a NEWLINE, so a `:` followed by a name could only be a type
+	 * annotation; docs/GRAMMAR.md section 6 gives `block` a single-line alternative, which makes
+	 * that false -- `func g(): uint()` and `if ready: long()` spell an ordinary expression right
+	 * after the `:`, and the rule rejected a legal identifier there.
+	 *
+	 * Every other type position -- after a `:`, a type argument (`Array[uint]`), a `type` alias,
+	 * and every position that declares a type name -- is the parser's, which knows what it is
+	 * parsing: `BSParser::reject_reserved_type_name()`. Being incomplete here costs a diagnostic
+	 * the parser produces anyway; guessing here costs a rejected value.
 	 */
 	bool _is_type_position() const;
 	Token check_vcs_marker(char32_t p_test, Token::Type p_double_type);

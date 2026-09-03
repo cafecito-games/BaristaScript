@@ -161,21 +161,31 @@ func _test_final_trait_is_rejected(probe, failures: Array[String]) -> void:
 ## one for the same token.
 func _test_removed_type_spelling_reports_once_from_one_definition(probe, failures: Array[String]) -> void:
 	var expected: String = probe.removed_type_name_diagnostic("uint")
-	var report := _parse(probe, "var count: uint = 0\n")
+	# `as` is a type position the *tokenizer* settles, so it rejects and consumes the token itself.
+	# That is where the parser could add a second, differently worded complaint about the same
+	# token, and the contract says it must not.
+	var report := _parse(probe, "var value = 1 as uint\n")
 	var matching := 0
 	for diagnostic in report["diagnostics"]:
 		if (diagnostic as String).ends_with(expected):
 			matching += 1
 	_expect(failures, matching == 1,
-		"`var x: uint`: expected exactly one removed-type-name diagnostic, got %d: %s" % [matching, report["diagnostics"]])
+		"`1 as uint`: expected exactly one removed-type-name diagnostic, got %d: %s" % [matching, report["diagnostics"]])
 	_expect(failures, report["diagnostics"].size() == 1,
-		"`var x: uint`: a second, different diagnostic was added: %s" % [report["diagnostics"]])
+		"`1 as uint`: a second, different diagnostic was added: %s" % [report["diagnostics"]])
 
 
 ## The type positions only a parser can see. Each must be rejected, and with the
 ## one message BSTokenizer::removed_type_name_diagnostic() defines.
 func _test_removed_type_spelling_in_every_parser_owned_type_position(probe, failures: Array[String]) -> void:
 	var positions := {
+		# The `:` annotation positions, which the tokenizer hands over because a `:` may also begin
+		# a single-line suite (docs/GRAMMAR.md section 6).
+		"var declared: uint = 1\n": "uint",
+		"const DECLARED: ulong = 1\n": "ulong",
+		"func f(value: long) -> void:\n\tpass\n": "long",
+		"signal changed(value: uint)\n": "uint",
+		# The positions no token-stream rule could reach at all.
 		"var a: Array[uint] = []\n": "uint",
 		"var b: Dictionary[String, ulong] = {}\n": "ulong",
 		"type Alias = long\n": "long",
