@@ -47,6 +47,12 @@ jobs:
       - name: Validate CI configuration
         run: python tests/validate_ci.py
 
+      - name: Audit the platform seam
+        shell: bash
+        run: |
+          python tests/audit_platform_seam.py
+          python tests/test_audit_platform_seam.py
+
       # Lint
       #- name: Setup clang-format
       #  shell: bash
