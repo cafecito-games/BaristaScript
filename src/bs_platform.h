@@ -52,6 +52,11 @@
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/core/math_defs.hpp>
 
+// core/object/class_db.h -- godot-cpp's `ClassDB` forwards the introspection methods onto the
+// `ClassDBSingleton` binding (godot-cpp/include/godot_cpp/core/class_db.hpp:214), so the core
+// spelling works unchanged. The one method it does not forward is `is_class_exposed()`, which it
+// does not need to: the ClassDB an extension talks to is built from the exposed API.
+#include <godot_cpp/core/class_db.hpp>
 // core/object/object.h -- only PropertyInfo is used; godot-cpp keeps it under core/, not classes/.
 #include <godot_cpp/core/property_info.hpp>
 // core/object/ref_counted.h -- core declares RefCounted and Ref<T> together.
@@ -75,8 +80,11 @@
 // core/io/marshalls.h -- godot-cpp has no marshalls header; see the BSMarshalls shim below. The
 // shim reaches the variant serializer through UtilityFunctions, already included above.
 #include <godot_cpp/variant/packed_byte_array.hpp>
-// scene/main/multiplayer_api.h -- only the RPCMode enumerators are used.
+// scene/main/multiplayer_api.h -- the `@rpc` annotation reads the RPCMode enumerators from
+// MultiplayerAPI and the TransferMode ones from MultiplayerPeer, which core declares in a header
+// this one includes and godot-cpp splits into its own.
 #include <godot_cpp/classes/multiplayer_api.hpp>
+#include <godot_cpp/classes/multiplayer_peer.hpp>
 // servers/text/text_server.h -- the confusable-identifier check M1 guarded out, reinstated by the
 // warning registry through the public interface rather than the engine-internal TS macro. core
 // reaches the primary interface through TS; godot-cpp goes through TextServerManager, so the seam
@@ -148,6 +156,36 @@ using namespace godot;
 		static godot::StringName *sname = memnew(StringName(m_arg)); \
 		return *sname;                                               \
 	}())
+
+/**
+ * `StringName` compared against a C string literal. Core declares four such operators on
+ * `StringName` and four free ones for the reversed operand order
+ * (Foundry `core/string/string_name.h:82,84,197,198` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6,
+ * unchanged from stock Godot); godot-cpp declares none of them, so `name == "export"` is not a
+ * missing operator but an *ambiguous* one -- the compiler can convert either side -- and every such
+ * comparison in the ported front-end fails to build.
+ *
+ * The four operators below are exact matches, so they resolve the ambiguity rather than adding a conversion, and
+ * they answer exactly what core's answer: the comparison a `StringName` makes against the interned
+ * form of that literal. They are declared here rather than spelled out at ~30 call sites so that the
+ * diff against Foundry stays readable, which is the seam's whole purpose.
+ */
+_FORCE_INLINE_ bool bs_string_name_equals_literal(const godot::StringName &p_name, const char *p_literal) {
+	return p_name == godot::StringName(p_literal);
+}
+
+_FORCE_INLINE_ bool operator==(const godot::StringName &p_name, const char *p_literal) {
+	return bs_string_name_equals_literal(p_name, p_literal);
+}
+_FORCE_INLINE_ bool operator!=(const godot::StringName &p_name, const char *p_literal) {
+	return !bs_string_name_equals_literal(p_name, p_literal);
+}
+_FORCE_INLINE_ bool operator==(const char *p_literal, const godot::StringName &p_name) {
+	return bs_string_name_equals_literal(p_name, p_literal);
+}
+_FORCE_INLINE_ bool operator!=(const char *p_literal, const godot::StringName &p_name) {
+	return !bs_string_name_equals_literal(p_name, p_literal);
+}
 
 /**
  * `core/string/string_builder.h` is absent from godot-cpp. Godot's own implementation was read

@@ -59,6 +59,21 @@ public:
 	bool _is_placeholder_fallback_enabled() const override;
 	godot::Variant _get_rpc_config() const override;
 	bool _instance_has(godot::Object *p_object) const override;
+
+	/**
+	 * The source path a script path denotes.
+	 *
+	 * Foundry canonicalizes its compiled variants (`.fsc`, `.fsb`) back onto the `.fs` source they
+	 * were built from (foundry_script.cpp:2998-3004 @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6), so
+	 * that one script has one identity in the global class table, in dependency lists, and in
+	 * diagnostics whatever form of it was loaded. BaristaScript has exactly one form today --
+	 * `.barista` -- so the mapping is the identity, and this is the single place the compiled-format
+	 * milestones add their extensions rather than a second rule appearing at a comparison site.
+	 */
+	static godot::String canonicalize_path(const godot::String &p_path);
+	static bool is_canonically_equal_paths(const godot::String &p_path_a, const godot::String &p_path_b) {
+		return canonicalize_path(p_path_a) == canonicalize_path(p_path_b);
+	}
 };
 
 } // namespace barista_script

@@ -30,6 +30,15 @@ String prove_string_builder() {
 	return builder.as_string();
 }
 
+// The comparison operators godot-cpp omits. Both orders and both senses, so a godot-cpp bump that
+// adds its own overloads is caught here as an ambiguity rather than at 30 ported call sites.
+bool prove_string_name_literal_comparison(const StringName &p_name) {
+	const bool equal = bs_string_name_equals_literal(p_name, "BaristaScript") &&
+			(p_name == "BaristaScript") && ("BaristaScript" == p_name);
+	const bool different = (p_name != "BaristaScript") || ("BaristaScript" != p_name);
+	return equal && !different;
+}
+
 const StringName &prove_sname() {
 	return SNAME("BaristaScript");
 }

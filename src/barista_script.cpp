@@ -158,4 +158,10 @@ bool BaristaScript::_instance_has(godot::Object *) const {
 	return false;
 }
 
+godot::String BaristaScript::canonicalize_path(const godot::String &p_path) {
+	// One source form exists today, so every path is already canonical. See the header for why the
+	// function exists anyway.
+	return p_path;
+}
+
 } // namespace barista_script

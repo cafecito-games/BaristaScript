@@ -82,6 +82,15 @@
 58:#endif // DEBUG_ENABLED
 60:#ifdef TOOLS_ENABLED
 
+=== modules/foundry_script/fs_parser_data_type.cpp ===
+31:#include "fs_parser.h"
+33:#include "foundry_script.h"
+34:#include "fs_cache.h"
+35:#include "fs_diagnostic_names.h"
+37:#include "core/core_constants.h"
+38:#include "core/object/class_db.h"
+39:#include "core/object/script_language.h"
+
 === modules/foundry_script/fs_warning.h ===
 31:#pragma once
 33:#ifdef DEBUG_ENABLED

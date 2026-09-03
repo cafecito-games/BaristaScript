@@ -8,10 +8,42 @@
 
 #pragma once
 
+#include "bs_platform.h"
+
 #include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/classes/script_language_extension.hpp>
 
 namespace barista_script {
+
+/**
+ * The interned names the front-end compares identifiers against.
+ *
+ * Foundry hangs this table on its language singleton and reaches it as
+ * `FSLanguage::get_singleton()->strings._init` (foundry_script.h:1255-1267 @
+ * c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6). Constructing a `StringName` crosses the GDExtension
+ * interface, so the parser must not build one per comparison; and a bare `"_init"` literal at a
+ * comparison site is how two spellings of the same special name drift apart. This is the only place
+ * these names are written.
+ *
+ * It is deliberately not a member of the language object. The parser runs before the language is
+ * registered (a resource loader may parse during extension start-up), and a table reached through a
+ * singleton that may still be null is a table with two behaviours. These are constants; they are
+ * built once, on first use, and are the same in every process that loads the extension.
+ */
+struct BaristaScriptInternedStrings {
+	godot::StringName _init;
+	godot::StringName _static_init;
+	godot::StringName _notification;
+	godot::StringName _set;
+	godot::StringName _get;
+	godot::StringName _get_property_list;
+	godot::StringName _validate_property;
+	godot::StringName _property_can_revert;
+	godot::StringName _property_get_revert;
+	godot::StringName _script_source;
+
+	BaristaScriptInternedStrings();
+};
 
 class BaristaScriptLanguage final : public godot::ScriptLanguageExtension {
 	GDCLASS(BaristaScriptLanguage, godot::ScriptLanguageExtension)
@@ -86,6 +118,19 @@ public:
 	void _frame() override;
 	bool _handles_global_class_type(const godot::String &p_type) const override;
 	godot::Dictionary _get_global_class_name(const godot::String &p_path) const override;
+
+	/** The interned special-method names. See `BaristaScriptInternedStrings`. */
+	static const BaristaScriptInternedStrings &get_interned_strings();
+
+	/**
+	 * The public functions of the language, in the shape the front-end wants them.
+	 *
+	 * Upstream asks the language singleton directly (`FSLanguage::get_public_functions()`,
+	 * fs_parser.cpp:3000 @ c9d5e35). A `ScriptLanguageExtension` answers the same question as an
+	 * array of dictionaries, and answers nothing at all before it is registered, so this converts
+	 * and tolerates both.
+	 */
+	static godot::List<godot::MethodInfo> get_public_function_list();
 };
 
 } // namespace barista_script

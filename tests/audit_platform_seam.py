@@ -234,12 +234,18 @@ def seam_includes(seam):
 
 
 def defines_symbol(seam_text, symbol):
-    """True when the seam defines `symbol` as a macro, a class, or a type alias."""
+    """True when the seam defines `symbol` as a macro, a class, a type alias, or a free function.
+
+    The free-function form is what a missing operator overload needs: godot-cpp can be missing a
+    comparison core declares, and the seam supplies it as a definition rather than as a type.
+    """
     patterns = (
         r"^\s*#\s*define\s+{}\b".format(re.escape(symbol)),
         r"^\s*(?:class|struct)\s+{}\b".format(re.escape(symbol)),
         r"^\s*using\s+{}\s*=".format(re.escape(symbol)),
         r"^\s*typedef\s+.*\b{}\s*;".format(re.escape(symbol)),
+        # A free function or operator definition: `<return type> symbol(...) {` at the top level.
+        r"^\s*\S.*\b{}\s*\([^;]*\)\s*\{{".format(re.escape(symbol)),
     )
     return any(re.search(pattern, seam_text, re.MULTILINE) for pattern in patterns)
 
