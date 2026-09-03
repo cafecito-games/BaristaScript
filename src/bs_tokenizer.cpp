@@ -1044,7 +1044,11 @@ BSTokenizer::Token BSTokenizerText::number() {
 				_advance();
 			}
 			const String body = source.substr(_start, body_end - _start);
-			return make_error(vformat(R"(Integer literal suffixes are reserved. BaristaScript has one integer type, "int"; write "%s".)", body));
+			// The suffix is named as it was written, not canonicalized: a diagnostic that said "UL"
+			// about a source that says "lu" would send the reader looking for text that is not
+			// there. The replacement it proposes is the body alone, because there is no suffix that
+			// would have been accepted.
+			return make_error(vformat(R"(The "%s" integer literal suffix is reserved. BaristaScript has one integer type, "int"; write "%s".)", suffix_text, body));
 		}
 	}
 

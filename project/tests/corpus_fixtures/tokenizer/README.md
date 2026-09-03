@@ -13,7 +13,7 @@ godot --headless --path project --script res://tests/corpus_runner.gd -- \
 | Fail-closed row | Cases |
 |---|---|
 | `uint`/`ulong`/`long` reserved | `reserved_type_uint`, `reserved_type_ulong`, `reserved_type_long`, `reserved_identifier_uint` |
-| `U`/`L`/`UL` literal suffix reserved | `suffix_unsigned`, `suffix_long`, `suffix_unsigned_long`, `suffix_lowercase_misordered` |
+| `U`/`L`/`UL` literal suffix reserved | `suffix_unsigned`, `suffix_long`, `suffix_unsigned_long`, `suffix_lowercase_misordered` (each diagnostic names the suffix as the source wrote it) |
 | `as!` reserved | `as_bang`, with `as_with_whitespace` proving `as !x` is untouched |
 | Integer literal out of signed 64-bit range | `integer_above_range`, `integer_below_range`, `integer_hex_above_range`, with `integer_range_boundaries` proving both endpoints are accepted |
 | Malformed UTF-8 | `malformed_utf8` (the byte offset is named, and no replacement character is substituted) |

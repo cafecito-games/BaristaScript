@@ -175,6 +175,15 @@ Error BSTokenizerBuffer::set_code_buffer(const PackedByteArray &p_buffer) {
 	int64_t cursor = CONTENTS_HEADER_SIZE;
 	total_len -= CONTENTS_HEADER_SIZE;
 
+	// Every record has a minimum encoded size, so a count larger than the remaining bytes could
+	// pay for is malformed however the rest of the buffer reads. Checking here, before the
+	// resizes below, keeps a crafted header from asking for an allocation the buffer could never
+	// have contained.
+	ERR_FAIL_COND_V(int64_t(identifier_count) * 4 > total_len, ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(int64_t(constant_count) * 4 > total_len, ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(int64_t(token_line_count) * 16 > total_len, ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(int64_t(token_count) * 5 > total_len, ERR_INVALID_DATA);
+
 	identifiers.resize(identifier_count);
 	for (uint32_t i = 0; i < identifier_count; i++) {
 		ERR_FAIL_COND_V(total_len < 4, ERR_INVALID_DATA);

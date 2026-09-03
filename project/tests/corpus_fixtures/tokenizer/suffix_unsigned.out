@@ -1,1 +1,1 @@
-Integer literal suffixes are reserved. BaristaScript has one integer type, "int"; write "123".
+The "U" integer literal suffix is reserved. BaristaScript has one integer type, "int"; write "123".

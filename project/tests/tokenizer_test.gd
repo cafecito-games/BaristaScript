@@ -117,6 +117,7 @@ func _initialize() -> void:
 	_test_tokenizers_do_not_interfere(probe)
 	_test_reserved_table_is_the_only_source_of_truth(probe)
 	_test_removed_spellings_are_never_free_identifiers(probe)
+	_test_removal_diagnostics_name_the_spelling(probe)
 	_test_as_bang_is_not_as_followed_by_bang(probe)
 	_test_malformed_utf8_names_the_offending_byte(probe)
 	_test_integer_range_is_exact(probe)
@@ -268,6 +269,39 @@ func _test_removed_spellings_are_never_free_identifiers(probe: BaristaScriptToke
 					not line.begins_with("Identifier\t") or not line.ends_with(":%s" % spelling),
 					"%s must never be tokenized as an identifier: %s" % [spelling, line]
 				)
+
+
+## Every D1 removal must name the spelling it is rejecting, in the form the source wrote it.
+## A diagnostic that only proposed a replacement would leave a reader with `123lu` hunting for
+## which part of the line the compiler objected to.
+func _test_removal_diagnostics_name_the_spelling(probe: BaristaScriptTokenizerProbe) -> void:
+	for spelling in probe.reserved_spellings():
+		var diagnostic: String = probe.first_diagnostic(("var value: %s = 1\n" % spelling).to_utf8_buffer())
+		_expect(
+			diagnostic.contains('"%s"' % spelling),
+			"the %s diagnostic must name the spelling, got: %s" % [spelling, diagnostic]
+		)
+
+	# Both the canonical suffixes and the lowercase/misordered spellings the grammar folds into the
+	# same rejection, each named exactly as written.
+	for suffix in ["U", "L", "UL", "u", "l", "ul", "lu", "LU", "Ul", "uL"]:
+		var diagnostic: String = probe.first_diagnostic(("var value = 123%s\n" % suffix).to_utf8_buffer())
+		_expect(
+			diagnostic == 'The "%s" integer literal suffix is reserved. BaristaScript has one integer type, "int"; write "123".' % suffix,
+			"the 123%s diagnostic must name the suffix as written, got: %s" % [suffix, diagnostic]
+		)
+
+	_expect(
+		probe.first_diagnostic("var bits = value as!other\n".to_utf8_buffer()).contains('"as!"'),
+		"the as! diagnostic must name the operator"
+	)
+
+	# A run of letters that is not one of the reserved suffixes keeps the ordinary error, so the
+	# removal message cannot be proposed for something D1 never removed.
+	_expect(
+		probe.first_diagnostic("var value = 123abc\n".to_utf8_buffer()) == "Invalid numeric notation.",
+		"a non-suffix letter run must stay an invalid-notation error"
+	)
 
 
 func _test_as_bang_is_not_as_followed_by_bang(probe: BaristaScriptTokenizerProbe) -> void:
