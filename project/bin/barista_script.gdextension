@@ -26,6 +26,16 @@ windows.x86_64.double.debug = "./windows/barista_script.windows.template_debug.d
 windows.x86_64.single.release = "./windows/barista_script.windows.template_release.x86_64.dll"
 windows.x86_64.double.release = "./windows/barista_script.windows.template_release.double.x86_64.dll"
 
+windows.arm64.single.debug = "./windows/barista_script.windows.template_debug.arm64.dll"
+windows.arm64.double.debug = "./windows/barista_script.windows.template_debug.double.arm64.dll"
+windows.arm64.single.release = "./windows/barista_script.windows.template_release.arm64.dll"
+windows.arm64.double.release = "./windows/barista_script.windows.template_release.double.arm64.dll"
+
+linux.x86_32.single.debug = "./linux/libbarista_script.linux.template_debug.x86_32.so"
+linux.x86_32.double.debug = "./linux/libbarista_script.linux.template_debug.double.x86_32.so"
+linux.x86_32.single.release = "./linux/libbarista_script.linux.template_release.x86_32.so"
+linux.x86_32.double.release = "./linux/libbarista_script.linux.template_release.double.x86_32.so"
+
 linux.x86_64.single.debug = "./linux/libbarista_script.linux.template_debug.x86_64.so"
 linux.x86_64.double.debug = "./linux/libbarista_script.linux.template_debug.double.x86_64.so"
 linux.x86_64.single.release = "./linux/libbarista_script.linux.template_release.x86_64.so"
@@ -36,10 +46,20 @@ linux.arm64.double.debug = "./linux/libbarista_script.linux.template_debug.doubl
 linux.arm64.single.release = "./linux/libbarista_script.linux.template_release.arm64.so"
 linux.arm64.double.release = "./linux/libbarista_script.linux.template_release.double.arm64.so"
 
+linux.arm32.single.debug = "./linux/libbarista_script.linux.template_debug.arm32.so"
+linux.arm32.double.debug = "./linux/libbarista_script.linux.template_debug.double.arm32.so"
+linux.arm32.single.release = "./linux/libbarista_script.linux.template_release.arm32.so"
+linux.arm32.double.release = "./linux/libbarista_script.linux.template_release.double.arm32.so"
+
 linux.rv64.single.debug = "./linux/libbarista_script.linux.template_debug.rv64.so"
 linux.rv64.double.debug = "./linux/libbarista_script.linux.template_debug.double.rv64.so"
 linux.rv64.single.release = "./linux/libbarista_script.linux.template_release.rv64.so"
 linux.rv64.double.release = "./linux/libbarista_script.linux.template_release.double.rv64.so"
+
+android.x86_32.single.debug = "./android/libbarista_script.android.template_debug.x86_32.so"
+android.x86_32.double.debug = "./android/libbarista_script.android.template_debug.double.x86_32.so"
+android.x86_32.single.release = "./android/libbarista_script.android.template_release.x86_32.so"
+android.x86_32.double.release = "./android/libbarista_script.android.template_release.double.x86_32.so"
 
 android.x86_64.single.debug = "./android/libbarista_script.android.template_debug.x86_64.so"
 android.x86_64.double.debug = "./android/libbarista_script.android.template_debug.double.x86_64.so"
@@ -50,6 +70,11 @@ android.arm64.single.debug = "./android/libbarista_script.android.template_debug
 android.arm64.double.debug = "./android/libbarista_script.android.template_debug.double.arm64.so"
 android.arm64.single.release = "./android/libbarista_script.android.template_release.arm64.so"
 android.arm64.double.release = "./android/libbarista_script.android.template_release.double.arm64.so"
+
+android.arm32.single.debug = "./android/libbarista_script.android.template_debug.arm32.so"
+android.arm32.double.debug = "./android/libbarista_script.android.template_debug.double.arm32.so"
+android.arm32.single.release = "./android/libbarista_script.android.template_release.arm32.so"
+android.arm32.double.release = "./android/libbarista_script.android.template_release.double.arm32.so"
 
 web.wasm32.single.debug = "./web/libbarista_script.web.template_debug.wasm32.nothreads.wasm"
 web.wasm32.double.debug = "./web/libbarista_script.web.template_debug.double.wasm32.nothreads.wasm"
