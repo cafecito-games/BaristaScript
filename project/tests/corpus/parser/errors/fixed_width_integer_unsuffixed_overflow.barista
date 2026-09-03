@@ -1,0 +1,3 @@
+func test():
+	# D1 leaves one signed 64-bit carrier, so above its range there is no wider type.
+	var _value = 9223372036854775808

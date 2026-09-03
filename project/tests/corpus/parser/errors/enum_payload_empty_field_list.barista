@@ -1,0 +1,2 @@
+enum Message:
+	Empty()

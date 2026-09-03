@@ -12,6 +12,7 @@
 #include "barista_script_language.h"
 #include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
+#include "bs_corpus_sentinels.h"
 #include "bs_parser_probe.h"
 #include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
@@ -46,6 +47,9 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
 	// The parser's test surface, likewise.
 	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
+	// The corpus sentinels, so the GDScript harness reads the same two literals the C++ side and
+	// the Python tooling do rather than restating them.
+	GDREGISTER_CLASS(barista_script::BaristaScriptCorpusSentinels);
 #ifdef DEBUG_ENABLED
 	// The warning registry only exists in debug builds, like the warnings it names. Its binding is
 	// the only way `project/tests/warning_registry_test.gd` can reach it: godot-cpp's String and

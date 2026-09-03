@@ -1,1 +1,1 @@
-BS_TEST_OK
+"ulong" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".

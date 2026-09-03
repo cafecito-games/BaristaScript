@@ -1,0 +1,1 @@
+Explicit values are not allowed in a tagged union; case tags are ordinal by declaration order.

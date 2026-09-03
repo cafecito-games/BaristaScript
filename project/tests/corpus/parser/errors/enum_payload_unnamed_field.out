@@ -1,0 +1,1 @@
+Enum case payload fields must be named, e.g. "Move(x: int, y: int)".
