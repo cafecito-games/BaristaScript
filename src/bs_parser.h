@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <climits>
+
 /**
  * Hard fork of Foundry's parser (`modules/foundry_script/fs_parser.h` @
  * c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6), renamed `FS*` -> `BS*` and reached through the

@@ -8,6 +8,8 @@
 
 #include "bs_tokenizer.h"
 
+#include <cstdint>
+
 // Upstream includes `core/error/error_macros.h` and `core/string/char_utils.h` here
 // (fs_tokenizer.cpp:33-34); both are mapped by the seam, so `bs_platform.h` is the whole include
 // block.

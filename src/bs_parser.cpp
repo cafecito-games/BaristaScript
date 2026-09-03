@@ -8,6 +8,8 @@
 
 #include "bs_parser.h"
 
+#include <climits>
+
 #include "barista_script.h"
 #include "barista_script_language.h"
 #include "bs_cache.h"
