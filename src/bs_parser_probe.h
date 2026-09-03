@@ -79,6 +79,21 @@ public:
 	/** The compiled token buffer for this source, which is what a cache-warm parse replays. */
 	godot::PackedByteArray tokenize_to_buffer(const godot::PackedByteArray &p_source_utf8, bool p_compress) const;
 
+	/**
+	 * The corpus verdict for one case source: the empty string when the parse reported nothing,
+	 * otherwise the message of the **first diagnostic the run emitted**.
+	 *
+	 * Emission order, not source order, is deliberate. Foundry's own golden files were generated
+	 * from `parser.get_errors().front()` (`modules/foundry_script/tests/fs_test_runner.cpp:1019-1021`
+	 * @ c9d5e35), on the reasoning that later diagnostics are usually cascades of the first. The
+	 * imported `.out` expectations are exactly those strings, so a corpus run has to ask the same
+	 * question of the port or it would be comparing against a different one.
+	 *
+	 * A source that does not decode reports the decode failure, which is a verdict too: the corpus
+	 * must never see an undecodable case as a clean parse.
+	 */
+	godot::String first_parse_diagnostic(const godot::PackedByteArray &p_source_utf8, const godot::String &p_script_path) const;
+
 	/** Every `Node::Type` name, in enum order, for vocabulary-closure assertions. */
 	godot::PackedStringArray node_type_names() const;
 

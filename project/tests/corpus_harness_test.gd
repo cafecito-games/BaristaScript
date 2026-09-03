@@ -21,7 +21,7 @@ func _initialize() -> void:
 	_test_parse_failure_against_sentinel_fails(failures)
 	_test_trailing_whitespace_drift_fails(failures)
 	_test_line_ending_drift_fails(failures)
-	_test_fsignore_directory_is_skipped_and_counted(failures)
+	_test_ignore_marker_directory_is_skipped_and_counted(failures)
 	_test_notest_helper_is_not_a_case(failures)
 	_test_zero_cases_fails_without_allow_empty(failures)
 	_test_failing_case_means_nonzero_exit(failures)
@@ -54,7 +54,7 @@ func _test_missing_expectation_fails(failures: Array[String]) -> void:
 	_expect(
 		failures,
 		_text(result).contains(
-			"FAIL %s/missing_expectation/case.fs: missing expectation %s/missing_expectation/case.out"
+			"FAIL %s/missing_expectation/case.barista: missing expectation %s/missing_expectation/case.out"
 			% [FIXTURES_ROOT, FIXTURES_ROOT]
 		),
 		"missing .out must be a named failure naming the expected .out path: %s" % _text(result)
@@ -67,7 +67,7 @@ func _test_orphaned_expectation_fails(failures: Array[String]) -> void:
 	_expect(
 		failures,
 		_text(result).contains(
-			"FAIL orphaned expectation %s/orphaned_expectation/case.out: no matching .fs case" % FIXTURES_ROOT
+			"FAIL orphaned expectation %s/orphaned_expectation/case.out: no matching .barista case" % FIXTURES_ROOT
 		),
 		"orphaned .out must be a named run-level failure: %s" % _text(result)
 	)
@@ -79,7 +79,7 @@ func _test_invalid_utf8_expectation_fails(failures: Array[String]) -> void:
 	_expect(
 		failures,
 		_text(result).contains(
-			"FAIL %s/invalid_expectation/case.fs: expectation %s/invalid_expectation/case.out is not valid UTF-8"
+			"FAIL %s/invalid_expectation/case.barista: expectation %s/invalid_expectation/case.out is not valid UTF-8"
 			% [FIXTURES_ROOT, FIXTURES_ROOT]
 		),
 		"non-UTF-8 .out must be a named failure distinct from missing and orphaned: %s" % _text(result)
@@ -136,19 +136,19 @@ func _test_line_ending_drift_fails(failures: Array[String]) -> void:
 	)
 
 
-func _test_fsignore_directory_is_skipped_and_counted(failures: Array[String]) -> void:
+func _test_ignore_marker_directory_is_skipped_and_counted(failures: Array[String]) -> void:
 	var direct := _run_harness("%s/ignored_directory" % FIXTURES_ROOT)
-	_expect(failures, direct["exit_code"] == Harness.ExitCode.CASES_FAILED, "a corpus root inside .fsignore scope still has no cases")
+	_expect(failures, direct["exit_code"] == Harness.ExitCode.CASES_FAILED, "a corpus root inside .baristaignore scope still has no cases")
 	_expect(
 		failures,
 		_text(direct).contains("no cases discovered") and _last_line(direct) == "%s 0/0 skipped=1" % Harness.SUMMARY_PREFIX,
-		".fsignore must skip the directory and report the skipped count: %s" % _text(direct)
+		".baristaignore must skip the directory and report the skipped count: %s" % _text(direct)
 	)
 
 	# The assertion is on the skipped count, not on the case total: sibling fixture directories
 	# (the tokenizer contract cases, and whatever later milestones add) legitimately change how
 	# many cases the tree holds, and pinning that number here would make an unrelated fixture
-	# addition look like an .fsignore regression.
+	# addition look like a .baristaignore regression.
 	var full_tree := _run_harness(FIXTURES_ROOT)
 	_expect(
 		failures,
@@ -167,7 +167,7 @@ func _test_notest_helper_is_not_a_case(failures: Array[String]) -> void:
 	_expect(
 		failures,
 		_last_line(result) == "%s 1/1 skipped=1" % Harness.SUMMARY_PREFIX,
-		"helper.notest.fs must be skipped and counted, never a case: %s" % _last_line(result)
+		"helper.notest.barista must be skipped and counted, never a case: %s" % _last_line(result)
 	)
 
 

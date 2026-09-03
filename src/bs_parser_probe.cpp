@@ -14,6 +14,9 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/string.hpp>
+
+#include <godot_cpp/templates/list.hpp>
 
 using namespace godot;
 
@@ -96,6 +99,7 @@ void BaristaScriptParserProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("parse_token_buffer", "token_buffer", "script_path"), &BaristaScriptParserProbe::parse_token_buffer);
 	ClassDB::bind_method(D_METHOD("reused_parse_reports", "source_utf8", "token_buffer", "script_path"), &BaristaScriptParserProbe::reused_parse_reports);
 	ClassDB::bind_method(D_METHOD("tokenize_to_buffer", "source_utf8", "compress"), &BaristaScriptParserProbe::tokenize_to_buffer);
+	ClassDB::bind_method(D_METHOD("first_parse_diagnostic", "source_utf8", "script_path"), &BaristaScriptParserProbe::first_parse_diagnostic);
 	ClassDB::bind_method(D_METHOD("node_type_names"), &BaristaScriptParserProbe::node_type_names);
 	ClassDB::bind_method(D_METHOD("removed_type_name_diagnostic", "spelling"), &BaristaScriptParserProbe::removed_type_name_diagnostic);
 	ClassDB::bind_method(D_METHOD("nested_source", "prefix", "open", "close", "suffix", "depth"), &BaristaScriptParserProbe::nested_source);
@@ -156,6 +160,22 @@ PackedByteArray BaristaScriptParserProbe::tokenize_to_buffer(const PackedByteArr
 	}
 	return BSTokenizerBuffer::parse_code_string(source,
 			p_compress ? BSTokenizerBuffer::COMPRESS_ZSTD : BSTokenizerBuffer::COMPRESS_NONE);
+}
+
+String BaristaScriptParserProbe::first_parse_diagnostic(const PackedByteArray &p_source_utf8, const String &p_script_path) const {
+	String source;
+	String decode_error;
+	if (!BSTokenizer::decode_source(p_source_utf8, &source, &decode_error)) {
+		return decode_error;
+	}
+
+	BSParser parser;
+	parser.parse(source, p_script_path, false);
+	const List<BSParser::ParserError> &errors = parser.get_errors();
+	if (errors.is_empty()) {
+		return String();
+	}
+	return errors.front()->get().message;
 }
 
 PackedStringArray BaristaScriptParserProbe::node_type_names() const {

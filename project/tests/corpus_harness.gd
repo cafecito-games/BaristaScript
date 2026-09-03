@@ -7,13 +7,31 @@ extends RefCounted
 
 ## Golden-file corpus harness for BaristaScript conformance runs.
 ##
-## A corpus case is a `.fs` source paired with a `.out` expectation whose first
-## line is either the success sentinel or the exact expected diagnostic text.
-## Comparison is exact: differences that differ only in trailing whitespace or
-## line endings are failures, never normalized away.
+## A corpus case is a `.barista` source paired with a `.out` expectation whose
+## first line is either the success sentinel or the exact expected diagnostic
+## text. Comparison is exact: differences that differ only in trailing whitespace
+## or line endings are failures, never normalized away.
 
-const SUCCESS_SENTINEL := "BS_TEST_OK"
-const SUMMARY_PREFIX := "BS_CORPUS"
+const CASE_EXTENSION := ".barista"
+const HELPER_SUFFIX := ".notest" + CASE_EXTENSION
+const EXPECTATION_EXTENSION := ".out"
+
+## The marker file that opts a directory out of collection.
+##
+## Deliberately not Foundry's `.fsignore`: the upstream corpus root carries an
+## empty `.fsignore` of its own (it opts the parser scripts out of the *runtime*
+## suite), so a re-import that copied dotfiles verbatim would land a marker that
+## silently skips all 340 cases while the run still exits 0. A name upstream does
+## not use cannot be imported by accident.
+const IGNORE_MARKER := ".baristaignore"
+
+## Both sentinels come from the compiled extension
+## (src/bs_corpus_sentinels.h), which is the one definition the C++ side, this
+## harness and the Python importer/CI validator all read. A literal here would be
+## a second spelling, and a corpus-wide false pass is what a second spelling
+## buys.
+static var SUCCESS_SENTINEL: String = BaristaScriptCorpusSentinels.success_sentinel()
+static var SUMMARY_PREFIX: String = BaristaScriptCorpusSentinels.summary_prefix()
 
 enum ExitCode {
 	PASSED = 0,
@@ -76,13 +94,13 @@ func run(corpus_root: String, allow_empty: bool = false, update_expectations: bo
 				output.append("     %s" % message_lines[message_index])
 
 	for orphan in orphaned_expectations:
-		output.append("FAIL orphaned expectation %s: no matching .fs case" % orphan)
+		output.append("FAIL orphaned expectation %s: no matching %s case" % [orphan, CASE_EXTENSION])
 		failures.append({
 			"passed": false,
 			"reason": FailureReason.ORPHANED_EXPECTATION,
 			"path": orphan,
 			"expectation_path": orphan,
-			"message": "orphaned expectation: no matching .fs case",
+			"message": "orphaned expectation: no matching %s case" % CASE_EXTENSION,
 		})
 
 	var discovered_nothing := cases.is_empty() and orphaned_expectations.is_empty()
@@ -134,8 +152,8 @@ func error_result(message: String) -> Dictionary:
 	}
 
 
-## The single home of case discovery: `.notest.fs` helpers, `.fsignore`
-## directories, `.fs`/`.out` pairing, orphan detection, and directories that
+## The single home of case discovery: `.notest.barista` helpers, ignored
+## directories, `.barista`/`.out` pairing, orphan detection, and directories that
 ## cannot be opened. Everything is sorted by path so results never depend on
 ## directory iteration order.
 func _discover_corpus(corpus_root: String) -> Dictionary:
@@ -163,7 +181,7 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 		names.sort()
 		# DirAccess iteration hides dot-prefixed entries, so the marker is
 		# checked by path rather than looked up in the listing.
-		if not ignored and FileAccess.file_exists("%s/.fsignore" % directory_path):
+		if not ignored and FileAccess.file_exists("%s/%s" % [directory_path, IGNORE_MARKER]):
 			ignored = true
 
 		var subdirectories: Array[String] = []
@@ -175,9 +193,9 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 			var entry_path := "%s/%s" % [directory_path, name]
 			if DirAccess.dir_exists_absolute(entry_path):
 				subdirectories.append(entry_path)
-			elif name.ends_with(".fs"):
+			elif name.ends_with(CASE_EXTENSION):
 				source_names.append(name)
-			elif name.ends_with(".out"):
+			elif name.ends_with(EXPECTATION_EXTENSION):
 				expectation_names.append(name)
 
 		var source_name_set := {}
@@ -185,20 +203,20 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 			source_name_set[name] = true
 
 		for name in source_names:
-			if name.ends_with(".notest.fs"):
+			if name.ends_with(HELPER_SUFFIX):
 				skipped_count += 1
 			elif ignored:
 				skipped_count += 1
 			else:
 				cases.append({
 					"path": "%s/%s" % [directory_path, name],
-					"expectation_path": "%s/%s.out" % [directory_path, name.get_basename()],
+					"expectation_path": "%s/%s%s" % [directory_path, name.get_basename(), EXPECTATION_EXTENSION],
 				})
 
 		for name in expectation_names:
 			if ignored:
 				continue
-			var paired_source := "%s.fs" % name.trim_suffix(".out")
+			var paired_source := "%s%s" % [name.trim_suffix(EXPECTATION_EXTENSION), CASE_EXTENSION]
 			if not source_name_set.has(paired_source):
 				orphaned_expectations.append("%s/%s" % [directory_path, name])
 
@@ -269,8 +287,13 @@ func _evaluate(case_path: String) -> Dictionary:
 ## The source is handed over as raw bytes rather than as a String on purpose. A
 ## String has already been decoded, and malformed UTF-8 has already become
 ## U+FFFD by then -- which is exactly the substitution the frontend must report
-## instead of absorbing. The frontend currently reaches the tokenizer; the
-## parser milestone extends this function, it does not change its contract.
+## instead of absorbing.
+##
+## The frontend reaches the parser, which is what makes the imported corpus mean
+## anything: a tokenizer-only evaluation would have accepted every case whose
+## source lexes, and 340 of them do. Tokenizer diagnostics still arrive here --
+## the parser reports them as its own as it consumes the token stream -- so the
+## tokenizer contract fixtures are evaluated by the same one path as the corpus.
 func _evaluate_with_language(case_path: String) -> Dictionary:
 	var source_bytes := FileAccess.get_file_as_bytes(case_path)
 	var open_error := FileAccess.get_open_error()
@@ -280,7 +303,7 @@ func _evaluate_with_language(case_path: String) -> Dictionary:
 			"output": "source %s is unreadable (error %d)" % [case_path, open_error],
 			"source_unreadable": true,
 		}
-	var diagnostic: String = BaristaScriptTokenizerProbe.new().first_diagnostic(source_bytes)
+	var diagnostic: String = BaristaScriptParserProbe.new().first_parse_diagnostic(source_bytes, case_path)
 	if diagnostic.is_empty():
 		return {"ok": true, "output": ""}
 	return {"ok": false, "output": diagnostic}
