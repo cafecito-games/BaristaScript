@@ -25,6 +25,10 @@ Add focused assertions to `project/tests/smoke_test.gd` for runtime-facing behav
 
 History uses short, imperative Conventional Commit subjects such as `feat:`, `fix:`, and `ci:`. Keep commits scoped and explain intent in the body when needed. PRs should summarize behavior, list exact verification commands, link relevant issues, and include screenshots only for visible editor changes. Require green CI and call out platform or build-matrix changes explicitly.
 
+## Licensing Headers
+
+The project is MIT licensed to Cafecito Games LLC. Every C++, Python, and GDScript source file carries the header produced by `scripts/add_license_header.py`; run it with no arguments to fill in any missing headers, or with `--check` to report them without editing. `prek install` wires the `.pre-commit-config.yaml` hook that adds the header at commit time, failing the commit when it had to modify a file so the change can be re-staged. Third-party and generated trees (`godot-cpp/`, `build/`, `bin/`, `src/gen/`) and the upstream-derived `methods.py` are excluded.
+
 ## Generated Files
 
 Do not commit platform libraries, `build/`, or incidental Godot cache files. Preserve the tracked `project/.godot/extension_list.cfg`, which is required for first-scan language registration.

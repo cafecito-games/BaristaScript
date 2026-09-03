@@ -1,3 +1,11 @@
+/**************************************************************************/
+/*  register_types.cpp                                                    */
+/*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
 #include "register_types.h"
 
 #include "barista_script.h"

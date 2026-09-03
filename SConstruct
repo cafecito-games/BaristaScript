@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+# SConstruct
+#
+# Copyright (c) 2026-present Cafecito Games LLC.
+# This file is part of BaristaScript, a Godot GDExtension.
+# SPDX-License-Identifier: MIT
+
 import os
 import sys
 

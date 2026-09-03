@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# validate_ci.py
+#
+# Copyright (c) 2026-present Cafecito Games LLC.
+# This file is part of BaristaScript, a Godot GDExtension.
+# SPDX-License-Identifier: MIT
 
 import json
 import re

@@ -1,3 +1,11 @@
+/**************************************************************************/
+/*  barista_script_resource_loader.h                                      */
+/*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
 #pragma once
 
 #include <godot_cpp/classes/resource_format_loader.hpp>
