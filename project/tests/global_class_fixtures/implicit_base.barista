@@ -1,0 +1,2 @@
+# No `extends`, so the reported base is the implicit one.
+class_name ImplicitBase

@@ -9,6 +9,7 @@
 #include "barista_script_language.h"
 
 #include "barista_script.h"
+#include "bs_global_class.h"
 #include "bs_tokenizer.h"
 
 #include <godot_cpp/variant/packed_int32_array.hpp>
@@ -296,12 +297,18 @@ int32_t BaristaScriptLanguage::_profiling_get_frame_data(godot::ScriptLanguageEx
 
 void BaristaScriptLanguage::_frame() {}
 
-bool BaristaScriptLanguage::_handles_global_class_type(const godot::String &) const {
-	return false;
+bool BaristaScriptLanguage::_handles_global_class_type(const godot::String &p_type) const {
+	// `p_type` is the resource type the editor's scan recorded for the file
+	// (`EditorFileSystem::_get_global_script_class`, editor/file_system/editor_file_system.cpp:2102
+	// at 4.7.2-stable), which for a `.barista` file is what
+	// `BaristaScriptResourceLoader::_get_resource_type()` returns. The two spellings must agree or
+	// the scan finds no language for the class and drops it silently, so this compares against
+	// `_get_type()` rather than repeating the literal.
+	return p_type == _get_type();
 }
 
-godot::Dictionary BaristaScriptLanguage::_get_global_class_name(const godot::String &) const {
-	return {};
+godot::Dictionary BaristaScriptLanguage::_get_global_class_name(const godot::String &p_path) const {
+	return bs_resolve_global_class(p_path).to_dictionary();
 }
 
 } // namespace barista_script

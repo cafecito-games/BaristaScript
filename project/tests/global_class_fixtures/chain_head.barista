@@ -1,0 +1,4 @@
+# Two consecutive path-qualified inner-class hops. The walk reparses into one reused parser
+# between them, so nothing it carries across that reparse may point into the tree being freed.
+class_name ChainHead
+extends "res://tests/global_class_fixtures/chain_middle.barista".Middle

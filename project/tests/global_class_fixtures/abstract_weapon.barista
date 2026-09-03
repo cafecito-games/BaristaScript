@@ -1,0 +1,3 @@
+# `abstract` on an instantiable kind: the kind stays `class_name`, the flag comes from the source.
+abstract class_name AbstractWeapon
+extends Node

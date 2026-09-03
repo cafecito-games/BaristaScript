@@ -1,0 +1,4 @@
+# A generic `class_name` over a Node base. D6 keeps the bare name out of the engine's instantiable
+# set, but the base is real: a concrete class specializing it through a path inherits it.
+class_name GenericNode[T]
+extends Node

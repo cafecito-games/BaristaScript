@@ -97,6 +97,10 @@ target_sources(${LIBNAME}
     src/bs_parser_probe.h
     src/bs_corpus_sentinels.cpp
     src/bs_corpus_sentinels.h
+    src/bs_global_class.cpp
+    src/bs_global_class.h
+    src/bs_global_class_probe.cpp
+    src/bs_global_class_probe.h
 )
 
 # Fetch a list of the xml files to use for documentation and add to our target

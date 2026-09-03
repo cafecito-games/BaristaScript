@@ -1,0 +1,2 @@
+class_name Specialized
+extends "res://tests/global_class_fixtures/generic_node.barista"[int]

@@ -8,6 +8,8 @@
 
 #pragma once
 
+#ifdef DEBUG_ENABLED
+
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
@@ -24,6 +26,11 @@ namespace barista_script {
  * class is that reach: it owns no behaviour, it only renders what `BSTokenizerText` and
  * `BSTokenizerBuffer` produce into strings a golden-file corpus can compare exactly.
  *
+ *
+ * It exists only in `template_debug`. The suites that reach it run against that build -- the editor
+ * loads the `debug` library entry in `project/bin/barista_script.gdextension`, and CI's
+ * editor-recognition job is gated on `target-type == 'template_debug'` -- so the guard costs the
+ * suites nothing and keeps a test-only class out of the surface `template_release` publishes.
  * Source is taken as raw bytes rather than as a `String` on purpose. A `String` has already been
  * decoded, and a malformed byte sequence has already become U+FFFD by then -- which is precisely
  * the failure the tokenizer must report rather than absorb.
@@ -70,3 +77,5 @@ public:
 };
 
 } // namespace barista_script
+
+#endif // DEBUG_ENABLED

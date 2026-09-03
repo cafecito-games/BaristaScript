@@ -8,6 +8,8 @@
 
 #include "bs_tokenizer_probe.h"
 
+#ifdef DEBUG_ENABLED
+
 #include "bs_tokenizer.h"
 #include "bs_tokenizer_buffer.h"
 
@@ -192,3 +194,5 @@ PackedStringArray BaristaScriptTokenizerProbe::reserved_spellings() const {
 }
 
 } // namespace barista_script
+
+#endif // DEBUG_ENABLED

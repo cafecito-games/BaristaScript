@@ -1,0 +1,3 @@
+# One path-qualified inner-class hop.
+class_name InnerDerived
+extends "res://tests/global_class_fixtures/chain_tail.barista".Tail

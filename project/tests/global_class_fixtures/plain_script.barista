@@ -1,0 +1,2 @@
+# No head declaration at all: a script, not a global class.
+extends Node

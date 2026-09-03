@@ -1,0 +1,2 @@
+# A generic `class_name`. D2 monomorphizes it, so the bare name has no runtime type (D6).
+class_name Boxed[T]

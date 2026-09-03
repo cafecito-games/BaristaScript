@@ -1,0 +1,7 @@
+# `enum_name` cannot be combined with `extends`; the parser reports it, and a file that reported
+# anything contributes no name -- least of all one carrying a base, which would make it
+# instantiable.
+extends Node
+
+enum_name ExtendedEnum:
+	ONE = 1

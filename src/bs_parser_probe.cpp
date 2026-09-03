@@ -8,6 +8,8 @@
 
 #include "bs_parser_probe.h"
 
+#ifdef DEBUG_ENABLED
+
 #include "bs_parser.h"
 #include "bs_tokenizer.h"
 #include "bs_tokenizer_buffer.h"
@@ -212,3 +214,5 @@ int BaristaScriptParserProbe::tokenizer_format_version() const {
 }
 
 } // namespace barista_script
+
+#endif // DEBUG_ENABLED

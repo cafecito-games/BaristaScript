@@ -1,0 +1,6 @@
+# The qualified-name fixture: `namespace` + `class_name` must register as `app.combat.Weapon`.
+@icon("res://icon.svg")
+namespace app.combat
+
+class_name Weapon
+extends Node

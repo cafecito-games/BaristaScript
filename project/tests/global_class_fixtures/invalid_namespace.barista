@@ -1,0 +1,5 @@
+# A namespace segment that is not an identifier. Never a partially built dotted string.
+namespace app.0combat
+
+class_name Ghost
+extends Node
