@@ -126,6 +126,8 @@ jobs:
           "$godot_binary" --headless --path project --script res://tests/corpus_runner.gd -- --corpus res://tests/corpus_fixtures/tokenizer
           "$godot_binary" --headless --path project --script res://tests/cache_test.gd | tee "$RUNNER_TEMP/parse_cache.log"
           grep -q '^BS_PARSE_CACHE_OK ' "$RUNNER_TEMP/parse_cache.log"
+          "$godot_binary" --headless --path project --script res://tests/parser_test.gd | tee "$RUNNER_TEMP/parser.log"
+          grep -q '^BS_PARSER_OK ' "$RUNNER_TEMP/parser.log"
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save

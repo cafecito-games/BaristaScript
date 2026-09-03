@@ -684,6 +684,111 @@ bool BSParser::consume(BSTokenizer::Token::Type p_token_type, const String &p_er
 	return false;
 }
 
+String BSParser::get_node_type_name(Node::Type p_type) {
+	switch (p_type) {
+		case Node::NONE:
+			return "NONE";
+		case Node::ANNOTATION:
+			return "ANNOTATION";
+		case Node::ANNOTATION_DECLARATION:
+			return "ANNOTATION_DECLARATION";
+		case Node::ARRAY:
+			return "ARRAY";
+		case Node::ASSERT:
+			return "ASSERT";
+		case Node::ASSIGNMENT:
+			return "ASSIGNMENT";
+		case Node::AWAIT:
+			return "AWAIT";
+		case Node::BINARY_OPERATOR:
+			return "BINARY_OPERATOR";
+		case Node::BREAK:
+			return "BREAK";
+		case Node::BREAKPOINT:
+			return "BREAKPOINT";
+		case Node::CALL:
+			return "CALL";
+		case Node::CAST:
+			return "CAST";
+		case Node::CLASS:
+			return "CLASS";
+		case Node::CONFORMANCE:
+			return "CONFORMANCE";
+		case Node::CONSTANT:
+			return "CONSTANT";
+		case Node::CONTINUE:
+			return "CONTINUE";
+		case Node::DICTIONARY:
+			return "DICTIONARY";
+		case Node::ENUM:
+			return "ENUM";
+		case Node::FOR:
+			return "FOR";
+		case Node::FUNCTION:
+			return "FUNCTION";
+		case Node::GET_NODE:
+			return "GET_NODE";
+		case Node::IDENTIFIER:
+			return "IDENTIFIER";
+		case Node::IF:
+			return "IF";
+		case Node::LAMBDA:
+			return "LAMBDA";
+		case Node::LITERAL:
+			return "LITERAL";
+		case Node::MATCH:
+			return "MATCH";
+		case Node::MATCH_BRANCH:
+			return "MATCH_BRANCH";
+		case Node::PARAMETER:
+			return "PARAMETER";
+		case Node::PASS:
+			return "PASS";
+		case Node::PATTERN:
+			return "PATTERN";
+		case Node::PRELOAD:
+			return "PRELOAD";
+		case Node::RETURN:
+			return "RETURN";
+		case Node::SELF:
+			return "SELF";
+		case Node::SIGNAL:
+			return "SIGNAL";
+		case Node::SUBSCRIPT:
+			return "SUBSCRIPT";
+		case Node::SUITE:
+			return "SUITE";
+		case Node::TERNARY_OPERATOR:
+			return "TERNARY_OPERATOR";
+		case Node::TUPLE:
+			return "TUPLE";
+		case Node::TUPLE_LITERAL:
+			return "TUPLE_LITERAL";
+		case Node::TYPE:
+			return "TYPE";
+		case Node::TYPE_ALIAS:
+			return "TYPE_ALIAS";
+		case Node::TYPE_PARAMETER:
+			return "TYPE_PARAMETER";
+		case Node::TYPE_TEST:
+			return "TYPE_TEST";
+		case Node::UNARY_OPERATOR:
+			return "UNARY_OPERATOR";
+		case Node::VARIABLE:
+			return "VARIABLE";
+		case Node::VARIABLE_DESTRUCTURE:
+			return "VARIABLE_DESTRUCTURE";
+		case Node::WHILE:
+			return "WHILE";
+		case Node::NODE_TYPE_MAX:
+			return "NODE_TYPE_MAX";
+	}
+	// Unreachable: the switch above is exhaustive over `Node::Type` and the build makes an
+	// unhandled enumerator an error. A value outside the enumeration is undefined behaviour that
+	// already happened, so this names it rather than inventing a node kind.
+	return "<invalid node type>";
+}
+
 void BSParser::reject_reserved_type_name() {
 	// (D1) `uint`, `ulong` and `long` are reserved type names: recognized in type position and always
 	// rejected, never silently treated as user identifiers in a type (docs/GRAMMAR.md sections 2.5
@@ -7122,141 +7227,161 @@ BSParser::ClassDocData BSParser::parse_class_doc_comment(int p_line, bool p_sing
 }
 #endif // TOOLS_ENABLED
 
-BSParser::ParseRule *BSParser::get_rule(BSTokenizer::Token::Type p_token_type) {
+const BSParser::ParseRule *BSParser::get_rule(BSTokenizer::Token::Type p_token_type) {
+	// One parse rule together with the token type it answers for, so a row cannot silently drift
+	// onto a neighbouring token. See the static assertions under the table.
+	struct TokenParseRule {
+		BSTokenizer::Token::Type type;
+		ParseRule rule;
+	};
+	constexpr auto rules_are_aligned = [](const TokenParseRule *p_rules, size_t p_count) {
+		for (size_t i = 0; i < p_count; i++) {
+			if (p_rules[i].type != (BSTokenizer::Token::Type)i) {
+				return false;
+			}
+		}
+		return true;
+	};
+
 	// Function table for expression parsing.
 	// clang-format destroys the alignment here, so turn off for the table.
 	/* clang-format off */
-	static ParseRule rules[] = {
-		// PREFIX                                           INFIX                                           PRECEDENCE (for infix)
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // EMPTY,
+	static constexpr TokenParseRule rules[] = {
+		// TOKEN                                            PREFIX / INFIX / PRECEDENCE (for infix)
+		{ BSTokenizer::Token::EMPTY, { nullptr,                                          nullptr,                                        PREC_NONE } }, // EMPTY
 		// Basic
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ANNOTATION,
-		{ &BSParser::parse_identifier,             	nullptr,                                        PREC_NONE }, // IDENTIFIER,
-		{ &BSParser::parse_literal,                	nullptr,                                        PREC_NONE }, // LITERAL,
+		{ BSTokenizer::Token::ANNOTATION, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ANNOTATION
+		{ BSTokenizer::Token::IDENTIFIER, { &BSParser::parse_identifier,             	nullptr,                                        PREC_NONE } }, // IDENTIFIER
+		{ BSTokenizer::Token::RESERVED_TYPE_NAME, { &BSParser::parse_identifier,             	nullptr,                                        PREC_NONE } }, // RESERVED_TYPE_NAME,
+		{ BSTokenizer::Token::LITERAL, { &BSParser::parse_literal,                	nullptr,                                        PREC_NONE } }, // LITERAL
 		// Comparison
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON }, // LESS,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON }, // LESS_EQUAL,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON }, // GREATER,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON }, // GREATER_EQUAL,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON }, // EQUAL_EQUAL,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON }, // BANG_EQUAL,
+		{ BSTokenizer::Token::LESS, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON } }, // LESS
+		{ BSTokenizer::Token::LESS_EQUAL, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON } }, // LESS_EQUAL
+		{ BSTokenizer::Token::GREATER, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON } }, // GREATER
+		{ BSTokenizer::Token::GREATER_EQUAL, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON } }, // GREATER_EQUAL
+		{ BSTokenizer::Token::EQUAL_EQUAL, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON } }, // EQUAL_EQUAL
+		{ BSTokenizer::Token::BANG_EQUAL, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_COMPARISON } }, // BANG_EQUAL
 		// Logical
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_LOGIC_AND }, // AND,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_LOGIC_OR }, // OR,
-		{ &BSParser::parse_unary_operator,         	&BSParser::parse_binary_not_in_operator,	PREC_CONTENT_TEST }, // NOT,
-		{ nullptr,                                          &BSParser::parse_binary_operator,			PREC_LOGIC_AND }, // AMPERSAND_AMPERSAND,
-		{ nullptr,                                          &BSParser::parse_binary_operator,			PREC_LOGIC_OR }, // PIPE_PIPE,
-		{ &BSParser::parse_unary_operator,			nullptr,                                        PREC_NONE }, // BANG,
+		{ BSTokenizer::Token::AND, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_LOGIC_AND } }, // AND
+		{ BSTokenizer::Token::OR, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_LOGIC_OR } }, // OR
+		{ BSTokenizer::Token::NOT, { &BSParser::parse_unary_operator,         	&BSParser::parse_binary_not_in_operator,	PREC_CONTENT_TEST } }, // NOT
+		{ BSTokenizer::Token::AMPERSAND_AMPERSAND, { nullptr,                                          &BSParser::parse_binary_operator,			PREC_LOGIC_AND } }, // AMPERSAND_AMPERSAND
+		{ BSTokenizer::Token::PIPE_PIPE, { nullptr,                                          &BSParser::parse_binary_operator,			PREC_LOGIC_OR } }, // PIPE_PIPE
+		{ BSTokenizer::Token::BANG, { &BSParser::parse_unary_operator,			nullptr,                                        PREC_NONE } }, // BANG
 		// Bitwise
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_AND }, // AMPERSAND,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_OR }, // PIPE,
-		{ &BSParser::parse_unary_operator,         	nullptr,                                        PREC_NONE }, // TILDE,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_XOR }, // CARET,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_SHIFT }, // LESS_LESS,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_SHIFT }, // GREATER_GREATER,
+		{ BSTokenizer::Token::AMPERSAND, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_AND } }, // AMPERSAND
+		{ BSTokenizer::Token::PIPE, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_OR } }, // PIPE
+		{ BSTokenizer::Token::TILDE, { &BSParser::parse_unary_operator,         	nullptr,                                        PREC_NONE } }, // TILDE
+		{ BSTokenizer::Token::CARET, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_XOR } }, // CARET
+		{ BSTokenizer::Token::LESS_LESS, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_SHIFT } }, // LESS_LESS
+		{ BSTokenizer::Token::GREATER_GREATER, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_BIT_SHIFT } }, // GREATER_GREATER
 		// Math
-		{ &BSParser::parse_unary_operator,         	&BSParser::parse_binary_operator,      	PREC_ADDITION_SUBTRACTION }, // PLUS,
-		{ &BSParser::parse_unary_operator,         	&BSParser::parse_binary_operator,      	PREC_ADDITION_SUBTRACTION }, // MINUS,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_FACTOR }, // STAR,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_POWER }, // STAR_STAR,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_FACTOR }, // SLASH,
-		{ &BSParser::parse_get_node,                  &BSParser::parse_binary_operator,      	PREC_FACTOR }, // PERCENT,
+		{ BSTokenizer::Token::PLUS, { &BSParser::parse_unary_operator,         	&BSParser::parse_binary_operator,      	PREC_ADDITION_SUBTRACTION } }, // PLUS
+		{ BSTokenizer::Token::MINUS, { &BSParser::parse_unary_operator,         	&BSParser::parse_binary_operator,      	PREC_ADDITION_SUBTRACTION } }, // MINUS
+		{ BSTokenizer::Token::STAR, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_FACTOR } }, // STAR
+		{ BSTokenizer::Token::STAR_STAR, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_POWER } }, // STAR_STAR
+		{ BSTokenizer::Token::SLASH, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_FACTOR } }, // SLASH
+		{ BSTokenizer::Token::PERCENT, { &BSParser::parse_get_node,                  &BSParser::parse_binary_operator,      	PREC_FACTOR } }, // PERCENT
 		// Assignment
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // PLUS_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // MINUS_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // STAR_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // STAR_STAR_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // SLASH_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // PERCENT_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // LESS_LESS_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // GREATER_GREATER_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // AMPERSAND_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // PIPE_EQUAL,
-		{ nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT }, // CARET_EQUAL,
+		{ BSTokenizer::Token::EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // EQUAL
+		{ BSTokenizer::Token::PLUS_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // PLUS_EQUAL
+		{ BSTokenizer::Token::MINUS_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // MINUS_EQUAL
+		{ BSTokenizer::Token::STAR_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // STAR_EQUAL
+		{ BSTokenizer::Token::STAR_STAR_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // STAR_STAR_EQUAL
+		{ BSTokenizer::Token::SLASH_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // SLASH_EQUAL
+		{ BSTokenizer::Token::PERCENT_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // PERCENT_EQUAL
+		{ BSTokenizer::Token::LESS_LESS_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // LESS_LESS_EQUAL
+		{ BSTokenizer::Token::GREATER_GREATER_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // GREATER_GREATER_EQUAL
+		{ BSTokenizer::Token::AMPERSAND_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // AMPERSAND_EQUAL
+		{ BSTokenizer::Token::PIPE_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // PIPE_EQUAL
+		{ BSTokenizer::Token::CARET_EQUAL, { nullptr,                                          &BSParser::parse_assignment,           	PREC_ASSIGNMENT } }, // CARET_EQUAL
 		// Control flow
-		{ nullptr,                                          &BSParser::parse_ternary_operator,     	PREC_TERNARY }, // IF,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ELIF,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ELSE,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // FOR,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // WHILE,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // BREAK,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // CONTINUE,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // PASS,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // RETURN,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // MATCH,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // WHEN,
+		{ BSTokenizer::Token::IF, { nullptr,                                          &BSParser::parse_ternary_operator,     	PREC_TERNARY } }, // IF
+		{ BSTokenizer::Token::ELIF, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ELIF
+		{ BSTokenizer::Token::ELSE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ELSE
+		{ BSTokenizer::Token::FOR, { nullptr,                                          nullptr,                                        PREC_NONE } }, // FOR
+		{ BSTokenizer::Token::WHILE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // WHILE
+		{ BSTokenizer::Token::BREAK, { nullptr,                                          nullptr,                                        PREC_NONE } }, // BREAK
+		{ BSTokenizer::Token::CONTINUE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // CONTINUE
+		{ BSTokenizer::Token::PASS, { nullptr,                                          nullptr,                                        PREC_NONE } }, // PASS
+		{ BSTokenizer::Token::RETURN, { nullptr,                                          nullptr,                                        PREC_NONE } }, // RETURN
+		{ BSTokenizer::Token::MATCH, { nullptr,                                          nullptr,                                        PREC_NONE } }, // MATCH
+		{ BSTokenizer::Token::WHEN, { nullptr,                                          nullptr,                                        PREC_NONE } }, // WHEN
 		// Keywords
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ABSTRACT,
-		{ nullptr,                                          &BSParser::parse_cast,                 	PREC_CAST }, // AS,
-		{ nullptr,                                          &BSParser::parse_cast,                 	PREC_CAST }, // AS_BANG,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ASSERT,
-		{ &BSParser::parse_await,                  	nullptr,                                        PREC_NONE }, // AWAIT,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // BREAKPOINT,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // CLASS,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // CLASS_NAME,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ENUM_NAME,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TK_CONST,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ENUM,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // EXTENDS,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // FINAL,
-		{ &BSParser::parse_lambda,                    nullptr,                                        PREC_NONE }, // FUNC,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // IMPORT,
-		{ nullptr,                                          &BSParser::parse_binary_operator,      	PREC_CONTENT_TEST }, // TK_IN,
-		{ nullptr,                                          &BSParser::parse_type_test,            	PREC_TYPE_TEST }, // IS,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // NAMESPACE,
-		{ &BSParser::parse_preload,					nullptr,                                        PREC_NONE }, // PRELOAD,
-		{ &BSParser::parse_self,                   	nullptr,                                        PREC_NONE }, // SELF,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // SIGNAL,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // STATIC,
-		{ &BSParser::parse_call,						nullptr,                                        PREC_NONE }, // SUPER,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TRAIT,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TRAIT_NAME,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TUPLE,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TUPLE_NAME,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // USES,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // VAR,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TK_VOID,
-		{ &BSParser::parse_yield,                     nullptr,                                        PREC_NONE }, // YIELD,
+		{ BSTokenizer::Token::ABSTRACT, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ABSTRACT
+		{ BSTokenizer::Token::AS, { nullptr,                                          &BSParser::parse_cast,                 	PREC_CAST } }, // AS
+		{ BSTokenizer::Token::ASSERT, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ASSERT
+		{ BSTokenizer::Token::AWAIT, { &BSParser::parse_await,                  	nullptr,                                        PREC_NONE } }, // AWAIT
+		{ BSTokenizer::Token::BREAKPOINT, { nullptr,                                          nullptr,                                        PREC_NONE } }, // BREAKPOINT
+		{ BSTokenizer::Token::CLASS, { nullptr,                                          nullptr,                                        PREC_NONE } }, // CLASS
+		{ BSTokenizer::Token::CLASS_NAME, { nullptr,                                          nullptr,                                        PREC_NONE } }, // CLASS_NAME
+		{ BSTokenizer::Token::ENUM_NAME, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ENUM_NAME
+		{ BSTokenizer::Token::TK_CONST, { nullptr,                                          nullptr,                                        PREC_NONE } }, // TK_CONST
+		{ BSTokenizer::Token::ENUM, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ENUM
+		{ BSTokenizer::Token::EXTENDS, { nullptr,                                          nullptr,                                        PREC_NONE } }, // EXTENDS
+		{ BSTokenizer::Token::FINAL, { nullptr,                                          nullptr,                                        PREC_NONE } }, // FINAL
+		{ BSTokenizer::Token::FUNC, { &BSParser::parse_lambda,                    nullptr,                                        PREC_NONE } }, // FUNC
+		{ BSTokenizer::Token::IMPORT, { nullptr,                                          nullptr,                                        PREC_NONE } }, // IMPORT
+		{ BSTokenizer::Token::TK_IN, { nullptr,                                          &BSParser::parse_binary_operator,      	PREC_CONTENT_TEST } }, // TK_IN
+		{ BSTokenizer::Token::IS, { nullptr,                                          &BSParser::parse_type_test,            	PREC_TYPE_TEST } }, // IS
+		{ BSTokenizer::Token::NAMESPACE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // NAMESPACE
+		{ BSTokenizer::Token::PRELOAD, { &BSParser::parse_preload,					nullptr,                                        PREC_NONE } }, // PRELOAD
+		{ BSTokenizer::Token::SELF, { &BSParser::parse_self,                   	nullptr,                                        PREC_NONE } }, // SELF
+		{ BSTokenizer::Token::SIGNAL, { nullptr,                                          nullptr,                                        PREC_NONE } }, // SIGNAL
+		{ BSTokenizer::Token::STATIC, { nullptr,                                          nullptr,                                        PREC_NONE } }, // STATIC
+		{ BSTokenizer::Token::SUPER, { &BSParser::parse_call,						nullptr,                                        PREC_NONE } }, // SUPER
+		{ BSTokenizer::Token::TRAIT, { nullptr,                                          nullptr,                                        PREC_NONE } }, // TRAIT
+		{ BSTokenizer::Token::TRAIT_NAME, { nullptr,                                          nullptr,                                        PREC_NONE } }, // TRAIT_NAME
+		{ BSTokenizer::Token::TUPLE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // TUPLE
+		{ BSTokenizer::Token::TUPLE_NAME, { nullptr,                                          nullptr,                                        PREC_NONE } }, // TUPLE_NAME
+		{ BSTokenizer::Token::USES, { nullptr,                                          nullptr,                                        PREC_NONE } }, // USES
+		{ BSTokenizer::Token::VAR, { nullptr,                                          nullptr,                                        PREC_NONE } }, // VAR
+		{ BSTokenizer::Token::TK_VOID, { nullptr,                                          nullptr,                                        PREC_NONE } }, // TK_VOID
+		{ BSTokenizer::Token::YIELD, { &BSParser::parse_yield,                     nullptr,                                        PREC_NONE } }, // YIELD
 		// Punctuation
-		{ &BSParser::parse_array,                  	&BSParser::parse_subscript,            	PREC_SUBSCRIPT }, // BRACKET_OPEN,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // BRACKET_CLOSE,
-		{ &BSParser::parse_dictionary,             	nullptr,                                        PREC_NONE }, // BRACE_OPEN,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // BRACE_CLOSE,
-		{ &BSParser::parse_grouping,               	&BSParser::parse_call,                 	PREC_CALL }, // PARENTHESIS_OPEN,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // PARENTHESIS_CLOSE,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // COMMA,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // SEMICOLON,
-		{ &BSParser::parse_contextual_enum_case,	&BSParser::parse_attribute,            	PREC_ATTRIBUTE }, // PERIOD,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // PERIOD_PERIOD,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // PERIOD_PERIOD_PERIOD,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // COLON,
-		{ &BSParser::parse_get_node,               	nullptr,                                        PREC_NONE }, // DOLLAR,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // FORWARD_ARROW,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // UNDERSCORE,
+		{ BSTokenizer::Token::BRACKET_OPEN, { &BSParser::parse_array,                  	&BSParser::parse_subscript,            	PREC_SUBSCRIPT } }, // BRACKET_OPEN
+		{ BSTokenizer::Token::BRACKET_CLOSE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // BRACKET_CLOSE
+		{ BSTokenizer::Token::BRACE_OPEN, { &BSParser::parse_dictionary,             	nullptr,                                        PREC_NONE } }, // BRACE_OPEN
+		{ BSTokenizer::Token::BRACE_CLOSE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // BRACE_CLOSE
+		{ BSTokenizer::Token::PARENTHESIS_OPEN, { &BSParser::parse_grouping,               	&BSParser::parse_call,                 	PREC_CALL } }, // PARENTHESIS_OPEN
+		{ BSTokenizer::Token::PARENTHESIS_CLOSE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // PARENTHESIS_CLOSE
+		{ BSTokenizer::Token::COMMA, { nullptr,                                          nullptr,                                        PREC_NONE } }, // COMMA
+		{ BSTokenizer::Token::SEMICOLON, { nullptr,                                          nullptr,                                        PREC_NONE } }, // SEMICOLON
+		{ BSTokenizer::Token::PERIOD, { &BSParser::parse_contextual_enum_case,	&BSParser::parse_attribute,            	PREC_ATTRIBUTE } }, // PERIOD
+		{ BSTokenizer::Token::PERIOD_PERIOD, { nullptr,                                          nullptr,                                        PREC_NONE } }, // PERIOD_PERIOD
+		{ BSTokenizer::Token::PERIOD_PERIOD_PERIOD, { nullptr,                                          nullptr,                                        PREC_NONE } }, // PERIOD_PERIOD_PERIOD
+		{ BSTokenizer::Token::COLON, { nullptr,                                          nullptr,                                        PREC_NONE } }, // COLON
+		{ BSTokenizer::Token::DOLLAR, { &BSParser::parse_get_node,               	nullptr,                                        PREC_NONE } }, // DOLLAR
+		{ BSTokenizer::Token::FORWARD_ARROW, { nullptr,                                          nullptr,                                        PREC_NONE } }, // FORWARD_ARROW
+		{ BSTokenizer::Token::UNDERSCORE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // UNDERSCORE
 		// Whitespace
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // NEWLINE,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // INDENT,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // DEDENT,
+		{ BSTokenizer::Token::NEWLINE, { nullptr,                                          nullptr,                                        PREC_NONE } }, // NEWLINE
+		{ BSTokenizer::Token::INDENT, { nullptr,                                          nullptr,                                        PREC_NONE } }, // INDENT
+		{ BSTokenizer::Token::DEDENT, { nullptr,                                          nullptr,                                        PREC_NONE } }, // DEDENT
 		// Constants
-		{ &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE }, // CONST_PI,
-		{ &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE }, // CONST_TAU,
-		{ &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE }, // CONST_INF,
-		{ &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE }, // CONST_NAN,
+		{ BSTokenizer::Token::CONST_PI, { &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE } }, // CONST_PI
+		{ BSTokenizer::Token::CONST_TAU, { &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE } }, // CONST_TAU
+		{ BSTokenizer::Token::CONST_INF, { &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE } }, // CONST_INF
+		{ BSTokenizer::Token::CONST_NAN, { &BSParser::parse_builtin_constant,			nullptr,                                        PREC_NONE } }, // CONST_NAN
 		// Error message improvement
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // VCS_CONFLICT_MARKER,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // BACKTICK,
-		{ nullptr,                                          &BSParser::parse_invalid_token,        	PREC_CAST }, // QUESTION_MARK,
+		{ BSTokenizer::Token::VCS_CONFLICT_MARKER, { nullptr,                                          nullptr,                                        PREC_NONE } }, // VCS_CONFLICT_MARKER
+		{ BSTokenizer::Token::BACKTICK, { nullptr,                                          nullptr,                                        PREC_NONE } }, // BACKTICK
+		{ BSTokenizer::Token::QUESTION_MARK, { nullptr,                                          &BSParser::parse_invalid_token,        	PREC_CAST } }, // QUESTION_MARK
 		// Special
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ERROR,
-		{ nullptr,                                          nullptr,                                        PREC_NONE }, // TK_EOF,
+		{ BSTokenizer::Token::ERROR, { nullptr,                                          nullptr,                                        PREC_NONE } }, // ERROR
+		{ BSTokenizer::Token::TK_EOF, { nullptr,                                          nullptr,                                        PREC_NONE } }, // TK_EOF
 	};
 	/* clang-format on */
-	// Avoid desync.
+	// Avoid desync. Upstream checks only the row count (fs_parser.cpp:7361 @ c9d5e35), which is not
+	// enough: this port both adds a token type (`RESERVED_TYPE_NAME`, D1) and removes one
+	// (`AS_BANG`, D1), and a table that made both edits wrongly would still have the right number of
+	// rows while every rule from `IDENTIFIER` onward answered for the wrong token. Each row
+	// therefore names the token it is for, and the alignment is proved at compile time.
 	static_assert(std_size(rules) == BSTokenizer::Token::TK_MAX, "Amount of parse rules don't match the amount of token types.");
+	static_assert(rules_are_aligned(rules, std_size(rules)), "A parse rule is not at its own token type's index.");
 
 	// Let's assume this is never invalid, since nothing generates a TK_MAX.
-	return &rules[p_token_type];
+	return &rules[p_token_type].rule;
 }
 
 bool BSParser::SuiteNode::has_local(const StringName &p_name) const {
@@ -9409,9 +9534,9 @@ void BSParser::TreePrinter::print_while(WhileNode *p_while) {
 	decrease_indent();
 }
 
-void BSParser::TreePrinter::print_tree(const BSParser &p_parser) {
+String BSParser::TreePrinter::render_tree(const BSParser &p_parser) {
 	ClassNode *class_tree = p_parser.get_tree();
-	ERR_FAIL_NULL_MSG(class_tree, "Parse the code before printing the parse tree.");
+	ERR_FAIL_NULL_V_MSG(class_tree, String(), "Parse the code before printing the parse tree.");
 
 	if (p_parser.is_tool()) {
 		push_line("@tool");
@@ -9423,7 +9548,11 @@ void BSParser::TreePrinter::print_tree(const BSParser &p_parser) {
 	}
 	print_class(class_tree);
 
-	print_line(String(printed));
+	return String(printed);
+}
+
+void BSParser::TreePrinter::print_tree(const BSParser &p_parser) {
+	print_line(render_tree(p_parser));
 }
 
 #endif // DEBUG_ENABLED

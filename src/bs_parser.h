@@ -584,6 +584,12 @@ public:
 			VARIABLE,
 			VARIABLE_DESTRUCTURE,
 			WHILE,
+			// A BaristaScript addition, not upstream's (fs_parser.h:588 @ c9d5e35 ends at WHILE). It
+			// is what lets the vocabulary be closed over: `get_node_type_name()` is a `switch` with
+			// no `default:`, so the compiler proves it names every enumerator, and this bound lets a
+			// test walk them all and assert each one is either produced by a fixture or explicitly
+			// marked unreachable. Never a node's own type.
+			NODE_TYPE_MAX,
 		};
 
 		Type type = NONE;
@@ -2199,6 +2205,10 @@ public:
 
 private:
 	friend class BSAnalyzer;
+	// The parse tree's test surface. godot-cpp's String and Variant are engine-backed, so a ported
+	// front-end can only be exercised from inside a running Godot; the probe needs the node
+	// allocation list and the error list to render what a test compares. It reads and never mutates.
+	friend class BaristaScriptParserProbe;
 	bool _is_tool = false;
 	String script_path;
 	bool for_completion = false;
@@ -2353,7 +2363,8 @@ private:
 		ParseFunction infix = nullptr;
 		Precedence precedence = PREC_NONE;
 	};
-	static ParseRule *get_rule(BSTokenizer::Token::Type p_token_type);
+	// The table is `constexpr`, so the rule it hands back is read-only; nothing mutates a rule.
+	static const ParseRule *get_rule(BSTokenizer::Token::Type p_token_type);
 
 	List<Node *> nodes_in_progress;
 	void complete_extents(Node *p_node);
@@ -2619,6 +2630,16 @@ public:
 	bool is_tool() const { return _is_tool; }
 	ClassNode *find_class(const String &p_qualified_name) const;
 	bool has_class(const BSParser::ClassNode *p_class) const;
+	/**
+	 * The name of an AST node kind, as one `switch` with no `default:` label.
+	 *
+	 * A `default:` is what would let a new enumerator fall through to an "unknown node" string, so
+	 * there is none; the build promotes the compiler's unhandled-enumerator diagnostic to an error
+	 * (`-Werror=switch`, set in `SConstruct` and `CMakeLists.txt`), which is what makes exhaustive a
+	 * build guarantee rather than a comment. This is the only place a node kind is spelled in text.
+	 */
+	static String get_node_type_name(Node::Type p_type);
+
 	static Variant::Type get_builtin_type(const StringName &p_type); // Excluding `Variant::NIL` and `Variant::OBJECT`.
 
 	// A built-in source name resolved to the Variant carrier it travels in. D1 collapses upstream's
@@ -2733,6 +2754,8 @@ public:
 		void print_while(WhileNode *p_while);
 
 	public:
+		/** The rendering `print_tree()` prints, returned instead of printed. */
+		String render_tree(const BSParser &p_parser);
 		void print_tree(const BSParser &p_parser);
 	};
 #endif // DEBUG_ENABLED
