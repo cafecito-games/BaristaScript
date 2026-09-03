@@ -97,6 +97,12 @@ public:
 
 	/** `BSParser::MAX_NESTING_DEPTH`, so a test cannot restate it. */
 	int max_nesting_depth() const;
+
+	/**
+	 * `BSTokenizerBuffer::TOKENIZER_VERSION`, so a test can say "one version behind this build"
+	 * about a checked-in fixture rather than hard-coding the number the fixture was written under.
+	 */
+	int tokenizer_format_version() const;
 };
 
 } // namespace barista_script

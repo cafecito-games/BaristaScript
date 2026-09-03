@@ -304,6 +304,13 @@ class BSTokenizerText : public BSTokenizer {
 	bool pending_newline = false;
 	Token last_token;
 	Token last_newline;
+	// The NEWLINE token the most recent `scan()` built but withheld because multiline mode was on,
+	// or an `EMPTY` token when it withheld none. `BSTokenizerBuffer::parse_code_string` tokenizes a
+	// whole file in multiline mode so that layout tokens stay out of the compiled buffer, and it
+	// regenerates them on replay; this is where it reads the position the regenerated NEWLINE must
+	// carry. Without it the replay would have to guess, and a guess is wrong wherever a trailing
+	// comment or trailing whitespace sits between the last token of a line and its newline.
+	Token withheld_newline;
 	int pending_indents = 0;
 	// Whether `last_token` is a keyword token (e.g. `class`, `trait`, `return`) emitted in
 	// attribute position, i.e. immediately after a `PERIOD`. `BSParser::parse_attribute` re-spells
@@ -379,6 +386,9 @@ public:
 	void set_source_code(const String &p_source_code);
 
 	const Vector<int> &get_continuation_lines() const { return continuation_lines; }
+
+	/** The NEWLINE token the most recent `scan()` withheld, or an `EMPTY` token when it withheld none. */
+	const Token &get_withheld_newline() const { return withheld_newline; }
 
 #ifdef TOOLS_ENABLED
 	virtual int get_current_position() const override { return position; }

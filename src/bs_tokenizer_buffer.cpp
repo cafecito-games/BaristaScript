@@ -8,6 +8,8 @@
 
 #include "bs_tokenizer_buffer.h"
 
+#include <climits>
+
 // Upstream includes `core/io/compression.h` and `core/io/marshalls.h` here
 // (fs_tokenizer_buffer.cpp:32-33). Neither exists in godot-cpp; both are shimmed by the platform
 // seam as `BSCompression` and `BSMarshalls`, so `bs_tokenizer.h` -> `bs_platform.h` is the whole
@@ -23,10 +25,54 @@ constexpr uint8_t BUFFER_MAGIC[4] = { 'B', 'S', 'T', 'B' };
 constexpr int64_t BUFFER_HEADER_SIZE = 12;
 constexpr int64_t CONTENTS_HEADER_SIZE = 16;
 
+// A token position on its way into the buffer. The tokenizer counts from 1 and never goes
+// negative, so this only ever passes the value through; clamping rather than casting keeps a stray
+// negative from being written as a four-billion-line position instead of being visibly wrong.
+uint32_t encode_position(int p_position) {
+	return p_position < 0 ? 0u : uint32_t(p_position);
+}
+
 void append_uint32(PackedByteArray &r_buffer, uint32_t p_value) {
 	const int64_t offset = r_buffer.size();
 	r_buffer.resize(offset + 4);
 	BSMarshalls::encode_uint32(p_value, r_buffer.ptrw() + offset);
+}
+
+void append_span(PackedByteArray &r_buffer, const BSTokenizerBuffer::TokenSpan &p_span) {
+	append_uint32(r_buffer, encode_position(p_span.start_line));
+	append_uint32(r_buffer, encode_position(p_span.start_column));
+	append_uint32(r_buffer, encode_position(p_span.end_line));
+	append_uint32(r_buffer, encode_position(p_span.end_column));
+}
+
+// The span of a token, for the layout tokens whose positions the buffer writes down rather than
+// storing the token itself. An `EMPTY` token -- what the tokenizer reports when it withheld no
+// newline at all -- yields a zero span, which the replay treats as "no recorded position".
+BSTokenizerBuffer::TokenSpan span_of(const BSTokenizer::Token &p_token) {
+	BSTokenizerBuffer::TokenSpan span;
+	if (p_token.type == BSTokenizer::Token::EMPTY) {
+		return span;
+	}
+	span.start_line = p_token.start_line;
+	span.start_column = p_token.start_column;
+	span.end_line = p_token.end_line;
+	span.end_column = p_token.end_column;
+	return span;
+}
+
+// Positions a regenerated layout token. A zero span means the buffer recorded no position for it
+// -- a line start with no NEWLINE of its own, or a buffer whose writer had none to record -- and
+// the token falls back to the line the replay is on, which is what it carried before D2.
+void apply_span(BSTokenizer::Token &r_token, const BSTokenizerBuffer::TokenSpan &p_span, int p_fallback_line) {
+	if (p_span.start_line == 0 && p_span.end_line == 0 && p_span.start_column == 0 && p_span.end_column == 0) {
+		r_token.start_line = p_fallback_line;
+		r_token.end_line = p_fallback_line;
+		return;
+	}
+	r_token.start_line = p_span.start_line;
+	r_token.start_column = p_span.start_column;
+	r_token.end_line = p_span.end_line;
+	r_token.end_column = p_span.end_column;
 }
 
 } // namespace
@@ -75,17 +121,26 @@ int BSTokenizerBuffer::_token_to_binary(const Token &p_token, PackedByteArray &r
 	// the whole of a literal's type, so there is nothing left for a descriptor to say.
 	int token_len;
 	if (token_type & TOKEN_MASK) {
-		token_len = 8;
+		token_len = TOKEN_LONG_SIZE;
 		r_buffer.resize(pos + token_len);
 		BSMarshalls::encode_uint32(token_type | TOKEN_BYTE_MASK, r_buffer.ptrw() + pos);
 		pos += 4;
 	} else {
-		token_len = 5;
+		token_len = TOKEN_SHORT_SIZE;
 		r_buffer.resize(pos + token_len);
 		r_buffer.ptrw()[pos] = uint8_t(token_type);
 		pos++;
 	}
-	BSMarshalls::encode_uint32(uint32_t(p_token.start_line), r_buffer.ptrw() + pos);
+	// D2: the whole span, not the start line alone.
+	const uint32_t span[4] = {
+		encode_position(p_token.start_line),
+		encode_position(p_token.start_column),
+		encode_position(p_token.end_line),
+		encode_position(p_token.end_column),
+	};
+	for (int i = 0; i < 4; i++) {
+		BSMarshalls::encode_uint32(span[i], r_buffer.ptrw() + pos + i * 4);
+	}
 	return token_len;
 }
 
@@ -109,8 +164,24 @@ BSTokenizer::Token BSTokenizerBuffer::_binary_to_token(const uint8_t *p_buffer) 
 	} else {
 		b++;
 	}
-	token.start_line = BSMarshalls::decode_uint32(b);
-	token.end_line = token.start_line;
+	// D2: the whole span. A crafted buffer can name a position past what `int` holds, and the
+	// tokenizer's positions are `int`, so a value that would not survive the narrowing is refused
+	// rather than wrapped into a negative line.
+	int span[4];
+	for (int i = 0; i < 4; i++) {
+		const uint32_t value = BSMarshalls::decode_uint32(b + i * 4);
+		if (unlikely(value > uint32_t(INT_MAX))) {
+			Token error;
+			error.type = Token::ERROR;
+			error.literal = "Token position out of range.";
+			return error;
+		}
+		span[i] = int(value);
+	}
+	token.start_line = span[0];
+	token.start_column = span[1];
+	token.end_line = span[2];
+	token.end_column = span[3];
 
 	token.literal = token.get_name();
 	if (token.type == Token::CONST_NAN) {
@@ -185,8 +256,8 @@ Error BSTokenizerBuffer::set_code_buffer(const PackedByteArray &p_buffer) {
 	// have contained.
 	ERR_FAIL_COND_V(int64_t(identifier_count) * 4 > total_len, ERR_INVALID_DATA);
 	ERR_FAIL_COND_V(int64_t(constant_count) * 4 > total_len, ERR_INVALID_DATA);
-	ERR_FAIL_COND_V(int64_t(token_line_count) * 16 > total_len, ERR_INVALID_DATA);
-	ERR_FAIL_COND_V(int64_t(token_count) * 5 > total_len, ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(int64_t(token_line_count) * LINE_MARKER_SIZE > total_len, ERR_INVALID_DATA);
+	ERR_FAIL_COND_V(int64_t(token_count) * TOKEN_SHORT_SIZE > total_len, ERR_INVALID_DATA);
 
 	identifiers.resize(identifier_count);
 	for (uint32_t i = 0; i < identifier_count; i++) {
@@ -220,29 +291,54 @@ Error BSTokenizerBuffer::set_code_buffer(const PackedByteArray &p_buffer) {
 		total_len -= int64_t(len);
 	}
 
+	// One record per line start: the token index that begins the line, the line and column the
+	// replay resumes at, and the span of the NEWLINE it must regenerate before that token.
 	for (uint32_t i = 0; i < token_line_count; i++) {
-		ERR_FAIL_COND_V(total_len < 8, ERR_INVALID_DATA);
-		const uint32_t token_index = BSMarshalls::decode_uint32(&buf[cursor]);
-		const uint32_t line = BSMarshalls::decode_uint32(&buf[cursor + 4]);
-		cursor += 8;
-		total_len -= 8;
-		token_lines[token_index] = line;
+		ERR_FAIL_COND_V(total_len < LINE_MARKER_SIZE, ERR_INVALID_DATA);
+		uint32_t fields[7];
+		for (int field = 0; field < 7; field++) {
+			fields[field] = BSMarshalls::decode_uint32(&buf[cursor + field * 4]);
+			ERR_FAIL_COND_V(fields[field] > uint32_t(INT_MAX), ERR_INVALID_DATA);
+		}
+		cursor += LINE_MARKER_SIZE;
+		total_len -= LINE_MARKER_SIZE;
+		const int token_index = int(fields[0]);
+		token_lines[token_index] = int(fields[1]);
+		token_columns[token_index] = int(fields[2]);
+		TokenSpan newline_span;
+		newline_span.start_line = int(fields[3]);
+		newline_span.start_column = int(fields[4]);
+		newline_span.end_line = int(fields[5]);
+		newline_span.end_column = int(fields[6]);
+		token_newlines[token_index] = newline_span;
 	}
-	for (uint32_t i = 0; i < token_line_count; i++) {
-		ERR_FAIL_COND_V(total_len < 8, ERR_INVALID_DATA);
-		const uint32_t token_index = BSMarshalls::decode_uint32(&buf[cursor]);
-		const uint32_t column = BSMarshalls::decode_uint32(&buf[cursor + 4]);
-		cursor += 8;
-		total_len -= 8;
-		token_columns[token_index] = column;
+
+	// The two layout tokens that follow the last stored one.
+	ERR_FAIL_COND_V(total_len < TRAILING_SPANS_SIZE, ERR_INVALID_DATA);
+	{
+		uint32_t fields[8];
+		for (int field = 0; field < 8; field++) {
+			fields[field] = BSMarshalls::decode_uint32(&buf[cursor + field * 4]);
+			ERR_FAIL_COND_V(fields[field] > uint32_t(INT_MAX), ERR_INVALID_DATA);
+		}
+		cursor += TRAILING_SPANS_SIZE;
+		total_len -= TRAILING_SPANS_SIZE;
+		final_newline.start_line = int(fields[0]);
+		final_newline.start_column = int(fields[1]);
+		final_newline.end_line = int(fields[2]);
+		final_newline.end_column = int(fields[3]);
+		eof_span.start_line = int(fields[4]);
+		eof_span.start_column = int(fields[5]);
+		eof_span.end_line = int(fields[6]);
+		eof_span.end_column = int(fields[7]);
 	}
 
 	tokens.resize(token_count);
 	for (uint32_t i = 0; i < token_count; i++) {
 		ERR_FAIL_COND_V(total_len < 1, ERR_INVALID_DATA);
-		int token_len = 5;
+		int token_len = TOKEN_SHORT_SIZE;
 		if (buf[cursor] & TOKEN_BYTE_MASK) {
-			token_len = 8;
+			token_len = TOKEN_LONG_SIZE;
 		}
 		ERR_FAIL_COND_V(total_len < token_len, ERR_INVALID_DATA);
 		Token token = _binary_to_token(&buf[cursor]);
@@ -263,11 +359,16 @@ PackedByteArray BSTokenizerBuffer::parse_code_string(const String &p_code, Compr
 	PackedByteArray token_buffer;
 	HashMap<uint32_t, uint32_t> token_lines;
 	HashMap<uint32_t, uint32_t> token_columns;
+	HashMap<uint32_t, TokenSpan> token_newlines;
 
 	BSTokenizerText tokenizer;
 	tokenizer.set_source_code(p_code);
 	tokenizer.set_multiline_mode(true); // Ignore whitespace tokens.
 	Token current = tokenizer.scan();
+	// The NEWLINE this scan withheld, if any. Multiline mode builds it and then does not return it,
+	// which is how layout tokens stay out of the buffer; D2 keeps its position so the replay can
+	// regenerate the token where it really was rather than at a guessed column.
+	Token withheld_newline = tokenizer.get_withheld_newline();
 	int token_pos = 0;
 	int last_token_line = 0;
 	uint32_t token_counter = 0;
@@ -278,12 +379,19 @@ PackedByteArray BSTokenizerBuffer::parse_code_string(const String &p_code, Compr
 		if (token_counter > 0 && current.start_line > last_token_line) {
 			token_lines[token_counter] = current.start_line;
 			token_columns[token_counter] = current.start_column;
+			token_newlines[token_counter] = span_of(withheld_newline);
 		}
 		last_token_line = current.end_line;
 
 		current = tokenizer.scan();
+		withheld_newline = tokenizer.get_withheld_newline();
 		token_counter++;
 	}
+
+	// `current` is the EOF token and `withheld_newline` the NEWLINE that preceded it, which is the
+	// one `scan()` regenerates once the stored tokens run out.
+	const TokenSpan final_newline_span = span_of(withheld_newline);
+	const TokenSpan eof_token_span = span_of(current);
 
 	// Reverse maps.
 	Vector<StringName> rev_identifier_map;
@@ -306,6 +414,7 @@ PackedByteArray BSTokenizerBuffer::parse_code_string(const String &p_code, Compr
 		if (rev_token_lines.has(uint32_t(line))) {
 			token_lines.erase(rev_token_lines[uint32_t(line)]);
 			token_columns.erase(rev_token_lines[uint32_t(line)]);
+			token_newlines.erase(rev_token_lines[uint32_t(line)]);
 		}
 	}
 
@@ -342,15 +451,18 @@ PackedByteArray BSTokenizerBuffer::parse_code_string(const String &p_code, Compr
 		contents.append_array(encoded);
 	}
 
-	// Save lines and columns.
+	// Save one record per line start: where the replay resumes, and the span of the NEWLINE it
+	// regenerates there.
 	for (const KeyValue<uint32_t, uint32_t> &e : token_lines) {
 		append_uint32(contents, e.key);
 		append_uint32(contents, e.value);
+		append_uint32(contents, token_columns[e.key]);
+		append_span(contents, token_newlines[e.key]);
 	}
-	for (const KeyValue<uint32_t, uint32_t> &e : token_columns) {
-		append_uint32(contents, e.key);
-		append_uint32(contents, e.value);
-	}
+	// The file's final NEWLINE and its EOF, which follow the last stored token and so have no
+	// record of their own to hang from.
+	append_span(contents, final_newline_span);
+	append_span(contents, eof_token_span);
 
 	// Store tokens.
 	contents.append_array(token_buffer);
@@ -416,26 +528,37 @@ BSTokenizer::Token BSTokenizerBuffer::scan() {
 	if (current >= tokens.size() && !last_token_was_newline) {
 		Token newline;
 		newline.type = Token::NEWLINE;
-		newline.start_line = current_line;
-		newline.end_line = current_line;
+		apply_span(newline, final_newline, current_line);
 		last_token_was_newline = true;
 		return newline;
 	}
 
-	// Resolve pending indentation change.
-	if (pending_indents > 0) {
-		pending_indents--;
-		Token indent;
-		indent.type = Token::INDENT;
-		indent.start_line = current_line;
-		indent.end_line = current_line;
-		return indent;
-	} else if (pending_indents < 0) {
+	// Resolve pending indentation change. An INDENT or a DEDENT sits at the start of the line of
+	// the token it precedes, spanning that line's indentation: the text tokenizer builds it from
+	// the position it has reached, which is that token's start, and a DEDENT covers one column
+	// more (bs_tokenizer.cpp, `BSTokenizerText::scan`, the `pending_indents` block). After the last
+	// stored token that anchor is the end-of-file token instead.
+	if (pending_indents != 0) {
+		const TokenSpan anchor = current < tokens.size() ? span_of(tokens[current]) : eof_span;
+		TokenSpan layout;
+		layout.start_line = anchor.start_line;
+		layout.start_column = anchor.start_line > 0 ? 1 : 0;
+		layout.end_line = anchor.start_line;
+		layout.end_column = anchor.start_column;
+		if (pending_indents > 0) {
+			pending_indents--;
+			Token indent;
+			indent.type = Token::INDENT;
+			apply_span(indent, layout, current_line);
+			return indent;
+		}
 		pending_indents++;
 		Token dedent;
 		dedent.type = Token::DEDENT;
-		dedent.start_line = current_line;
-		dedent.end_line = current_line;
+		if (layout.end_column > 0) {
+			layout.end_column += 1;
+		}
+		apply_span(dedent, layout, current_line);
 		return dedent;
 	}
 
@@ -447,10 +570,12 @@ BSTokenizer::Token BSTokenizerBuffer::scan() {
 		}
 		Token eof;
 		eof.type = Token::TK_EOF;
+		apply_span(eof, eof_span, 0);
 		return eof;
 	}
 
 	if (!last_token_was_newline && token_lines.has(current)) {
+		const int line_start_index = current;
 		current_line = token_lines[current];
 		uint32_t current_column = token_columns[current];
 
@@ -476,8 +601,8 @@ BSTokenizer::Token BSTokenizerBuffer::scan() {
 
 			Token newline;
 			newline.type = Token::NEWLINE;
-			newline.start_line = current_line;
-			newline.end_line = current_line;
+			const TokenSpan *recorded = token_newlines.getptr(line_start_index);
+			apply_span(newline, recorded != nullptr ? *recorded : TokenSpan(), current_line);
 			last_token_was_newline = true;
 
 			return newline;
