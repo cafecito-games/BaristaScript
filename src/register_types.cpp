@@ -10,6 +10,7 @@
 
 #include "barista_script.h"
 #include "barista_script_language.h"
+#include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
 
 #include <godot_cpp/classes/engine.hpp>
@@ -34,6 +35,7 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);
+	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
 
 	language = memnew(barista_script::BaristaScriptLanguage);
 	const godot::Error registration_error = godot::Engine::get_singleton()->register_script_language(language);

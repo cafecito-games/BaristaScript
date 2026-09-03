@@ -4,7 +4,7 @@
 		"repository": "cafecito-games/Foundry",
 		"revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
 		"module_root": "modules/foundry_script/",
-		"port_set": ["fs_tokenizer.h", "fs_tokenizer.cpp", "fs_parser.h", "fs_parser.cpp"],
+		"port_set": ["fs_tokenizer.h", "fs_tokenizer.cpp", "fs_parser.h", "fs_parser.cpp", "fs_cache.h", "fs_cache.cpp"],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
 	"seam_header": "src/bs_platform.h",
@@ -14,7 +14,9 @@
 	],
 	"seam_support_headers": [
 		"godot_cpp/core/memory.hpp",
-		"godot_cpp/templates/local_vector.hpp"
+		"godot_cpp/templates/local_vector.hpp",
+		"godot_cpp/classes/dir_access.hpp",
+		"godot_cpp/variant/packed_byte_array.hpp"
 	],
 	"required_macros": [
 		"ERR_CONTINUE",
@@ -59,6 +61,13 @@
 			"non_mappings": ["core's ERR_FAIL_* route through _err_print_error with a Godot Error code; godot-cpp's route through the GDExtension print interface. Message text and exit behaviour are not byte-identical, so diagnostics compared by a corpus must not come from these macros."]
 		},
 		{
+			"core_header": "core/io/file_access.h",
+			"sites": ["fs_cache.cpp:43"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/classes/file_access.hpp"],
+			"rationale": "fs_cache.cpp opens script sources and compiled artifacts with FileAccess::open (fs_cache.cpp:407, fs_cache.cpp:511 at the pinned revision); the parse cache store adds get_file_as_bytes/store_buffer on the same class."
+		},
+		{
 			"core_header": "core/io/resource.h",
 			"sites": ["fs_parser.h:42"],
 			"resolution": "mapped",
@@ -87,7 +96,7 @@
 		},
 		{
 			"core_header": "core/object/ref_counted.h",
-			"sites": ["fs_parser.h:43"],
+			"sites": ["fs_parser.h:43", "fs_cache.h:35"],
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/classes/ref_counted.hpp", "godot_cpp/classes/ref.hpp"],
 			"rationale": "core declares RefCounted and Ref<T> in one header; godot-cpp splits Ref<T> into classes/ref.hpp, so the seam includes both."
@@ -103,6 +112,13 @@
 				"Foundry's trait virtuals on ScriptLanguage are not in stock Godot (D5); BaristaScript owns its own trait registry.",
 				"core/object/script_function_state.h is engine-internal and is not reachable from a GDExtension; coroutines get their own suspended-frame object."
 			]
+		},
+		{
+			"core_header": "core/os/safe_binary_mutex.h",
+			"sites": ["fs_cache.h:36"],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "SafeBinaryMutex locks through the engine's binary-mutex TLS machinery (fs_cache.cpp:168-174 at the pinned revision), which a GDExtension cannot register with. The port locks a plain std::mutex over the same critical sections, so no symbol of this header is referenced and nothing is mapped."
 		},
 		{
 			"core_header": "core/string/char_utils.h",
@@ -135,8 +151,14 @@
 			"non_mappings": ["godot-cpp's String is an opaque byte array dispatched through _method_bindings into the GDExtension interface, so it has no ptrw/resize/copy_from_unchecked and does not work without a loaded Godot runtime. No ported frontend code can be exercised from a standalone C++ test binary."]
 		},
 		{
+			"core_header": "core/templates/hash_set.h",
+			"sites": ["fs_cache.h:38"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/templates/hash_set.hpp"]
+		},
+		{
 			"core_header": "core/templates/hash_map.h",
-			"sites": ["fs_tokenizer.h:33", "fs_parser.h:47"],
+			"sites": ["fs_tokenizer.h:33", "fs_parser.h:47", "fs_cache.h:37"],
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/templates/hash_map.hpp"]
 		},
@@ -148,7 +170,7 @@
 		},
 		{
 			"core_header": "core/templates/vector.h",
-			"sites": ["fs_tokenizer.h:35", "fs_parser.h:49"],
+			"sites": ["fs_tokenizer.h:35", "fs_parser.h:49", "fs_cache.h:39", "fs_cache.cpp:44"],
 			"resolution": "mapped",
 			"godot_cpp_headers": ["godot_cpp/templates/vector.hpp"]
 		},

@@ -198,6 +198,13 @@ class BSCache {
 
 	std::mutex mutex;
 
+	/**
+	 * Drops every dependency edge naming p_path, in both directions. Ported from
+	 * FSCache::clear_parser_dependency_edges (fs_cache.cpp:279) over the two maps this port has.
+	 * The caller holds the mutex.
+	 */
+	static void clear_dependency_edges(BSCache *p_cache, const String &p_path);
+
 public:
 	static BSCache *get_singleton();
 

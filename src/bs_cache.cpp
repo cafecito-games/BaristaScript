@@ -12,10 +12,6 @@
 
 #include "bs_cache.h"
 
-#include <godot_cpp/classes/dir_access.hpp>
-#include <godot_cpp/classes/file_access.hpp>
-#include <godot_cpp/variant/packed_byte_array.hpp>
-
 // ---------------------------------------------------------------------------
 // Miss-reason vocabulary. One definition of every name and every log line.
 // ---------------------------------------------------------------------------
@@ -155,6 +151,17 @@ int BSParseCache::get_entry_count() const {
 	return entries.size();
 }
 
+/**
+ * The verdict on one on-disk record, returned by the decoder in load(). Kept separate from
+ * BSMissReason because DUPLICATE_KEY is a writer bug rather than a lookup outcome.
+ */
+enum class RecordStatus {
+	OK,
+	VERSION_REJECTED,
+	DUPLICATE_KEY,
+	CORRUPT_RECORD,
+};
+
 BSMissReason BSParseCache::load(const String &p_store_path) {
 	clear();
 
@@ -191,102 +198,132 @@ BSMissReason BSParseCache::load(const String &p_store_path) {
 
 	for (uint32_t entry_index = 0; entry_index < entry_count; entry_index++) {
 		const uint64_t entry_start = offset;
-		// Every field is bounds-checked against what is actually on disk; a short read means the
-		// store was truncated mid-entry and nothing after it can be trusted.
-		auto require = [&](uint64_t p_count) -> bool {
-			if (offset + p_count > size) {
-				return false;
+		String key;
+		Entry entry;
+		uint32_t version_tag = 0;
+
+		// One record is decoded by a single expression whose every rejection path is a `return`, so
+		// no branch can skip past the initialization of a field the branches below it read.
+		const RecordStatus status = [&]() -> RecordStatus {
+			// Every field is bounds-checked against what is actually on disk; a short read means
+			// the store was truncated mid-entry and nothing after it can be trusted.
+			auto require = [&](uint64_t p_count) -> bool {
+				if (p_count > size || offset > size - p_count) {
+					return false;
+				}
+				offset += p_count;
+				return true;
+			};
+
+			if (!require(4)) {
+				return RecordStatus::CORRUPT_RECORD;
 			}
-			offset += p_count;
-			return true;
-		};
+			version_tag = bs_get_u32(data, entry_start);
 
-		if (!require(4)) {
-			goto corrupt;
-		}
-		const uint32_t version_tag = bs_get_u32(data, entry_start);
+			if (!require(4)) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
+			const uint32_t key_length = bs_get_u32(data, entry_start + 4);
+			if (key_length == 0 || !require(key_length)) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
+			const uint64_t key_offset = entry_start + 8;
+			// The key is UTF-8; round-tripping it through String rejects embedded NULs and invalid
+			// sequences the way a loader would.
+			key = String::utf8((const char *)(data + key_offset), (int64_t)key_length);
+			if (key.is_empty()) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
 
-		if (!require(4)) {
-			goto corrupt;
-		}
-		const uint32_t key_length = bs_get_u32(data, entry_start + 4);
-		if (key_length == 0 || !require(key_length)) {
-			goto corrupt;
-		}
-		const uint64_t key_offset = entry_start + 8;
-		CharString key_bytes;
-		// The key is UTF-8; round-trip through String rejects embedded NULs the way a loader would.
-		const String key = String::utf8((const char *)(data + key_offset), (int64_t)key_length);
-		if (key.is_empty()) {
-			goto corrupt;
-		}
+			if (!require(4)) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
+			const uint32_t source_digest = bs_get_u32(data, key_offset + key_length);
 
-		if (!require(4)) {
-			goto corrupt;
-		}
-		const uint32_t source_digest = bs_get_u32(data, key_offset + key_length);
+			if (!require(4)) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
+			const uint32_t payload_length = bs_get_u32(data, key_offset + key_length + 4);
+			if (!require(payload_length) || !require(4)) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
+			const uint64_t payload_offset = key_offset + key_length + 8;
+			const uint32_t stored_entry_digest = bs_get_u32(data, offset - 4);
 
-		if (!require(4)) {
-			goto corrupt;
-		}
-		const uint32_t payload_length = bs_get_u32(data, key_offset + key_length + 4);
-		if (!require(payload_length) || !require(4)) {
-			goto corrupt;
-		}
-		const uint64_t payload_offset = key_offset + key_length + 8;
-		const uint32_t stored_entry_digest = bs_get_u32(data, offset - 4);
+			// The checksum covers the whole record from the version tag through the payload, so a
+			// flipped bit anywhere in it -- including in the version tag itself -- is corruption.
+			const uint32_t computed_entry_digest = bs_hash_bytes(
+					data + entry_start, payload_offset + payload_length - entry_start, BS_ENTRY_CHECKSUM_SEED);
+			if (computed_entry_digest != stored_entry_digest) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
 
-		// The checksum covers the whole entry from the version tag through the payload, so a
-		// flipped bit anywhere in it -- including in the version tag itself -- is corruption.
-		const uint32_t computed_entry_digest =
-				bs_hash_bytes(data + entry_start, payload_offset + payload_length - entry_start, BS_ENTRY_CHECKSUM_SEED);
-		if (computed_entry_digest != stored_entry_digest) {
-			goto corrupt;
-		}
+			if (version_tag != CACHE_FORMAT_VERSION) {
+				return RecordStatus::VERSION_REJECTED;
+			}
 
-		if (version_tag != CACHE_FORMAT_VERSION) {
-			// Keep the rejection as a tombstone: a later lookup of this path must report
-			// VERSION_MISMATCH, not read back as a cold miss.
-			const String line = bs_miss::get_log_line(BSMissReason::VERSION_MISMATCH, key);
-			load_report.push_back(line);
-			ERR_PRINT(line);
-			rejected[key] = BSMissReason::VERSION_MISMATCH;
-			continue;
-		}
+			// A key claimed twice -- whether the earlier claim was accepted or version-rejected --
+			// means the writer is broken.
+			if (entries.has(key) || rejected.has(key)) {
+				return RecordStatus::DUPLICATE_KEY;
+			}
 
-		if (entries.has(key)) {
-			// Two entries claiming one key means the writer is broken, so nothing in the store is
-			// trustworthy: fail loudly and drop everything rather than pick a winner.
-			const String line = "duplicate cache key '" + key + "' in '" + p_store_path +
-					"': the cache writer is broken, discarding the whole store";
-			load_report.push_back(line);
-			ERR_PRINT(line);
-			clear();
-			store_corrupt = true;
-			return BSMissReason::CORRUPT;
-		}
-
-		{
-			Entry entry;
 			entry.source_digest = source_digest;
-			entry.payload.resize(payload_length);
+			entry.payload.resize((int)payload_length);
 			if (payload_length > 0) {
 				memcpy(entry.payload.ptrw(), data + payload_offset, payload_length);
 			}
-			entries[key] = entry;
-		}
-		continue;
+			return RecordStatus::OK;
+		}();
 
-	corrupt:
-		{
-			const String line = "cache store '" + p_store_path + "' is truncated or corrupt at byte " +
-					String::num((int64_t)entry_start) + " of " + String::num((int64_t)size) +
-					"; discarding it and every entry after it";
-			load_report.push_back(line);
-			ERR_PRINT(line);
-			store_corrupt = true;
-			return BSMissReason::CORRUPT;
+		switch (status) {
+			case RecordStatus::OK: {
+				entries[key] = entry;
+			} break;
+
+			case RecordStatus::VERSION_REJECTED: {
+				// Keep the rejection as a tombstone: a later lookup of this path must report
+				// VERSION_MISMATCH, not read back as a cold miss.
+				const String line = bs_miss::get_log_line(BSMissReason::VERSION_MISMATCH, key);
+				load_report.push_back(line);
+				ERR_PRINT(line);
+				rejected[key] = BSMissReason::VERSION_MISMATCH;
+			} break;
+
+			case RecordStatus::DUPLICATE_KEY: {
+				// Two records claiming one key means the writer is broken, so nothing in the store
+				// is trustworthy: fail loudly and drop everything rather than pick a winner.
+				const String line = "duplicate cache key '" + key + "' in '" + p_store_path +
+						"': the cache writer is broken, discarding the whole store";
+				clear();
+				load_report.push_back(line);
+				ERR_PRINT(line);
+				store_corrupt = true;
+				return BSMissReason::CORRUPT;
+			}
+
+			case RecordStatus::CORRUPT_RECORD: {
+				const String line = "cache store '" + p_store_path + "' is truncated or corrupt at byte " +
+						String::num((int64_t)entry_start) + " of " + String::num((int64_t)size) +
+						"; discarding it and every entry after it";
+				load_report.push_back(line);
+				ERR_PRINT(line);
+				store_corrupt = true;
+				return BSMissReason::CORRUPT;
+			}
 		}
+	}
+
+	// A store whose declared entry count is not exhausted by its bytes, or that carries bytes after
+	// its last record, was not written by this build's writer.
+	if (offset != size) {
+		const String line = "cache store '" + p_store_path + "' has " + String::num((int64_t)(size - offset)) +
+				" trailing bytes after its declared " + String::num((int64_t)entry_count) +
+				" entries; discarding it";
+		load_report.push_back(line);
+		ERR_PRINT(line);
+		store_corrupt = true;
+		return BSMissReason::CORRUPT;
 	}
 
 	return BSMissReason::COLD;
@@ -305,7 +342,7 @@ BSParseCache::Lookup BSParseCache::lookup(const String &p_script_path, const Str
 		if (!FileAccess::file_exists(p_script_path)) {
 			// An entry for a file that no longer exists is evicted, not served and not silently
 			// dropped: the lookup names the eviction.
-			entries.erase(entry);
+			entries.erase(p_script_path);
 			rejected[p_script_path] = BSMissReason::EVICTED;
 			const String line = bs_miss::get_log_line(BSMissReason::EVICTED, p_script_path);
 			load_report.push_back(line);
@@ -316,7 +353,7 @@ BSParseCache::Lookup BSParseCache::lookup(const String &p_script_path, const Str
 
 		const uint32_t digest = compute_source_digest(p_source);
 		if (digest != entry->value.source_digest) {
-			entries.erase(entry);
+			entries.erase(p_script_path);
 			rejected[p_script_path] = BSMissReason::DIGEST_MISMATCH;
 			const String line = bs_miss::get_log_line(BSMissReason::DIGEST_MISMATCH, p_script_path);
 			load_report.push_back(line);
@@ -374,9 +411,8 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 
 	for (const String &key : keys) {
 		const Entry &entry = entries[key];
-		const PackedByteArray key_bytes = key.utf8().trim_suffix("\0") == key ? key.to_utf8_buffer() : PackedByteArray();
+		const PackedByteArray key_bytes = key.to_utf8_buffer();
 
-		const uint64_t entry_length_offset = store.size();
 		const uint64_t entry_start = store.size();
 
 		bs_put_u32(store, p_version_tag);
@@ -390,12 +426,11 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 			store.push_back(entry.payload.ptr()[i]);
 		}
 		bs_put_u32(store, bs_hash_bytes(store.ptr() + entry_start, store.size() - entry_start, BS_ENTRY_CHECKSUM_SEED));
-		(void)entry_length_offset;
 	}
 
 	// Atomic write: everything lands in a temp file first, so a crash mid-write leaves either the
 	// previous store or no store -- never a half-written one under the real name.
-	const String temp_path = p_store_path + ".tmp";
+	const String temp_path = p_store_path + String(".tmp");
 	const Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
 	if (file.is_null()) {
 		const String line = "cache flush to '" + p_store_path + "' failed: cannot open '" + temp_path +
@@ -488,8 +523,7 @@ String BSCache::get_source_code(const String &p_path) {
 
 	const Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
 	if (file.is_null()) {
-		ERR_FAIL_V_MSG(String(), "Script '" + p_path + "' could not be opened (error " +
-				String::num((int64_t)FileAccess::get_open_error()) + ").");
+		ERR_FAIL_V_MSG(String(), "Script '" + p_path + "' could not be opened (error " + String::num((int64_t)FileAccess::get_open_error()) + ").");
 	}
 
 	const int64_t length = file->get_length();
@@ -536,13 +570,14 @@ void BSCache::record_dependency(const String &p_path, const String &p_owner) {
 
 HashSet<String> BSCache::get_inverse_dependencies(const String &p_path) {
 	std::lock_guard<std::mutex> lock(get_singleton()->mutex);
+	HashSet<String> owners;
 	if (HashMap<String, HashSet<String>>::ConstIterator found = get_singleton()->inverse_dependencies.find(p_path)) {
-		return found->value;
+		owners = found->value;
 	}
-	return HashSet<String>();
+	return owners;
 }
 
-static void bs_clear_dependency_edges(BSCache *p_cache, const String &p_path) {
+void BSCache::clear_dependency_edges(BSCache *p_cache, const String &p_path) {
 	// Ported from FSCache::clear_parser_dependency_edges (fs_cache.cpp:279) over the two maps that
 	// exist in this port.
 	if (HashMap<String, HashSet<String>>::Iterator forward = p_cache->dependencies.find(p_path)) {
@@ -564,7 +599,7 @@ void BSCache::remove_script(const String &p_path) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(singleton->mutex);
-	bs_clear_dependency_edges(singleton, p_path);
+	clear_dependency_edges(singleton, p_path);
 	singleton->source_overrides.erase(p_path);
 }
 
@@ -573,7 +608,7 @@ void BSCache::move_script(const String &p_from, const String &p_to) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(singleton->mutex);
-	bs_clear_dependency_edges(singleton, p_from);
+	clear_dependency_edges(singleton, p_from);
 	singleton->source_overrides.erase(p_from);
 	if (!p_to.is_empty()) {
 		// The moved script keeps nothing of its old dependency edges; whoever reloads it records
