@@ -1,2 +1,7 @@
 # Normalize EOL for all files that Git considers text files.
 * text=auto eol=lf
+
+# Corpus expectations are compared byte-for-byte; EOL normalization would
+# silently rewrite the very drift these fixtures assert on.
+project/tests/corpus/** -text
+project/tests/corpus_fixtures/** -text
