@@ -684,6 +684,26 @@ bool BSParser::consume(BSTokenizer::Token::Type p_token_type, const String &p_er
 	return false;
 }
 
+void BSParser::reject_reserved_type_name() {
+	// (D1) `uint`, `ulong` and `long` are reserved type names: recognized in type position and always
+	// rejected, never silently treated as user identifiers in a type (docs/GRAMMAR.md sections 2.5
+	// and 7.1). The tokenizer rejects them in the positions the token stream alone settles -- after
+	// `->`, `as`, `is`, and a `:` outside `{` (bs_tokenizer.cpp, `_is_type_position()`) -- and emits
+	// `Token::RESERVED_TYPE_NAME` everywhere else, because only a parser knows whether a name stands
+	// in a type position. This is where the rest is decided.
+	//
+	// It reports and does not consume. The caller's own `consume(IDENTIFIER)` then takes the token as
+	// it always would (`check(IDENTIFIER)` accepts `RESERVED_TYPE_NAME`, since the spelling is still a
+	// legal ordinary name), so the tree keeps the shape it would have had and exactly one diagnostic
+	// is produced -- not a rejection here plus a derived "expected a type" from the caller.
+	//
+	// The message comes from `BSTokenizer::removed_type_name_diagnostic()`, which is its only
+	// definition, so the tokenizer's rejection and this one cannot word the same rule differently.
+	if (current.type == BSTokenizer::Token::RESERVED_TYPE_NAME) {
+		push_error(BSTokenizer::removed_type_name_diagnostic(current.get_identifier()));
+	}
+}
+
 bool BSParser::is_at_end() const {
 	return check(BSTokenizer::Token::TK_EOF);
 }
@@ -1340,6 +1360,7 @@ BSParser::ClassNode *BSParser::parse_class(const DeclarationModifiers &p_modifie
 	n_class->is_abstract = p_modifiers.is_abstract;
 	n_class->is_final = p_modifiers.is_final;
 
+	reject_reserved_type_name();
 	if (consume(BSTokenizer::Token::IDENTIFIER, R"(Expected identifier for the class name after "class".)")) {
 		n_class->identifier = parse_identifier();
 		if (n_class->outer) {
@@ -1408,6 +1429,7 @@ BSParser::TraitNode *BSParser::parse_trait(const DeclarationModifiers &p_modifie
 	trait->outer = previous_class;
 	trait->is_abstract = p_modifiers.is_abstract;
 
+	reject_reserved_type_name();
 	if (consume(BSTokenizer::Token::IDENTIFIER, R"(Expected identifier for the trait name after "trait".)")) {
 		trait->identifier = parse_identifier();
 		if (trait->outer) {
@@ -1470,6 +1492,7 @@ BSParser::TraitNode *BSParser::parse_trait(const DeclarationModifiers &p_modifie
 }
 
 void BSParser::parse_class_name() {
+	reject_reserved_type_name();
 	if (consume(BSTokenizer::Token::IDENTIFIER, R"(Expected identifier for the global class name after "class_name".)")) {
 		current_class->identifier = parse_identifier();
 		current_class->qualified_global_name = current_class->namespace_name.is_empty() ? String(current_class->identifier->name) : current_class->namespace_name + "." + String(current_class->identifier->name);
@@ -1496,6 +1519,7 @@ void BSParser::parse_class_name() {
 }
 
 void BSParser::parse_trait_name() {
+	reject_reserved_type_name();
 	if (consume(BSTokenizer::Token::IDENTIFIER, R"(Expected identifier for the global trait name after "trait_name".)")) {
 		current_class->is_trait = true;
 		current_class->trait_name_used = true;
@@ -1643,6 +1667,7 @@ void BSParser::parse_extends() {
 
 	make_completion_context(COMPLETION_INHERIT_TYPE, current_class, chain_index++);
 
+	reject_reserved_type_name();
 	if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected superclass name after "extends".)")) {
 		return;
 	}
@@ -1650,6 +1675,7 @@ void BSParser::parse_extends() {
 
 	while (match(BSTokenizer::Token::PERIOD)) {
 		make_completion_context(COMPLETION_INHERIT_TYPE, current_class, chain_index++);
+		reject_reserved_type_name();
 		if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected superclass name after ".".)")) {
 			return;
 		}
@@ -1677,6 +1703,7 @@ void BSParser::parse_uses() {
 bool BSParser::parse_trait_use(ClassNode::TraitUse &r_trait_use) {
 	int chain_index = 0;
 	make_completion_context(COMPLETION_USES, current_class, chain_index++, true, &r_trait_use.name);
+	reject_reserved_type_name();
 	if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected trait name after "uses".)")) {
 		return false;
 	}
@@ -1684,6 +1711,7 @@ bool BSParser::parse_trait_use(ClassNode::TraitUse &r_trait_use) {
 
 	while (match(BSTokenizer::Token::PERIOD)) {
 		make_completion_context(COMPLETION_USES, current_class, chain_index++, true, &r_trait_use.name);
+		reject_reserved_type_name();
 		if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected trait name after ".".)")) {
 			return false;
 		}
@@ -1727,6 +1755,7 @@ void BSParser::parse_type_parameters(Vector<TypeParameterNode *> &r_type_paramet
 			}
 
 			TypeParameterNode *type_parameter = alloc_node<TypeParameterNode>();
+			reject_reserved_type_name();
 			if (consume(BSTokenizer::Token::IDENTIFIER, R"(Expected type parameter name.)")) {
 				type_parameter->identifier = parse_identifier();
 				for (const TypeParameterNode *previous_parameter : r_type_parameters) {
@@ -2943,6 +2972,7 @@ BSParser::EnumNode *BSParser::parse_enum(const DeclarationModifiers &p_modifiers
 	EnumNode *enum_node = alloc_node<EnumNode>();
 	bool named = false;
 
+	reject_reserved_type_name();
 	if (match(BSTokenizer::Token::IDENTIFIER)) {
 		enum_node->identifier = parse_identifier();
 		named = true;
@@ -3227,6 +3257,7 @@ BSParser::EnumNode *BSParser::parse_enum(const DeclarationModifiers &p_modifiers
 BSParser::TupleNode *BSParser::parse_tuple(const DeclarationModifiers &p_modifiers) {
 	TupleNode *tuple_node = alloc_node<TupleNode>();
 
+	reject_reserved_type_name();
 	if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected tuple name after "tuple".)")) {
 		complete_extents(tuple_node);
 		return tuple_node;
@@ -6372,6 +6403,7 @@ BSParser::TypeAliasNode *BSParser::parse_type_alias() {
 	// onto the next real member.
 	parse_class_member_annotations(AnnotationInfo::NONE, "type alias");
 
+	reject_reserved_type_name();
 	if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected an alias name after "type".)")) {
 		complete_extents(type_alias);
 		return nullptr;
@@ -6548,6 +6580,8 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 		complete_extents(type);
 		return type;
 	}
+
+	reject_reserved_type_name();
 
 	if (!match(BSTokenizer::Token::IDENTIFIER)) {
 		if (match(BSTokenizer::Token::TK_VOID)) {
@@ -6746,6 +6780,7 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 			// Consume the misplaced tail so parsing stays aligned, but keep it out of the chain: the
 			// applied head is the type the author meant, and resolving the tail against it would only
 			// add a derived "not a nested type" complaint after the real error.
+			reject_reserved_type_name();
 			if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected inner type name after ".".)")) {
 				break;
 			}
@@ -6753,6 +6788,7 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 			continue;
 		}
 		make_completion_context(COMPLETION_TYPE_ATTRIBUTE, type, chain_index++);
+		reject_reserved_type_name();
 		if (!consume(BSTokenizer::Token::IDENTIFIER, R"(Expected inner type name after ".".)")) {
 			continue;
 		}

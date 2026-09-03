@@ -2423,6 +2423,14 @@ private:
 	bool match(BSTokenizer::Token::Type p_token_type);
 	bool check(BSTokenizer::Token::Type p_token_type) const;
 	bool consume(BSTokenizer::Token::Type p_token_type, const String &p_error_message);
+	/**
+	 * Reports a D1-reserved type spelling standing in a type position, without consuming it.
+	 *
+	 * Called at every type position the token stream itself cannot settle -- a type argument, a
+	 * qualified type name's segments, `extends`/`uses`, a `type` alias, and every position that
+	 * declares a type name. See the definition for why it does not consume.
+	 */
+	void reject_reserved_type_name();
 	bool is_at_end() const;
 	bool is_statement_end_token() const;
 	bool is_statement_end() const;

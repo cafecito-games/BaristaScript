@@ -14,10 +14,10 @@
 //
 // Upstream also includes `servers/text/text_server.h` under `DEBUG_ENABLED` (fs_tokenizer.cpp:37)
 // for the `TextServer::FEATURE_UNICODE_SECURITY` confusable-identifier check at
-// fs_tokenizer.cpp:672. The warning registry mapped that header (see the
-// `servers/text/text_server.h` entry in `src/bs_platform_manifest.json`), so it is reachable
-// through `bs_platform.h`; the tokenizer's own use of it is a separate decision, marked at its
-// call site in `potential_identifier()` below.
+// fs_tokenizer.cpp:672, which the warning registry mapped (see the `servers/text/text_server.h`
+// entry in `src/bs_platform_manifest.json`) and which is therefore reachable through
+// `bs_platform.h`. That check is reinstated here as `confusable_keyword()`; see the decision at its
+// call site in `potential_identifier()`.
 //
 // Upstream's `editor/settings/editor_settings.h` (fs_tokenizer.cpp:41) is guarded out for the same
 // reason: a GDExtension reaches editor settings through `EditorInterface`, not that header, so the
@@ -720,6 +720,30 @@ String BSTokenizer::removed_type_name_diagnostic(const String &p_spelling) {
 	return vformat(R"("%s" is reserved. BaristaScript stores every integer on one signed 64-bit carrier; write "int".)", p_spelling);
 }
 
+String BSTokenizer::confusable_keyword(const String &p_identifier) {
+	TextServerManager *manager = TextServerManager::get_singleton();
+	if (manager == nullptr) {
+		return String();
+	}
+	const Ref<TextServer> text_server = manager->get_primary_interface();
+	if (text_server.is_null() || !text_server->has_feature(TextServer::FEATURE_UNICODE_SECURITY)) {
+		return String();
+	}
+	PackedStringArray keyword_list;
+	for (const String &keyword : get_keyword_spellings()) {
+		keyword_list.push_back(keyword);
+	}
+	const int64_t confusable = text_server->is_confusable(p_identifier, keyword_list);
+	if (confusable < 0 || confusable >= keyword_list.size()) {
+		return String();
+	}
+	return keyword_list[(int)confusable];
+}
+
+String BSTokenizer::confusable_keyword_diagnostic(const String &p_identifier, const String &p_keyword) {
+	return vformat(R"(Identifier "%s" is visually similar to the BaristaScript keyword "%s" and thus not allowed.)", p_identifier, p_keyword);
+}
+
 Vector<String> BSTokenizer::get_keyword_spellings() {
 #define KEYWORD_GROUP_IGNORE(group)
 #define KEYWORD_APPEND(keyword, token_type) spellings.push_back(keyword);
@@ -769,16 +793,27 @@ BSTokenizer::Token BSTokenizerText::potential_identifier() {
 	}
 
 	if (!only_ascii) {
-		// Upstream runs the `TextServer::FEATURE_UNICODE_SECURITY` confusable-identifier check here
-		// under `DEBUG_ENABLED` (fs_tokenizer.cpp:668-677), rejecting a non-ASCII identifier that
-		// is visually similar to a keyword. The seam now maps `servers/text/text_server.h`, and
-		// `BSWarning::is_confusable_identifier()` already wraps the predicate, so the header is not
-		// what is missing. This site raises a parse *error* rather than a warning, which is a
-		// diagnostic decision for the parser milestone rather than for the warning registry; the
-		// check stays out until then. Everything else about this branch is unchanged.
+		// Kept here in case the order with push_error matters.
+		Token id = make_identifier(name);
+
+#ifdef DEBUG_ENABLED
+		// The decision issue #6 recorded and left to the parser milestone: this check is reinstated.
+		// It is upstream's (fs_tokenizer.cpp:668-677 @ c9d5e35), reached through the same public
+		// TextServer route the warning registry uses rather than through the engine-internal `TS`
+		// macro. It stays an *error* and not a `CONFUSABLE_IDENTIFIER` warning because the two ask
+		// different questions: the warning asks whether an identifier mixes scripts in a way Unicode
+		// security profiles call a spoof, while this asks whether it impersonates a keyword -- and a
+		// name that reads as `class` but is not `class` has no legitimate use, so the language
+		// refuses it rather than mentioning it. `docs/GRAMMAR.md` section 2.4 defers identifier
+		// validity to the Unicode identifier profile, which this enforces.
+		const String confusable = confusable_keyword(name);
+		if (!confusable.is_empty()) {
+			push_error(confusable_keyword_diagnostic(name, confusable));
+		}
+#endif // DEBUG_ENABLED
 
 		// Cannot be a keyword, as keywords are ASCII only.
-		return make_identifier(name);
+		return id;
 	}
 
 	// Define some helper macros for the switch case.

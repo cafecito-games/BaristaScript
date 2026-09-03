@@ -229,6 +229,31 @@ public:
 	static String removed_type_name_diagnostic(const String &p_spelling);
 
 	/**
+	 * The keyword a non-ASCII identifier is visually confusable with, or an empty `String` when it
+	 * is confusable with none.
+	 *
+	 * Unicode confusables are how a keyword gets impersonated: `clаss` with a Cyrillic `а` reads as
+	 * `class` and lexes as an identifier. Foundry rejects such an identifier outright
+	 * (`fs_tokenizer.cpp:668-677` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6), which is a parse
+	 * error rather than the `CONFUSABLE_IDENTIFIER` warning `BSWarning` owns; the two are different
+	 * questions asked of the same TextServer feature.
+	 *
+	 * The dictionary is `get_keyword_spellings()`, the one keyword table, so the set of names that
+	 * may not be impersonated is by construction the set of names that are keywords.
+	 *
+	 * Fail-open by construction, like the warning-side predicate: no TextServer, or a build of it
+	 * without the ICU-backed `FEATURE_UNICODE_SECURITY`, means no rejection. Refusing to tokenize
+	 * would make whether a source file compiles depend on how the host was built.
+	 */
+	static String confusable_keyword(const String &p_identifier);
+
+	/**
+	 * The diagnostic a keyword-confusable identifier reports, defined once for the same reason
+	 * `removed_type_name_diagnostic()` is.
+	 */
+	static String confusable_keyword_diagnostic(const String &p_identifier, const String &p_keyword);
+
+	/**
 	 * Decodes UTF-8 source bytes, refusing malformed input instead of substituting U+FFFD.
 	 *
 	 * Godot's `String::parse_utf8` reports failure but not where, and its recovery path writes a
