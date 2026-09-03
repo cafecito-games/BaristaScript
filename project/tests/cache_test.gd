@@ -63,6 +63,7 @@ func _initialize() -> void:
 	_test_trailing_bytes_are_corrupt_never_absent(failures)
 	_test_duplicate_key_fails_loudly(failures)
 	_test_duplicate_key_fails_loudly_across_versions(failures)
+	_test_key_with_an_embedded_nul_is_corrupt(failures)
 
 	# The per-entry verdicts.
 	_test_version_mismatch_is_discarded_never_upgraded(failures)
@@ -76,6 +77,7 @@ func _initialize() -> void:
 	_test_digest_ignores_file_modification_time(failures)
 	_test_write_failure_is_logged_and_non_fatal(failures)
 	_test_atomic_write_leaves_the_previous_store_intact(failures)
+	_test_deferred_write_failure_never_replaces_the_previous_store(failures)
 
 	# Vocabulary closure.
 	_test_miss_reason_vocabulary_is_closed(failures)
@@ -208,6 +210,48 @@ func _test_duplicate_key_fails_loudly_across_versions(failures: Array[String]) -
 		failures,
 		cache.lookup(SCRIPT_A, _read_source(SCRIPT_A))["reason"] == CORRUPT,
 		"a lookup against a duplicate-carrying store must report CORRUPT"
+	)
+
+
+## A key is only valid if its bytes survive a full round trip. String decoding
+## stops at an embedded NUL and returns the prefix, so without the re-encode
+## check this record would be filed under SCRIPT_A -- a path that really exists
+## -- and served as a hit for it.
+##
+## The record is assembled here because the writer will never emit one, but its
+## checksum comes from the cache's own compute_entry_checksum: the store is
+## structurally perfect, and the loader has to reject the key on its own merits
+## rather than on damage it can see in the digest.
+func _test_key_with_an_embedded_nul_is_corrupt(failures: Array[String]) -> void:
+	var store := _scratch_path("nul_key.bin")
+	var source := _read_source(SCRIPT_A)
+	var payload := _parse(source)
+
+	var key := SCRIPT_A.to_utf8_buffer()
+	key.append(0)
+	key.append_array("/shadow".to_utf8_buffer())
+
+	var record := _u32(BaristaScriptParseCache.get_cache_format_version())
+	record.append_array(_u32(key.size()))
+	record.append_array(key)
+	record.append_array(_u64(BaristaScriptParseCache.compute_source_digest(source)))
+	record.append_array(_u32(payload.size()))
+	record.append_array(payload)
+	record.append_array(_u64(BaristaScriptParseCache.compute_entry_checksum(record)))
+
+	var bytes := "BSPC".to_utf8_buffer()
+	bytes.append_array(_u32(1))
+	bytes.append_array(record)
+	_write_bytes(store, bytes)
+
+	var cache := BaristaScriptParseCache.new()
+	_expect(failures, cache.load(store) == CORRUPT, "a key with an embedded NUL must make the store CORRUPT")
+	_expect(failures, cache.get_entry_count() == 0, "a NUL-truncated key must not become an entry")
+	_expect(failures, not cache.has_entry(SCRIPT_A), "a NUL-truncated key must not be filed under the path it truncates to")
+	_expect(
+		failures,
+		not cache.lookup(SCRIPT_A, source)["hit"],
+		"a NUL-truncated key must never be served as a hit for the path it truncates to"
 	)
 
 
@@ -424,6 +468,38 @@ func _test_atomic_write_leaves_the_previous_store_intact(failures: Array[String]
 	_expect(failures, reader.load(store) == COLD, "the surviving store must still load cleanly")
 	_expect(failures, reader.lookup(SCRIPT_A, first_source)["hit"], "the previous entry must still be served")
 	_expect(failures, not reader.has_entry(SCRIPT_B), "the interrupted write's entry must not be visible")
+
+
+## store_buffer reports what the buffer accepted, not what reached the disk: a
+## full volume surfaces at flush or close. The read-back before the rename is
+## what keeps such a write from being promoted over a healthy store.
+func _test_deferred_write_failure_never_replaces_the_previous_store(failures: Array[String]) -> void:
+	var store := _scratch_path("deferred.bin")
+	_remove(store)
+	_remove("%s.tmp" % store)
+
+	var first_source := _read_source(SCRIPT_A)
+	var first := BaristaScriptParseCache.new()
+	first.put(SCRIPT_A, first_source, _parse(first_source))
+	_expect(failures, first.flush(store, 0, BaristaScriptParseCache.get_cache_format_version()) == OK, "the baseline store must flush")
+	var previous := FileAccess.get_file_as_bytes(store)
+
+	# 3 == BSParseCache::WriteFault::TRUNCATE_TEMP_AFTER_WRITE: the temp file is
+	# shortened after close, exactly as a deferred I/O failure would leave it.
+	var second_source := _read_source(SCRIPT_B)
+	var second := BaristaScriptParseCache.new()
+	second.put(SCRIPT_B, second_source, _parse(second_source))
+	_expect(
+		failures,
+		second.flush(store, 3, BaristaScriptParseCache.get_cache_format_version()) != OK,
+		"a short write must be reported rather than promoted"
+	)
+	_expect(failures, FileAccess.get_file_as_bytes(store) == previous, "a short write must leave the previous store byte for byte")
+	_expect(failures, not FileAccess.file_exists("%s.tmp" % store), "a refused flush must not leave its temp file behind")
+
+	var reader := BaristaScriptParseCache.new()
+	_expect(failures, reader.load(store) == COLD, "the surviving store must still load cleanly")
+	_expect(failures, reader.lookup(SCRIPT_A, first_source)["hit"], "the previous entry must still be served")
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +766,15 @@ func _remove(path: String) -> void:
 
 func _u32(value: int) -> PackedByteArray:
 	return PackedByteArray([value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF, (value >> 24) & 0xFF])
+
+
+## Little-endian, matching bs_put_u64. The value arrives as a signed GDScript
+## int reinterpreting a uint64, so the shifts are masked byte by byte.
+func _u64(value: int) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	for index in 8:
+		bytes.append((value >> (index * 8)) & 0xFF)
+	return bytes
 
 
 func _expect(failures: Array[String], condition: bool, message: String) -> void:

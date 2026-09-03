@@ -139,6 +139,30 @@ static uint64_t bs_get_u64(const uint8_t *p_source, uint64_t p_offset) {
 	return value;
 }
 
+/**
+ * Removes a temp store that will never be promoted. A failed flush must not leave a half-written
+ * file behind for the next flush to append to or a reader to trip over; the real store is
+ * untouched either way.
+ */
+static void bs_discard_temp_store(const String &p_temp_path) {
+	if (FileAccess::file_exists(p_temp_path)) {
+		DirAccess::remove_absolute(p_temp_path);
+	}
+}
+
+/**
+ * Shortens a file to p_length bytes. Only WriteFault::TRUNCATE_TEMP_AFTER_WRITE uses this, to stand
+ * in for the deferred write failure -- a full volume surfacing at flush or close -- that no test
+ * can provoke honestly.
+ */
+static void bs_truncate_for_test(const String &p_path, int64_t p_length) {
+	const PackedByteArray whole = FileAccess::get_file_as_bytes(p_path);
+	const Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE);
+	ERR_FAIL_COND_MSG(file.is_null(), "bs_truncate_for_test: could not reopen '" + p_path + "'.");
+	file->store_buffer(whole.slice(0, p_length));
+	file->close();
+}
+
 uint64_t BSParseCache::compute_source_digest(const String &p_source) {
 	// The digest is semantic: the version tag, then the source's byte length, then its bytes. No
 	// path and no timestamp, so the same source under the same language version digests identically
@@ -154,6 +178,10 @@ uint64_t BSParseCache::compute_source_digest(const String &p_source) {
 		memcpy(bytes.ptrw() + prefix, utf8.ptr(), utf8.size());
 	}
 	return bs_hash_bytes(bytes.ptr(), bytes.size(), BS_SOURCE_DIGEST_BASIS);
+}
+
+uint64_t BSParseCache::compute_entry_checksum(const Vector<uint8_t> &p_record_bytes) {
+	return bs_hash_bytes(p_record_bytes.ptr(), (uint64_t)p_record_bytes.size(), BS_ENTRY_CHECKSUM_BASIS);
 }
 
 void BSParseCache::clear() {
@@ -248,10 +276,18 @@ BSMissReason BSParseCache::load(const String &p_store_path) {
 				return RecordStatus::CORRUPT_RECORD;
 			}
 			const uint64_t key_offset = entry_start + 8;
-			// The key is UTF-8; round-tripping it through String rejects embedded NULs and invalid
-			// sequences the way a loader would.
+			// The key must survive a full byte -> String -> byte round trip. Decoding alone is not
+			// enough: String::utf8 stops at an embedded NUL and hands back the non-empty prefix, so
+			// a malformed record would otherwise be filed under a shorter path that really exists
+			// and served as a hit for it. Re-encoding and comparing is what rejects that, along
+			// with invalid sequences and any other lossy decode.
 			key = String::utf8((const char *)(data + key_offset), (int64_t)key_length);
 			if (key.is_empty()) {
+				return RecordStatus::CORRUPT_RECORD;
+			}
+			const PackedByteArray key_round_trip = key.to_utf8_buffer();
+			if ((uint64_t)key_round_trip.size() != (uint64_t)key_length ||
+					memcmp(key_round_trip.ptr(), data + key_offset, key_length) != 0) {
 				return RecordStatus::CORRUPT_RECORD;
 			}
 
@@ -472,14 +508,36 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 	if (store.size() > 0) {
 		memcpy(store_bytes.ptrw(), store.ptr(), store.size());
 	}
-	if (!file->store_buffer(store_bytes)) {
+	const bool buffered = file->store_buffer(store_bytes);
+	file->flush();
+	const Error write_error = file->get_error();
+	file->close();
+	if (!buffered || (write_error != Error::OK && write_error != Error::ERR_FILE_EOF)) {
 		const String line = "cache flush to '" + p_store_path + "' failed while writing '" + temp_path +
-				"'; parsing continues without a cache";
+				"' (error " + String::num((int64_t)write_error) + "); parsing continues without a cache";
 		ERR_PRINT(line);
+		bs_discard_temp_store(temp_path);
 		return Error::ERR_FILE_CANT_WRITE;
 	}
-	file->flush();
-	file->close();
+
+	if (p_fault == WriteFault::TRUNCATE_TEMP_AFTER_WRITE) {
+		bs_truncate_for_test(temp_path, store_bytes.size() / 2);
+	}
+
+	// Read the temp file back before promoting it. store_buffer reports what the buffer accepted,
+	// not what reached the disk: a full or failing volume surfaces at flush or close, and on some
+	// platforms not until then. Promoting a short file would rename an unloadable store over a
+	// perfectly good one, which is exactly what the atomic-write contract exists to prevent.
+	const PackedByteArray written_back = FileAccess::get_file_as_bytes(temp_path);
+	if (FileAccess::get_open_error() != Error::OK || written_back != store_bytes) {
+		const String line = "cache flush to '" + p_store_path + "' wrote '" + temp_path +
+				"' incompletely (" + String::num((int64_t)written_back.size()) + " of " +
+				String::num((int64_t)store_bytes.size()) +
+				" bytes read back); the previous store is left in place";
+		ERR_PRINT(line);
+		bs_discard_temp_store(temp_path);
+		return Error::ERR_FILE_CANT_WRITE;
+	}
 
 	if (p_fault == WriteFault::AFTER_WRITE_BEFORE_RENAME) {
 		// The temp file is complete but the rename never happens, so the previous store must still
@@ -495,6 +553,7 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 		const String line = "cache flush to '" + p_store_path + "' failed to rename '" + temp_path +
 				"' (error " + String::num((int64_t)rename_error) + "); parsing continues without a cache";
 		ERR_PRINT(line);
+		bs_discard_temp_store(temp_path);
 		return rename_error;
 	}
 

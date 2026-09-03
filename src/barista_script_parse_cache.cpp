@@ -47,6 +47,9 @@ BSParseCache::WriteFault write_fault_from_int(int p_fault) {
 	if (p_fault == (int)BSParseCache::WriteFault::AFTER_WRITE_BEFORE_RENAME) {
 		return BSParseCache::WriteFault::AFTER_WRITE_BEFORE_RENAME;
 	}
+	if (p_fault == (int)BSParseCache::WriteFault::TRUNCATE_TEMP_AFTER_WRITE) {
+		return BSParseCache::WriteFault::TRUNCATE_TEMP_AFTER_WRITE;
+	}
 	return BSParseCache::WriteFault::NONE;
 }
 
@@ -71,6 +74,7 @@ void BaristaScriptParseCache::_bind_methods() {
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("get_cache_format_version"), &BaristaScriptParseCache::get_cache_format_version);
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("get_default_store_path"), &BaristaScriptParseCache::get_default_store_path);
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("compute_source_digest", "source"), &BaristaScriptParseCache::compute_source_digest);
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("compute_entry_checksum", "record_bytes"), &BaristaScriptParseCache::compute_entry_checksum);
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("get_source_code", "path"), &BaristaScriptParseCache::get_source_code);
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("set_source_override", "path", "source"), &BaristaScriptParseCache::set_source_override);
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("has_source_override", "path"), &BaristaScriptParseCache::has_source_override);
@@ -148,6 +152,10 @@ godot::String BaristaScriptParseCache::get_default_store_path() {
 
 int64_t BaristaScriptParseCache::compute_source_digest(const godot::String &p_source) {
 	return (int64_t)BSParseCache::compute_source_digest(p_source);
+}
+
+int64_t BaristaScriptParseCache::compute_entry_checksum(const godot::PackedByteArray &p_record_bytes) {
+	return (int64_t)BSParseCache::compute_entry_checksum(from_packed_bytes(p_record_bytes));
 }
 
 godot::String BaristaScriptParseCache::get_source_code(const godot::String &p_path) {

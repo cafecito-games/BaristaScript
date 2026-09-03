@@ -79,6 +79,9 @@ public:
 	/** The 64-bit source digest, reinterpreted as a signed GDScript int. */
 	static int64_t compute_source_digest(const godot::String &p_source);
 
+	/** The record checksum over one entry's bytes, as a signed GDScript int. */
+	static int64_t compute_entry_checksum(const godot::PackedByteArray &p_record_bytes);
+
 	// The in-memory source-override and dependency layer (BSCache), same forwarding rule.
 	static godot::String get_source_code(const godot::String &p_path);
 	static void set_source_override(const godot::String &p_path, const godot::String &p_source);

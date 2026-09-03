@@ -114,11 +114,23 @@ public:
 	 */
 	static uint64_t compute_source_digest(const String &p_source);
 
+	/**
+	 * The entry checksum over one record's bytes, from its version tag through its payload. The
+	 * single definition, exposed so a test can build a record the writer would never emit -- a key
+	 * carrying an embedded NUL, say -- with a genuine checksum, rather than reimplementing the hash
+	 * beside it and letting the two drift.
+	 */
+	static uint64_t compute_entry_checksum(const Vector<uint8_t> &p_record_bytes);
+
 	/** Fault points a flush can be asked to simulate, so the atomic-write contract is testable. */
 	enum class WriteFault {
 		NONE,
 		BEFORE_WRITE,
 		AFTER_WRITE_BEFORE_RENAME,
+		// Shortens the temp file after it is closed, standing in for a write failure that only
+		// surfaces at flush or close -- a full volume, say. The read-back check before the rename
+		// must catch it and leave the previous store alone.
+		TRUNCATE_TEMP_AFTER_WRITE,
 	};
 
 	struct Entry {
@@ -169,8 +181,10 @@ public:
 
 	/**
 	 * Writes the buffered entries atomically: the full store is written to `<path>.tmp`, flushed,
-	 * closed, then renamed over the store. A crash at any point leaves either the previous store
-	 * or none; a partially written store is never visible under the real name. Write failures are
+	 * closed, read back and compared, and only then renamed over the store. A crash at any point
+	 * leaves either the previous store or none; a partially written store is never visible under
+	 * the real name. The read-back is what makes that true for a write failure that surfaces only
+	 * at flush or close, which store_buffer's return value cannot report. Write failures are
 	 * returned and logged, never fatal to the caller -- parsing succeeds without a cache.
 	 */
 	Error flush(const String &p_store_path, WriteFault p_fault = WriteFault::NONE,
