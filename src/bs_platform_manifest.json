@@ -8,6 +8,10 @@
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
 	"seam_header": "src/bs_platform.h",
+	"seam_proof_sources": [
+		"src/bs_platform_seam.cpp",
+		"src/bs_platform_shims.cpp"
+	],
 	"seam_support_headers": [
 		"godot_cpp/core/memory.hpp",
 		"godot_cpp/templates/local_vector.hpp"

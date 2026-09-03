@@ -84,7 +84,15 @@ def load_manifest(path):
         if field not in document:
             raise AuditError("{} has no {!r} field".format(path, field))
     if not isinstance(document["entries"], list):
-        raise AuditError("{}: 'entries' must be a list".format(path))
+        raise AuditError("{}: 'entries' must be a list, not {}".format(path, type(document["entries"]).__name__))
+    if not isinstance(document["required_macros"], list):
+        raise AuditError(
+            "{}: 'required_macros' must be a list, not {}".format(path, type(document["required_macros"]).__name__)
+        )
+    if not isinstance(document["upstream"], dict):
+        raise AuditError(
+            "{}: 'upstream' must be an object, not {}".format(path, type(document["upstream"]).__name__)
+        )
     return document
 
 
@@ -176,6 +184,17 @@ def poisons_symbol(seam_text, symbol):
     return re.search(r"^\s*#\s*define\s+{}\s+\S+".format(re.escape(symbol)), seam_text, re.MULTILINE) is not None
 
 
+def as_string_list(value):
+    """The strings in `value`, or nothing at all when it is not a list of strings.
+
+    A malformed field has already been reported by the time this runs; this exists so the digest and
+    the table survive it rather than crashing on a type they did not expect.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def string_list(entry, field, failures, core_header):
     value = entry.get(field)
     if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
@@ -233,7 +252,7 @@ def check_entry(entry, index, seam_headers, seam_text, port_set, failures):
         for symbol in symbols:
             if not defines_symbol(seam_text, symbol):
                 failures.append("{}: the seam does not define the shim {}".format(core_header, symbol))
-        for header in entry.get("godot_cpp_headers", []):
+        for header in as_string_list(entry.get("godot_cpp_headers")):
             if header not in index:
                 failures.append("{}: godot-cpp has no {}".format(core_header, header))
             if header not in seam_headers:
@@ -261,10 +280,10 @@ def check_entry(entry, index, seam_headers, seam_text, port_set, failures):
         "core_header": core_header,
         "resolution": resolution,
         "detail": detail,
-        "godot_cpp_headers": sorted(entry.get("godot_cpp_headers", [])),
-        "symbols": sorted(entry.get("shim_symbols", []) + entry.get("forbidden_symbols", [])),
-        "vendored_path": entry.get("vendored_path", ""),
-        "omission_reason": entry.get("omission_reason", ""),
+        "godot_cpp_headers": sorted(as_string_list(entry.get("godot_cpp_headers"))),
+        "symbols": sorted(as_string_list(entry.get("shim_symbols")) + as_string_list(entry.get("forbidden_symbols"))),
+        "vendored_path": entry.get("vendored_path") if isinstance(entry.get("vendored_path"), str) else "",
+        "omission_reason": entry.get("omission_reason") if isinstance(entry.get("omission_reason"), str) else "",
     }
 
 
@@ -294,11 +313,42 @@ def check_required_macros(macros, godot_cpp, seam_text, failures):
         failures.append("godot-cpp has no {}".format(error_macros))
         return
     text = error_macros.read_text(encoding="utf-8")
-    for macro in sorted(macros):
+    for macro in macros:
+        if not isinstance(macro, str):
+            failures.append("'required_macros' holds a {}, not a macro name".format(type(macro).__name__))
+    for macro in sorted(as_string_list(macros)):
         if not re.search(r"^\s*#\s*define\s+{}\b".format(re.escape(macro)), text, re.MULTILINE):
             failures.append("godot-cpp no longer defines {}".format(macro))
         if macro not in seam_text:
             failures.append("the seam does not assert that {} is defined".format(macro))
+
+
+def check_shims_are_compiled(manifest, rows, failures):
+    """A shim nothing compiles is a shim that rots.
+
+    Including the seam header proves its mappings resolve; it does not compile a macro that is never
+    expanded or a class whose members are never called. The manifest names the translation units
+    that do, and every shim symbol has to appear in one of them.
+    """
+    sources = as_string_list(manifest.get("seam_proof_sources"))
+    if not sources:
+        failures.append("the manifest names no 'seam_proof_sources'")
+        return
+    text = ""
+    for source in sources:
+        path = ROOT / source
+        if not path.is_file():
+            failures.append("no seam proof source at {}".format(source))
+            continue
+        text += path.read_text(encoding="utf-8")
+    for row in rows:
+        if row["resolution"] != "shimmed":
+            continue
+        for symbol in row["symbols"]:
+            if not re.search(r"\b{}\b".format(re.escape(symbol)), text):
+                failures.append(
+                    "{}: no seam proof source uses the shim {}".format(row["core_header"], symbol)
+                )
 
 
 def main(argv=None):
@@ -329,7 +379,7 @@ def main(argv=None):
     for header in sorted(drift):
         failures.append("godot-cpp generator drift: {} is predicted but not generated".format(header))
 
-    port_set = set(manifest["upstream"].get("port_set", []))
+    port_set = set(as_string_list(manifest["upstream"].get("port_set")))
     if not port_set:
         failures.append("the manifest declares no upstream port set")
 
@@ -350,11 +400,12 @@ def main(argv=None):
             rows.append(row)
 
     check_required_macros(manifest["required_macros"], arguments.godot_cpp, seam_text, failures)
+    check_shims_are_compiled(manifest, rows, failures)
 
-    allowed = set(manifest.get("seam_support_headers", []))
+    allowed = set(as_string_list(manifest.get("seam_support_headers")))
     for entry in manifest["entries"]:
         if isinstance(entry, dict):
-            allowed.update(entry.get("godot_cpp_headers", []))
+            allowed.update(as_string_list(entry.get("godot_cpp_headers")))
     for header in sorted(seam_headers - allowed):
         failures.append("the seam includes {}, which no manifest entry explains".format(header))
 

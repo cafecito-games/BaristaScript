@@ -231,6 +231,66 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ERR_FAIL_ON_A_TUESDAY", result.stdout + result.stderr)
 
+    def test_wrongly_typed_top_level_fields_are_rejected(self):
+        for field, value in (("entries", {}), ("required_macros", "ERR_FAIL_COND"), ("upstream", [])):
+            with self.subTest(field=field):
+                document = real_manifest()
+                document[field] = value
+                with TemporaryManifest(document) as path:
+                    result = run_audit("--manifest", str(path))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(field, result.stdout + result.stderr)
+
+    def test_wrongly_typed_entry_fields_are_rejected_not_coerced(self):
+        document = real_manifest()
+        for entry in document["entries"]:
+            if entry["resolution"] == "mapped":
+                entry["godot_cpp_headers"] = "godot_cpp/templates/vector.hpp"
+                break
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("godot_cpp_headers", result.stdout + result.stderr)
+
+    def test_a_non_string_required_macro_is_rejected(self):
+        document = real_manifest()
+        document["required_macros"].append(17)
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("required_macros", result.stdout + result.stderr)
+
+    def test_an_entry_that_is_not_an_object_is_rejected(self):
+        document = real_manifest()
+        document["entries"].append("core/templates/vector.h")
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_a_shim_no_translation_unit_compiles_is_rejected(self):
+        document = real_manifest()
+        document["seam_proof_sources"] = []
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("seam_proof_sources", result.stdout + result.stderr)
+
+    def test_a_missing_seam_proof_source_is_rejected(self):
+        document = real_manifest()
+        document["seam_proof_sources"] = ["src/bs_platform_never_written.cpp"]
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/bs_platform_never_written.cpp", result.stdout + result.stderr)
+
+    def test_a_shim_absent_from_the_proof_sources_is_rejected(self):
+        document = real_manifest()
+        document["seam_proof_sources"] = ["src/bs_platform_seam.cpp"]
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("StringBuilder", result.stdout + result.stderr)
+
     def test_site_outside_the_declared_port_set_is_rejected(self):
         document = real_manifest()
         document["entries"][0]["sites"] = ["fs_analyzer.cpp:12"]
