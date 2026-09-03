@@ -20,6 +20,9 @@ DIRECT_SUITE_INVOCATION = re.compile(r"""(?:--script|(?<![\w-])-s)\s+['"]?res://
 # The runner named in a command position, so a workflow that only mentions its path -- in an
 # echo, say -- is not mistaken for one that runs it. `--godot` is what makes the invocation
 # run the suites; `--list` only prints them.
+# `|| true`, `; true` and friends turn the runner's non-zero exit into a green step.
+SUPPRESSED_STATUS = re.compile(r"\|\||;\s*true\b|&&\s*true\b")
+
 SUITE_RUNNER_COMMAND = re.compile(
     r"""(?:^|[\s|;&])(?:python3?|py)\s+['"]?[^\s'"#]*"""
     + re.escape(SUITE_RUNNER)
@@ -60,15 +63,22 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
             f"run it through {SUITE_RUNNER} so a parse error cannot pass as green"
         )
 
-    executions = [
-        match
+    invocations = [
+        match.group("arguments")
         for match in SUITE_RUNNER_COMMAND.finditer(active)
         if "--godot" in match.group("arguments") and "--list" not in match.group("arguments")
     ]
-    if not executions:
+    if not invocations:
         return (
             f"CI must run the GDScript suites through {SUITE_RUNNER} --godot <binary>; "
             "naming the runner, or running it in --list mode, launches no suite"
+        )
+
+    # A guard whose non-zero status is swallowed is no guard at all.
+    if all(SUPPRESSED_STATUS.search(arguments) for arguments in invocations):
+        return (
+            f"CI must let {SUITE_RUNNER} fail the job; its exit status is the guard, "
+            "so it may not be followed by ||, ; true, or a discarded status"
         )
 
     return None

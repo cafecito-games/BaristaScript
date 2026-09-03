@@ -188,6 +188,21 @@ def test_merely_naming_the_runner_is_not_running_it(failures: list) -> None:
         )
 
 
+def test_a_runner_whose_status_is_swallowed_is_rejected(failures: list) -> None:
+    suppressed = [
+        '      - run: python tests/run_gdscript_suites.py --godot "$godot_binary" || true\n',
+        '      - run: python tests/run_gdscript_suites.py --godot "$godot_binary" ; true\n',
+        '      - run: python tests/run_gdscript_suites.py --godot "$godot_binary" || echo skipped\n',
+    ]
+    for line in suppressed:
+        complaint = validate_ci.check_gdscript_suite_wiring(WORKFLOW_HEADER + line)
+        check(
+            complaint is not None,
+            "a runner invocation with a swallowed exit status was accepted: %s" % line.strip(),
+            failures,
+        )
+
+
 def test_a_real_runner_invocation_is_accepted(failures: list) -> None:
     workflow = (
         WORKFLOW_HEADER
