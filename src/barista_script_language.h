@@ -34,7 +34,6 @@ public:
 	bool _is_using_templates() override;
 	godot::Dictionary _validate(const godot::String &p_script, const godot::String &p_path, bool p_validate_functions, bool p_validate_errors, bool p_validate_warnings, bool p_validate_safe_lines) const override;
 	godot::String _validate_path(const godot::String &p_path) const override;
-	godot::Object *_create_script() const override;
 	bool _has_named_classes() const override;
 	bool _supports_builtin_mode() const override;
 	bool _supports_documentation() const override;

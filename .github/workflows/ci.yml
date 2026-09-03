@@ -81,6 +81,23 @@ jobs:
         run: |
           scons api_version=4.7 target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
 
+      - name: Verify editor recognition
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: 4.7.2
+        run: |
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/godot.zip" \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          chmod +x "$godot_binary"
+
+          "$godot_binary" --headless --path project --editor --quit
+          grep -q 'example.barista::BaristaScript' project/.godot/editor/filesystem_cache*
+          "$godot_binary" --headless --path project --script res://tests/smoke_test.gd
+
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save
         with:

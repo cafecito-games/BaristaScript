@@ -42,6 +42,7 @@ include(GodotCPPModule)
 # The godot-cpp target has some of useful properties attached that can be retrieved like so.
 get_target_property(GODOTCPP_SUFFIX godot::cpp GODOTCPP_SUFFIX)
 get_target_property(GODOTCPP_PLATFORM godot::cpp GODOTCPP_PLATFORM)
+get_target_property(GODOTCPP_ARCH godot::cpp GODOTCPP_ARCH)
 
 # Now we can specify our own project which will inherit any global cmake properties or variables that have been defined.
 project(barista_script
@@ -50,6 +51,15 @@ project(barista_script
     HOMEPAGE_URL "https://github.com/cafecito-games/BaristaScript"
     LANGUAGES CXX
 )
+
+# The GDExtension descriptor uses Godot's standard architecture-agnostic macOS
+# library name. CMake's godot-cpp suffix includes the build architecture, unlike
+# the template's SCons build, so normalize it before naming our library.
+set(BARISTA_SCRIPT_SUFFIX "${GODOTCPP_SUFFIX}")
+string(REPLACE ".dev" "" BARISTA_SCRIPT_SUFFIX "${BARISTA_SCRIPT_SUFFIX}")
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    string(REPLACE "$<1:.${GODOTCPP_ARCH}>" "" BARISTA_SCRIPT_SUFFIX "${BARISTA_SCRIPT_SUFFIX}")
+endif()
 
 add_library(${LIBNAME} SHARED)
 
@@ -85,7 +95,7 @@ set_target_properties(${LIBNAME}
     # The generator expression here prevents msvc from adding a Debug or Release subdir.
     RUNTIME_OUTPUT_DIRECTORY "$<1:${PROJECT_SOURCE_DIR}/bin/${GODOTCPP_PLATFORM}>"
 
-    OUTPUT_NAME "${LIBNAME}${GODOTCPP_SUFFIX}"
+    OUTPUT_NAME "${LIBNAME}${BARISTA_SCRIPT_SUFFIX}"
 )
 
 set(GODOT_PROJECT_BINARY_DIR "${PROJECT_SOURCE_DIR}/${GODOT_PROJECT_DIR}/bin/${GODOTCPP_PLATFORM}")

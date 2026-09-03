@@ -1,5 +1,7 @@
 #include "barista_script_language.h"
 
+#include "barista_script.h"
+
 #include <godot_cpp/variant/packed_int32_array.hpp>
 
 namespace barista_script {
@@ -60,8 +62,11 @@ godot::PackedStringArray BaristaScriptLanguage::_get_string_delimiters() const {
 	return {};
 }
 
-godot::Ref<godot::Script> BaristaScriptLanguage::_make_template(const godot::String &, const godot::String &, const godot::String &) const {
-	return {};
+godot::Ref<godot::Script> BaristaScriptLanguage::_make_template(const godot::String &p_template, const godot::String &, const godot::String &) const {
+	godot::Ref<BaristaScript> script;
+	script.instantiate();
+	script->_set_source_code(p_template);
+	return script;
 }
 
 godot::TypedArray<godot::Dictionary> BaristaScriptLanguage::_get_built_in_templates(const godot::StringName &) const {
@@ -84,10 +89,6 @@ godot::Dictionary BaristaScriptLanguage::_validate(const godot::String &, const 
 
 godot::String BaristaScriptLanguage::_validate_path(const godot::String &) const {
 	return {};
-}
-
-godot::Object *BaristaScriptLanguage::_create_script() const {
-	return nullptr;
 }
 
 bool BaristaScriptLanguage::_has_named_classes() const {
