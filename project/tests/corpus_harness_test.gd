@@ -29,6 +29,7 @@ func _initialize() -> void:
 	_test_update_expectations_refuses_non_mismatch(failures)
 	_test_update_expectations_rewrites_mismatches(failures)
 	_test_unreadable_corpus_root_is_harness_error(failures)
+	_test_unreadable_directory_is_harness_error(failures)
 	_test_runner_process_arguments(failures)
 
 	for failure in failures:
@@ -268,6 +269,61 @@ func _test_unreadable_corpus_root_is_harness_error(failures: Array[String]) -> v
 	)
 
 
+## An unreadable directory hides an unknown number of cases. It must abort the
+## run rather than shrink the corpus, and it must outrank --allow-empty, which
+## would otherwise turn a locked-out corpus into a green run.
+func _test_unreadable_directory_is_harness_error(failures: Array[String]) -> void:
+	var nested_root := "user://bs_corpus_unreadable_nested"
+	var locked_child := "%s/locked" % nested_root
+	_remove_directory(nested_root)
+	_copy_fixture_directory("%s/passing" % FIXTURES_ROOT, nested_root)
+	_copy_fixture_directory("%s/passing" % FIXTURES_ROOT, locked_child)
+
+	var locked_root := "user://bs_corpus_unreadable_root"
+	_remove_directory(locked_root)
+	DirAccess.make_dir_recursive_absolute(locked_root)
+
+	if not _make_unreadable(locked_child) or not _make_unreadable(locked_root):
+		failures.append(
+			"could not revoke read permission on %s; the unreadable-directory contract went unverified"
+			% ProjectSettings.globalize_path(locked_child)
+		)
+	else:
+		var nested := _run_harness(nested_root)
+		_expect(
+			failures,
+			nested["exit_code"] == Harness.ExitCode.HARNESS_ERROR,
+			"an unreadable subdirectory must abort the run, not silently shrink the corpus: %s" % _text(nested)
+		)
+		_expect(
+			failures,
+			_text(nested).contains("BS_ERROR corpus directory is unreadable: %s" % locked_child),
+			"the unreadable directory must be named: %s" % _text(nested)
+		)
+		_expect(
+			failures,
+			_run_harness(nested_root, true)["exit_code"] == Harness.ExitCode.HARNESS_ERROR,
+			"--allow-empty must not downgrade an unreadable subdirectory to a pass"
+		)
+		_expect(
+			failures,
+			_run_harness(nested_root, false, true)["exit_code"] == Harness.ExitCode.HARNESS_ERROR,
+			"--update-expectations must refuse to run against an unreadable subdirectory"
+		)
+
+		var unreadable_root := _run_harness(locked_root, true)
+		_expect(
+			failures,
+			unreadable_root["exit_code"] == Harness.ExitCode.HARNESS_ERROR,
+			"an unreadable corpus root must be a harness error even with --allow-empty: %s" % _text(unreadable_root)
+		)
+
+	_make_readable(locked_child)
+	_make_readable(locked_root)
+	_remove_directory(nested_root)
+	_remove_directory(locked_root)
+
+
 func _test_runner_process_arguments(failures: Array[String]) -> void:
 	var bad_arguments := _run_runner_process(["--bogus"])
 	_expect(
@@ -328,9 +384,24 @@ func _expect(failures: Array[String], condition: bool, description: String) -> v
 		failures.append(description)
 
 
+## Revokes read permission via POSIX mode bits and confirms the directory is
+## genuinely unopenable, so a platform that cannot produce the condition is
+## reported rather than passing the assertion vacuously.
+func _make_unreadable(path: String) -> bool:
+	OS.execute("chmod", ["000", ProjectSettings.globalize_path(path)])
+	return DirAccess.open(path) == null
+
+
+func _make_readable(path: String) -> void:
+	OS.execute("chmod", ["755", ProjectSettings.globalize_path(path)])
+
+
 func _copy_fixture_directory(source_root: String, destination_root: String) -> void:
 	DirAccess.make_dir_recursive_absolute(destination_root)
 	var directory := DirAccess.open(source_root)
+	if directory == null:
+		push_error("fixture copy could not open %s" % source_root)
+		return
 	directory.list_dir_begin()
 	var entry := directory.get_next()
 	while not entry.is_empty():

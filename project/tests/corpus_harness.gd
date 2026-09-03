@@ -51,6 +51,16 @@ func run(corpus_root: String, allow_empty: bool = false, update_expectations: bo
 	var cases: Array = discovery["cases"]
 	var orphaned_expectations: Array[String] = discovery["orphaned_expectations"]
 	var skipped_count: int = discovery["skipped_count"]
+	var unreadable_directories: Array[String] = discovery["unreadable_directories"]
+
+	# A directory that exists but cannot be opened hides an unknown number of
+	# cases, so the run cannot report a trustworthy verdict at all: aborting is
+	# the only fail-closed answer, and it must outrank --allow-empty.
+	if not unreadable_directories.is_empty():
+		for unreadable in unreadable_directories:
+			output.append("BS_ERROR corpus directory is unreadable: %s" % unreadable)
+		output.append(_summary_line(0, 0, 0))
+		return {"exit_code": ExitCode.HARNESS_ERROR, "output": output}
 
 	var failures: Array[Dictionary] = []
 	var passed := 0
@@ -125,11 +135,13 @@ func error_result(message: String) -> Dictionary:
 
 
 ## The single home of case discovery: `.notest.fs` helpers, `.fsignore`
-## directories, `.fs`/`.out` pairing, and orphan detection. Everything is
-## sorted by path so results never depend on directory iteration order.
+## directories, `.fs`/`.out` pairing, orphan detection, and directories that
+## cannot be opened. Everything is sorted by path so results never depend on
+## directory iteration order.
 func _discover_corpus(corpus_root: String) -> Dictionary:
 	var cases: Array[Dictionary] = []
 	var orphaned_expectations: Array[String] = []
+	var unreadable_directories: Array[String] = []
 	var skipped_count := 0
 	var pending: Array = [[corpus_root, false]]
 	while not pending.is_empty():
@@ -139,6 +151,7 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 
 		var directory := DirAccess.open(directory_path)
 		if directory == null:
+			unreadable_directories.append(directory_path)
 			continue
 		directory.list_dir_begin()
 		var names: Array[String] = []
@@ -194,9 +207,11 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 
 	cases.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["path"] < b["path"])
 	orphaned_expectations.sort()
+	unreadable_directories.sort()
 	return {
 		"cases": cases,
 		"orphaned_expectations": orphaned_expectations,
+		"unreadable_directories": unreadable_directories,
 		"skipped_count": skipped_count,
 	}
 
