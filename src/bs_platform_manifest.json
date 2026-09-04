@@ -15,7 +15,13 @@
 			"fs_warning.h",
 			"fs_warning.cpp",
 			"fs_cache.h",
-			"fs_cache.cpp"
+			"fs_cache.cpp",
+			"fs_type.h",
+			"fs_type.cpp",
+			"fs_builtin_sources.h",
+			"fs_builtin_sources.cpp",
+			"fs_analyzer.h",
+			"fs_analyzer.cpp"
 		],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
@@ -52,7 +58,8 @@
 		{
 			"core_header": "core/config/project_settings.h",
 			"sites": [
-				"fs_parser.cpp:38"
+				"fs_parser.cpp:38",
+				"fs_analyzer.cpp:46"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -67,16 +74,18 @@
 			"core_header": "core/core_constants.h",
 			"sites": [
 				"fs_parser.cpp:39",
-				"fs_parser_data_type.cpp:37"
+				"fs_parser_data_type.cpp:37",
+				"fs_analyzer.cpp:47"
 			],
 			"resolution": "guarded-out",
 			"omission_reason": "unreferenced",
-			"rationale": "Two include sites, neither of which BaristaScript's port references. fs_parser.cpp's is vestigial upstream: no CoreConstants symbol appears in that file at all. fs_parser_data_type.cpp's reaches CoreConstants::is_global_enum() from one predicate, _enum_signature_leaf_round_trips(), which exists only to decide whether to emit PROPERTY_HINT_CALLABLE_TYPE -- an enumerator Foundry adds to its own engine fork and stock Godot does not have. The port deletes that whole encoder rather than keep it unreachable (see the deletion note in src/bs_parser_data_type.cpp), so the include has no referent here either. The port drops both rather than inventing a mapping for a registry no GDExtension can reach."
+			"rationale": "Engine-internal global-constant registry. The analyzer port reaches CoreConstants::* through src/bs_core_constants.h, which fails closed (every query returns false/empty) because godot-cpp does not expose @GlobalScope constants the way an engine module can. The include is dropped; the adapter is the audited contract."
 		},
 		{
 			"core_header": "core/error/error_macros.h",
 			"sites": [
-				"fs_tokenizer.cpp:33"
+				"fs_tokenizer.cpp:33",
+				"fs_builtin_sources.cpp:33"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -107,7 +116,8 @@
 		{
 			"core_header": "core/io/file_access.h",
 			"sites": [
-				"fs_cache.cpp:43"
+				"fs_cache.cpp:43",
+				"fs_analyzer.cpp:48"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -147,7 +157,8 @@
 		{
 			"core_header": "core/io/resource_loader.h",
 			"sites": [
-				"fs_parser.cpp:40"
+				"fs_parser.cpp:40",
+				"fs_analyzer.cpp:49"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -160,7 +171,8 @@
 		{
 			"core_header": "core/io/resource_uid.h",
 			"sites": [
-				"fs_parser.cpp:41"
+				"fs_parser.cpp:41",
+				"fs_analyzer.cpp:50"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -183,7 +195,9 @@
 		{
 			"core_header": "core/object/class_db.h",
 			"sites": [
-				"fs_parser_data_type.cpp:38"
+				"fs_parser_data_type.cpp:38",
+				"fs_type.cpp:37",
+				"fs_analyzer.cpp:51"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -198,7 +212,8 @@
 		{
 			"core_header": "core/object/object.h",
 			"sites": [
-				"fs_warning.h:35"
+				"fs_warning.h:35",
+				"fs_analyzer.h:39"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -214,7 +229,8 @@
 			"core_header": "core/object/ref_counted.h",
 			"sites": [
 				"fs_parser.h:43",
-				"fs_cache.h:35"
+				"fs_cache.h:35",
+				"fs_analyzer.h:40"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -227,7 +243,8 @@
 			"core_header": "core/object/script_language.h",
 			"sites": [
 				"fs_parser.h:44",
-				"fs_parser_data_type.cpp:39"
+				"fs_parser_data_type.cpp:39",
+				"fs_analyzer.cpp:52"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -293,7 +310,8 @@
 			"core_header": "core/string/ustring.h",
 			"sites": [
 				"fs_parser.h:46",
-				"fs_warning.h:36"
+				"fs_warning.h:36",
+				"fs_builtin_sources.h:33"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -310,7 +328,9 @@
 			"sites": [
 				"fs_tokenizer.h:33",
 				"fs_parser.h:47",
-				"fs_cache.h:37"
+				"fs_cache.h:37",
+				"fs_builtin_sources.h:34",
+				"fs_analyzer.cpp:53"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -320,7 +340,8 @@
 		{
 			"core_header": "core/templates/hash_set.h",
 			"sites": [
-				"fs_cache.h:38"
+				"fs_cache.h:38",
+				"fs_analyzer.cpp:54"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -331,7 +352,8 @@
 			"core_header": "core/templates/list.h",
 			"sites": [
 				"fs_tokenizer.h:34",
-				"fs_parser.h:48"
+				"fs_parser.h:48",
+				"fs_builtin_sources.h:35"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -369,7 +391,8 @@
 			"sites": [
 				"fs_tokenizer.h:37",
 				"fs_parser.h:51",
-				"fs_warning.cpp:33"
+				"fs_warning.cpp:33",
+				"fs_builtin_sources.cpp:34"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -417,6 +440,66 @@
 			"non_mappings": [
 				"core's TS macro (TextServerManager::get_singleton()->get_primary_interface()) is engine-internal and absent from godot-cpp; ported code spells the two calls out. Foundry's other site, the keyword-confusable check at fs_tokenizer.cpp:672, raises a parse error rather than a warning, so whether to keep it stays a tokenizer decision -- the header it needs is mapped either way."
 			]
+		},
+		{
+			"core_header": "core/config/engine.h",
+			"sites": [
+				"fs_analyzer.cpp:45"
+			],
+			"resolution": "mapped",
+			"godot_cpp_headers": [
+				"godot_cpp/classes/engine.hpp"
+			],
+			"rationale": "godot-cpp exposes Engine as a singleton class; the analyzer reaches Engine::get_singleton() unchanged."
+		},
+		{
+			"core_header": "core/templates/hashfuncs.h",
+			"sites": [
+				"fs_analyzer.cpp:55"
+			],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "Upstream includes hashfuncs.h transitively for HashMap helpers. godot-cpp HashMap already pulls hashing; the port drops the include."
+		},
+		{
+			"core_header": "scene/main/node.h",
+			"sites": [
+				"fs_analyzer.cpp:56"
+			],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "Upstream includes Node for TypedArray<Node*> and scene helpers. This analyzer slice checks Node ancestry via ClassDB / SNAME(\"Node\") only. The build profile does not generate godot_cpp/classes/node.hpp, so the include is dropped rather than expanding the binding surface."
+		},
+		{
+			"core_header": "core/object/method_bind.h",
+			"sites": [
+				"fs_analyzer.h:38"
+			],
+			"resolution": "mapped",
+			"godot_cpp_headers": [
+				"godot_cpp/core/method_bind.hpp"
+			],
+			"rationale": "godot-cpp provides MethodBind for extension methods. Engine MethodBind* introspection is unavailable; BSNativeDB::get_method returns nullptr and D1 metadata is always NONE (bs_type_info.h / bs_native_db.h)."
+		},
+		{
+			"core_header": "core/variant/container_type_validate.h",
+			"sites": [
+				"fs_analyzer.h:41"
+			],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "Foundry extended container_type_validate with numeric_type/type_arguments. BaristaScript owns its DataType descriptor (D1/D2); the include is dropped. Typed-container checks live in bs_type / BSParser::DataType."
+		},
+		{
+			"core_header": "core/variant/type_info.h",
+			"sites": [
+				"fs_analyzer.h:42"
+			],
+			"resolution": "mapped",
+			"godot_cpp_headers": [
+				"godot_cpp/core/type_info.hpp"
+			],
+			"rationale": "godot-cpp mirrors type_info.hpp. FoundryTypeInfo numeric-width metadata is deleted by D1; bs_type_info.h keeps only METADATA_NONE."
 		}
 	]
 }

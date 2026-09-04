@@ -75,6 +75,15 @@
 #include <godot_cpp/classes/resource_uid.hpp>
 // core/config/project_settings.h
 #include <godot_cpp/classes/project_settings.hpp>
+
+// core/config/engine.h
+#include <godot_cpp/classes/engine.hpp>
+// scene/main/node.h -- deliberately omitted. The build profile does not generate Node; ClassDB
+// ancestry checks (SNAME("Node")) do not need the typed Node binding. See the manifest.
+// core/object/method_bind.h
+#include <godot_cpp/core/method_bind.hpp>
+// core/variant/type_info.h
+#include <godot_cpp/core/type_info.hpp>
 // core/io/compression.h -- only the ZSTD mode is used; godot-cpp spells it on FileAccess.
 #include <godot_cpp/classes/file_access.hpp>
 // core/io/marshalls.h -- godot-cpp has no marshalls header; see the BSMarshalls shim below. The
