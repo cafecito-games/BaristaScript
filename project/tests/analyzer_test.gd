@@ -697,9 +697,9 @@ func _test_final_local_assignment(failures: PackedStringArray) -> void:
 	_expect(failures, bad_report.get("valid", true) == false, "final assigned on only one branch then read is invalid")
 	var saw_branch_bad := false
 	for message in bad_report.get("errors", PackedStringArray()):
-		if "before assignment" in message or "already assigned" in message or "final" in message.to_lower():
+		if "before assignment" in message:
 			saw_branch_bad = true
-	_expect(failures, saw_branch_bad, "FinalBranchBad reports final assignment diagnostic")
+	_expect(failures, saw_branch_bad, "FinalBranchBad reports use-before-assignment diagnostic")
 
 	var lambda_write := "class_name FinalLambdaWrite extends Node\nfunc _ready() -> void:\n\tfinal var x: int = 1\n\tvar f := func():\n\t\tx = 2\n\tf.call()\n"
 	var lambda_report: Dictionary = probe.analyze_source(lambda_write, "res://tests/final_lambda_write.barista")
@@ -763,9 +763,10 @@ func _test_unused_locals(failures: PackedStringArray) -> void:
 	var param_report: Dictionary = probe.validate_source(unused_param, "res://tests/unused_param.barista", true)
 	var saw_param := false
 	for warn in param_report.get("warnings", []):
-		if "UNUSED_PARAMETER" in str(warn.get("string_code", "")) or ("name" in str(warn.get("message", "")) and "never used" in str(warn.get("message", "")).to_lower()):
+		var msg := str(warn.get("message", "")).to_lower()
+		if "UNUSED_PARAMETER" in str(warn.get("string_code", "")) and "never used" in msg and "greet" in msg:
 			saw_param = true
-	_expect(failures, saw_param, "unused parameter produces UNUSED_PARAMETER")
+	_expect(failures, saw_param, "unused parameter produces UNUSED_PARAMETER message")
 
 	var used := "class_name UsedLocal extends Node\nfunc _ready() -> void:\n\tvar keep: int = 1\n\tvar _sink: int = keep\n"
 	var used_report: Dictionary = probe.validate_source(used, "res://tests/used_local.barista", true)

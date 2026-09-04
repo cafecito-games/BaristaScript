@@ -1130,6 +1130,7 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 	if (p_function == nullptr || p_function->is_abstract) {
 		return;
 	}
+	const String function_visible_name = p_function->identifier != nullptr ? String(p_function->identifier->name) : String("<anonymous>");
 	for (int i = 0; i < p_function->parameters.size(); i++) {
 		BSParser::ParameterNode *parameter = p_function->parameters[i];
 		if (parameter == nullptr || parameter->identifier == nullptr) {
@@ -1137,6 +1138,7 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 		}
 		if (parameter->usages == 0 && !String(parameter->identifier->name).begins_with("_")) {
 			Vector<String> symbols;
+			symbols.push_back(function_visible_name);
 			symbols.push_back(String(parameter->identifier->name));
 			push_warning(parameter, BSWarning::UNUSED_PARAMETER, symbols);
 		}
@@ -1144,6 +1146,7 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->identifier != nullptr) {
 		if (p_function->rest_parameter->usages == 0 && !String(p_function->rest_parameter->identifier->name).begins_with("_")) {
 			Vector<String> symbols;
+			symbols.push_back(function_visible_name);
 			symbols.push_back(String(p_function->rest_parameter->identifier->name));
 			push_warning(p_function->rest_parameter, BSWarning::UNUSED_PARAMETER, symbols);
 		}
