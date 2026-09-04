@@ -720,10 +720,11 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		p_identifier->source_function = local.source_function;
 		switch (local.type) {
 			case BSParser::SuiteNode::Local::CONSTANT: {
+				// Foundry: suite locals/parameters do not re-count usages in reduce_identifier
+				// (parse-time binding owns the count). Member/signal paths still bump below.
 				p_identifier->source = BSParser::IdentifierNode::LOCAL_CONSTANT;
 				p_identifier->constant_source = local.constant;
 				if (local.constant != nullptr) {
-					local.constant->usages++;
 					p_identifier->set_datatype(local.constant->get_datatype());
 					if (local.constant->initializer != nullptr && local.constant->initializer->is_constant) {
 						p_identifier->is_constant = true;
@@ -736,7 +737,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->source = BSParser::IdentifierNode::LOCAL_VARIABLE;
 				p_identifier->variable_source = local.variable;
 				if (local.variable != nullptr) {
-					local.variable->usages++;
 					p_identifier->set_datatype(local.variable->get_datatype());
 				}
 				return;
@@ -745,7 +745,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->source = BSParser::IdentifierNode::FUNCTION_PARAMETER;
 				p_identifier->parameter_source = local.parameter;
 				if (local.parameter != nullptr) {
-					local.parameter->usages++;
 					p_identifier->set_datatype(local.parameter->get_datatype());
 				}
 				return;
@@ -756,7 +755,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->source = local.type == BSParser::SuiteNode::Local::FOR_VARIABLE ? BSParser::IdentifierNode::LOCAL_ITERATOR : BSParser::IdentifierNode::LOCAL_BIND;
 				p_identifier->bind_source = local.bind;
 				if (local.bind != nullptr) {
-					local.bind->usages++;
 					p_identifier->set_datatype(local.bind->get_datatype());
 				}
 				return;
@@ -771,7 +769,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			if (parameter != nullptr && parameter->identifier != nullptr && parameter->identifier->name == p_identifier->name) {
 				p_identifier->source = BSParser::IdentifierNode::FUNCTION_PARAMETER;
 				p_identifier->parameter_source = parameter;
-				parameter->usages++;
 				p_identifier->set_datatype(parameter->get_datatype());
 				p_identifier->source_function = current_function;
 				return;
@@ -1133,6 +1130,7 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 	if (p_function == nullptr || p_function->is_abstract) {
 		return;
 	}
+	const String function_visible_name = p_function->identifier != nullptr ? String(p_function->identifier->name) : String("<anonymous>");
 	for (int i = 0; i < p_function->parameters.size(); i++) {
 		BSParser::ParameterNode *parameter = p_function->parameters[i];
 		if (parameter == nullptr || parameter->identifier == nullptr) {
@@ -1140,6 +1138,7 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 		}
 		if (parameter->usages == 0 && !String(parameter->identifier->name).begins_with("_")) {
 			Vector<String> symbols;
+			symbols.push_back(function_visible_name);
 			symbols.push_back(String(parameter->identifier->name));
 			push_warning(parameter, BSWarning::UNUSED_PARAMETER, symbols);
 		}
@@ -1147,6 +1146,7 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->identifier != nullptr) {
 		if (p_function->rest_parameter->usages == 0 && !String(p_function->rest_parameter->identifier->name).begins_with("_")) {
 			Vector<String> symbols;
+			symbols.push_back(function_visible_name);
 			symbols.push_back(String(p_function->rest_parameter->identifier->name));
 			push_warning(p_function->rest_parameter, BSWarning::UNUSED_PARAMETER, symbols);
 		}
@@ -1377,21 +1377,58 @@ bool BSAnalyzer::suite_has_return(const BSParser::SuiteNode *p_suite) const {
 	return false;
 }
 
+bool BSAnalyzer::node_has_explicit_return(const BSParser::Node *p_node) const {
+	if (p_node == nullptr) {
+		return false;
+	}
+	if (p_node->type == BSParser::Node::RETURN) {
+		return true;
+	}
+	if (p_node->type == BSParser::Node::SUITE) {
+		return suite_has_explicit_return(static_cast<const BSParser::SuiteNode *>(p_node));
+	}
+	if (p_node->type == BSParser::Node::IF) {
+		const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(p_node);
+		return suite_has_explicit_return(if_node->true_block) || suite_has_explicit_return(if_node->false_block);
+	}
+	if (p_node->type == BSParser::Node::MATCH) {
+		const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(p_node);
+		for (int b = 0; b < match_node->branches.size(); b++) {
+			if (match_node->branches[b] != nullptr && suite_has_explicit_return(match_node->branches[b]->block)) {
+				return true;
+			}
+		}
+	}
+	if (p_node->type == BSParser::Node::WHILE) {
+		return suite_has_explicit_return(static_cast<const BSParser::WhileNode *>(p_node)->loop);
+	}
+	if (p_node->type == BSParser::Node::FOR) {
+		return suite_has_explicit_return(static_cast<const BSParser::ForNode *>(p_node)->loop);
+	}
+	return false;
+}
+
+bool BSAnalyzer::suite_has_explicit_return(const BSParser::SuiteNode *p_suite) const {
+	if (p_suite == nullptr) {
+		return false;
+	}
+	for (int i = 0; i < p_suite->statements.size(); i++) {
+		if (node_has_explicit_return(p_suite->statements[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void BSAnalyzer::check_function_flow_finality(BSParser::FunctionNode *p_function) {
 	if (p_function == nullptr || !p_function->has_body || p_function->body == nullptr) {
 		return;
 	}
 
 	if (p_function->is_noreturn) {
-		bool has_return = false;
-		for (int i = 0; i < p_function->body->statements.size(); i++) {
-			const BSParser::Node *statement = p_function->body->statements[i];
-			if (statement != nullptr && statement->type == BSParser::Node::RETURN) {
-				has_return = true;
-				break;
-			}
-		}
-		if (has_return) {
+		// Foundry SuiteExitState: has_return is recursive RETURN-only; noreturn calls set
+		// always_terminates without has_return.
+		if (suite_has_explicit_return(p_function->body)) {
 			push_error(R"(A "@noreturn" function cannot return.)", p_function);
 		} else if (!suite_has_return(p_function->body)) {
 			push_error(R"(A "@noreturn" function cannot complete normally.)", p_function);
