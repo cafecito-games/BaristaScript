@@ -413,22 +413,22 @@ class TriageLedgerGate(unittest.TestCase):
 
     def test_excluded_path_marked_imported_is_rejected(self):
         parser = self.parser()
-        # Move an excluded path into rewritten while leaving it absent from disk:
-        # rewritten requires an imported case.
-        path, reason = next(iter(parser["triage"]["excluded"].items()))
-        del parser["triage"]["excluded"][path]
-        parser["triage"]["rewritten"][path] = reason
-        # Keep population arithmetic superficially consistent by bumping total
-        # without creating the file — disk checks must still catch it.
-        parser["total"] += 1
+        # An excluded disposition that names a file still present on disk must fail.
+        root = ROOT / "project" / parser["root"][len("res://") :]
+        some_case = sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*.barista")
+            if not path.name.endswith(".notest.barista")
+        )[0]
+        self.assertNotIn(some_case, parser["triage"]["excluded"])
+        parser["triage"]["excluded"][some_case] = (
+            "Falsely excluded while still present on disk; the validator must name this path."
+        )
+        parser["upstream_total"] += 1  # keep arithmetic from masking the disk conflict
         complaint = self.check(self.with_parser(parser))
         self.assertIsNotNone(complaint)
-        self.assertTrue(
-            path in complaint
-            or "cases" in (complaint or "")
-            or "not an imported" in (complaint or ""),
-            complaint,
-        )
+        self.assertIn(some_case, complaint)
+        self.assertIn("still imported", complaint)
 
     def test_analyzer_scaffold_is_pending_and_schema_valid(self):
         analyzer = self.baseline["corpora"]["analyzer"]
