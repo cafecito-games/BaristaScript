@@ -1120,7 +1120,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 	_expect(failures, not saw_used_signal, "emit_signal counts as signal use")
 
 	# Annotation surface: @warning_ignore needs resolve_annotation to populate resolved_arguments.
-	var ignored := "@warning_ignore(\"unused_signal\")\nclass_name IgnoredSignalScript extends Node\nsignal quiet\nfunc _ready() -> void:\n\tpass\n"
+	var ignored := "class_name IgnoredSignalScript extends Node\n@warning_ignore(\"unused_signal\")\nsignal quiet\nfunc _ready() -> void:\n\tpass\n"
 	var ignored_report: Dictionary = probe.validate_source(ignored, "res://tests/ignored_signal.barista", true)
 	var saw_ignored := false
 	for warn in ignored_report.get("warnings", []):
