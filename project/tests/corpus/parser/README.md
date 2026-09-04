@@ -2,7 +2,8 @@
 
 Imported from Foundry `cafecito-games/Foundry` @ `c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6`,
 `modules/foundry_script/tests/scripts/parser`, by `scripts/import_parser_corpus.py`. Do not edit these files by
-hand: the script is the single copy of the D1 triage table and `--check` proves this tree is what it
+hand: the script is the single copy of the D1 triage *reasons* (projected into
+`tests/corpus_baseline.json` without duplication) and `--check` proves this tree is what it
 produces.
 
 | Category | Cases |
