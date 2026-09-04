@@ -1305,6 +1305,44 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_rest = true
 	_expect(failures, saw_rest, "trait rest narrowing diagnostic")
 
+	# Fixed Array/Dictionary element matching (#84 / #83 review): carriers alone are not enough.
+	var array_elem := "class_name TraitArrayElem extends Node\nuses TakesNodes\n\ntrait TakesNodes:\n\tabstract func take(items: Array[Node]) -> void\n\nfunc take(items: Array[String]) -> void:\n\tpass\n"
+	var array_elem_report: Dictionary = probe.analyze_source(array_elem, "res://tests/trait_array_elem.barista")
+	_expect(failures, array_elem_report.get("valid", true) == false, "fixed Array[Node] vs Array[String] param is invalid")
+	var saw_array_elem := false
+	for message in array_elem_report.get("errors", PackedStringArray()):
+		if "signature does not match required trait method" in message and "TakesNodes.take()" in message:
+			saw_array_elem = true
+	_expect(failures, saw_array_elem, "fixed Array element mismatch diagnostic")
+
+	var dict_elem := "class_name TraitDictElem extends Node\nuses TakesMap\n\ntrait TakesMap:\n\tabstract func take(items: Dictionary[String, Node]) -> void\n\nfunc take(items: Dictionary[String, String]) -> void:\n\tpass\n"
+	var dict_elem_report: Dictionary = probe.analyze_source(dict_elem, "res://tests/trait_dict_elem.barista")
+	_expect(failures, dict_elem_report.get("valid", true) == false, "fixed Dictionary value element mismatch is invalid")
+	var saw_dict_elem := false
+	for message in dict_elem_report.get("errors", PackedStringArray()):
+		if "signature does not match required trait method" in message and "TakesMap.take()" in message:
+			saw_dict_elem = true
+	_expect(failures, saw_dict_elem, "fixed Dictionary element mismatch diagnostic")
+
+	# Explicit static-vs-instance (and reverse) signature mismatch (#84 / #83 review).
+	var static_vs_instance := "class_name TraitStaticVsInst extends Node\nuses Factory\n\ntrait Factory:\n\tabstract static func build() -> void\n\nfunc build() -> void:\n\tpass\n"
+	var static_vs_instance_report: Dictionary = probe.analyze_source(static_vs_instance, "res://tests/trait_static_vs_inst.barista")
+	_expect(failures, static_vs_instance_report.get("valid", true) == false, "instance impl of static trait method is invalid")
+	var saw_static_vs_inst := false
+	for message in static_vs_instance_report.get("errors", PackedStringArray()):
+		if "signature does not match required trait method" in message and "Factory.build()" in message:
+			saw_static_vs_inst = true
+	_expect(failures, saw_static_vs_inst, "static-vs-instance signature mismatch diagnostic")
+
+	var instance_vs_static := "class_name TraitInstVsStatic extends Node\nuses Worker\n\ntrait Worker:\n\tabstract func run() -> void\n\nstatic func run() -> void:\n\tpass\n"
+	var instance_vs_static_report: Dictionary = probe.analyze_source(instance_vs_static, "res://tests/trait_inst_vs_static.barista")
+	_expect(failures, instance_vs_static_report.get("valid", true) == false, "static impl of instance trait method is invalid")
+	var saw_inst_vs_static := false
+	for message in instance_vs_static_report.get("errors", PackedStringArray()):
+		if "signature does not match required trait method" in message and "Worker.run()" in message:
+			saw_inst_vs_static = true
+	_expect(failures, saw_inst_vs_static, "instance-vs-static signature mismatch diagnostic")
+
 	var rtc_sig := "class_name RtcSigTarget extends Node\n\ntrait NeedsPing:\n\tabstract func ping(code: int) -> void\n\nextend RtcSigTarget uses NeedsPing:\n\tfunc ping(code: String) -> void:\n\t\tpass\n"
 	var rtc_sig_report: Dictionary = probe.analyze_source(rtc_sig, "res://tests/rtc_sig_mismatch.barista")
 	_expect(failures, rtc_sig_report.get("valid", true) == false, "extend witness with wrong signature is invalid")
