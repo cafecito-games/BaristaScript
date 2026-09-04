@@ -135,6 +135,11 @@ public:
 	bool commit_declaration_record(uint64_t p_token, const BSDeclarationRecord &p_record);
 	bool remove_declaration_path(const String &p_path, uint64_t p_token);
 	void synchronize_declaration_path_from_source(const String &p_path, const String &p_source);
+	/**
+	 * Name lookup with digest validation (#44 leftover / #58). When source is available and the
+	 * stored digest mismatches, discards the stale entry, schedules reanalysis, and retries.
+	 */
+	bool try_resolve_declaration(const String &p_qualified_name, BSDeclarationRecord &r_record);
 	Error flush_declaration_index(const String &p_store_path = String());
 	BSDeclarationIndexLoadStatus load_declaration_index(const String &p_store_path = String());
 	void notify_conformance_namespaces_changed(const Vector<String> &p_namespaces);

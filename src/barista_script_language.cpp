@@ -478,6 +478,32 @@ void BaristaScriptLanguage::synchronize_declaration_path_from_source(const Strin
 	}
 }
 
+bool BaristaScriptLanguage::try_resolve_declaration(const String &p_qualified_name, BSDeclarationRecord &r_record) {
+	if (p_qualified_name.is_empty()) {
+		return false;
+	}
+	if (!declaration_index.try_get_by_qualified_name(p_qualified_name, r_record)) {
+		return false;
+	}
+	const String source = BSCache::get_source_code(r_record.path);
+	if (source.is_empty()) {
+		// Export / unavailable source: trust the shipped digest (M4 contract).
+		return true;
+	}
+	const uint64_t digest = BSDeclarationIndex::compute_source_digest(source);
+	if (digest == r_record.source_digest) {
+		return true;
+	}
+	// Stale metadata cannot resolve (#44 leftover / #58): discard and schedule reanalysis.
+	const String path = r_record.path;
+	const uint64_t token = declaration_index.claim_refresh(path);
+	Vector<String> changed;
+	declaration_index.remove_path(path, token, &changed);
+	notify_conformance_namespaces_changed(changed);
+	synchronize_declaration_path_from_source(path, source);
+	return declaration_index.try_get_by_qualified_name(p_qualified_name, r_record);
+}
+
 Error BaristaScriptLanguage::flush_declaration_index(const String &p_store_path) {
 	const String path = p_store_path.is_empty() ? BSDeclarationIndex::get_default_store_path() : p_store_path;
 	return declaration_index.flush(path);

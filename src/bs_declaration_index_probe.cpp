@@ -101,6 +101,7 @@ void BaristaScriptDeclarationIndexProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("host_conformance_files_in_namespace", "namespace_name"), &BaristaScriptDeclarationIndexProbe::host_conformance_files_in_namespace);
 	ClassDB::bind_method(D_METHOD("host_is_bootstrap_path_allowed", "path"), &BaristaScriptDeclarationIndexProbe::host_is_bootstrap_path_allowed);
 	ClassDB::bind_method(D_METHOD("set_bootstrap_root", "root"), &BaristaScriptDeclarationIndexProbe::set_bootstrap_root);
+	ClassDB::bind_method(D_METHOD("lookup_qualified_name", "qualified_name"), &BaristaScriptDeclarationIndexProbe::lookup_qualified_name);
 }
 
 int BaristaScriptDeclarationIndexProbe::get_format_version() {
@@ -213,6 +214,16 @@ bool BaristaScriptDeclarationIndexProbe::host_is_bootstrap_path_allowed(const go
 
 void BaristaScriptDeclarationIndexProbe::set_bootstrap_root(const godot::String &p_root) {
 	BSAnalyzer::set_bootstrap_allowed_dependency_root(p_root);
+}
+
+godot::Dictionary BaristaScriptDeclarationIndexProbe::lookup_qualified_name(const godot::String &p_qualified_name) {
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	ERR_FAIL_COND_V(language == nullptr, godot::Dictionary());
+	BSDeclarationRecord record;
+	if (!language->try_resolve_declaration(p_qualified_name, record)) {
+		return godot::Dictionary();
+	}
+	return dictionary_from_record(record);
 }
 
 } // namespace barista_script

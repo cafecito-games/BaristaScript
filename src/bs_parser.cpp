@@ -119,16 +119,26 @@ void BSParser::update_project_settings() {
 	if (settings == nullptr) {
 		return;
 	}
-	is_project_ignoring_warnings = !settings->get_setting_with_override("debug/barista_script/warnings/enable").booleanize();
+	const String enable_path = "debug/barista_script/warnings/enable";
+	if (settings->has_setting(enable_path)) {
+		is_project_ignoring_warnings = !settings->get_setting_with_override(enable_path).booleanize();
+	} else {
+		is_project_ignoring_warnings = false;
+	}
 
 	for (int i = 0; i < BSWarning::WARNING_MAX; i++) {
-		const String setting_path = BSWarning::get_setting_path_from_code((BSWarning::Code)i);
-		warning_levels[i] = (BSWarning::WarnLevel)(int)settings->get_setting_with_override(setting_path);
+		BSWarning::WarnLevel level = BSWarning::WARN;
+		BSWarning::resolve_level_from_project_settings((BSWarning::Code)i, level);
+		warning_levels[i] = level;
 	}
 
 	warning_directory_rules.clear();
 
-	const Dictionary rules = settings->get_setting_with_override("debug/barista_script/warnings/directory_rules");
+	const String rules_path = "debug/barista_script/warnings/directory_rules";
+	if (!settings->has_setting(rules_path)) {
+		return;
+	}
+	const Dictionary rules = settings->get_setting_with_override(rules_path);
 	// godot-cpp's `Dictionary` is engine-backed and offers no iterator, so the keys are taken first.
 	const Array rule_directories = rules.keys();
 	for (int rule_index = 0; rule_index < rule_directories.size(); rule_index++) {
@@ -594,6 +604,7 @@ Error BSParser::parse(const String &p_source_code, const String &p_script_path, 
 	script_path = p_script_path.simplify_path();
 
 #ifdef DEBUG_ENABLED
+	update_project_settings();
 	evaluate_warning_directory_rules_for_script_path();
 #endif // DEBUG_ENABLED
 
@@ -669,6 +680,7 @@ Error BSParser::parse_binary(const PackedByteArray &p_binary, const String &p_sc
 	script_path = p_script_path.simplify_path();
 
 #ifdef DEBUG_ENABLED
+	update_project_settings();
 	evaluate_warning_directory_rules_for_script_path();
 #endif // DEBUG_ENABLED
 
