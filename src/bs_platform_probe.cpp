@@ -41,6 +41,7 @@ Dictionary BaristaScriptPlatformProbe::string_builder_behavior() const {
 	StringBuilder builder;
 	report["fresh_count"] = builder.num_strings_appended();
 	report["fresh_length"] = builder.get_string_length();
+	report["fresh_string"] = builder.as_string();
 
 	builder.append(String());
 	report["after_empty_string_count"] = builder.num_strings_appended();

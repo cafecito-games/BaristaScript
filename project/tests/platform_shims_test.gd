@@ -34,6 +34,7 @@ func _test_string_builder_behavior(probe, failures: Array[String]) -> void:
 
 	_expect(failures, report["fresh_count"] == 0, "fresh builder: count is not zero")
 	_expect(failures, report["fresh_length"] == 0, "fresh builder: length is not zero")
+	_expect(failures, report["fresh_string"] == "", "fresh builder: result is not empty")
 
 	_expect(failures, report["after_empty_string_count"] == 0,
 		"empty String append: counted as an append")

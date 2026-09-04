@@ -36,7 +36,7 @@ public:
 	/**
 	 * Exercises `StringBuilder` through the checkpoints a behavioural test needs:
 	 *
-	 *   `fresh_count` / `fresh_length`  a new builder before any append.
+	 *   `fresh_count` / `fresh_length` / `fresh_string`  a new builder before any append.
 	 *   `after_empty_string_count` / `after_empty_string_length`  after `append("")`.
 	 *   `after_empty_cstring_count` / `after_empty_cstring_length`  after `append("")` as a C string.
 	 *   `after_mixed_count` / `after_mixed_length`  after a non-empty `String` and C string.
