@@ -154,11 +154,45 @@ void BSParser::update_project_settings() {
 	warning_directory_rules.sort_custom<RuleSort>();
 }
 
-// D-deferred: upstream's `invalidate_analysis_on_strict_settings_change()` (fs_parser.cpp:127-153
-// @ c9d5e35) drops already-built parsers and scripts when a strict-analysis project setting flips.
-// Both halves it needs -- the analyzer that reads those settings and the cache's parse-tree store
-// (`BSCache::invalidate_analysis()`, absent by the deliberate scoping in bs_cache.h:29-31) -- arrive
-// with M3, and a version that dropped nothing would be a stub that silently kept stale analysis.
+bool BSParser::invalidate_analysis_on_strict_settings_change() {
+	// Snapshots effective, override-aware values. First observation establishes the baseline without
+	// invalidating; only a later flip drops parsed/analyzed artifacts (source overrides preserved).
+	static bool last_strict_null = false;
+	static bool last_strict_dynamic = false;
+	static bool initialized = false;
+
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	if (settings == nullptr) {
+		return false;
+	}
+
+	const String null_path = "debug/barista_script/analysis/strict_null_checks";
+	const String dynamic_path = "debug/barista_script/analysis/strict_dynamic_checks";
+	if (!settings->has_setting(null_path)) {
+		settings->set_setting(null_path, false);
+	}
+	if (!settings->has_setting(dynamic_path)) {
+		settings->set_setting(dynamic_path, false);
+	}
+
+	const bool strict_null = (bool)settings->get_setting_with_override(null_path);
+	const bool strict_dynamic = (bool)settings->get_setting_with_override(dynamic_path);
+
+	const bool changed = !initialized || strict_null != last_strict_null || strict_dynamic != last_strict_dynamic;
+	last_strict_null = strict_null;
+	last_strict_dynamic = strict_dynamic;
+
+	if (!initialized) {
+		initialized = true;
+		return false;
+	}
+	if (!changed) {
+		return false;
+	}
+
+	BSCache::invalidate_analysis();
+	return true;
+}
 #endif // DEBUG_ENABLED
 
 BSParser::BSParser() {
@@ -1301,10 +1335,34 @@ void BSParser::parse_program() {
 	clear_unused_annotations();
 }
 
-// D-deferred: `get_depended_parser_for()` / `get_depended_parsers()` (fs_parser.cpp:1119-1136 @
-// c9d5e35) hand the analyzer the parsers of the files this one depends on, through `FSParserRef` and
-// `FSCache::get_parser()`. Both are the parse-tree halves of the cache that `bs_cache.h:29-31`
-// deliberately leaves to M3, and the parser itself never calls either.
+// D-deferred comments removed: get_depended_parser_for / get_depended_parsers restored by #27.
+
+Ref<BSParserRef> BSParser::get_depended_parser_for(const String &p_path) {
+	String path = p_path.strip_edges();
+	if (path.is_empty()) {
+		return Ref<BSParserRef>();
+	}
+	if (path.is_relative_path() && !script_path.is_empty()) {
+		path = script_path.get_base_dir().path_join(path).simplify_path();
+	}
+	path = ResourceUID::ensure_path(path).simplify_path();
+
+	Ref<BSParserRef> ref;
+	if (depended_parsers.has(path)) {
+		ref = depended_parsers[path];
+	} else {
+		Error err = OK;
+		ref = BSCache::get_parser(path, BSParserRef::EMPTY, err, script_path);
+		if (ref.is_valid()) {
+			depended_parsers[path] = ref;
+		}
+	}
+	return ref;
+}
+
+const HashMap<String, Ref<BSParserRef>> &BSParser::get_depended_parsers() {
+	return depended_parsers;
+}
 
 List<String> BSParser::get_dependencies() const {
 	List<String> dependencies;

@@ -10,6 +10,9 @@
 /build/
 /project/bin/*/
 
+# Live declaration-index artifact (issue #44). Checked-in fixtures live under
+# project/tests/declaration_index_fixtures/ instead.
+/project/.godot/barista_script/
 # Ignore scons database
 .sconsign*.dblite
 

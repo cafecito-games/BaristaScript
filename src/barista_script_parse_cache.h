@@ -93,6 +93,17 @@ public:
 	static void remove_script(const godot::String &p_path);
 	static void move_script(const godot::String &p_from, const godot::String &p_to);
 	static void clear_script_cache();
+
+	// Staged parser/analyzer lifecycle (#27). Status is BSParserRef::Status index.
+	static godot::Dictionary get_parser(const godot::String &p_path, int p_status, const godot::String &p_owner = godot::String());
+	static bool has_parser(const godot::String &p_path);
+	static void remove_parser(const godot::String &p_path);
+	static godot::PackedStringArray collect_parser_invalidation_closure(const godot::String &p_path);
+	static godot::PackedStringArray collect_parsers_reaching_namespace(const godot::String &p_namespace);
+	static void invalidate_analysis();
+#ifdef DEBUG_ENABLED
+	static bool invalidate_analysis_on_strict_settings_change();
+#endif // DEBUG_ENABLED
 };
 
 } // namespace barista_script

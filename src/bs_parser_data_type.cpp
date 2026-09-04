@@ -999,9 +999,115 @@ int BSParser::DataType::get_tuple_field_index(const StringName &p_name) const {
 	return -1;
 }
 
-// D-deferred: `DataType::can_reference()` (fs_parser_data_type.cpp:1327-1391 @ c9d5e35) resolves a
-// CLASS handle to its script through `FSCache::get_shallow_script()` and `FoundryScript::find_class()`
-// -- the compiled-script halves of the cache that `bs_cache.h:29-31` deliberately leaves to M3. It is
-// an analyzer predicate with no parser call site, so it arrives with the analyzer that asks it rather
-// than as a version that answered without consulting the script it is about.
+// Referencing hands out the value without re-validating it against this slot. D1: no NumericType /
+// width/signedness alias checks -- the Variant carrier is the whole numeric type.
+bool BSParser::DataType::can_reference(const BSParser::DataType &p_other) const {
+	if (p_other.is_meta_type) {
+		return false;
+	}
+
+	if (kind == UNION || p_other.kind == UNION) {
+		return false;
+	}
+
+	if (kind == TUPLE || p_other.kind == TUPLE) {
+		if (kind != TUPLE || p_other.kind != TUPLE) {
+			return false;
+		}
+		if (container_element_types.size() != p_other.container_element_types.size()) {
+			return false;
+		}
+		for (int i = 0; i < container_element_types.size(); i++) {
+			if (!container_element_types[i].can_reference(p_other.container_element_types[i])) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if (builtin_type != p_other.builtin_type) {
+		return false;
+	}
+
+	if (builtin_type != Variant::OBJECT) {
+		return true;
+	}
+
+	if (native_type == StringName()) {
+		return true;
+	} else if (p_other.native_type == StringName()) {
+		return false;
+	} else if (native_type != p_other.native_type && !ClassDB::is_parent_class(p_other.native_type, native_type)) {
+		return false;
+	}
+
+	Ref<Script> script = script_type;
+	if (kind == BSParser::DataType::CLASS && script.is_null()) {
+		// #43 seam: Foundry resolves CLASS handles through FSCache::get_shallow_script. Until the
+		// shallow analyzed-script surface exists, fail closed rather than answer permissively.
+		if (script_path.is_empty()) {
+			return false;
+		}
+		Error err = OK;
+		Ref<BSParserRef> ref = BSCache::get_parser(script_path, BSParserRef::PARSED, err);
+		if (ref.is_null() || err != OK) {
+			ERR_PRINT(vformat(R"(Error while getting cache for script "%s".)", script_path));
+			return false;
+		}
+		// Without a compiled Script object, identity falls back to matching declaring paths.
+		if (p_other.kind == BSParser::DataType::CLASS) {
+			Ref<Script> script_other = p_other.script_type;
+			if (script_other.is_null()) {
+				if (p_other.script_path.is_empty()) {
+					return false;
+				}
+				Error other_err = OK;
+				Ref<BSParserRef> other_ref = BSCache::get_parser(p_other.script_path, BSParserRef::PARSED, other_err);
+				if (other_ref.is_null() || other_err != OK) {
+					ERR_PRINT(vformat(R"(Error while getting cache for script "%s".)", p_other.script_path));
+					return false;
+				}
+				return script_path == p_other.script_path;
+			}
+			return false;
+		}
+		return true;
+	}
+
+	Ref<Script> script_other = p_other.script_type;
+	if (p_other.kind == BSParser::DataType::CLASS && script_other.is_null()) {
+		if (p_other.script_path.is_empty()) {
+			return false;
+		}
+		Error err = OK;
+		Ref<BSParserRef> ref = BSCache::get_parser(p_other.script_path, BSParserRef::PARSED, err);
+		if (ref.is_null() || err != OK) {
+			ERR_PRINT(vformat(R"(Error while getting cache for script "%s".)", p_other.script_path));
+			return false;
+		}
+		return false;
+	}
+
+	if (script.is_null()) {
+		return true;
+	} else if (script_other.is_null()) {
+		return false;
+	} else if (script != script_other) {
+		// godot-cpp's Script binding does not expose inherits_script(); walk bases instead.
+		Ref<Script> cursor = script_other;
+		bool inherits = false;
+		while (cursor.is_valid()) {
+			if (cursor == script) {
+				inherits = true;
+				break;
+			}
+			cursor = cursor->get_base_script();
+		}
+		if (!inherits) {
+			return false;
+		}
+	}
+
+	return true;
+}
 } // namespace barista_script

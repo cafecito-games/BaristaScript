@@ -24,9 +24,8 @@
  *   - Upstream's `FSLanguage`/`FSAnalyzer` coupling is reduced to two seams: the interned-string
  *     table, which now lives on `BaristaScriptLanguage`, and `BSParserHost`, the narrow interface
  *     M3 implements for the namespace-conformance index and the bootstrap-path check.
- *   - The parse-tree halves of the cache (`FSParserRef`, `FSCache::get_parser`) do not exist yet, so
- *     `get_depended_parser_for()`/`get_depended_parsers()` are not ported; M3 reinstates them
- *     against `BSCache`.
+ *   - The parse-tree halves of the cache (`BSParserRef`, `BSCache::get_parser`) are restored by
+ *     issue #27; `get_depended_parser_for()`/`get_depended_parsers()` use that cache.
  */
 
 #include "bs_cache.h"
@@ -367,6 +366,7 @@ public:
 		static String same_rendered_name_clause(const DataType &p_first, const String &p_first_subject, const DataType &p_second, const String &p_second_subject);
 		_FORCE_INLINE_ String to_string_strict() const { return is_hard_type() ? to_string() : "Variant"; }
 		PropertyInfo to_property_info(const String &p_name) const;
+		bool can_reference(const DataType &p_other) const;
 
 		_FORCE_INLINE_ static DataType get_variant_type() { // Default DataType for container elements.
 			DataType datatype;
@@ -2213,6 +2213,7 @@ private:
 	friend class BaristaScriptParserProbe;
 	bool _is_tool = false;
 	String script_path;
+	HashMap<String, Ref<BSParserRef>> depended_parsers;
 	bool for_completion = false;
 	bool parse_body = true;
 	bool panic_mode = false;
@@ -2713,6 +2714,8 @@ public:
 	// show diagnostics to a human present them in source order through this view; `errors` itself keeps
 	// emission order, which the compiler and the tests rely on.
 	Vector<const ParserError *> get_errors_in_source_order() const;
+	Ref<BSParserRef> get_depended_parser_for(const String &p_path);
+	const HashMap<String, Ref<BSParserRef>> &get_depended_parsers();
 	List<String> get_dependencies() const;
 	// The files this one loads solely because they declare retroactive conformances in its own
 	// namespace or in a namespace it imports. Included in `get_dependencies()`; reported separately
@@ -2720,6 +2723,7 @@ public:
 	List<String> get_namespace_conformance_dependencies() const;
 
 #ifdef DEBUG_ENABLED
+	static bool invalidate_analysis_on_strict_settings_change();
 	static void update_project_settings();
 	static bool is_ignoring_warnings() { return is_project_ignoring_warnings; }
 	static void set_ignoring_warnings(bool p_ignore) { is_project_ignoring_warnings = p_ignore; }

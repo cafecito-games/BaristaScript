@@ -135,6 +135,13 @@ public:
 	 * about a checked-in fixture rather than hard-coding the number the fixture was written under.
 	 */
 	int tokenizer_format_version() const;
+
+	/**
+	 * `DataType::can_reference()` for table-driven GDScript cases. Each side is a Dictionary with:
+	 * kind (int), builtin_type (int), is_meta_type (bool), native_type (String), script_path (String),
+	 * and optional container_element_types (Array of the same shape) for tuples.
+	 */
+	bool can_reference(const godot::Dictionary &p_self, const godot::Dictionary &p_other) const;
 };
 
 } // namespace barista_script
