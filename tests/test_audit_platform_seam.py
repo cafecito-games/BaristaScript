@@ -465,21 +465,20 @@ class FailClosedTest(unittest.TestCase):
     def test_a_port_set_file_absent_from_the_capture_is_rejected(self):
         document = real_manifest()
         # A module file that is genuinely outside the current capture. Prefer a real Foundry
-        # analyzer split unit that is not yet in the M3 port set (fs_analyzer.cpp itself is now
-        # in the capture after the analyzer slice).
-        document["upstream"]["port_set"].append("fs_analyzer_call_validation.cpp")
+        # analyzer split unit that is not yet in the M3 port set (call_validation is now captured).
+        document["upstream"]["port_set"].append("fs_analyzer_surface.cpp")
         with TemporaryManifest(document) as path:
             result = run_audit("--manifest", str(path))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fs_analyzer_call_validation.cpp", result.stdout + result.stderr)
+        self.assertIn("fs_analyzer_surface.cpp", result.stdout + result.stderr)
 
     def test_site_outside_the_declared_port_set_is_rejected(self):
         document = real_manifest()
-        document["entries"][0]["sites"] = ["fs_analyzer_call_validation.cpp:12"]
+        document["entries"][0]["sites"] = ["fs_analyzer_surface.cpp:12"]
         with TemporaryManifest(document) as path:
             result = run_audit("--manifest", str(path))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fs_analyzer_call_validation.cpp", result.stdout + result.stderr)
+        self.assertIn("fs_analyzer_surface.cpp", result.stdout + result.stderr)
 
 
 class VocabularyClosureTest(unittest.TestCase):
