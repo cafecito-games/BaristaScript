@@ -701,9 +701,9 @@ func _test_precedence_and_associativity(probe, failures: Array[String]) -> void:
 	_expect(failures, _expression_tree(probe, "a -2 ** 2") != _expression_tree(probe, "(a - 2) ** 2"),
 		"after-value sign: `a -2 ** 2` grouped as `(a - 2) ** 2`")
 
-	# Deferred to #43 (M3 analyzer constant folding): consume the AST shapes pinned above without
-	# re-tokenizing source or special-casing the spelling `-2`. Expected reduced values once that
-	# surface lands: `-2 ** 2` / `(-2) ** 2` → 4; `-(2 ** 2)` / `- 2 ** 2` → -4.
+	# Deferred to #43 / #49 (M3 analyzer constant folding): consume the AST shapes pinned above
+	# without re-tokenizing source or special-casing the spelling `-2`. Expected reduced values
+	# once that surface lands: `-2 ** 2` / `(-2) ** 2` → 4; `-(2 ** 2)` / `- 2 ** 2` → -4.
 
 	# The ternary is right-associative.
 	_expect(failures,
