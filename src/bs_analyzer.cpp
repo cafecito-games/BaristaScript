@@ -673,8 +673,9 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 Error BSAnalyzer::run_phase_interface_and_member_surface() {
 	analyze_class_interface(parser->get_tree());
 	resolve_used_traits(parser->get_tree());
-	validate_trait_requirements(parser->get_tree());
 	mark_phase(AnalyzerPhase::INTERFACE_AND_MEMBER_SURFACE);
+	// Foundry TRAIT_CONFORMANCE: registration / extend targets only.
+	// Abstract-method requirements belong in FLOW_FINALITY_INVARIANTS.
 	resolve_conformances(parser->get_tree());
 	mark_phase(AnalyzerPhase::TRAIT_CONFORMANCE_REGISTRATION);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
@@ -1912,6 +1913,8 @@ Error BSAnalyzer::run_phase_flow_finality() {
 				check_function_flow_finality(member.function);
 			}
 		}
+		// Foundry FLOW_FINALITY_INVARIANTS: abstract trait requirements after body.
+		validate_trait_requirements(head);
 	}
 	mark_phase(AnalyzerPhase::FLOW_FINALITY_INVARIANTS);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;

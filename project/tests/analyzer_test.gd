@@ -1218,6 +1218,16 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 	var local_ok_report: Dictionary = probe.analyze_source(local_ok, "res://tests/rtc_local_ok.barista")
 	_expect(failures, local_ok_report.get("valid", false) == true, "same-file extend with witness is valid")
 
+	# Redundant extend when the target already owns the trait via uses.
+	var redundant := "class_name RtcRedundantTarget extends Node\nuses NeedsPing\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nfunc ping() -> void:\n\tpass\n\nextend RtcRedundantTarget uses NeedsPing:\n\tpass\n"
+	var redundant_report: Dictionary = probe.analyze_source(redundant, "res://tests/rtc_redundant_uses.barista")
+	_expect(failures, redundant_report.get("valid", true) == false, "extend redundant with target uses is invalid")
+	var saw_redundant := false
+	for message in redundant_report.get("errors", PackedStringArray()):
+		if "already conforms to trait" in message and "through its own \"uses\"" in message and "NeedsPing" in message:
+			saw_redundant = true
+	_expect(failures, saw_redundant, "redundant uses conformance diagnostic")
+
 	# Cross-file trait requirement via declaration index.
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	index.clear()
