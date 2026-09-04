@@ -218,10 +218,11 @@ class ImportedTree(unittest.TestCase):
     def test_the_d1_grep_gate_returns_only_the_removal_case(self):
         """Issue #10's acceptance grep, run over the imported tree.
 
-        It is a regression check on the spellings it covers, not the discovery
-        tool the issue took it for: it matches neither bare `long` nor a
-        lowercase suffix, which is why the triage table in the importer is
-        larger than the nine files it returns.
+        This is a **lower-bound candidate / regression check** on the spellings it
+        covers, not a discovery tool and never a population total: it matches
+        neither bare `long` nor a lowercase suffix, which is why the triage
+        ledger records sixteen dispositions while this grep returns one file.
+        Static search seeds review; the ledger's population equation closes it.
         """
         pattern = re.compile(r"\b(uint|ulong)\b|as!|[0-9](UL|U|L)\b")
         matching = sorted(
@@ -230,6 +231,17 @@ class ImportedTree(unittest.TestCase):
             if pattern.search(path.read_text(encoding="utf-8"))
         )
         self.assertEqual(matching, ["features/fixed_width_integer_literals.barista"])
+        # Grep hit count is not the disposition count and not the population.
+        triage = self.baseline["triage"]
+        disposition_count = sum(len(triage[key]) for key in triage)
+        self.assertEqual(disposition_count, 16)
+        self.assertLess(len(matching), disposition_count)
+        self.assertEqual(
+            self.baseline["upstream_total"],
+            self.baseline["total"]
+            + len(triage["excluded"])
+            + len(triage["deferred"]),
+        )
 
     def test_the_upstream_ignore_marker_was_not_imported(self):
         """Foundry's corpus root carries an empty `.fsignore`.
@@ -255,7 +267,7 @@ class ImportedTree(unittest.TestCase):
 
 
 class TriageTable(unittest.TestCase):
-    """The importer's triage table, which is the only copy of it."""
+    """The importer's triage table, which is the only copy of the reason text."""
 
     def dispositions(self):
         return {
@@ -302,6 +314,137 @@ class TriageTable(unittest.TestCase):
             IMPORTER.read_text(encoding="utf-8"),
             "the importer must read the sentinel, not restate it",
         )
+
+    def test_ledger_reasons_are_not_duplicated(self):
+        """The committed ledger must quote the importer tables, not restate them."""
+        baseline = json.loads(BASELINE.read_text(encoding="utf-8"))["corpora"]["parser"]
+        ledger = importer.parser_triage_ledger()
+        self.assertEqual(baseline["triage"], ledger)
+        self.assertEqual(baseline["upstream_total"], importer.PARSER_UPSTREAM_TOTAL)
+        self.assertEqual(
+            len(ledger["excluded"])
+            + len(ledger["rewritten"])
+            + len(ledger["expectation_overrides"])
+            + len(ledger["deferred"]),
+            16,
+        )
+
+
+class TriageLedgerGate(unittest.TestCase):
+    """Table-driven mutations against a valid ledger must fail with a named path."""
+
+    def setUp(self):
+        self.baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+        self.suites = json.loads(SUITES.read_text(encoding="utf-8"))
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.original = (validate_ci.BASELINE_PATH, validate_ci.SUITES_MANIFEST_PATH)
+
+        def restore():
+            validate_ci.BASELINE_PATH, validate_ci.SUITES_MANIFEST_PATH = self.original
+
+        self.addCleanup(restore)
+
+    def check(self, baseline):
+        scratch = Path(self.directory.name)
+        baseline_path = scratch / "corpus_baseline.json"
+        suites_path = scratch / "gdscript_suites.json"
+        baseline_path.write_text(json.dumps(baseline, indent=2), encoding="utf-8")
+        suites_path.write_text(json.dumps(self.suites, indent=2), encoding="utf-8")
+        validate_ci.BASELINE_PATH = baseline_path
+        validate_ci.SUITES_MANIFEST_PATH = suites_path
+        return validate_ci.check_corpus_baseline()
+
+    def parser(self):
+        return copy.deepcopy(self.baseline)["corpora"]["parser"]
+
+    def with_parser(self, parser):
+        baseline = copy.deepcopy(self.baseline)
+        baseline["corpora"]["parser"] = parser
+        return baseline
+
+    def test_empty_reason_is_rejected(self):
+        parser = self.parser()
+        path = next(iter(parser["triage"]["excluded"]))
+        parser["triage"]["excluded"][path] = "   "
+        complaint = self.check(self.with_parser(parser))
+        self.assertIsNotNone(complaint)
+        self.assertIn(path, complaint)
+        self.assertIn("empty reason", complaint)
+
+    def test_unknown_path_in_rewritten_is_rejected(self):
+        parser = self.parser()
+        invented = "errors/no_such_triage_case.barista"
+        parser["triage"]["rewritten"][invented] = (
+            "Invented path used only to prove the validator names unknown rewritten cases."
+        )
+        complaint = self.check(self.with_parser(parser))
+        self.assertIsNotNone(complaint)
+        self.assertIn(invented, complaint)
+
+    def test_duplicate_disposition_is_rejected(self):
+        parser = self.parser()
+        path = next(iter(parser["triage"]["rewritten"]))
+        parser["triage"]["expectation_overrides"][path] = (
+            "Duplicate disposition on an already rewritten path must fail validation."
+        )
+        complaint = self.check(self.with_parser(parser))
+        self.assertIsNotNone(complaint)
+        self.assertIn(path, complaint)
+        self.assertIn("overlapping", complaint)
+
+    def test_omitting_an_upstream_case_breaks_population_arithmetic(self):
+        parser = self.parser()
+        # Drop one excluded reason without lowering upstream_total: the case is
+        # no longer accounted for as imported or dispositioned.
+        path = next(iter(parser["triage"]["excluded"]))
+        del parser["triage"]["excluded"][path]
+        complaint = self.check(self.with_parser(parser))
+        self.assertIsNotNone(complaint)
+        self.assertIn("population mismatch", complaint)
+        self.assertIn("parser", complaint)
+
+    def test_misstated_total_breaks_population_arithmetic(self):
+        parser = self.parser()
+        parser["upstream_total"] = parser["total"]  # pretend exclusions do not exist
+        complaint = self.check(self.with_parser(parser))
+        self.assertIsNotNone(complaint)
+        self.assertIn("population mismatch", complaint)
+
+    def test_excluded_path_marked_imported_is_rejected(self):
+        parser = self.parser()
+        # An excluded disposition that names a file still present on disk must fail.
+        root = ROOT / "project" / parser["root"][len("res://") :]
+        some_case = sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*.barista")
+            if not path.name.endswith(".notest.barista")
+        )[0]
+        self.assertNotIn(some_case, parser["triage"]["excluded"])
+        parser["triage"]["excluded"][some_case] = (
+            "Falsely excluded while still present on disk; the validator must name this path."
+        )
+        parser["upstream_total"] += 1  # keep arithmetic from masking the disk conflict
+        complaint = self.check(self.with_parser(parser))
+        self.assertIsNotNone(complaint)
+        self.assertIn(some_case, complaint)
+        self.assertIn("still imported", complaint)
+
+    def test_analyzer_scaffold_is_pending_and_schema_valid(self):
+        analyzer = self.baseline["corpora"]["analyzer"]
+        self.assertFalse(analyzer["imported"])
+        self.assertEqual(analyzer["upstream_total"], 1346)
+        self.assertEqual(analyzer["upstream_helpers"], 250)
+        self.assertEqual(analyzer["total"], 0)
+        self.assertEqual(analyzer["triage"]["excluded"], {})
+        self.assertIsNone(self.check(self.baseline))
+
+    def test_analyzer_scaffold_rejecting_claimed_totals(self):
+        baseline = copy.deepcopy(self.baseline)
+        baseline["corpora"]["analyzer"]["total"] = 100
+        complaint = self.check(baseline)
+        self.assertIsNotNone(complaint)
+        self.assertIn("analyzer", complaint)
 
 
 if __name__ == "__main__":

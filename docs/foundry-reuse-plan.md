@@ -72,12 +72,19 @@ from a judgement call into a number, and it is the mechanism that makes the piec
 safe: each ported stage is done when its slice of the corpus is green.
 
 **Migration is mostly mechanical.** Rename `.fs` → `.barista`, rename `.out` expectations from
-`FS_TEST_OK` to `BS_TEST_OK`, and triage the cases that touch a delta. Expect the following to need
-hand review, identified by grepping the corpus:
+`FS_TEST_OK` to `BS_TEST_OK`, and triage the cases that touch a delta. Static greps are a
+**candidate generator and regression check only** — never the population total. The D1 spelling
+grep (`\b(uint|ulong)\b|as!|[0-9](UL|U|L)\b`) under-approximates (bare `long`, lowercase/misordered
+suffixes, and unsuffixed overflow diagnostics are invisible to it); treat its hit count as a lower
+bound on files to review, not as an exhaustive deletion set. Historical note: an early draft of this
+plan quoted "**113 corpus cases**, identified by one grep" as if that number closed triage — that
+claim is retired. The authoritative accounting is the version-controlled triage ledger in
+`tests/corpus_baseline.json`, filled by complete import plus execution (see M3 below and issue #30).
 
-- **Delete outright (D1):** any case using `uint`, `ulong`, `long`, a `U`/`L`/`UL` literal suffix,
-  or `as!`. These are not triaged case by case — the feature is gone, so the tests go with it. That
-  is **113 corpus cases**, identified by one grep.
+Cases that typically need hand review (seed with grep, close with execution):
+
+- **D1 integer-tower residuals:** sources using `uint`/`ulong`/`long`, a `U`/`L`/`UL` suffix, or
+  `as!`, plus cases whose *expectation* names a removed width even when the source does not.
 - Rewrite `is long` to `is int` wherever a case tests the integer carrier (D1).
 - cases constructing a generic without type arguments, or relying on the gradual store rule (D3, D4)
 - cases asserting engine-visible traits or `trait_name`/`enum_name` global registration (D5, D6)
@@ -281,9 +288,28 @@ the extension.* This is the milestone that de-risks everything after it.
 are triaged for D1, four of them by deletion. *Exit: 340/340 parser cases green* (issue #10).
 
 **M3 — Type model + analyzer.** Port the type model and analyzer, dropping the numeric apparatus
-(D1) rather than porting it. Bring over `analyzer/**` (1,571 cases) minus the 113 deleted numeric
-cases and the generics cluster. Define the global-class index format here (§5.6) — the analyzer is
-what fills it. *Exit: the non-generic analyzer corpus green.*
+(D1) rather than porting it. Bring over `analyzer/**` starting from the pinned Foundry enumeration
+at `c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6`: **1,596 sources / 1,346 runnable cases / 250 helpers /
+1,346 expectations** (status mix: 844 analyzer-error, 480 OK, 18 parser-error, 2 compiler-error,
+2 runtime-error). Do **not** subtract an unverified grep count to invent a final total before the
+first run. Historical note: an earlier draft wrote "`analyzer/**` (1,571 cases) minus the 113
+deleted numeric cases" — that arithmetic is retired; it mixed a stale file count with a grep hit
+count that is not a disposition set.
+
+The M3 import loop (issue #30 / #45) is execution-driven:
+
+1. Static candidate sweep (grep / path heuristics) to seed review — recorded as a lower bound only.
+2. Complete pinned import of every upstream runnable case into the ledger.
+3. Full corpus execution.
+4. Case-by-case classification of every residual: fix the implementation, rewrite the source,
+   override the expectation, exclude, or milestone-defer — each with a non-empty path-specific
+   reason in `tests/corpus_baseline.json`.
+5. Rerun until the exact ledger-pinned summary is green with `expected_failures` empty.
+
+An unexplained residual failure remains a failing corpus result; it must not be bulk-added to
+`expected_failures`. Define the global-class index format here (§5.6) — the analyzer is what fills
+it. *Exit: the non-generic analyzer corpus green, with final imported/skipped totals written by
+execution into the ledger/README/runner pin (issue #45).*
 
 **M4 — Codegen + VM + glue.** Port bytecode and VM, rewrite the glue, implement coroutines. This is
 the first milestone where a `.barista` file *runs*. Load the §5.6 index at startup, since Godot's

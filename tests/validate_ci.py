@@ -7,10 +7,14 @@
 
 import json
 import re
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
+from corpus_ledger import validate_triage_ledger  # noqa: E402
 
 SUITE_RUNNER = "tests/run_gdscript_suites.py"
 
@@ -168,6 +172,19 @@ def summary_prefix() -> str:
     return match.group(1)
 
 
+def list_corpus_paths(root: Path) -> tuple[set[str], set[str]]:
+    """Return ``(cases, helpers)`` as relative posix paths under ``root``."""
+    cases: set[str] = set()
+    helpers: set[str] = set()
+    for path in root.rglob("*" + CASE_EXTENSION):
+        relative = path.relative_to(root).as_posix()
+        if path.name.endswith(HELPER_SUFFIX):
+            helpers.add(relative)
+        else:
+            cases.add(relative)
+    return cases, helpers
+
+
 def count_corpus(root: Path) -> tuple[int, int]:
     """The cases and the skipped helpers actually on disk under `root`.
 
@@ -175,14 +192,8 @@ def count_corpus(root: Path) -> tuple[int, int]:
     committed in the baseline is checked against the tree rather than against
     another copy of itself.
     """
-    cases = 0
-    helpers = 0
-    for path in root.rglob("*" + CASE_EXTENSION):
-        if path.name.endswith(HELPER_SUFFIX):
-            helpers += 1
-        else:
-            cases += 1
-    return cases, helpers
+    cases, helpers = list_corpus_paths(root)
+    return len(cases), len(helpers)
 
 
 def check_corpus_baseline() -> str | None:
@@ -196,6 +207,11 @@ def check_corpus_baseline() -> str | None:
     the third, and a case the baseline records as expected-fail that starts
     passing fails on the third too -- the pinned pass count is exact, so drift in
     either direction is a red build.
+
+    The triage ledger additionally proves that every upstream runnable case is
+    either imported or has exactly one path-specific excluded/deferred
+    disposition, and that every rewrite/expectation override names an imported
+    case with a non-empty reason.
     """
     baseline = json.loads(BASELINE_PATH.read_text())
     manifest = json.loads(SUITES_MANIFEST_PATH.read_text())
@@ -206,14 +222,23 @@ def check_corpus_baseline() -> str | None:
     prefix = summary_prefix()
 
     for name, corpus in sorted(baseline["corpora"].items()):
-        root_uri = corpus["root"]
-        if not root_uri.startswith("res://"):
+        imported = bool(corpus.get("imported", True))
+        root_uri = corpus.get("root")
+        if not isinstance(root_uri, str) or not root_uri.startswith("res://"):
             return f"corpus {name!r} root {root_uri!r} is not a res:// path"
+
+        if not imported:
+            complaint = validate_triage_ledger(name, corpus)
+            if complaint is not None:
+                return complaint
+            continue
+
         root = ROOT / "project" / root_uri[len("res://") :]
         if not root.is_dir():
             return f"corpus {name!r} root {root} does not exist"
 
-        cases, helpers = count_corpus(root)
+        disk_cases, disk_helpers = list_corpus_paths(root)
+        cases, helpers = len(disk_cases), len(disk_helpers)
         if cases != corpus["total"] or helpers != corpus["skipped"]:
             return (
                 f"corpus {name!r} holds {cases} cases and {helpers} skipped helpers, but "
@@ -221,10 +246,17 @@ def check_corpus_baseline() -> str | None:
                 "that vanishes must never shrink the corpus quietly"
             )
 
+        complaint = validate_triage_ledger(
+            name,
+            corpus,
+            disk_cases=disk_cases,
+            disk_helpers=disk_helpers,
+        )
+        if complaint is not None:
+            return complaint
+
         expected_failures = corpus["expected_failures"]
-        unknown = sorted(set(expected_failures) - {
-            path.relative_to(root).as_posix() for path in root.rglob("*" + CASE_EXTENSION)
-        })
+        unknown = sorted(set(expected_failures) - disk_cases)
         if unknown:
             return (
                 f"corpus {name!r} records expected failures that are not cases: "

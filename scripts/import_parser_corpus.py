@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import json
 import re
 import shutil
 import subprocess
@@ -61,11 +62,18 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
+from corpus_ledger import barista_path, build_triage_from_maps, validate_triage_ledger  # noqa: E402
 
 # The Foundry revision this import is pinned to. Foundry moves; an import that
 # ran against a different tree would produce a corpus whose provenance is a
 # guess, so the script refuses rather than warns.
 FOUNDRY_REVISION = "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6"
+
+# Upstream runnable-case count at FOUNDRY_REVISION for modules/.../parser
+# (helpers are counted separately and never contribute to this total).
+PARSER_UPSTREAM_TOTAL = 344
 
 CORPUS_SUBPATH = Path("modules/foundry_script/tests/scripts/parser")
 DESTINATION = ROOT / "project" / "tests" / "corpus" / "parser"
@@ -120,8 +128,9 @@ def success_sentinel() -> str:
 # the hard fork rather than for a language delta: its diagnostic names the
 # language, and this one is BaristaScript.
 #
-# This is the only copy of the table. Issue #10's body documents it; it does not
-# duplicate it.
+# This is the only copy of the disposition *reasons*. Issue #10's body documents
+# it; it does not duplicate it. `parser_triage_ledger()` projects these tables
+# into `tests/corpus_baseline.json` without restating any reason text.
 # --------------------------------------------------------------------------
 
 # Cases whose whole subject is the removed integer tower. They test range
@@ -291,6 +300,61 @@ EXPECTATION_OVERRIDES = [
         "all unchanged.",
     ),
 ]
+
+
+def parser_triage_ledger() -> dict[str, dict[str, str]]:
+    """Ledger records derived from the in-code disposition tables.
+
+    Reasons live only in DELETIONS / REPLACEMENT_REASON / EDITS /
+    EXPECTATION_OVERRIDES; this function maps those tables into the shared
+    schema without restating any reason text.
+    """
+    excluded = {barista_path(path): reason for path, reason in DELETIONS.items()}
+    rewritten = {barista_path(REPLACEMENT_PATH): REPLACEMENT_REASON}
+    rewritten.update({barista_path(path): reason for path, _edits, reason in EDITS})
+    overrides = {
+        barista_path(path): reason
+        for path, _edits, _upstream, _new, reason in EXPECTATION_OVERRIDES
+    }
+    return build_triage_from_maps(
+        excluded=excluded,
+        rewritten=rewritten,
+        expectation_overrides=overrides,
+        deferred={},
+    )
+
+
+def analyzer_scaffold_entry() -> dict:
+    """Pending analyzer ledger slot for #45.
+
+    Records the pinned upstream enumeration only. Final imported/skipped totals
+    and path-specific dispositions are filled by execution-driven triage, not
+    guessed here.
+    """
+    return {
+        "imported": False,
+        "root": "res://tests/corpus/analyzer",
+        "foundry_revision": FOUNDRY_REVISION,
+        "upstream_total": 1346,
+        "upstream_helpers": 250,
+        "upstream_sources": 1596,
+        "upstream_status_distribution": {
+            "analyzer_error": 844,
+            "ok": 480,
+            "parser_error": 18,
+            "compiler_error": 2,
+            "runtime_error": 2,
+        },
+        "total": 0,
+        "skipped": 0,
+        "expected_failures": [],
+        "triage": build_triage_from_maps(),
+        "comment": (
+            "Schema scaffold only. #45 imports the analyzer corpus, classifies "
+            "every residual with a path-specific disposition, and writes the "
+            "execution-derived totals. Grep hit counts are never the population."
+        ),
+    }
 
 
 def run_git(repository: Path, *arguments: str) -> str:
@@ -491,7 +555,8 @@ def write_readme(destination: Path, summary: dict) -> None:
 
 Imported from Foundry `cafecito-games/Foundry` @ `{FOUNDRY_REVISION}`,
 `{CORPUS_SUBPATH.as_posix()}`, by `scripts/import_parser_corpus.py`. Do not edit these files by
-hand: the script is the single copy of the D1 triage table and `--check` proves this tree is what it
+hand: the script is the single copy of the D1 triage *reasons* (projected into
+`tests/corpus_baseline.json` without duplication) and `--check` proves this tree is what it
 produces.
 
 | Category | Cases |
@@ -502,6 +567,9 @@ produces.
 | **total** | **{len(summary["cases"])}** |
 
 Plus {len(summary["helpers"])} `.notest.barista` helper sources, which are skipped and never counted.
+Upstream at this pin holds {PARSER_UPSTREAM_TOTAL} runnable parser cases; the triage ledger in
+`tests/corpus_baseline.json` accounts for every non-import disposition so
+`upstream_total == imported + excluded + deferred`.
 
 Each `.out` holds one line: the success sentinel, or the exact diagnostic the front end must
 produce, compared byte for byte. Upstream's `.out` files carry a status word and then the *runtime*
@@ -530,37 +598,54 @@ with the upstream diagnostic it owes:
     )
 
 
+def parser_baseline_entry(summary: dict) -> dict:
+    """The parser corpus ledger entry, including triage derived from the tables."""
+    triage = parser_triage_ledger()
+    entry = {
+        "root": "res://tests/corpus/parser",
+        "total": len(summary["cases"]),
+        "skipped": len(summary["helpers"]),
+        "expected_failures": [],
+        "foundry_revision": FOUNDRY_REVISION,
+        "upstream_total": PARSER_UPSTREAM_TOTAL,
+        "triage": triage,
+        "analyzer_deferred": dict(sorted(summary["analyzer_deferred"].items())),
+    }
+    complaint = validate_triage_ledger(
+        "parser",
+        entry,
+        disk_cases=set(summary["cases"]),
+        disk_helpers=set(summary["helpers"]),
+    )
+    if complaint is not None:
+        raise SystemExit(complaint)
+    return entry
+
+
 def write_baseline(summary: dict) -> None:
-    lines = [
-        "{",
-        '  "comment": [',
-        '    "The committed conformance baseline. tests/validate_ci.py reads it and requires",',
-        '    "tests/gdscript_suites.json to pin the exact summary line it implies, so a case that",',
-        '    "quietly vanishes and a case that quietly starts failing are both CI failures, and so",',
-        '    "is a case listed as expected-fail that unexpectedly passes.",',
-        '    "Regenerated by scripts/import_parser_corpus.py; do not hand-edit."',
-        "  ],",
-        '  "corpora": {',
-        '    "parser": {',
-        '      "root": "res://tests/corpus/parser",',
-        f'      "total": {len(summary["cases"])},',
-        f'      "skipped": {len(summary["helpers"])},',
-        '      "expected_failures": [],',
-        '      "foundry_revision": "%s",' % FOUNDRY_REVISION,
-        '      "analyzer_deferred": {',
-    ]
-    deferred_items = sorted(summary["analyzer_deferred"].items())
-    for index, (case, diagnostic) in enumerate(deferred_items):
-        comma = "" if index == len(deferred_items) - 1 else ","
-        encoded = diagnostic.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        lines.append(f'        "{case}": "{encoded}"{comma}')
-    lines += [
-        "      }",
-        "    }",
-        "  }",
-        "}",
-    ]
-    BASELINE_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """Write the baseline, preserving any non-parser corpus entries already present."""
+    existing: dict = {}
+    if BASELINE_PATH.is_file():
+        existing = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+
+    corpora = dict(existing.get("corpora", {}))
+    corpora["parser"] = parser_baseline_entry(summary)
+    if "analyzer" not in corpora:
+        corpora["analyzer"] = analyzer_scaffold_entry()
+
+    document = {
+        "comment": [
+            "The committed conformance baseline and triage ledger.",
+            "tests/validate_ci.py requires tests/gdscript_suites.json to pin the exact",
+            "summary line each imported corpus implies, and proves every upstream",
+            "runnable case is imported or has exactly one path-specific disposition.",
+            "Regenerated by scripts/import_parser_corpus.py for the parser entry;",
+            "analyzer dispositions are filled by #45. Do not hand-edit reasons here",
+            "when an importer owns them — edit the importer tables instead.",
+        ],
+        "corpora": corpora,
+    }
+    BASELINE_PATH.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
 def compare_trees(left: Path, right: Path) -> list[str]:
@@ -601,12 +686,36 @@ def main(argv: list[str] | None = None) -> int:
             summary = import_corpus(foundry, fresh)
             write_readme(fresh, summary)
             differences = compare_trees(DESTINATION, fresh)
+            expected_entry = parser_baseline_entry(summary)
         if differences:
             print("the committed corpus is not what the importer produces:")
             for difference in differences:
                 print(f"  {difference}")
             return 1
-        print(f"corpus matches a fresh import of {FOUNDRY_REVISION}: {len(summary['cases'])} cases")
+        committed = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        committed_parser = committed.get("corpora", {}).get("parser")
+        if committed_parser is None:
+            print("tests/corpus_baseline.json has no parser corpus entry")
+            return 1
+        # Provenance fields the importer owns must match what a fresh import emits.
+        for field in (
+            "total",
+            "skipped",
+            "foundry_revision",
+            "upstream_total",
+            "triage",
+            "analyzer_deferred",
+            "expected_failures",
+        ):
+            if committed_parser.get(field) != expected_entry.get(field):
+                print(
+                    f"committed parser ledger field {field!r} does not match a fresh import"
+                )
+                return 1
+        print(
+            f"corpus and triage ledger match a fresh import of {FOUNDRY_REVISION}: "
+            f"{len(summary['cases'])} cases"
+        )
         return 0
 
     summary = import_corpus(foundry, DESTINATION)
