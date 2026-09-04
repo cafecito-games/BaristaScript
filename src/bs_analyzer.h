@@ -5,7 +5,8 @@
 /*  mirror Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body     */
 /*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
 /*  local + member/static final definite assignment (#60 flow TU),        */
-/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU).     */
+/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
+/*  unused private/signal + built-in annotation resolve (#60 surface).    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -206,6 +207,15 @@ private:
 	void analyze_statement(BSParser::Node *p_node);
 	void warn_unused_locals(BSParser::SuiteNode *p_suite);
 	void warn_unused_parameters(BSParser::FunctionNode *p_function);
+	/** Foundry resolve_class_body unused pass: UNUSED_PRIVATE_CLASS_VARIABLE + UNUSED_SIGNAL. */
+	void warn_unused_class_members(BSParser::ClassNode *p_class);
+	/**
+	 * Built-in annotation constant-argument resolution before apply (Foundry
+	 * resolve_annotation @ c9d5e35). Custom / @autoload depth remains #60 follow-up.
+	 */
+	void resolve_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind = 0);
+	/** Counts emit_signal/connect/disconnect/is_connected as signal uses (Foundry @ c9d5e35). */
+	void mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_is_self);
 
 	void reduce_literal(BSParser::LiteralNode *p_literal);
 	void reduce_unary_op(BSParser::UnaryOpNode *p_unary_op);
