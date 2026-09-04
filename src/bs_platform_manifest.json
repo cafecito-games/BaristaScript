@@ -23,7 +23,9 @@
 			"fs_analyzer.h",
 			"fs_analyzer.cpp",
 			"fs_analyzer_flow_finality.cpp",
-			"fs_analyzer_call_validation.cpp"
+			"fs_analyzer_call_validation.cpp",
+			"fs_analyzer_conformance.cpp",
+			"fs_trait_utils.h"
 		],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
@@ -61,7 +63,8 @@
 			"core_header": "core/config/project_settings.h",
 			"sites": [
 				"fs_parser.cpp:38",
-				"fs_analyzer.cpp:46"
+				"fs_analyzer.cpp:46",
+				"fs_analyzer_conformance.cpp:40"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -200,7 +203,8 @@
 				"fs_parser_data_type.cpp:38",
 				"fs_type.cpp:37",
 				"fs_analyzer.cpp:51",
-				"fs_analyzer_call_validation.cpp:36"
+				"fs_analyzer_call_validation.cpp:36",
+				"fs_analyzer_conformance.cpp:41"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -247,7 +251,8 @@
 			"sites": [
 				"fs_parser.h:44",
 				"fs_parser_data_type.cpp:39",
-				"fs_analyzer.cpp:52"
+				"fs_analyzer.cpp:52",
+				"fs_analyzer_conformance.cpp:42"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -447,7 +452,8 @@
 		{
 			"core_header": "core/config/engine.h",
 			"sites": [
-				"fs_analyzer.cpp:45"
+				"fs_analyzer.cpp:45",
+				"fs_analyzer_conformance.cpp:39"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [

@@ -5,7 +5,9 @@
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
 /*  flow (#61), local/member/static final definite assignment (#60 TU),   */
 /*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
-/*  resolved_traits + trait-member lookup for flattening finality.        */
+/*  resolved_traits + trait-member lookup for flattening finality,        */
+/*  unused private/signal surface, trait requirement / conformance        */
+/*  witness starter (#60 conformance TU).                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -671,7 +673,9 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 Error BSAnalyzer::run_phase_interface_and_member_surface() {
 	analyze_class_interface(parser->get_tree());
 	resolve_used_traits(parser->get_tree());
+	validate_trait_requirements(parser->get_tree());
 	mark_phase(AnalyzerPhase::INTERFACE_AND_MEMBER_SURFACE);
+	resolve_conformances(parser->get_tree());
 	mark_phase(AnalyzerPhase::TRAIT_CONFORMANCE_REGISTRATION);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
@@ -1910,6 +1914,11 @@ Error BSAnalyzer::run_phase_flow_finality() {
 		}
 	}
 	mark_phase(AnalyzerPhase::FLOW_FINALITY_INVARIANTS);
+	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
+}
+
+Error BSAnalyzer::run_phase_conformance_witness_body() {
+	resolve_conformance_bodies(parser->get_tree());
 	mark_phase(AnalyzerPhase::CONFORMANCE_WITNESS_BODY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
@@ -1957,6 +1966,11 @@ Error BSAnalyzer::resolve_body() {
 		commit_or_remove_declaration(false);
 		return err;
 	}
+	err = run_phase_conformance_witness_body();
+	if (err != OK) {
+		commit_or_remove_declaration(false);
+		return err;
+	}
 	err = run_phase_finalize();
 	const bool success = err == OK || errors_are_only_m5_deferred();
 	commit_or_remove_declaration(success);
@@ -1987,6 +2001,11 @@ Error BSAnalyzer::analyze() {
 	if (flow_err != OK && !errors_are_only_m5_deferred()) {
 		commit_or_remove_declaration(false);
 		return flow_err;
+	}
+	Error witness_err = run_phase_conformance_witness_body();
+	if (witness_err != OK && !errors_are_only_m5_deferred()) {
+		commit_or_remove_declaration(false);
+		return witness_err;
 	}
 	err = run_phase_finalize();
 	const bool success = (err == OK && parser->get_errors().is_empty()) || errors_are_only_m5_deferred();

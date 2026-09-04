@@ -39,6 +39,7 @@ func _init() -> void:
 	_test_noreturn_flow(failures)
 	_test_unused_locals(failures)
 	_test_unused_class_members_and_signals(failures)
+	_test_trait_requirements_and_conformance_witness(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1161,3 +1162,69 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "quiet" in str(warn.get("message", "")):
 			saw_ignored = true
 	_expect(failures, not saw_ignored, "@warning_ignore(\"unused_signal\") suppresses UNUSED_SIGNAL via resolve_annotation")
+
+
+func _test_trait_requirements_and_conformance_witness(failures: PackedStringArray) -> void:
+	# Foundry fixtures: trait_required_method / retroactive_conformance_missing_method (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var missing := "class_name TraitReqMissing extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n"
+	var missing_report: Dictionary = probe.analyze_source(missing, "res://tests/trait_req_missing.barista")
+	_expect(failures, missing_report.get("valid", true) == false, "missing abstract trait method is invalid")
+	var saw_missing := false
+	for message in missing_report.get("errors", PackedStringArray()):
+		if "must implement trait method" in message and "Damageable.take_damage()" in message:
+			saw_missing = true
+	_expect(failures, saw_missing, "missing trait method diagnostic")
+
+	var ok := "class_name TraitReqOk extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n\nfunc take_damage(amount: int) -> void:\n\tpass\n"
+	var ok_report: Dictionary = probe.analyze_source(ok, "res://tests/trait_req_ok.barista")
+	_expect(failures, ok_report.get("valid", false) == true, "implemented abstract trait method is valid")
+
+	var abstract_class := "abstract class_name TraitReqAbstract extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n"
+	var abstract_report: Dictionary = probe.analyze_source(abstract_class, "res://tests/trait_req_abstract.barista")
+	_expect(failures, abstract_report.get("valid", false) == true, "abstract class may defer trait requirements")
+
+	var native_missing := "trait NeedsCustomPing:\n\tabstract func custom_ping() -> void\n\nextend Node uses NeedsCustomPing:\n\tpass\n"
+	var native_missing_report: Dictionary = probe.analyze_source(native_missing, "res://tests/rtc_native_missing.barista")
+	_expect(failures, native_missing_report.get("valid", true) == false, "native extend missing witness is invalid")
+	var saw_native_missing := false
+	for message in native_missing_report.get("errors", PackedStringArray()):
+		if "must implement trait method" in message and "custom_ping()" in message:
+			saw_native_missing = true
+	_expect(failures, saw_native_missing, "native extend missing-witness diagnostic")
+
+	var native_ok := "trait NeedsCustomPing:\n\tabstract func custom_ping() -> void\n\nextend Node uses NeedsCustomPing:\n\tfunc custom_ping() -> void:\n\t\tpass\n"
+	var native_ok_report: Dictionary = probe.analyze_source(native_ok, "res://tests/rtc_native_ok.barista")
+	_expect(failures, native_ok_report.get("valid", false) == true, "native extend with witness is valid")
+
+	var local_missing := "class_name RtcLocalGadget extends Node\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nextend RtcLocalGadget uses NeedsPing:\n\tpass\n"
+	var local_missing_report: Dictionary = probe.analyze_source(local_missing, "res://tests/rtc_local_missing.barista")
+	_expect(failures, local_missing_report.get("valid", true) == false, "same-file extend missing witness is invalid")
+	var saw_local_missing := false
+	for message in local_missing_report.get("errors", PackedStringArray()):
+		if "Conformance of" in message and "must implement trait method" in message and "ping()" in message:
+			saw_local_missing = true
+	_expect(failures, saw_local_missing, "same-file extend missing-witness diagnostic")
+
+	var local_ok := "class_name RtcLocalOk extends Node\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nextend RtcLocalOk uses NeedsPing:\n\tfunc ping() -> void:\n\t\tpass\n"
+	var local_ok_report: Dictionary = probe.analyze_source(local_ok, "res://tests/rtc_local_ok.barista")
+	_expect(failures, local_ok_report.get("valid", false) == true, "same-file extend with witness is valid")
+
+	# Cross-file trait requirement via declaration index.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var trait_path := "res://tests/index_damageable.barista"
+	var trait_source := "trait_name IndexDamageable\nabstract func take_damage(amount: int) -> void\n"
+	index.synchronize_path_from_source(trait_path, trait_source)
+	BaristaScriptParseCache.set_source_override(trait_path, trait_source)
+	var consumer := "class_name TraitIndexMissing extends Node\nuses IndexDamageable\n"
+	var index_report: Dictionary = probe.analyze_source(consumer, "res://tests/trait_index_missing.barista")
+	_expect(failures, index_report.get("valid", true) == false, "index-backed missing trait method is invalid")
+	var saw_index := false
+	for message in index_report.get("errors", PackedStringArray()):
+		if "must implement trait method" in message and "take_damage()" in message:
+			saw_index = true
+	_expect(failures, saw_index, "index-backed missing trait method diagnostic")
+	BaristaScriptParseCache.clear_source_override(trait_path)
+	index.clear()

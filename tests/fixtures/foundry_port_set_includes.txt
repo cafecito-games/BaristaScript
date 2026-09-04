@@ -203,3 +203,20 @@
 33:#include "foundry_script.h"
 34:#include "fs_type.h"
 36:#include "core/object/class_db.h"
+
+=== modules/foundry_script/fs_analyzer_conformance.cpp ===
+31:#include "fs_analyzer.h"
+33:#include "foundry_script.h"
+34:#include "fs_conformance_registry.h"
+35:#include "fs_diagnostic_names.h"
+36:#include "fs_trait_utils.h"
+37:#include "fs_type.h"
+39:#include "core/config/engine.h"
+40:#include "core/config/project_settings.h"
+41:#include "core/object/class_db.h"
+42:#include "core/object/script_language.h"
+
+=== modules/foundry_script/fs_trait_utils.h ===
+31:#pragma once
+33:#include "fs_diagnostic_names.h"
+34:#include "fs_parser.h"
