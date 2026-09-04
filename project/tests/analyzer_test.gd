@@ -35,6 +35,7 @@ func _init() -> void:
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
 	_test_final_member_and_static_assignment(failures)
+	_test_final_trait_flattening(failures)
 	_test_noreturn_flow(failures)
 	_test_unused_locals(failures)
 	BaristaScriptParseCache.clear_script_cache()
@@ -905,6 +906,46 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 		if "before assignment" in message:
 			saw_use_before = true
 	_expect(failures, saw_use_before, "final member use-before-assignment diagnostic")
+
+
+func _test_final_trait_flattening(failures: PackedStringArray) -> void:
+	# Foundry fixtures: trait-supplied finals flatten into the implementer (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var trait_ok := "class_name FinalTraitOk extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 42\n"
+	var ok_report: Dictionary = probe.analyze_source(trait_ok, "res://tests/final_trait_ok.barista")
+	_expect(failures, ok_report.get("valid", false) == true, "trait blank final assigned once in implementer _init is valid")
+
+	var trait_blank := "class_name FinalTraitBlank extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tpass\n"
+	var blank_report: Dictionary = probe.analyze_source(trait_blank, "res://tests/final_trait_blank.barista")
+	_expect(failures, blank_report.get("valid", true) == false, "trait blank final never assigned is invalid")
+	var saw_blank := false
+	for message in blank_report.get("errors", PackedStringArray()):
+		if "must be definitely assigned" in message:
+			saw_blank = true
+	_expect(failures, saw_blank, "trait blank final never-assigned diagnostic")
+
+	var trait_twice := "class_name FinalTraitTwice extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 1\n\tid = 2\n"
+	var twice_report: Dictionary = probe.analyze_source(trait_twice, "res://tests/final_trait_twice.barista")
+	_expect(failures, twice_report.get("valid", true) == false, "trait final assigned twice in _init is invalid")
+	var saw_twice := false
+	for message in twice_report.get("errors", PackedStringArray()):
+		if "already assigned" in message:
+			saw_twice = true
+	_expect(failures, saw_twice, "trait final double-assign diagnostic")
+
+	var trait_method := "class_name FinalTraitMethod extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int = 1\n\tfunc mutate() -> void:\n\t\tid = 2\n\nfunc _ready() -> void:\n\tpass\n"
+	var method_report: Dictionary = probe.analyze_source(trait_method, "res://tests/final_trait_method.barista")
+	_expect(failures, method_report.get("valid", true) == false, "trait method reassigning flattened final is invalid")
+	var saw_method := false
+	for message in method_report.get("errors", PackedStringArray()):
+		if "can only be assigned" in message:
+			saw_method = true
+	_expect(failures, saw_method, "trait method illegal-write diagnostic")
+
+	var trait_init := "class_name FinalTraitInit extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\tfunc _init() -> void:\n\t\tid = 5\n\nfunc _ready() -> void:\n\tpass\n"
+	var trait_init_report: Dictionary = probe.analyze_source(trait_init, "res://tests/final_trait_init.barista")
+	_expect(failures, trait_init_report.get("valid", false) == true, "trait-supplied _init assigning blank final is valid")
 
 
 func _test_noreturn_flow(failures: PackedStringArray) -> void:

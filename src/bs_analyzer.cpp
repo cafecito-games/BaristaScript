@@ -4,7 +4,8 @@
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
 /*  flow (#61), local/member/static final definite assignment (#60 TU),   */
-/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU).     */
+/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
+/*  resolved_traits + trait-member lookup for flattening finality.        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -868,6 +869,37 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			return;
 		}
 	}
+	// Foundry surface: flattened trait members are visible on the implementer (#60).
+	if (current_class != nullptr) {
+		for (int t = 0; t < current_class->resolved_traits.size(); t++) {
+			BSParser::ClassNode *trait = current_class->resolved_traits[t];
+			if (trait == nullptr || !trait->has_member(p_identifier->name)) {
+				continue;
+			}
+			const BSParser::ClassNode::Member member = trait->get_member(p_identifier->name);
+			if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+				p_identifier->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
+				p_identifier->variable_source = member.variable;
+				member.variable->usages++;
+				p_identifier->set_datatype(member.variable->get_datatype());
+				return;
+			}
+			if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
+				p_identifier->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+				p_identifier->constant_source = member.constant;
+				member.constant->usages++;
+				p_identifier->set_datatype(member.constant->get_datatype());
+				return;
+			}
+			if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr) {
+				p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
+				p_identifier->signal_source = member.signal;
+				member.signal->usages++;
+				p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), current_class));
+				return;
+			}
+		}
+	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_identifier->set_datatype(type);
@@ -1642,8 +1674,55 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 	if (p_class == nullptr) {
 		return;
 	}
+	if (p_class->resolved_trait_uses) {
+		for (int i = 0; i < p_class->members.size(); i++) {
+			if (p_class->members[i].type == BSParser::ClassNode::Member::CLASS) {
+				resolve_used_traits(p_class->members[i].m_class);
+			}
+		}
+		return;
+	}
+	if (p_class->failed_trait_uses) {
+		return;
+	}
+	if (p_class->resolving_trait_uses) {
+		push_error(vformat(R"(Could not resolve trait uses for "%s": Cyclic trait use.)",
+						   p_class->identifier != nullptr ? String(p_class->identifier->name) : String("<anonymous>")),
+				p_class);
+		p_class->failed_trait_uses = true;
+		return;
+	}
+
+	p_class->resolving_trait_uses = true;
+	p_class->resolved_traits.clear();
+
+	auto append_trait_unique = [](Vector<BSParser::ClassNode *> &r_traits, BSParser::ClassNode *p_trait) {
+		if (p_trait == nullptr) {
+			return;
+		}
+		for (int i = 0; i < r_traits.size(); i++) {
+			if (r_traits[i] == p_trait) {
+				return;
+			}
+		}
+		r_traits.push_back(p_trait);
+	};
+
+	auto find_local_trait = [](BSParser::ClassNode *p_owner, const String &p_name) -> BSParser::ClassNode * {
+		for (BSParser::ClassNode *scope = p_owner; scope != nullptr; scope = scope->outer) {
+			if (!scope->has_member(StringName(p_name))) {
+				continue;
+			}
+			const BSParser::ClassNode::Member member = scope->get_member(StringName(p_name));
+			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr && member.m_class->is_trait) {
+				return member.m_class;
+			}
+		}
+		return nullptr;
+	};
+
 	for (int i = 0; i < p_class->used_traits.size(); i++) {
-		const BSParser::ClassNode::TraitUse &use = p_class->used_traits[i];
+		BSParser::ClassNode::TraitUse &use = p_class->used_traits.write[i];
 		const String name = use.to_string();
 		if (name.is_empty()) {
 			continue;
@@ -1652,29 +1731,68 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 			push_error("Generic trait specialization is not available until M5.", p_class);
 			continue;
 		}
-		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-		BSDeclarationRecord record;
-		bool found = false;
-		if (language != nullptr) {
-			found = language->try_resolve_declaration(name, record);
-			if (!found && !p_class->namespace_name.is_empty()) {
-				found = language->try_resolve_declaration(p_class->namespace_name + String(".") + name, record);
-			}
-			if (!found) {
-				for (int j = 0; j < p_class->imports.size(); j++) {
-					found = language->try_resolve_declaration(p_class->imports[j] + String(".") + name, record);
-					if (found) {
-						break;
+
+		BSParser::ClassNode *trait = use.resolved_trait;
+		if (trait == nullptr) {
+			trait = find_local_trait(p_class, name);
+		}
+		if (trait == nullptr) {
+			BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+			BSDeclarationRecord record;
+			bool found = false;
+			if (language != nullptr) {
+				found = language->try_resolve_declaration(name, record);
+				if (!found && !p_class->namespace_name.is_empty()) {
+					found = language->try_resolve_declaration(p_class->namespace_name + String(".") + name, record);
+				}
+				if (!found) {
+					for (int j = 0; j < p_class->imports.size(); j++) {
+						found = language->try_resolve_declaration(p_class->imports[j] + String(".") + name, record);
+						if (found) {
+							break;
+						}
 					}
 				}
 			}
-		}
-		if (!found && !ScriptServer::is_global_class(StringName(name))) {
-			push_error(vformat(R"(Could not find trait "%s".)", name), p_class);
+			if (!found) {
+				push_error(vformat(R"(Could not find trait "%s".)", name), p_class);
+				continue;
+			}
+			if (record.kind != BSDeclarationKind::TRAIT) {
+				push_error(vformat(R"("%s" is not a trait.)", name), p_class);
+				continue;
+			}
+			Error err = OK;
+			Ref<BSParserRef> trait_ref = BSCache::get_parser(record.path, BSParserRef::INTERFACE_SOLVED, err, parser != nullptr ? parser->script_path : String());
+			if (trait_ref.is_null() || err != OK || trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
+				push_error(vformat(R"(Could not resolve trait "%s".)", name), p_class);
+				continue;
+			}
+			trait = trait_ref->get_parser()->get_tree();
+			if (trait == nullptr || !trait->is_trait) {
+				push_error(vformat(R"("%s" is not a trait.)", name), p_class);
+				continue;
+			}
+		} else if (!trait->is_trait) {
+			push_error(vformat(R"("%s" is not a trait.)", name), p_class);
 			continue;
 		}
-		if (found && record.kind != BSDeclarationKind::TRAIT) {
-			push_error(vformat(R"("%s" is not a trait.)", name), p_class);
+
+		use.resolved_trait = trait;
+		resolve_used_traits(trait);
+		append_trait_unique(p_class->resolved_traits, trait);
+		for (int t = 0; t < trait->resolved_traits.size(); t++) {
+			append_trait_unique(p_class->resolved_traits, trait->resolved_traits[t]);
+		}
+	}
+
+	p_class->resolving_trait_uses = false;
+	p_class->resolved_trait_uses = true;
+	p_class->failed_trait_uses = false;
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		if (p_class->members[i].type == BSParser::ClassNode::Member::CLASS) {
+			resolve_used_traits(p_class->members[i].m_class);
 		}
 	}
 }
