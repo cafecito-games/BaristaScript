@@ -24,7 +24,7 @@ godot --headless --path project --script res://tests/corpus_runner.gd -- \
 | `uint`/`ulong`/`long` reserved in a type | `reserved_type_return`, `reserved_type_cast`, `reserved_type_test` for the positions the tokenizer settles; `deferred_to_parser_var_annotation`, `deferred_to_parser_ulong_annotation`, `deferred_to_parser_long_annotation`, `deferred_to_parser_parameter` for the positions it hands to the parser; with `reserved_name_as_identifier` and `reserved_name_in_dictionary` proving they stay usable as ordinary names |
 | `U`/`L`/`UL` literal suffix reserved | `suffix_unsigned`, `suffix_long`, `suffix_unsigned_long`, `suffix_lowercase_misordered` (each diagnostic names the suffix as the source wrote it) |
 | `as!` reserved | `as_bang`, with `as_with_whitespace` proving `as !x` is untouched: it is not the `as!` diagnostic but the ordinary `Expected type specifier after "as".`, which only a stream that never produced an `as!` token can reach |
-| Integer literal out of signed 64-bit range | `integer_above_range`, `integer_below_range`, `integer_hex_above_range`, with `integer_range_boundaries` proving both endpoints are accepted |
+| Integer literal out of signed 64-bit range | `integer_above_range`, `integer_below_range`, `integer_hex_above_range`, `integer_spaced_minimum` (unary minus plus the positive magnitude that only the folded signed literal can hold), with `integer_range_boundaries` proving both endpoints are accepted |
 | Malformed UTF-8 | `malformed_utf8` (the byte offset is named, and no replacement character is substituted) |
 | Unterminated string/comment at EOF | `unterminated_string`, `unterminated_multiline_string`, with `comment_at_eof` |
 

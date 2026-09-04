@@ -19,7 +19,7 @@
       "name": "corpus_runner (tokenizer fixtures)",
       "script": "res://tests/corpus_runner.gd",
       "args": ["--corpus", "res://tests/corpus_fixtures/tokenizer"],
-      "expect": "^BS_CORPUS 23/23 skipped=0$"
+      "expect": "^BS_CORPUS 24/24 skipped=0$"
     },
     {
       "name": "corpus_runner (parser corpus)",
