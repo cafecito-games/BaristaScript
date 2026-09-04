@@ -268,7 +268,8 @@ func _run_case(case_info: Dictionary) -> Dictionary:
 		return _failure(
 			case_info,
 			FailureReason.OUTPUT_MISMATCH,
-			"output mismatch\nexpected: \"%s\"\nactual:   \"%s\"" % [expected, actual],
+			"output mismatch\nexpected: \"%s\"\nactual:   \"%s\""
+			% [_escape_mismatch_value(expected), _escape_mismatch_value(actual)],
 			actual
 		)
 	return {"passed": true}
@@ -344,6 +345,32 @@ func _first_line(text: String) -> String:
 	if newline == -1:
 		return text
 	return text.substr(0, newline)
+
+
+## Presentation-only escaping for OUTPUT_MISMATCH diagnostics. Remaining ASCII C0
+## and DEL render as lowercase \\xNN escapes; comparison and --update-expectations
+## stay on the raw values.
+func _escape_mismatch_value(value: String) -> String:
+	var escaped := ""
+	for index in value.length():
+		var code := value.unicode_at(index)
+		match code:
+			0x5C:
+				escaped += "\\\\"
+			0x22:
+				escaped += "\\\""
+			0x0D:
+				escaped += "\\r"
+			0x0A:
+				escaped += "\\n"
+			0x09:
+				escaped += "\\t"
+			_:
+				if code < 0x20 or code == 0x7F:
+					escaped += "\\x%02x" % code
+				else:
+					escaped += value[index]
+	return escaped
 
 
 func _summary_line(passed: int, total: int, skipped_count: int) -> String:

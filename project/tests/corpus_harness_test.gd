@@ -21,6 +21,7 @@ func _initialize() -> void:
 	_test_parse_failure_against_sentinel_fails(failures)
 	_test_trailing_whitespace_drift_fails(failures)
 	_test_line_ending_drift_fails(failures)
+	_test_mismatch_escape_visibility(failures)
 	_test_ignore_marker_directory_is_skipped_and_counted(failures)
 	_test_notest_helper_is_not_a_case(failures)
 	_test_zero_cases_fails_without_allow_empty(failures)
@@ -29,6 +30,7 @@ func _initialize() -> void:
 	_test_deterministic_output(failures)
 	_test_update_expectations_refuses_non_mismatch(failures)
 	_test_update_expectations_rewrites_mismatches(failures)
+	_test_update_expectations_writes_raw_special_characters(failures)
 	_test_unreadable_corpus_root_is_harness_error(failures)
 	_test_unreadable_directory_is_harness_error(failures)
 	_test_runner_process_arguments(failures)
@@ -129,11 +131,52 @@ func _test_line_ending_drift_fails(failures: Array[String]) -> void:
 			return {"ok": true, "output": ""}
 	)
 	_expect(failures, result["exit_code"] == Harness.ExitCode.CASES_FAILED, "line-ending-only drift must fail")
+	var text := _text(result)
 	_expect(
 		failures,
-		_text(result).contains('expected: "%s\r"' % Harness.SUCCESS_SENTINEL),
-		"a carriage return in the expectation must survive into the exact comparison: %s" % _text(result)
+		text.contains('expected: "%s\\r"' % Harness.SUCCESS_SENTINEL),
+		"a carriage return in the expectation must render as a visible \\r escape: %s" % text
 	)
+	_expect(
+		failures,
+		not text.contains("\r"),
+		"mismatch output must not contain raw carriage returns: %s" % text
+	)
+
+
+func _test_mismatch_escape_visibility(failures: Array[String]) -> void:
+	# Godot String cannot embed U+0000 (chr(0) becomes U+FFFD); chr(1) exercises the same \xNN path.
+	var exotic_output := "\"\\" + "\t\n" + String.chr(1) + String.chr(127) + "abcé"
+	var result := _run_harness(
+		"%s/passing" % FIXTURES_ROOT,
+		false,
+		false,
+		func(_case_path: String) -> Dictionary:
+			return {"ok": false, "output": exotic_output}
+	)
+	_expect(failures, result["exit_code"] == Harness.ExitCode.CASES_FAILED, "exotic mismatch must fail the run")
+	var text := _text(result)
+	_expect(
+		failures,
+		result["output"].size() == 4,
+		"mismatch diagnostic must produce exactly four output lines (FAIL, expected, actual, summary): %s"
+		% text
+	)
+	_expect(
+		failures,
+		text.contains('actual:   "\\\"\\\\\\t\\n\\x01\\x7fabcé"'),
+		"control characters must render as visible escapes: %s" % text
+	)
+	for line_index in range(3):
+		var line_text := String(result["output"][line_index])
+		for char_index in line_text.length():
+			var code := line_text.unicode_at(char_index)
+			_expect(
+				failures,
+				code >= 0x20 and code != 0x7F,
+				"mismatch output line %d must not contain raw C0/DEL control characters (U+%04X): %s"
+				% [line_index, code, line_text]
+			)
 
 
 func _test_ignore_marker_directory_is_skipped_and_counted(failures: Array[String]) -> void:
@@ -258,6 +301,32 @@ func _test_update_expectations_rewrites_mismatches(failures: Array[String]) -> v
 		failures,
 		rewritten == "%s\n" % Harness.SUCCESS_SENTINEL,
 		"update must write the actual output as the new expectation, got: %s" % [rewritten]
+	)
+	_remove_directory(temporary_root)
+
+
+func _test_update_expectations_writes_raw_special_characters(failures: Array[String]) -> void:
+	var temporary_root := "user://bs_corpus_update_raw_chars_test"
+	var raw_actual := "error: \"unterminated\\path"
+	_copy_fixture_directory("%s/parse_failure_vs_ok" % FIXTURES_ROOT, temporary_root)
+	var updated := _run_harness(
+		temporary_root,
+		false,
+		true,
+		func(_case_path: String) -> Dictionary:
+			return {"ok": false, "output": raw_actual}
+	)
+	_expect(
+		failures,
+		updated["exit_code"] == Harness.ExitCode.PASSED,
+		"--update-expectations must succeed for a mismatch with quotes and backslashes: %s" % _text(updated)
+	)
+	var rewritten_bytes := FileAccess.get_file_as_bytes("%s/case.out" % temporary_root)
+	_expect(
+		failures,
+		rewritten_bytes == (raw_actual + "\n").to_utf8_buffer(),
+		"update must write raw actual bytes without diagnostic escaping, got: %s"
+		% [rewritten_bytes.get_string_from_utf8()]
 	)
 	_remove_directory(temporary_root)
 
