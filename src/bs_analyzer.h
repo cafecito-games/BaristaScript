@@ -1,8 +1,10 @@
 /**************************************************************************/
 /*  bs_analyzer.h                                                         */
 /*                                                                        */
-/*  Narrow M3 analyzer seam for staged cache raises (#27). Full type-model*/
-/*  / analyzer port is issue #43; this header only advances lifecycle.    */
+/*  M3 analyzer port seam (issue #43). Staged resolve_* mirror Foundry    */
+/*  FSAnalyzer @ c9d5e35. This slice lands inheritance, interface, body   */
+/*  reduction/constant-folding (#49), declaration commit (#52), and       */
+/*  _validate wiring. Remaining Foundry phase depth is follow-up work.    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -11,32 +13,90 @@
 #pragma once
 
 #include "bs_parser.h"
+#include "bs_type.h"
 
 namespace barista_script {
 
-/**
- * Staged-analysis seam used by `BSParserRef::raise_status`.
- *
- * Issue #43 replaces the resolve_* bodies with the real type model. Until then the stages succeed
- * after a successful parse so cache/dependency lifecycle tests can raise monotonically without
- * porting the analyzer corpus. Bootstrap-root filtering lives here because Foundry spells it on
- * `FSAnalyzer` (`fs_analyzer.cpp:9535` @ c9d5e35).
- */
 class BSAnalyzer {
-	BSParser *parser = nullptr;
-
 public:
-	explicit BSAnalyzer(BSParser *p_parser) :
-			parser(p_parser) {}
+	enum class AnalyzerPhase : int8_t {
+		NONE = -1,
+		PREFLIGHT = 0,
+		DEPENDENCY_PARSE_AVAILABILITY = 1,
+		INHERITANCE_RESOLUTION = 2,
+		INTERFACE_AND_MEMBER_SURFACE = 3,
+		TRAIT_CONFORMANCE_REGISTRATION = 4,
+		BODY_EXPRESSION_CALLABLE_SIGNAL = 5,
+		FLOW_FINALITY_INVARIANTS = 6,
+		CONFORMANCE_WITNESS_BODY = 7,
+		FINAL_DIAGNOSTICS_AND_DEPENDENCIES = 8,
+	};
+
+	explicit BSAnalyzer(BSParser *p_parser);
+	~BSAnalyzer() = default;
 
 	Error resolve_inheritance();
 	Error resolve_interface();
 	Error resolve_body();
+	Error analyze();
 
 	static bool is_bootstrap_path_allowed(const String &p_path);
-	/** Test/editor seam: empty root admits every path (Foundry default). */
 	static void set_bootstrap_allowed_dependency_root(const String &p_root);
 	static String get_bootstrap_allowed_dependency_root();
+
+	BSParser *get_parser() const { return parser; }
+	AnalyzerPhase get_highest_completed_phase() const { return highest_completed_phase; }
+
+	/** Constant-fold a top-level expression after parse; used by the #49 probe. */
+	void reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root = false);
+
+	/**
+	 * After successful FULLY_SOLVED analysis, commit a declaration record; on failure remove any
+	 * prior record for the path (#52). Safe no-op when the language singleton is absent.
+	 */
+	void commit_or_remove_declaration(bool p_success);
+
+	static BSParser::DataType type_from_variant(const Variant &p_value);
+
+private:
+	BSParser *parser = nullptr;
+	AnalyzerPhase highest_completed_phase = AnalyzerPhase::NONE;
+	bool strict_dynamic_checks = false;
+	bool strict_null_checks = false;
+
+	Error run_phase_preflight();
+	Error run_phase_inheritance_resolution();
+	Error run_phase_interface_and_member_surface();
+	Error run_phase_body_expression_callable_signal();
+	Error run_phase_finalize();
+
+	void resolve_class_inheritance(BSParser::ClassNode *p_class);
+	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
+	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
+	void analyze_class_interface(BSParser::ClassNode *p_class);
+	void analyze_class_body(BSParser::ClassNode *p_class);
+	void analyze_function_body(BSParser::FunctionNode *p_function);
+	void analyze_suite(BSParser::SuiteNode *p_suite);
+	void analyze_statement(BSParser::Node *p_node);
+
+	void reduce_literal(BSParser::LiteralNode *p_literal);
+	void reduce_unary_op(BSParser::UnaryOpNode *p_unary_op);
+	void reduce_binary_op(BSParser::BinaryOpNode *p_binary_op);
+	void reduce_identifier(BSParser::IdentifierNode *p_identifier);
+	void reduce_call(BSParser::CallNode *p_call);
+	void reduce_subscript(BSParser::SubscriptNode *p_subscript);
+	void reduce_array(BSParser::ArrayNode *p_array);
+	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);
+	void reduce_ternary(BSParser::TernaryOpNode *p_ternary);
+
+	void push_error(const String &p_message, const BSParser::Node *p_origin = nullptr);
+	void mark_phase(AnalyzerPhase p_phase);
+	void read_strict_settings();
+
+	static String &bootstrap_root_storage();
 };
+
+/** Shared helper: parse + analyze; true when no errors remain. */
+bool bs_source_analyzes(const String &p_source, const String &p_path);
 
 } // namespace barista_script

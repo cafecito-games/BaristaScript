@@ -14,6 +14,9 @@
 #include "bs_global_class.h"
 #include "bs_parser.h"
 #include "bs_tokenizer.h"
+#ifdef DEBUG_ENABLED
+#include "bs_warning.h"
+#endif
 
 #include <godot_cpp/variant/packed_int32_array.hpp>
 
@@ -178,13 +181,83 @@ bool BaristaScriptLanguage::_is_using_templates() {
 	return false;
 }
 
-godot::Dictionary BaristaScriptLanguage::_validate(const godot::String &, const godot::String &, bool, bool, bool, bool) const {
+godot::Dictionary BaristaScriptLanguage::_validate(const godot::String &p_script, const godot::String &p_path, bool p_validate_functions, bool p_validate_errors, bool p_validate_warnings, bool p_validate_safe_lines) const {
 	godot::Dictionary result;
-	result["valid"] = false;
-	result["functions"] = godot::PackedStringArray();
-	result["errors"] = godot::TypedArray<godot::Dictionary>();
-	result["warnings"] = godot::TypedArray<godot::Dictionary>();
-	result["safe_lines"] = godot::PackedInt32Array();
+	BSParser parser;
+	BSAnalyzer analyzer(&parser);
+
+	Error err = parser.parse(p_script, p_path, false);
+	if (err == OK) {
+		err = analyzer.analyze();
+	}
+
+	const bool has_errors = !parser.get_errors().is_empty() || err != OK;
+	result["valid"] = !has_errors;
+
+	godot::PackedStringArray functions;
+	if (p_validate_functions && !has_errors && parser.get_tree() != nullptr) {
+		const BSParser::ClassNode *tree = parser.get_tree();
+		for (int i = 0; i < tree->members.size(); i++) {
+			const BSParser::ClassNode::Member &member = tree->members[i];
+			if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr && member.function->identifier != nullptr) {
+				functions.push_back(String(member.function->identifier->name) + ":" + itos(member.function->start_line));
+			}
+		}
+	}
+	result["functions"] = functions;
+
+	godot::TypedArray<godot::Dictionary> errors;
+	if (p_validate_errors) {
+		const Vector<const BSParser::ParserError *> ordered = parser.get_errors_in_source_order();
+		for (int i = 0; i < ordered.size(); i++) {
+			const BSParser::ParserError *pe = ordered[i];
+			if (pe == nullptr) {
+				continue;
+			}
+			godot::Dictionary e;
+			e["path"] = p_path;
+			e["line"] = pe->line;
+			e["column"] = pe->column;
+			e["message"] = pe->message;
+			errors.push_back(e);
+		}
+	}
+	result["errors"] = errors;
+
+	godot::TypedArray<godot::Dictionary> warnings;
+#ifdef DEBUG_ENABLED
+	if (p_validate_warnings) {
+		for (const BSWarning &warn : parser.get_warnings()) {
+			godot::Dictionary w;
+			w["start_line"] = warn.start_line;
+			w["start_column"] = warn.start_column;
+			w["end_line"] = warn.end_line;
+			w["end_column"] = warn.end_column;
+			w["code"] = (int)warn.code;
+			w["string_code"] = BSWarning::get_name_from_code(warn.code);
+			w["message"] = warn.get_message();
+			warnings.push_back(w);
+		}
+	}
+#else
+	(void)p_validate_warnings;
+#endif
+	result["warnings"] = warnings;
+
+	godot::PackedInt32Array safe_lines;
+#ifdef DEBUG_ENABLED
+	if (p_validate_safe_lines) {
+		const HashSet<int> &unsafe_lines = parser.get_unsafe_lines();
+		for (int i = 1; i <= parser.get_last_line_number(); i++) {
+			if (!unsafe_lines.has(i)) {
+				safe_lines.push_back(i);
+			}
+		}
+	}
+#else
+	(void)p_validate_safe_lines;
+#endif
+	result["safe_lines"] = safe_lines;
 	return result;
 }
 
@@ -380,19 +453,18 @@ bool BaristaScriptLanguage::remove_declaration_path(const String &p_path, uint64
 
 void BaristaScriptLanguage::synchronize_declaration_path_from_source(const String &p_path, const String &p_source) {
 	const String path = p_path.simplify_path();
-	const uint64_t token = declaration_index.claim_refresh(path);
-	const BSGlobalClass resolved = bs_resolve_global_class_from_source(p_source, path);
-	if (!resolved.declarations_parsed) {
+	// #52: analysis must not run while holding index mutexes. analyze() commits or removes.
+	BSParser parser;
+	BSAnalyzer analyzer(&parser);
+	Error err = parser.parse(p_source, path, false);
+	if (err != OK) {
+		const uint64_t token = declaration_index.claim_refresh(path);
 		Vector<String> changed;
 		declaration_index.remove_path(path, token, &changed);
 		notify_conformance_namespaces_changed(changed);
 		return;
 	}
-	BSDeclarationRecord record = BSDeclarationIndex::record_from_global_class(path, p_source, resolved);
-	Vector<String> changed;
-	if (declaration_index.commit_record(token, record, &changed)) {
-		notify_conformance_namespaces_changed(changed);
-	}
+	analyzer.analyze();
 }
 
 Error BaristaScriptLanguage::flush_declaration_index(const String &p_store_path) {

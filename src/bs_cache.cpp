@@ -13,6 +13,7 @@
 #include "bs_cache.h"
 
 #include "bs_analyzer.h"
+#include "bs_builtin_sources.h"
 #include "bs_parser.h"
 
 #include <cstring>
@@ -630,6 +631,13 @@ String BSCache::get_source_code(const String &p_path) {
 		}
 	}
 
+	{
+		String builtin_source;
+		if (BSBuiltinSources::get_source(p_path, builtin_source)) {
+			return builtin_source;
+		}
+	}
+
 	const Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
 	if (file.is_null()) {
 		ERR_FAIL_V_MSG(String(), "Script '" + p_path + "' could not be opened (error " + String::num((int64_t)FileAccess::get_open_error()) + ").");
@@ -935,9 +943,11 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 				return ref;
 			}
 		} else {
-			// Missing files must not invent cache entries (unless an in-memory override supplies
-			// source). Checked under the cache lock so we do not re-enter through has_source_override().
-			if (!cache->source_overrides.has(path) && !FileAccess::file_exists(path)) {
+			// Missing files must not invent cache entries (unless an in-memory override or builtin
+			// source supplies the text). Checked under the cache lock so we do not re-enter.
+			String builtin_source;
+			const bool has_builtin = BSBuiltinSources::get_source(path, builtin_source);
+			if (!cache->source_overrides.has(path) && !has_builtin && !FileAccess::file_exists(path)) {
 				r_error = ERR_FILE_NOT_FOUND;
 				return ref;
 			}

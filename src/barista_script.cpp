@@ -9,6 +9,7 @@
 #include "barista_script.h"
 
 #include "barista_script_language.h"
+#include "bs_analyzer.h"
 
 namespace barista_script {
 
@@ -101,14 +102,10 @@ bool BaristaScript::_is_tool() const {
 }
 
 bool BaristaScript::_is_valid() const {
-	// The *whole* source, function bodies included -- deliberately a stricter question than the one
-	// `_get_global_class_name()` asks, which reads declarations only so that a class keeps its name
-	// and base while its body is mid-edit. `ClassDB::can_instantiate` short-circuits on
-	// `Script::is_valid()` before it ever looks at `Script::is_abstract()`
-	// (`core/object/class_db.cpp:865` at 4.7.2-stable), so this is what keeps a file that does not
-	// parse from being offered as instantiable, and what lets the abstractness gate be reached at
-	// all for a file that does.
-	return bs_source_parses(source_code, canonicalize_path(get_path()));
+	// Semantic validity must agree with `BaristaScriptLanguage::_validate()`: parse + analyze.
+	// Declaration-only resolution (`_get_global_class_name`) stays looser so mid-edit bodies do not
+	// drop the global name. Issue #43.
+	return bs_source_analyzes(source_code, canonicalize_path(get_path()));
 }
 
 bool BaristaScript::_is_abstract() const {

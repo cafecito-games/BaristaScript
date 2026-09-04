@@ -1043,31 +1043,55 @@ bool BSParser::DataType::can_reference(const BSParser::DataType &p_other) const 
 
 	Ref<Script> script = script_type;
 	if (kind == BSParser::DataType::CLASS && script.is_null()) {
-		// #43 seam: Foundry resolves CLASS handles through FSCache::get_shallow_script. Until the
-		// shallow analyzed-script surface exists, fail closed rather than answer permissively.
-		if (script_path.is_empty()) {
+		// #52: resolve CLASS handles through the staged parser/analyzer cache (Foundry
+		// FSCache::get_shallow_script equivalent for ancestry checks).
+		if (script_path.is_empty() && class_type == nullptr) {
 			return false;
 		}
-		Error err = OK;
-		Ref<BSParserRef> ref = BSCache::get_parser(script_path, BSParserRef::PARSED, err);
-		if (ref.is_null() || err != OK) {
-			ERR_PRINT(vformat(R"(Error while getting cache for script "%s".)", script_path));
+		BSParser::ClassNode *self_class = class_type;
+		if (self_class == nullptr) {
+			Error err = OK;
+			Ref<BSParserRef> ref = BSCache::get_parser(script_path, BSParserRef::INHERITANCE_SOLVED, err);
+			if (ref.is_null() || err != OK || ref->get_parser() == nullptr) {
+				ERR_PRINT(vformat(R"(Error while getting cache for script "%s".)", script_path));
+				return false;
+			}
+			self_class = ref->get_parser()->get_tree();
+		}
+		if (self_class == nullptr) {
 			return false;
 		}
-		// Without a compiled Script object, identity falls back to matching declaring paths.
 		if (p_other.kind == BSParser::DataType::CLASS) {
 			Ref<Script> script_other = p_other.script_type;
-			if (script_other.is_null()) {
+			if (script_other.is_valid()) {
+				return false;
+			}
+			BSParser::ClassNode *other_class = p_other.class_type;
+			if (other_class == nullptr) {
 				if (p_other.script_path.is_empty()) {
 					return false;
 				}
 				Error other_err = OK;
-				Ref<BSParserRef> other_ref = BSCache::get_parser(p_other.script_path, BSParserRef::PARSED, other_err);
-				if (other_ref.is_null() || other_err != OK) {
+				Ref<BSParserRef> other_ref = BSCache::get_parser(p_other.script_path, BSParserRef::INHERITANCE_SOLVED, other_err);
+				if (other_ref.is_null() || other_err != OK || other_ref->get_parser() == nullptr) {
 					ERR_PRINT(vformat(R"(Error while getting cache for script "%s".)", p_other.script_path));
 					return false;
 				}
-				return script_path == p_other.script_path;
+				other_class = other_ref->get_parser()->get_tree();
+			}
+			if (other_class == nullptr) {
+				return false;
+			}
+			// Slot `self` can hold value `other` when other is self or a descendant.
+			BSParser::ClassNode *cursor = other_class;
+			while (cursor != nullptr) {
+				if (cursor == self_class || (!self_class->fqcn.is_empty() && cursor->fqcn == self_class->fqcn)) {
+					return true;
+				}
+				if (cursor->base_type.kind != BSParser::DataType::CLASS) {
+					break;
+				}
+				cursor = cursor->base_type.class_type;
 			}
 			return false;
 		}
