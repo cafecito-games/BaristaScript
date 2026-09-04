@@ -3,7 +3,7 @@
 /*                                                                        */
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
-/*  flow (#61), local-final definite assignment + noreturn (#60 TU).      */
+/*  flow (#61), local/member/static final definite assignment (#60 TU).   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -778,7 +778,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (current_class != nullptr && current_class->has_member(p_identifier->name)) {
 		const BSParser::ClassNode::Member member = current_class->get_member(p_identifier->name);
 		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
-			p_identifier->source = BSParser::IdentifierNode::MEMBER_VARIABLE;
+			p_identifier->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
 			p_identifier->variable_source = member.variable;
 			member.variable->usages++;
 			p_identifier->set_datatype(member.variable->get_datatype());
@@ -887,7 +887,23 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 		return;
 	}
 	reduce_expression(p_subscript->base);
-	if (!p_subscript->is_attribute) {
+	if (p_subscript->is_attribute) {
+		// Bind `self.<member>` so flow finality can see MEMBER_VARIABLE / STATIC_VARIABLE on the
+		// attribute (Foundry resolve_subscript attribute path @ c9d5e35, member/static finals).
+		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr &&
+				p_subscript->base->type == BSParser::Node::SELF && current_class != nullptr &&
+				current_class->has_member(p_subscript->attribute->name)) {
+			const BSParser::ClassNode::Member member = current_class->get_member(p_subscript->attribute->name);
+			if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+				p_subscript->attribute->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
+				p_subscript->attribute->variable_source = member.variable;
+				member.variable->usages++;
+				p_subscript->attribute->set_datatype(member.variable->get_datatype());
+				p_subscript->set_datatype(member.variable->get_datatype());
+				return;
+			}
+		}
+	} else {
 		reduce_expression(p_subscript->index);
 	}
 	BSParser::DataType type;
@@ -991,6 +1007,13 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::TERNARY_OPERATOR:
 			reduce_ternary(static_cast<BSParser::TernaryOpNode *>(p_expression));
 			break;
+		case BSParser::Node::SELF: {
+			BSParser::SelfNode *self_node = static_cast<BSParser::SelfNode *>(p_expression);
+			if (current_class != nullptr) {
+				self_node->set_datatype(current_class->get_datatype());
+			}
+			self_node->reduced = true;
+		} break;
 		case BSParser::Node::ASSIGNMENT: {
 			BSParser::AssignmentNode *assignment = static_cast<BSParser::AssignmentNode *>(p_expression);
 			reduce_expression(assignment->assigned_value);
@@ -1551,6 +1574,9 @@ Error BSAnalyzer::run_phase_body_expression_callable_signal() {
 Error BSAnalyzer::run_phase_flow_finality() {
 	BSParser::ClassNode *head = parser->get_tree();
 	if (head != nullptr) {
+		// Foundry order @ c9d5e35: member, static, then local finals.
+		flow_finality.check_final_member_assignments(head);
+		flow_finality.check_final_static_assignments(head);
 		flow_finality.check_final_local_assignments(head);
 		for (int i = 0; i < head->members.size(); i++) {
 			const BSParser::ClassNode::Member &member = head->members[i];

@@ -4,7 +4,7 @@
 /*  M3 analyzer port seam (issue #43 / #57 / #60). Staged resolve_*        */
 /*  mirror Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body     */
 /*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
-/*  local-final definite assignment + noreturn (#60 flow TU slice).       */
+/*  local + member/static final definite assignment (#60 flow TU).        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -34,8 +34,8 @@ public:
 
 	/**
 	 * Hard fork of Foundry `FSAnalyzer::FlowFinalityContext` (@ c9d5e35,
-	 * `fs_analyzer_flow_finality.cpp`). This slice ports LOCAL-scope `final var`
-	 * definite assignment / illegal writes; member/static/trait finality and
+	 * `fs_analyzer_flow_finality.cpp`). Ports LOCAL + INSTANCE + STATIC
+	 * `final var` definite assignment / illegal writes. Trait flattening and
 	 * flow narrowing remain follow-up under #60.
 	 */
 	class FlowFinalityContext {
@@ -54,6 +54,8 @@ public:
 
 		explicit FlowFinalityContext(BSAnalyzer *p_analyzer);
 
+		void check_final_member_assignments(BSParser::ClassNode *p_class);
+		void check_final_static_assignments(BSParser::ClassNode *p_class);
 		void check_final_local_assignments(BSParser::ClassNode *p_class);
 		void analyze_function_local_finals(const BSParser::FunctionNode *p_function);
 		void collect_local_finals(const BSParser::Node *p_node,
