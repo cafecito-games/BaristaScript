@@ -3,7 +3,8 @@
 /*                                                                        */
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
-/*  flow (#61), local/member/static final definite assignment (#60 TU).   */
+/*  flow (#61), local/member/static final definite assignment (#60 TU),   */
+/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU).     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -17,6 +18,7 @@
 #include "bs_cache.h"
 #include "bs_declaration_index.h"
 #include "bs_global_class.h"
+#include "bs_native_db.h"
 #include "bs_script_server.h"
 #include "bs_warning.h"
 
@@ -117,6 +119,7 @@ String &BSAnalyzer::bootstrap_root_storage() {
 
 BSAnalyzer::BSAnalyzer(BSParser *p_parser) :
 		parser(p_parser),
+		call_site_validation(this),
 		flow_finality(this) {
 	read_strict_settings();
 }
@@ -207,6 +210,41 @@ BSParser::DataType BSAnalyzer::type_from_variant(const Variant &p_value) {
 	type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
 	type.is_constant = true;
 	return type;
+}
+
+BSParser::DataType BSAnalyzer::type_from_property(const PropertyInfo &p_property, bool p_is_arg, bool p_is_readonly) const {
+	// D1-trimmed decode of Foundry FSAnalyzer::type_from_property (@ c9d5e35): carrier-only
+	// PropertyInfo → DataType for MethodInfo call validation. Width/signedness metadata is never
+	// consulted; coroutine / Callable-signature hint decoding remains follow-up under #60.
+	BSParser::DataType result;
+	result.is_read_only = p_is_readonly;
+	result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	if (p_property.type == Variant::NIL && (p_is_arg || (p_property.usage & PROPERTY_USAGE_NIL_IS_VARIANT))) {
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+	result.builtin_type = p_property.type;
+	if (p_property.type == Variant::OBJECT) {
+		StringName class_name = p_property.class_name;
+		if (String(class_name).ends_with("?")) {
+			String nullable_class_name = class_name;
+			nullable_class_name = nullable_class_name.substr(0, nullable_class_name.length() - 1);
+			class_name = nullable_class_name;
+			result.is_nullable = true;
+		}
+		if (ScriptServer::is_global_class(class_name)) {
+			result.kind = BSParser::DataType::SCRIPT;
+			result.script_path = ScriptServer::get_global_class_path(class_name);
+			result.native_type = ScriptServer::get_global_class_native_base(class_name);
+		} else {
+			result.kind = BSParser::DataType::NATIVE;
+			result.native_type = class_name == StringName() ? StringName("Object") : class_name;
+		}
+	} else {
+		result.kind = BSParser::DataType::BUILTIN;
+		result.builtin_type = p_property.type;
+	}
+	return result;
 }
 
 void BSAnalyzer::validate_bootstrap_namespace_imports() {
@@ -589,6 +627,37 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 					member.variable->set_datatype(datatype_from_type_node(member.variable->datatype_specifier));
 				}
 				break;
+			case BSParser::ClassNode::Member::SIGNAL:
+				if (member.signal != nullptr) {
+					// Foundry fs_analyzer_surface.cpp @ c9d5e35: build MethodInfo + rich parameter
+					// types so CallSiteValidationContext can validate emit / emit_signal.
+					MethodInfo mi = MethodInfo(member.signal->identifier != nullptr ? member.signal->identifier->name : StringName());
+					BSParser::DataType signal_type;
+					signal_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+					signal_type.kind = BSParser::DataType::BUILTIN;
+					signal_type.builtin_type = Variant::SIGNAL;
+					signal_type.is_constant = true;
+					signal_type.has_method_signature = true;
+					signal_type.has_explicit_method_signature = true;
+					for (int j = 0; j < member.signal->parameters.size(); j++) {
+						BSParser::ParameterNode *param = member.signal->parameters[j];
+						if (param == nullptr) {
+							continue;
+						}
+						if (param->datatype_specifier != nullptr) {
+							param->set_datatype(datatype_from_type_node(param->datatype_specifier));
+						}
+						const BSParser::DataType param_type = param->get_datatype();
+						signal_type.method_parameter_types.push_back(param_type);
+						if (param->identifier != nullptr) {
+							mi.arguments.push_back(param_type.to_property_info(param->identifier->name));
+						}
+					}
+					signal_type.method_info = mi;
+					member.signal->method_info = mi;
+					member.signal->set_datatype(signal_type);
+				}
+				break;
 			default:
 				break;
 		}
@@ -791,6 +860,13 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			p_identifier->set_datatype(member.constant->get_datatype());
 			return;
 		}
+		if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr) {
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
+			p_identifier->signal_source = member.signal;
+			member.signal->usages++;
+			p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), current_class));
+			return;
+		}
 	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
@@ -801,50 +877,29 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	if (p_call == nullptr || p_callee == nullptr) {
 		return;
 	}
-	const int argc = p_call->arguments.size();
-	const int paramc = p_callee->parameters.size();
-	int required = paramc;
-	for (int i = paramc - 1; i >= 0; i--) {
+	List<BSParser::DataType> par_types;
+	int default_arg_count = 0;
+	for (int i = 0; i < p_callee->parameters.size(); i++) {
+		BSParser::ParameterNode *parameter = p_callee->parameters[i];
+		if (parameter == nullptr) {
+			par_types.push_back(BSParser::DataType());
+			continue;
+		}
+		par_types.push_back(parameter->get_datatype());
+	}
+	// Defaults must be trailing; count only the trailing run so arity matches Foundry.
+	for (int i = p_callee->parameters.size() - 1; i >= 0; i--) {
 		if (p_callee->parameters[i] != nullptr && p_callee->parameters[i]->initializer != nullptr) {
-			required--;
+			default_arg_count++;
 		} else {
 			break;
 		}
 	}
-	const StringName fname = p_call->function_name != StringName() ? p_call->function_name : (p_callee->identifier != nullptr ? p_callee->identifier->name : StringName());
-	if (argc < required) {
-		push_error(vformat(R"*(Too few arguments for "%s()" call. Expected at least %d but received %d.)*", fname, required, argc), p_call);
-		return;
+	p_call->resolved_parameter_types.clear();
+	for (const BSParser::DataType &par_type : par_types) {
+		p_call->resolved_parameter_types.push_back(par_type);
 	}
-	if (argc > paramc) {
-		push_error(vformat(R"*(Too many arguments for "%s()" call. Expected at most %d but received %d.)*", fname, paramc, argc),
-				argc > 0 ? static_cast<const BSParser::Node *>(p_call->arguments[paramc]) : static_cast<const BSParser::Node *>(p_call));
-		return;
-	}
-	for (int i = 0; i < argc; i++) {
-		BSParser::ParameterNode *parameter = p_callee->parameters[i];
-		BSParser::ExpressionNode *argument = p_call->arguments[i];
-		if (parameter == nullptr || argument == nullptr) {
-			continue;
-		}
-		const BSParser::DataType expected = parameter->get_datatype();
-		const BSParser::DataType actual = argument->get_datatype();
-		if (!expected.is_set() || expected.is_variant() || !actual.is_set()) {
-			continue;
-		}
-		BSTypeCompatibility::Options options;
-		options.allow_implicit_conversion = true;
-		options.strict_dynamic = strict_dynamic_checks;
-		options.strict_null = strict_null_checks;
-		if (argument->is_constant) {
-			options.constant_source_value = &argument->reduced_value;
-		}
-		if (!BSTypeCompatibility::check(expected, actual, options).compatible) {
-			push_error(vformat("Invalid argument for \"%s()\" function: argument %d should be \"%s\" but is \"%s\".",
-							   fname, i + 1, expected.to_string(), actual.to_string()),
-					argument);
-		}
-	}
+	call_site_validation.validate_call_arg(par_types, default_arg_count, false, p_call);
 	p_call->set_datatype(p_callee->get_datatype());
 }
 
@@ -855,6 +910,54 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 	for (int i = 0; i < p_call->arguments.size(); i++) {
 		reduce_expression(p_call->arguments[i]);
 	}
+
+	// Attribute call: `receiver.method(...)` — signal.emit and member-method shapes.
+	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
+		BSParser::SubscriptNode *subscript = static_cast<BSParser::SubscriptNode *>(p_call->callee);
+		if (subscript != nullptr && subscript->is_attribute && subscript->attribute != nullptr) {
+			reduce_expression(subscript->base);
+			const bool is_self = subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF;
+			if (p_call->function_name == StringName()) {
+				p_call->function_name = subscript->attribute->name;
+			}
+
+			if (subscript->base != nullptr && p_call->function_name == SNAME("emit")) {
+				const BSParser::DataType base_type = subscript->base->get_datatype();
+				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
+						base_type.has_method_signature) {
+					call_site_validation.validate_signal_emit_args(base_type, p_call, 0);
+					BSParser::DataType void_type;
+					void_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+					void_type.kind = BSParser::DataType::BUILTIN;
+					void_type.builtin_type = Variant::NIL;
+					p_call->set_datatype(void_type);
+					return;
+				}
+			}
+
+			// Native MethodInfo path on a typed native / class receiver (Foundry validate_call_arg(MethodInfo)).
+			if (subscript->base != nullptr && p_call->function_name != StringName()) {
+				const BSParser::DataType base_type = subscript->base->get_datatype();
+				StringName native_type;
+				if (base_type.kind == BSParser::DataType::NATIVE) {
+					native_type = base_type.native_type;
+				} else if (base_type.kind == BSParser::DataType::CLASS && base_type.native_type != StringName()) {
+					native_type = base_type.native_type;
+				} else if (is_self && current_class != nullptr && current_class->base_type.native_type != StringName()) {
+					native_type = current_class->base_type.native_type;
+				}
+				if (native_type != StringName()) {
+					MethodInfo method_info;
+					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
+						call_site_validation.validate_call_arg(method_info, p_call);
+						p_call->set_datatype(type_from_property(method_info.return_val));
+						return;
+					}
+				}
+			}
+		}
+	}
+
 	if (current_class != nullptr) {
 		StringName fname = p_call->function_name;
 		if (fname == StringName() && p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER) {
@@ -863,11 +966,29 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 		// Same-class bare call: callee is the identifier itself (or null for some super forms).
 		const bool local_shape = p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER;
 		if (local_shape && fname != StringName()) {
+			if (fname == SNAME("emit_signal")) {
+				call_site_validation.validate_local_object_emit_signal_args(p_call, true);
+				BSParser::DataType void_type;
+				void_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+				void_type.kind = BSParser::DataType::BUILTIN;
+				void_type.builtin_type = Variant::NIL;
+				p_call->set_datatype(void_type);
+				return;
+			}
 			BSParser::FunctionNode *callee = find_class_function(current_class, fname);
 			if (callee != nullptr) {
 				validate_local_call(p_call, callee);
 				p_call->is_noreturn = callee->is_noreturn;
 				return;
+			}
+			// Bare native MethodInfo call on the script's native base (e.g. Node.get_node).
+			if (current_class->base_type.native_type != StringName()) {
+				MethodInfo method_info;
+				if (BSNativeDB::get_method_info(current_class->base_type.native_type, fname, &method_info)) {
+					call_site_validation.validate_call_arg(method_info, p_call);
+					p_call->set_datatype(type_from_property(method_info.return_val));
+					return;
+				}
 			}
 		}
 	}
@@ -913,6 +1034,15 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						p_subscript->set_datatype(member.variable->get_datatype());
 						return;
 					}
+				}
+				if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr && !class_name_receiver) {
+					p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
+					p_subscript->attribute->signal_source = member.signal;
+					member.signal->usages++;
+					const BSParser::DataType signal_type = call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), current_class);
+					p_subscript->attribute->set_datatype(signal_type);
+					p_subscript->set_datatype(signal_type);
+					return;
 				}
 			}
 		}

@@ -30,6 +30,7 @@ func _init() -> void:
 	_test_namespace_change_invalidation(failures)
 	_test_explicit_out_of_root_import(failures)
 	_test_call_arity_and_types(failures)
+	_test_call_validation_methodinfo_and_signals(failures)
 	_test_match_and_flow(failures)
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
@@ -618,6 +619,66 @@ func _test_call_arity_and_types(failures: PackedStringArray) -> void:
 	var ok := "class_name CallOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tvar x: int = add(1, 2)\n"
 	var ok_report: Dictionary = probe.analyze_source(ok, "res://tests/call_ok.barista")
 	_expect(failures, ok_report.get("valid", false) == true, "matching call arity/types valid")
+
+
+func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# MethodInfo path: bare native call on Node base (ClassDB MethodInfo via BSNativeDB).
+	var native_few := "class_name NativeFew extends Node\nfunc _ready() -> void:\n\tget_node()\n"
+	var native_few_report: Dictionary = probe.analyze_source(native_few, "res://tests/native_few.barista")
+	_expect(failures, native_few_report.get("valid", true) == false, "native MethodInfo too-few invalid")
+	var saw_native_few := false
+	for message in native_few_report.get("errors", PackedStringArray()):
+		if "Too few arguments" in message and "get_node" in message:
+			saw_native_few = true
+	_expect(failures, saw_native_few, "native MethodInfo too-few diagnostic")
+
+	var native_type := "class_name NativeType extends Node\nfunc _ready() -> void:\n\tget_node(1)\n"
+	var native_type_report: Dictionary = probe.analyze_source(native_type, "res://tests/native_type.barista")
+	_expect(failures, native_type_report.get("valid", true) == false, "native MethodInfo wrong arg type invalid")
+	var saw_native_type := false
+	for message in native_type_report.get("errors", PackedStringArray()):
+		if "Invalid argument" in message and "get_node" in message:
+			saw_native_type = true
+	_expect(failures, saw_native_type, "native MethodInfo wrong-type diagnostic")
+
+	# Signal.emit payload arity + types.
+	var emit_few := "class_name EmitFew extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit()\n"
+	var emit_few_report: Dictionary = probe.analyze_source(emit_few, "res://tests/emit_few.barista")
+	_expect(failures, emit_few_report.get("valid", true) == false, "signal.emit too-few invalid")
+	var saw_emit_few := false
+	for message in emit_few_report.get("errors", PackedStringArray()):
+		if "Too few arguments" in message and "emit" in message:
+			saw_emit_few = true
+	_expect(failures, saw_emit_few, "signal.emit too-few diagnostic")
+
+	var emit_type := "class_name EmitType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit(\"bad\")\n"
+	var emit_type_report: Dictionary = probe.analyze_source(emit_type, "res://tests/emit_type.barista")
+	_expect(failures, emit_type_report.get("valid", true) == false, "signal.emit wrong type invalid")
+	var saw_emit_type := false
+	for message in emit_type_report.get("errors", PackedStringArray()):
+		if "Invalid argument" in message and "emit" in message:
+			saw_emit_type = true
+	_expect(failures, saw_emit_type, "signal.emit wrong-type diagnostic")
+
+	var emit_ok := "class_name EmitOk extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit(1)\n"
+	var emit_ok_report: Dictionary = probe.analyze_source(emit_ok, "res://tests/emit_ok.barista")
+	_expect(failures, emit_ok_report.get("valid", false) == true, "signal.emit matching payload valid")
+
+	# emit_signal("name", ...) constant-name payload validation.
+	var emit_signal_type := "class_name EmitSignalType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\temit_signal(\"changed\", \"bad\")\n"
+	var emit_signal_report: Dictionary = probe.analyze_source(emit_signal_type, "res://tests/emit_signal_type.barista")
+	_expect(failures, emit_signal_report.get("valid", true) == false, "emit_signal wrong payload type invalid")
+	var saw_emit_signal := false
+	for message in emit_signal_report.get("errors", PackedStringArray()):
+		if "Invalid argument" in message and "emit_signal" in message:
+			saw_emit_signal = true
+	_expect(failures, saw_emit_signal, "emit_signal wrong-type diagnostic")
+
+	var emit_signal_ok := "class_name EmitSignalOk extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\temit_signal(\"changed\", 1)\n"
+	var emit_signal_ok_report: Dictionary = probe.analyze_source(emit_signal_ok, "res://tests/emit_signal_ok.barista")
+	_expect(failures, emit_signal_ok_report.get("valid", false) == true, "emit_signal matching payload valid")
 
 
 func _test_match_and_flow(failures: PackedStringArray) -> void:

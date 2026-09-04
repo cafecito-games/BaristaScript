@@ -4,7 +4,8 @@
 /*  M3 analyzer port seam (issue #43 / #57 / #60). Staged resolve_*        */
 /*  mirror Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body     */
 /*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
-/*  local + member/static final definite assignment (#60 flow TU).        */
+/*  local + member/static final definite assignment (#60 flow TU),        */
+/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU).     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -30,6 +31,46 @@ public:
 		FLOW_FINALITY_INVARIANTS = 6,
 		CONFORMANCE_WITNESS_BODY = 7,
 		FINAL_DIAGNOSTICS_AND_DEPENDENCIES = 8,
+	};
+
+	/**
+	 * Hard fork of Foundry `FSAnalyzer::CallSiteValidationContext` (@ c9d5e35,
+	 * `fs_analyzer_call_validation.cpp`). Ports MethodInfo / typed-parameter
+	 * call arity+type checks and signal emit / emit_signal payload validation.
+	 * Generic inference, named-arg canonicalization, and connect/callable
+	 * richness remain follow-up under #60.
+	 */
+	class CallSiteValidationContext {
+	public:
+		explicit CallSiteValidationContext(BSAnalyzer *p_analyzer);
+
+		void validate_call_arg(const MethodInfo &p_method, const BSParser::CallNode *p_call);
+		void validate_call_arg(const List<BSParser::DataType> &p_par_types, int p_default_args_count, bool p_is_vararg, const BSParser::CallNode *p_call, const Vector<int> &p_extra_allowed_argument_counts = Vector<int>(), int p_trailing_unbound_argument_count = 0, const BSParser::DataType *p_rest_parameter_type = nullptr, int p_extra_allowed_argument_offset = 0);
+		void validate_argument_against_type(const BSParser::DataType &p_expected_type, BSParser::ExpressionNode *p_argument, int p_argument_number, const StringName &p_function, const BSParser::CallNode *p_call);
+		static const BSParser::DataType *rest_element_type(const BSParser::DataType *p_rest_parameter_type);
+		String make_invalid_argument_error(
+				const StringName &p_function,
+				int p_argument_number,
+				const BSParser::DataType &p_expected_type,
+				const BSParser::DataType &p_actual_type,
+				bool p_strict_dynamic_mismatch,
+				bool p_strict_nullable_mismatch,
+				const BSParser::Node *p_actual_node = nullptr) const;
+
+		BSParser::DataType explicit_signal_type_from_info(const MethodInfo &p_info) const;
+		BSParser::DataType explicit_signal_type_from_node(const BSParser::SignalNode *p_signal, const BSParser::DataType &p_receiver_type, const BSParser::ClassNode *p_declaring_class) const;
+		bool signal_name_from_constant_arg(const BSParser::CallNode *p_call, int p_signal_arg_index, StringName &r_signal_name) const;
+		bool signal_type_from_class_constant_arg(const BSParser::DataType &p_receiver_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
+		bool signal_type_from_native_constant_arg(const StringName &p_native_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
+		bool local_signal_type_from_constant_arg(const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
+		void validate_strict_signal_name_fallback(const BSParser::CallNode *p_call, const BSParser::DataType &p_receiver_type, int p_signal_arg_index);
+		bool call_argument_can_be_string_name(const BSParser::CallNode *p_call, int p_argument_index);
+
+		void validate_signal_emit_args(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_first_emit_arg_index);
+		void validate_local_object_emit_signal_args(const BSParser::CallNode *p_call, bool p_is_self);
+
+	private:
+		BSAnalyzer *analyzer = nullptr;
 	};
 
 	/**
@@ -121,6 +162,8 @@ public:
 	void commit_or_remove_declaration(bool p_success);
 
 	static BSParser::DataType type_from_variant(const Variant &p_value);
+	/** D1-trimmed PropertyInfo → DataType decode for MethodInfo call validation (@ c9d5e35). */
+	BSParser::DataType type_from_property(const PropertyInfo &p_property, bool p_is_arg = false, bool p_is_readonly = false) const;
 
 private:
 	BSParser *parser = nullptr;
@@ -130,6 +173,7 @@ private:
 	bool update_declaration_index = false;
 	BSParser::ClassNode *current_class = nullptr;
 	BSParser::FunctionNode *current_function = nullptr;
+	CallSiteValidationContext call_site_validation;
 	FlowFinalityContext flow_finality;
 
 	Error run_phase_preflight();

@@ -22,7 +22,8 @@
 			"fs_builtin_sources.cpp",
 			"fs_analyzer.h",
 			"fs_analyzer.cpp",
-			"fs_analyzer_flow_finality.cpp"
+			"fs_analyzer_flow_finality.cpp",
+			"fs_analyzer_call_validation.cpp"
 		],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
@@ -198,7 +199,8 @@
 			"sites": [
 				"fs_parser_data_type.cpp:38",
 				"fs_type.cpp:37",
-				"fs_analyzer.cpp:51"
+				"fs_analyzer.cpp:51",
+				"fs_analyzer_call_validation.cpp:36"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
