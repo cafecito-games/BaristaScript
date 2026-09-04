@@ -55,10 +55,14 @@ public:
 	 */
 	godot::Dictionary lookup_qualified_name(const godot::String &p_qualified_name);
 
-	/** ScriptServer surfaces that must also digest-validate private names (#62). */
-	bool script_server_is_global_class_enum(const godot::String &p_name) const;
-	godot::String script_server_get_global_class_path(const godot::String &p_name) const;
-	godot::PackedStringArray script_server_get_global_class_list() const;
+	/**
+	 * ScriptServer surfaces that must also digest-validate private names (#62).
+	 * Non-const: resolve may discard + reanalyze (same as lookup_qualified_name).
+	 */
+	bool script_server_is_global_class_enum(const godot::String &p_name);
+	godot::String script_server_get_global_class_path(const godot::String &p_name);
+	godot::StringName script_server_get_global_class_native_base(const godot::String &p_name);
+	godot::PackedStringArray script_server_get_global_class_list();
 };
 
 } // namespace barista_script
