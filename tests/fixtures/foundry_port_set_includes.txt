@@ -197,3 +197,9 @@
 === modules/foundry_script/fs_analyzer_flow_finality.cpp ===
 31:#include "fs_analyzer.h"
 33:#include "foundry_script.h"
+
+=== modules/foundry_script/fs_analyzer_call_validation.cpp ===
+31:#include "fs_analyzer.h"
+33:#include "foundry_script.h"
+34:#include "fs_type.h"
+36:#include "core/object/class_db.h"
