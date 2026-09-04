@@ -88,6 +88,17 @@ target_sources(${LIBNAME}
     src/bs_cache.h
     src/bs_analyzer.cpp
     src/bs_analyzer.h
+    src/bs_analyzer_probe.cpp
+    src/bs_analyzer_probe.h
+    src/bs_type.cpp
+    src/bs_type.h
+    src/bs_type_info.h
+    src/bs_builtin_sources.cpp
+    src/bs_builtin_sources.h
+    src/bs_function.h
+    src/bs_script_server.h
+    src/bs_core_constants.h
+    src/bs_native_db.h
     src/bs_declaration_index.cpp
     src/bs_declaration_index.h
     src/bs_declaration_index_probe.cpp

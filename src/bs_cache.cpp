@@ -13,6 +13,7 @@
 #include "bs_cache.h"
 
 #include "bs_analyzer.h"
+#include "bs_builtin_sources.h"
 #include "bs_parser.h"
 
 #include <cstring>
@@ -630,6 +631,13 @@ String BSCache::get_source_code(const String &p_path) {
 		}
 	}
 
+	{
+		String builtin_source;
+		if (barista_script::BSBuiltinSources::get_source(p_path, builtin_source)) {
+			return builtin_source;
+		}
+	}
+
 	const Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
 	if (file.is_null()) {
 		ERR_FAIL_V_MSG(String(), "Script '" + p_path + "' could not be opened (error " + String::num((int64_t)FileAccess::get_open_error()) + ").");
@@ -830,7 +838,7 @@ barista_script::BSAnalyzer *BSParserRef::get_analyzer() {
 }
 
 Error BSParserRef::raise_status(Status p_new_status) {
-	std::lock_guard<std::mutex> raise_lock(raise_mutex);
+	std::lock_guard<std::recursive_mutex> raise_lock(raise_mutex);
 	ERR_FAIL_COND_V(clearing, ERR_BUG);
 	ERR_FAIL_COND_V(parser == nullptr && status != EMPTY, ERR_BUG);
 
@@ -932,9 +940,11 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 			}
 		} else {
 			// Missing files must not invent cache entries or dependency edges (unless an
-			// in-memory override supplies source). Checked under the cache lock so we do not
-			// re-enter through has_source_override().
-			if (!cache->source_overrides.has(path) && !FileAccess::file_exists(path)) {
+			// in-memory override or builtin source supplies the text). Checked under the
+			// cache lock so we do not re-enter through has_source_override().
+			String builtin_source;
+			const bool has_builtin = barista_script::BSBuiltinSources::get_source(path, builtin_source);
+			if (!cache->source_overrides.has(path) && !has_builtin && !FileAccess::file_exists(path)) {
 				r_error = ERR_FILE_NOT_FOUND;
 				return ref;
 			}

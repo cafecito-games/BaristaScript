@@ -21,6 +21,10 @@ func _init() -> void:
 	_test_strict_settings(failures)
 	_test_can_reference(failures)
 	_test_host_bootstrap_filtering(failures)
+	_test_validate_and_is_valid_agree(failures)
+	_test_semantic_errors(failures)
+	_test_unary_sign_constant_folding(failures)
+	_test_analyzer_declaration_commit(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -262,4 +266,98 @@ func _test_host_bootstrap_filtering(failures: PackedStringArray) -> void:
 	_expect(failures, not index.host_is_bootstrap_path_allowed("res://outside/other.barista"),
 		"out-of-root conformance filtered")
 	index.set_bootstrap_root("")
+	index.clear()
+
+
+func _test_validate_and_is_valid_agree(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var valid_source := "class_name AnalyzerValid extends Node\n\nfunc _ready() -> void:\n\tvar x: int = 1\n"
+	var analyzed: Dictionary = probe.analyze_source(valid_source, "res://tests/analyzer_valid.barista")
+	_expect(failures, analyzed["valid"] == true, "valid program analyzes cleanly")
+	_expect(failures, probe.is_semantically_valid(valid_source, "res://tests/analyzer_valid.barista"),
+		"probe is_semantically_valid agrees for valid program")
+	var script := BaristaScript.new()
+	script.set_source_code(valid_source)
+	script.resource_path = "res://tests/analyzer_valid.barista"
+	_expect(failures, script.is_valid(), "BaristaScript.is_valid agrees for valid program")
+
+	var bad_source := "class_name AnalyzerBad extends NotARealBaseClass\n"
+	var bad_analyzed: Dictionary = probe.analyze_source(bad_source, "res://tests/analyzer_bad.barista")
+	_expect(failures, bad_analyzed["valid"] == false, "unknown base is invalid")
+	_expect(failures, not probe.is_semantically_valid(bad_source, "res://tests/analyzer_bad.barista"),
+		"probe is_semantically_valid agrees for semantic error")
+	var bad_script := BaristaScript.new()
+	bad_script.set_source_code(bad_source)
+	bad_script.resource_path = "res://tests/analyzer_bad.barista"
+	_expect(failures, not bad_script.is_valid(), "BaristaScript.is_valid false for semantic error")
+
+
+func _test_semantic_errors(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var mismatch := "class_name TypeMismatch extends Node\n\nfunc _ready() -> void:\n\tvar x: int = 1.5\n"
+	var report: Dictionary = probe.analyze_source(mismatch, "res://tests/type_mismatch.barista")
+	_expect(failures, report["valid"] == false, "int = float mismatch is invalid")
+	_expect(failures, (report["errors"] as PackedStringArray).size() > 0, "type mismatch produces a diagnostic")
+
+	var generic := "class_name GenericBox[T] extends RefCounted\n"
+	var generic_report: Dictionary = probe.analyze_source(generic, "res://tests/generic_box.barista")
+	_expect(failures, generic_report["valid"] == false, "generic class needs M5 diagnostic")
+	var generic_errors: PackedStringArray = generic_report["errors"]
+	var saw_m5 := false
+	for message in generic_errors:
+		if "M5" in message:
+			saw_m5 = true
+	_expect(failures, saw_m5, "generic construct names M5 in diagnostic")
+
+
+func _test_unary_sign_constant_folding(failures: PackedStringArray) -> void:
+	# Issue #49: consume parser AST shapes from #39; do not re-tokenize sign spellings.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var adjacent: Dictionary = probe.fold_expression("-2 ** 2")
+	_expect(failures, adjacent["ok"] == true, "-2 ** 2 folds")
+	_expect(failures, adjacent["value"] == 4, "-2 ** 2 → 4")
+	_expect(failures, adjacent["has_unary_sign"] == false, "-2 ** 2 has no unary-sign node")
+
+	var paren: Dictionary = probe.fold_expression("(-2) ** 2")
+	_expect(failures, paren["ok"] == true and paren["value"] == 4, "(-2) ** 2 → 4")
+	_expect(failures, paren["has_unary_sign"] == false, "(-2) ** 2 has no unary-sign node")
+
+	var explicit: Dictionary = probe.fold_expression("-(2 ** 2)")
+	_expect(failures, explicit["ok"] == true and explicit["value"] == -4, "-(2 ** 2) → -4")
+	_expect(failures, explicit["has_unary_sign"] == true, "-(2 ** 2) keeps unary-sign node")
+
+	var spaced: Dictionary = probe.fold_expression("- 2 ** 2")
+	_expect(failures, spaced["ok"] == true and spaced["value"] == -4, "- 2 ** 2 → -4")
+	_expect(failures, spaced["has_unary_sign"] == true, "- 2 ** 2 keeps unary-sign node")
+
+	var plus_adj: Dictionary = probe.fold_expression("+2 ** 2")
+	_expect(failures, plus_adj["ok"] == true and plus_adj["value"] == 4, "+2 ** 2 → 4")
+
+
+func _test_analyzer_declaration_commit(failures: PackedStringArray) -> void:
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var ok_path := "res://tests/commit_ok.barista"
+	var ok_source := "class_name CommitOk extends Node\n\nfunc _ready() -> void:\n\tpass\n"
+	index.synchronize_path_from_source(ok_path, ok_source)
+	var found := false
+	for record in index.get_records():
+		if record.get("qualified_name", "") == "CommitOk":
+			found = true
+	_expect(failures, found, "successful analysis commits CommitOk declaration")
+
+	# Read-only analyze / is_valid must not mutate the index (PR #59 review).
+	var before := index.get_record_count()
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var read_only: Dictionary = probe.analyze_source(ok_source, ok_path)
+	_expect(failures, read_only.get("valid", false), "read-only analyze still reports valid")
+	_expect(failures, probe.is_semantically_valid(ok_source, ok_path), "is_valid agrees without committing")
+	_expect(failures, index.get_record_count() == before, "analyze/is_valid must not change declaration index")
+
+	index.synchronize_path_from_source(ok_path, "class_name CommitOk extends MissingBaseDefinitely\n")
+	var still_there := false
+	for record in index.get_records():
+		if record.get("path", "") == ok_path:
+			still_there = true
+	_expect(failures, not still_there, "failed analysis removes prior declaration record")
 	index.clear()

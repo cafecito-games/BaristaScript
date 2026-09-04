@@ -128,3 +128,68 @@
 43:#include "core/io/file_access.h"
 44:#include "core/templates/vector.h"
 46:#ifndef FOUNDRY_SCRIPT_NO_FRONTEND
+
+=== modules/foundry_script/fs_type.h ===
+31:#pragma once
+33:#include "fs_conformance_registry.h"
+34:#include "fs_parser.h"
+
+=== modules/foundry_script/fs_type.cpp ===
+31:#include "fs_type.h"
+33:#include "foundry_script.h"
+34:#include "fs_conformance_registry.h"
+35:#include "fs_trait_utils.h"
+37:#include "core/object/class_db.h"
+
+=== modules/foundry_script/fs_builtin_sources.h ===
+31:#pragma once
+33:#include "core/string/ustring.h"
+34:#include "core/templates/hash_map.h"
+35:#include "core/templates/list.h"
+
+=== modules/foundry_script/fs_builtin_sources.cpp ===
+31:#include "fs_builtin_sources.h"
+33:#include "core/error/error_macros.h"
+34:#include "core/variant/variant.h"
+
+=== modules/foundry_script/fs_analyzer.h ===
+31:#pragma once
+33:#include "fs_autoload_index.h"
+34:#include "fs_cache.h"
+35:#include "fs_conformance_registry.h"
+36:#include "fs_parser.h"
+38:#include "core/object/method_bind.h"
+39:#include "core/object/object.h"
+40:#include "core/object/ref_counted.h"
+41:#include "core/variant/container_type_validate.h"
+42:#include "core/variant/type_info.h"
+44:#ifdef TESTS_ENABLED
+49:#endif // TESTS_ENABLED
+
+=== modules/foundry_script/fs_analyzer.cpp ===
+31:#include "fs_analyzer.h"
+33:#include "foundry_script.h"
+34:#include "fs_builtin_sources.h"
+35:#include "fs_builtin_types.h"
+36:#include "fs_diagnostic_names.h"
+37:#include "fs_numeric_ops.h"
+38:#include "fs_script_extensible_native_hooks.h"
+39:#include "fs_tagged_union.h"
+40:#include "fs_trait_utils.h"
+41:#include "fs_type.h"
+42:#include "fs_utility_callable.h"
+43:#include "fs_utility_functions.h"
+45:#include "core/config/engine.h"
+46:#include "core/config/project_settings.h"
+47:#include "core/core_constants.h"
+48:#include "core/io/file_access.h"
+49:#include "core/io/resource_loader.h"
+50:#include "core/io/resource_uid.h"
+51:#include "core/object/class_db.h"
+52:#include "core/object/script_language.h"
+53:#include "core/templates/hash_map.h"
+54:#include "core/templates/hash_set.h"
+55:#include "core/templates/hashfuncs.h"
+56:#include "scene/main/node.h"
+58:#define UNNAMED_ENUM "<anonymous enum>"
+59:#define ENUM_SEPARATOR "."
