@@ -382,7 +382,7 @@ func _test_declaration_head_kinds_and_conformance(failures: PackedStringArray) -
 	index.clear()
 	var cases := [
 		{"path": "res://tests/commit_trait.barista", "source": "trait_name CommitTrait\n", "name": "CommitTrait", "kind": 3},
-		{"path": "res://tests/commit_enum.barista", "source": "enum_name CommitEnum:\n\tA\n\tB\n", "name": "CommitEnum", "kind": 4},
+		{"path": "res://tests/commit_enum.barista", "source": "enum_name CommitEnum:\n\tA = 0\n\tB = 1\n", "name": "CommitEnum", "kind": 4},
 		{"path": "res://tests/commit_tuple.barista", "source": "tuple_name CommitTup(x: int, y: int)\n", "name": "CommitTup", "kind": 5},
 		{"path": "res://tests/commit_generic.barista", "source": "class_name CommitGeneric[T] extends RefCounted\n", "name": "CommitGeneric", "kind": 2},
 	]
@@ -545,7 +545,8 @@ func _test_match_and_flow(failures: PackedStringArray) -> void:
 
 func _test_warning_settings(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var source := "class_name WarnDiv extends Node\nfunc _ready() -> void:\n\tvar x: int = 1\n\tvar y: int = 2\n\tvar z: int = x / y\n"
+	var source := "class_name WarnDiv extends Node\nfunc _ready() -> void:\n\tvar z: int = 1 / 2\n"
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
 	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 1) # WARN
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
 	var warn_report: Dictionary = probe.validate_source(source, "res://tests/warn_div.barista", true)

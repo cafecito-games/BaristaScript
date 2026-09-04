@@ -1457,7 +1457,10 @@ void BSAnalyzer::commit_or_remove_declaration(bool p_success) {
 	record.declares_retroactive_conformances = !head->conformances.is_empty();
 	for (int i = 0; i < head->annotation_declarations.size(); i++) {
 		if (head->annotation_declarations[i] != nullptr && head->annotation_declarations[i]->identifier != nullptr) {
-			record.global_annotations.push_back(String(head->annotation_declarations[i]->identifier->name));
+			const String annotation_name = head->annotation_declarations[i]->qualified_name.is_empty()
+					? String(head->annotation_declarations[i]->identifier->name)
+					: head->annotation_declarations[i]->qualified_name;
+			record.global_annotations.push_back(annotation_name);
 		}
 	}
 	language->commit_declaration_record(token, record);

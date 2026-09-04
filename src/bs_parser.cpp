@@ -594,6 +594,7 @@ Error BSParser::parse(const String &p_source_code, const String &p_script_path, 
 	script_path = p_script_path.simplify_path();
 
 #ifdef DEBUG_ENABLED
+	update_project_settings();
 	evaluate_warning_directory_rules_for_script_path();
 #endif // DEBUG_ENABLED
 
@@ -669,6 +670,7 @@ Error BSParser::parse_binary(const PackedByteArray &p_binary, const String &p_sc
 	script_path = p_script_path.simplify_path();
 
 #ifdef DEBUG_ENABLED
+	update_project_settings();
 	evaluate_warning_directory_rules_for_script_path();
 #endif // DEBUG_ENABLED
 
