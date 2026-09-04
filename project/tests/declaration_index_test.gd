@@ -14,6 +14,7 @@ func _init() -> void:
 	_test_cold_and_round_trip(failures)
 	_test_kinds_and_views(failures)
 	_test_lifecycle_tokens(failures)
+	_test_commit_rejects_noncanonical(failures)
 	_test_corrupt_fixtures(failures)
 	_test_atomic_write_faults(failures)
 	_test_host_conformance(failures)
@@ -150,6 +151,45 @@ func _test_lifecycle_tokens(failures: PackedStringArray) -> void:
 	var failed := probe.claim_refresh(path)
 	_expect(failures, probe.remove_path(path, failed), "failed analysis removes prior record")
 	_expect(failures, probe.get_record_count() == 0, "removed path must leave no record")
+
+
+func _test_commit_rejects_noncanonical(failures: PackedStringArray) -> void:
+	var probe := _probe()
+	probe.clear()
+	var evil_path := "user://evil.barista"
+	var evil_token := probe.claim_refresh(evil_path)
+	_expect(failures, not probe.commit_record(evil_token, {
+		"path": evil_path,
+		"source_digest": 1,
+		"namespace_name": "evil",
+		"qualified_name": "",
+		"kind": 0,
+		"base_type": "",
+		"is_abstract": false,
+		"is_tool": false,
+		"icon_path": "",
+		"global_annotations": PackedStringArray(),
+		"declares_retroactive_conformances": true,
+	}), "non-res:// path must not commit")
+	_expect(failures, probe.get_record_count() == 0, "rejected non-res:// commit must leave no record")
+	_expect(failures, probe.get_conformance_files_in_namespace("evil").is_empty(), "rejected path must not appear in conformance view")
+
+	var path := "res://tests/bad_kind.barista"
+	var token := probe.claim_refresh(path)
+	_expect(failures, not probe.commit_record(token, {
+		"path": path,
+		"source_digest": 2,
+		"namespace_name": "",
+		"qualified_name": "BadKind",
+		"kind": 99,
+		"base_type": "Node",
+		"is_abstract": false,
+		"is_tool": false,
+		"icon_path": "",
+		"global_annotations": PackedStringArray(),
+		"declares_retroactive_conformances": false,
+	}), "out-of-range kind must not commit")
+	_expect(failures, probe.get_record_count() == 0, "rejected kind must leave no record")
 
 
 func _mutate_and_expect(failures: PackedStringArray, source: PackedByteArray, mutator: Callable, expected_status: int, label: String) -> void:
