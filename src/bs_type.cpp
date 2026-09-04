@@ -165,4 +165,52 @@ bool BSTypeCompatibility::allows_runtime_narrowing(const BSParser::DataType &p_n
 	return false;
 }
 
+bool BSTypeCompatibility::rest_parameter_type_is_narrowing(const BSParser::DataType &p_rest_parameter_type) {
+	return p_rest_parameter_type.kind == BSParser::DataType::BUILTIN &&
+			p_rest_parameter_type.builtin_type == Variant::ARRAY &&
+			p_rest_parameter_type.has_container_element_type(0) &&
+			!p_rest_parameter_type.get_container_element_type(0).is_variant();
+}
+
+bool BSTypeCompatibility::rest_parameter_accepts_required_arguments(const BSParser::DataType *p_implementation_rest_array,
+		const BSParser::DataType *p_required_rest_array, bool p_strict_null) {
+	if (p_required_rest_array == nullptr) {
+		return true;
+	}
+	if (p_implementation_rest_array == nullptr) {
+		return false;
+	}
+	if (!rest_parameter_type_is_narrowing(*p_implementation_rest_array)) {
+		return true;
+	}
+	if (!rest_parameter_type_is_narrowing(*p_required_rest_array)) {
+		return false;
+	}
+	Options element_options;
+	element_options.strict_null = p_strict_null;
+	return check(p_implementation_rest_array->get_container_element_type(0),
+			p_required_rest_array->get_container_element_type(0), element_options)
+			.compatible;
+}
+
+bool BSTypeCompatibility::rest_parameter_accepts_required_argument(const BSParser::DataType *p_implementation_rest_array,
+		const BSParser::DataType &p_required_argument_type, bool p_strict_null) {
+	if (p_implementation_rest_array == nullptr) {
+		return false;
+	}
+	if (!rest_parameter_type_is_narrowing(*p_implementation_rest_array)) {
+		return true;
+	}
+	if (p_required_argument_type.is_variant() && p_required_argument_type.is_hard_type()) {
+		return false;
+	}
+	if (!p_required_argument_type.is_set()) {
+		return true;
+	}
+	Options element_options;
+	element_options.strict_null = p_strict_null;
+	return check(p_implementation_rest_array->get_container_element_type(0), p_required_argument_type, element_options)
+			.compatible;
+}
+
 } // namespace barista_script
