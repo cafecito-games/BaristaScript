@@ -1685,11 +1685,19 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 	if (p_class->failed_trait_uses) {
 		return;
 	}
+	// Foundry resolve_trait_uses @ c9d5e35: fail() clears resolving and sets failed; never mark
+	// resolved after a cycle or lookup miss, and never append a trait whose resolve failed.
+	auto fail = [&]() {
+		p_class->resolving_trait_uses = false;
+		p_class->failed_trait_uses = true;
+		p_class->resolved_trait_uses = false;
+		p_class->resolved_traits.clear();
+	};
 	if (p_class->resolving_trait_uses) {
 		push_error(vformat(R"(Could not resolve trait uses for "%s": Cyclic trait use.)",
 						   p_class->identifier != nullptr ? String(p_class->identifier->name) : String("<anonymous>")),
 				p_class);
-		p_class->failed_trait_uses = true;
+		fail();
 		return;
 	}
 
@@ -1725,11 +1733,13 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 		BSParser::ClassNode::TraitUse &use = p_class->used_traits.write[i];
 		const String name = use.to_string();
 		if (name.is_empty()) {
-			continue;
+			fail();
+			return;
 		}
 		if (!use.type_arguments.is_empty()) {
 			push_error("Generic trait specialization is not available until M5.", p_class);
-			continue;
+			fail();
+			return;
 		}
 
 		BSParser::ClassNode *trait = use.resolved_trait;
@@ -1756,30 +1766,44 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 			}
 			if (!found) {
 				push_error(vformat(R"(Could not find trait "%s".)", name), p_class);
-				continue;
+				fail();
+				return;
 			}
 			if (record.kind != BSDeclarationKind::TRAIT) {
 				push_error(vformat(R"("%s" is not a trait.)", name), p_class);
-				continue;
+				fail();
+				return;
 			}
 			Error err = OK;
 			Ref<BSParserRef> trait_ref = BSCache::get_parser(record.path, BSParserRef::INTERFACE_SOLVED, err, parser != nullptr ? parser->script_path : String());
 			if (trait_ref.is_null() || err != OK || trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
 				push_error(vformat(R"(Could not resolve trait "%s".)", name), p_class);
-				continue;
+				fail();
+				return;
 			}
 			trait = trait_ref->get_parser()->get_tree();
 			if (trait == nullptr || !trait->is_trait) {
 				push_error(vformat(R"("%s" is not a trait.)", name), p_class);
-				continue;
+				fail();
+				return;
 			}
 		} else if (!trait->is_trait) {
 			push_error(vformat(R"("%s" is not a trait.)", name), p_class);
-			continue;
+			fail();
+			return;
 		}
 
 		use.resolved_trait = trait;
 		resolve_used_traits(trait);
+		if (trait->failed_trait_uses || (!trait->resolved_trait_uses && trait->resolving_trait_uses)) {
+			// Nested cycle leaves failed_trait_uses; never append a half-resolved trait.
+			fail();
+			return;
+		}
+		if (!trait->resolved_trait_uses) {
+			fail();
+			return;
+		}
 		append_trait_unique(p_class->resolved_traits, trait);
 		for (int t = 0; t < trait->resolved_traits.size(); t++) {
 			append_trait_unique(p_class->resolved_traits, trait->resolved_traits[t]);

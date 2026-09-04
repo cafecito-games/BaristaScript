@@ -947,6 +947,57 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 	var trait_init_report: Dictionary = probe.analyze_source(trait_init, "res://tests/final_trait_init.barista")
 	_expect(failures, trait_init_report.get("valid", false) == true, "trait-supplied _init assigning blank final is valid")
 
+	# Cyclic uses must fail-stop (Foundry resolve_trait_uses); do not flatten as resolved (#75).
+	var trait_cycle := "class_name FinalTraitCycle extends Node\nuses CycleA\n\ntrait CycleA:\n\tuses CycleB\n\ntrait CycleB:\n\tuses CycleA\n"
+	var cycle_report: Dictionary = probe.analyze_source(trait_cycle, "res://tests/final_trait_cycle.barista")
+	_expect(failures, cycle_report.get("valid", true) == false, "cyclic trait uses is invalid")
+	var saw_cycle := false
+	for message in cycle_report.get("errors", PackedStringArray()):
+		if "Cyclic trait use" in message:
+			saw_cycle = true
+	_expect(failures, saw_cycle, "cyclic trait use diagnostic")
+
+	# Static trait-supplied finals.
+	var trait_static_blank := "class_name FinalTraitStaticBlank extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n"
+	var static_blank_report: Dictionary = probe.analyze_source(trait_static_blank, "res://tests/final_trait_static_blank.barista")
+	_expect(failures, static_blank_report.get("valid", true) == false, "trait static blank final without _static_init is invalid")
+	var saw_static_blank := false
+	for message in static_blank_report.get("errors", PackedStringArray()):
+		if "must be definitely assigned" in message and "_static_init()" in message:
+			saw_static_blank = true
+	_expect(failures, saw_static_blank, "trait static blank never-assigned diagnostic")
+
+	var trait_static_ok := "class_name FinalTraitStaticOk extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n\nstatic func _static_init() -> void:\n\tLABEL = \"ready\"\n"
+	var static_ok_report: Dictionary = probe.analyze_source(trait_static_ok, "res://tests/final_trait_static_ok.barista")
+	_expect(failures, static_ok_report.get("valid", false) == true, "trait static blank assigned in _static_init is valid")
+
+	var trait_static_outside := "class_name FinalTraitStaticOutside extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String = \"ready\"\n\nfunc reset() -> void:\n\tLABEL = \"other\"\n"
+	var static_outside_report: Dictionary = probe.analyze_source(trait_static_outside, "res://tests/final_trait_static_outside.barista")
+	_expect(failures, static_outside_report.get("valid", true) == false, "trait static final reassigned outside _static_init is invalid")
+	var saw_static_outside := false
+	for message in static_outside_report.get("errors", PackedStringArray()):
+		if "_static_init()" in message and "can only be assigned" in message:
+			saw_static_outside = true
+	_expect(failures, saw_static_outside, "trait static outside-_static_init diagnostic")
+
+	# Declaration-index / BSCache trait-final path (cross-file uses).
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var trait_path := "res://tests/index_has_id.barista"
+	var trait_source := "trait_name IndexHasId\nfinal var id: int\n"
+	index.synchronize_path_from_source(trait_path, trait_source)
+	BaristaScriptParseCache.set_source_override(trait_path, trait_source)
+	var consumer := "class_name FinalTraitIndexBlank extends Node\nuses IndexHasId\nfunc _init() -> void:\n\tpass\n"
+	var index_blank_report: Dictionary = probe.analyze_source(consumer, "res://tests/final_trait_index_blank.barista")
+	_expect(failures, index_blank_report.get("valid", true) == false, "index-backed trait blank final never assigned is invalid")
+	var saw_index_blank := false
+	for message in index_blank_report.get("errors", PackedStringArray()):
+		if "must be definitely assigned" in message:
+			saw_index_blank = true
+	_expect(failures, saw_index_blank, "index-backed trait blank never-assigned diagnostic")
+	BaristaScriptParseCache.clear_source_override(trait_path)
+	index.clear()
+
 
 func _test_noreturn_flow(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
