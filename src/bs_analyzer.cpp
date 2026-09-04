@@ -24,6 +24,29 @@ namespace barista_script {
 
 namespace {
 
+String _operator_name(Variant::Operator p_op) {
+	switch (p_op) {
+		case Variant::OP_ADD:
+			return "+";
+		case Variant::OP_SUBTRACT:
+			return "-";
+		case Variant::OP_MULTIPLY:
+			return "*";
+		case Variant::OP_DIVIDE:
+			return "/";
+		case Variant::OP_MODULE:
+			return "%";
+		case Variant::OP_POWER:
+			return "**";
+		case Variant::OP_NEGATE:
+			return "-";
+		case Variant::OP_POSITIVE:
+			return "+";
+		default:
+			return String::num_int64((int64_t)p_op);
+	}
+}
+
 bool _is_integer_overflow_mul(int64_t a, int64_t b) {
 	if (a == 0 || b == 0) {
 		return false;
@@ -457,7 +480,7 @@ void BSAnalyzer::reduce_unary_op(BSParser::UnaryOpNode *p_unary_op) {
 		bool valid = false;
 		Variant::evaluate(p_unary_op->variant_op, p_unary_op->operand->reduced_value, Variant(), p_unary_op->reduced_value, valid);
 		if (!valid) {
-			push_error(vformat(R"(Invalid operand for unary operator "%s".)", Variant::get_operator_name(p_unary_op->variant_op)), p_unary_op);
+			push_error(vformat(R"(Invalid operand for unary operator "%s".)", _operator_name(p_unary_op->variant_op)), p_unary_op);
 			p_unary_op->reduced_value = Variant();
 		}
 	}
@@ -504,7 +527,7 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 		Variant::evaluate(p_binary_op->variant_op, p_binary_op->left_operand->reduced_value, p_binary_op->right_operand->reduced_value, p_binary_op->reduced_value, valid);
 		if (!valid) {
 			push_error(vformat(R"(Invalid operands to operator %s, %s and %s.)",
-							   Variant::get_operator_name(p_binary_op->variant_op),
+							   _operator_name(p_binary_op->variant_op),
 							   Variant::get_type_name(p_binary_op->left_operand->reduced_value.get_type()),
 							   Variant::get_type_name(p_binary_op->right_operand->reduced_value.get_type())),
 					p_binary_op);

@@ -633,7 +633,7 @@ String BSCache::get_source_code(const String &p_path) {
 
 	{
 		String builtin_source;
-		if (BSBuiltinSources::get_source(p_path, builtin_source)) {
+		if (barista_script::BSBuiltinSources::get_source(p_path, builtin_source)) {
 			return builtin_source;
 		}
 	}
@@ -946,7 +946,7 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 			// Missing files must not invent cache entries (unless an in-memory override or builtin
 			// source supplies the text). Checked under the cache lock so we do not re-enter.
 			String builtin_source;
-			const bool has_builtin = BSBuiltinSources::get_source(path, builtin_source);
+			const bool has_builtin = barista_script::BSBuiltinSources::get_source(path, builtin_source);
 			if (!cache->source_overrides.has(path) && !has_builtin && !FileAccess::file_exists(path)) {
 				r_error = ERR_FILE_NOT_FOUND;
 				return ref;

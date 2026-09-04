@@ -15,27 +15,18 @@ const char *BSBuiltinSources::PATH_PREFIX = "barista://builtin/";
 const char *BSBuiltinSources::EXPORTED_BYTECODE_PREFIX = "res://.barista/builtin/";
 
 HashMap<String, String> &BSBuiltinSources::sources() {
-	static HashMap<String, String> *map = nullptr;
-	if (map == nullptr) {
-		map = memnew(HashMap<String, String>);
-	}
-	return *map;
+	static HashMap<String, String> map;
+	return map;
 }
 
 HashMap<String, String> &BSBuiltinSources::global_name_to_path() {
-	static HashMap<String, String> *map = nullptr;
-	if (map == nullptr) {
-		map = memnew(HashMap<String, String>);
-	}
-	return *map;
+	static HashMap<String, String> map;
+	return map;
 }
 
 HashSet<String> &BSBuiltinSources::enum_names() {
-	static HashSet<String> *set = nullptr;
-	if (set == nullptr) {
-		set = memnew(HashSet<String>);
-	}
-	return *set;
+	static HashSet<String> set;
+	return set;
 }
 
 bool BSBuiltinSources::is_builtin_path(const String &p_path) {
