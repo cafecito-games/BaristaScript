@@ -105,6 +105,7 @@ void BaristaScriptDeclarationIndexProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("lookup_qualified_name", "qualified_name"), &BaristaScriptDeclarationIndexProbe::lookup_qualified_name);
 	ClassDB::bind_method(D_METHOD("script_server_is_global_class_enum", "name"), &BaristaScriptDeclarationIndexProbe::script_server_is_global_class_enum);
 	ClassDB::bind_method(D_METHOD("script_server_get_global_class_path", "name"), &BaristaScriptDeclarationIndexProbe::script_server_get_global_class_path);
+	ClassDB::bind_method(D_METHOD("script_server_get_global_class_native_base", "name"), &BaristaScriptDeclarationIndexProbe::script_server_get_global_class_native_base);
 	ClassDB::bind_method(D_METHOD("script_server_get_global_class_list"), &BaristaScriptDeclarationIndexProbe::script_server_get_global_class_list);
 }
 
@@ -230,15 +231,19 @@ godot::Dictionary BaristaScriptDeclarationIndexProbe::lookup_qualified_name(cons
 	return dictionary_from_record(record);
 }
 
-bool BaristaScriptDeclarationIndexProbe::script_server_is_global_class_enum(const godot::String &p_name) const {
+bool BaristaScriptDeclarationIndexProbe::script_server_is_global_class_enum(const godot::String &p_name) {
 	return ScriptServer::is_global_class_enum(StringName(p_name));
 }
 
-godot::String BaristaScriptDeclarationIndexProbe::script_server_get_global_class_path(const godot::String &p_name) const {
+godot::String BaristaScriptDeclarationIndexProbe::script_server_get_global_class_path(const godot::String &p_name) {
 	return ScriptServer::get_global_class_path(StringName(p_name));
 }
 
-godot::PackedStringArray BaristaScriptDeclarationIndexProbe::script_server_get_global_class_list() const {
+godot::StringName BaristaScriptDeclarationIndexProbe::script_server_get_global_class_native_base(const godot::String &p_name) {
+	return ScriptServer::get_global_class_native_base(StringName(p_name));
+}
+
+godot::PackedStringArray BaristaScriptDeclarationIndexProbe::script_server_get_global_class_list() {
 	List<StringName> names;
 	ScriptServer::get_global_class_list(&names);
 	godot::PackedStringArray result;
