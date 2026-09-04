@@ -128,8 +128,9 @@ def success_sentinel() -> str:
 # the hard fork rather than for a language delta: its diagnostic names the
 # language, and this one is BaristaScript.
 #
-# This is the only copy of the table. Issue #10's body documents it; it does not
-# duplicate it.
+# This is the only copy of the disposition *reasons*. Issue #10's body documents
+# it; it does not duplicate it. `parser_triage_ledger()` projects these tables
+# into `tests/corpus_baseline.json` without restating any reason text.
 # --------------------------------------------------------------------------
 
 # Cases whose whole subject is the removed integer tower. They test range
@@ -554,7 +555,8 @@ def write_readme(destination: Path, summary: dict) -> None:
 
 Imported from Foundry `cafecito-games/Foundry` @ `{FOUNDRY_REVISION}`,
 `{CORPUS_SUBPATH.as_posix()}`, by `scripts/import_parser_corpus.py`. Do not edit these files by
-hand: the script is the single copy of the D1 triage table and `--check` proves this tree is what it
+hand: the script is the single copy of the D1 triage *reasons* (projected into
+`tests/corpus_baseline.json` without duplication) and `--check` proves this tree is what it
 produces.
 
 | Category | Cases |
