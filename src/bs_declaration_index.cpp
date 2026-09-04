@@ -133,6 +133,7 @@ void discard_temp(const String &p_temp_path) {
 	}
 }
 
+#ifdef DEBUG_ENABLED
 void truncate_for_test(const String &p_path, int64_t p_length) {
 	const PackedByteArray whole = FileAccess::get_file_as_bytes(p_path);
 	const Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE);
@@ -140,6 +141,7 @@ void truncate_for_test(const String &p_path, int64_t p_length) {
 	file->store_buffer(whole.slice(0, p_length));
 	file->close();
 }
+#endif
 
 } // namespace
 
@@ -320,6 +322,15 @@ bool BSDeclarationIndex::commit_record(uint64_t p_token, const BSDeclarationReco
 	BSDeclarationRecord record = p_record;
 	record.path = record.path.simplify_path();
 	_sort_unique(record.global_annotations);
+
+	// Match load()'s fail-closed gates so a live index never holds records the on-disk format
+	// would reject (non-res:// paths, out-of-range kinds). See security review on #51 (M1).
+	if (!is_canonical_res_path(record.path)) {
+		return false;
+	}
+	if ((uint32_t)record.kind >= (uint32_t)BSDeclarationKind::MAX) {
+		return false;
+	}
 
 	std::lock_guard<std::mutex> generation_lock(generation_mutex);
 	if (!_is_token_current_unlocked(record.path, p_token)) {
@@ -550,15 +561,18 @@ bool BSDeclarationIndex::_decode_record(const uint8_t *p_data, uint64_t p_size, 
 }
 
 BSDeclarationIndexLoadStatus BSDeclarationIndex::load(const String &p_store_path) {
-	clear();
-
+	// Decode into a local vector first. Clearing/replacing the live maps happens only after the
+	// whole file validates, under both mutexes, so a concurrent commit cannot merge into a
+	// half-loaded index (security review #51 L1).
 	const PackedByteArray bytes = FileAccess::get_file_as_bytes(p_store_path);
 	const Error open_error = FileAccess::get_open_error();
 	if (open_error == Error::ERR_FILE_NOT_FOUND) {
+		clear();
 		last_load_status = BSDeclarationIndexLoadStatus::COLD;
 		return last_load_status;
 	}
 	if (open_error != Error::OK) {
+		clear();
 		last_load_status = BSDeclarationIndexLoadStatus::TRUNCATED;
 		const String line = "declaration index '" + p_store_path + "' exists but cannot be read";
 		load_report.push_back(line);
@@ -656,16 +670,33 @@ BSDeclarationIndexLoadStatus BSDeclarationIndex::load(const String &p_store_path
 		return reject(BSDeclarationIndexLoadStatus::TRAILING_BYTES, "bytes remain after records");
 	}
 
-	std::lock_guard<std::mutex> lock(mutex);
-	for (const BSDeclarationRecord &record : loaded) {
-		by_path[record.path] = record;
+	{
+		std::lock_guard<std::mutex> generation_lock(generation_mutex);
+		std::lock_guard<std::mutex> lock(mutex);
+		// Invalidate in-flight tokens so a concurrent commit cannot overwrite freshly loaded disk
+		// state after we drop the locks.
+		generation_floor = ++generation_counter;
+		generations.clear();
+		by_path.clear();
+		path_by_qualified_name.clear();
+		conformance_files_by_namespace.clear();
+		paths_by_annotation.clear();
+		load_report.clear();
+		for (const BSDeclarationRecord &record : loaded) {
+			by_path[record.path] = record;
+		}
+		_rebuild_views_unlocked();
+		last_load_status = BSDeclarationIndexLoadStatus::OK;
 	}
-	_rebuild_views_unlocked();
-	last_load_status = BSDeclarationIndexLoadStatus::OK;
 	return last_load_status;
 }
 
 Error BSDeclarationIndex::flush(const String &p_store_path, WriteFault p_fault) {
+#ifndef DEBUG_ENABLED
+	// Fault injection is a debug/test aid; never simulate partial writes in release builds (L2).
+	(void)p_fault;
+	p_fault = WriteFault::NONE;
+#endif
 	Vector<BSDeclarationRecord> records = get_records();
 
 	Vector<uint8_t> store;
@@ -691,10 +722,12 @@ Error BSDeclarationIndex::flush(const String &p_store_path, WriteFault p_fault) 
 	}
 	bs_put_u64(store, compute_file_checksum(store));
 
+#ifdef DEBUG_ENABLED
 	if (p_fault == WriteFault::BEFORE_WRITE) {
 		ERR_PRINT("declaration index flush failed before write (simulated)");
 		return Error::ERR_FILE_CANT_WRITE;
 	}
+#endif
 
 	const String directory = p_store_path.get_base_dir();
 	if (!DirAccess::dir_exists_absolute(directory)) {
@@ -731,9 +764,11 @@ Error BSDeclarationIndex::flush(const String &p_store_path, WriteFault p_fault) 
 		return Error::ERR_FILE_CANT_WRITE;
 	}
 
+#ifdef DEBUG_ENABLED
 	if (p_fault == WriteFault::TRUNCATE_TEMP_AFTER_WRITE) {
 		truncate_for_test(temp_path, store_bytes.size() / 2);
 	}
+#endif
 
 	const PackedByteArray written_back = FileAccess::get_file_as_bytes(temp_path);
 	if (FileAccess::get_open_error() != Error::OK || written_back != store_bytes) {
@@ -742,10 +777,12 @@ Error BSDeclarationIndex::flush(const String &p_store_path, WriteFault p_fault) 
 		return Error::ERR_FILE_CANT_WRITE;
 	}
 
+#ifdef DEBUG_ENABLED
 	if (p_fault == WriteFault::AFTER_WRITE_BEFORE_RENAME) {
 		ERR_PRINT("declaration index flush failed between write and rename (simulated)");
 		return Error::ERR_FILE_CANT_WRITE;
 	}
+#endif
 
 	const Error rename_error = DirAccess::rename_absolute(temp_path, p_store_path);
 	if (rename_error != Error::OK) {
