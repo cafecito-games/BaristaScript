@@ -347,6 +347,9 @@ func _first_line(text: String) -> String:
 	return text.substr(0, newline)
 
 
+## Presentation-only escaping for OUTPUT_MISMATCH diagnostics. Remaining ASCII C0
+## and DEL render as lowercase \\xNN escapes; comparison and --update-expectations
+## stay on the raw values.
 func _escape_mismatch_value(value: String) -> String:
 	var escaped := ""
 	for index in value.length():
@@ -364,7 +367,7 @@ func _escape_mismatch_value(value: String) -> String:
 				escaped += "\\t"
 			_:
 				if code < 0x20 or code == 0x7F:
-					escaped += "\\x" + "%02x" % code
+					escaped += "\\x%02x" % code
 				else:
 					escaped += value[index]
 	return escaped

@@ -30,6 +30,7 @@ func _initialize() -> void:
 	_test_deterministic_output(failures)
 	_test_update_expectations_refuses_non_mismatch(failures)
 	_test_update_expectations_rewrites_mismatches(failures)
+	_test_update_expectations_writes_raw_special_characters(failures)
 	_test_unreadable_corpus_root_is_harness_error(failures)
 	_test_unreadable_directory_is_harness_error(failures)
 	_test_runner_process_arguments(failures)
@@ -155,32 +156,27 @@ func _test_mismatch_escape_visibility(failures: Array[String]) -> void:
 	)
 	_expect(failures, result["exit_code"] == Harness.ExitCode.CASES_FAILED, "exotic mismatch must fail the run")
 	var text := _text(result)
-	var mismatch_lines := PackedStringArray()
-	for line in result["output"]:
-		var line_text := String(line)
-		if line_text.contains("output mismatch"):
-			mismatch_lines.append(line_text)
-		elif line_text.begins_with("     expected:") or line_text.begins_with("     actual:"):
-			mismatch_lines.append(line_text)
 	_expect(
 		failures,
-		mismatch_lines.size() == 3,
-		"mismatch diagnostic must stay on three logical lines: %s" % text
+		result["output"].size() == 4,
+		"mismatch diagnostic must produce exactly four output lines (FAIL, expected, actual, summary): %s"
+		% text
 	)
 	_expect(
 		failures,
 		text.contains('actual:   "\\\"\\\\\\t\\n\\x01\\x7fabcé"'),
 		"control characters must render as visible escapes: %s" % text
 	)
-	for line in mismatch_lines:
-		_expect(
-			failures,
-			not line.contains(char(0))
-				and not line.contains(char(127))
-				and not line.contains("\t")
-				and not line.contains("\r"),
-			"mismatch lines must not contain raw control characters: %s" % line
-		)
+	for line_index in range(3):
+		var line_text := String(result["output"][line_index])
+		for char_index in line_text.length():
+			var code := line_text.unicode_at(char_index)
+			_expect(
+				failures,
+				code >= 0x20 and code != 0x7F,
+				"mismatch output line %d must not contain raw C0/DEL control characters (U+%04X): %s"
+				% [line_index, code, line_text]
+			)
 
 
 func _test_ignore_marker_directory_is_skipped_and_counted(failures: Array[String]) -> void:
@@ -305,6 +301,32 @@ func _test_update_expectations_rewrites_mismatches(failures: Array[String]) -> v
 		failures,
 		rewritten == "%s\n" % Harness.SUCCESS_SENTINEL,
 		"update must write the actual output as the new expectation, got: %s" % [rewritten]
+	)
+	_remove_directory(temporary_root)
+
+
+func _test_update_expectations_writes_raw_special_characters(failures: Array[String]) -> void:
+	var temporary_root := "user://bs_corpus_update_raw_chars_test"
+	var raw_actual := "error: \"unterminated\\path"
+	_copy_fixture_directory("%s/parse_failure_vs_ok" % FIXTURES_ROOT, temporary_root)
+	var updated := _run_harness(
+		temporary_root,
+		false,
+		true,
+		func(_case_path: String) -> Dictionary:
+			return {"ok": false, "output": raw_actual}
+	)
+	_expect(
+		failures,
+		updated["exit_code"] == Harness.ExitCode.PASSED,
+		"--update-expectations must succeed for a mismatch with quotes and backslashes: %s" % _text(updated)
+	)
+	var rewritten_bytes := FileAccess.get_file_as_bytes("%s/case.out" % temporary_root)
+	_expect(
+		failures,
+		rewritten_bytes == (raw_actual + "\n").to_utf8_buffer(),
+		"update must write raw actual bytes without diagnostic escaping, got: %s"
+		% [rewritten_bytes.get_string_from_utf8()]
 	)
 	_remove_directory(temporary_root)
 
