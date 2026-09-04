@@ -86,6 +86,12 @@ target_sources(${LIBNAME}
     src/barista_script_resource_loader.h
     src/bs_cache.cpp
     src/bs_cache.h
+    src/bs_analyzer.cpp
+    src/bs_analyzer.h
+    src/bs_declaration_index.cpp
+    src/bs_declaration_index.h
+    src/bs_declaration_index_probe.cpp
+    src/bs_declaration_index_probe.h
     src/barista_script_parse_cache.cpp
     src/barista_script_parse_cache.h
     src/bs_diagnostic_names.cpp

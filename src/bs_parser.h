@@ -367,6 +367,7 @@ public:
 		static String same_rendered_name_clause(const DataType &p_first, const String &p_first_subject, const DataType &p_second, const String &p_second_subject);
 		_FORCE_INLINE_ String to_string_strict() const { return is_hard_type() ? to_string() : "Variant"; }
 		PropertyInfo to_property_info(const String &p_name) const;
+		bool can_reference(const DataType &p_other) const;
 
 		_FORCE_INLINE_ static DataType get_variant_type() { // Default DataType for container elements.
 			DataType datatype;

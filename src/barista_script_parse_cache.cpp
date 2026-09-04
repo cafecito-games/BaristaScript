@@ -8,6 +8,8 @@
 
 #include "barista_script_parse_cache.h"
 
+#include "bs_parser.h"
+
 #include <cstring>
 
 #include <godot_cpp/core/class_db.hpp>
@@ -87,6 +89,15 @@ void BaristaScriptParseCache::_bind_methods() {
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("remove_script", "path"), &BaristaScriptParseCache::remove_script);
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("move_script", "from", "to"), &BaristaScriptParseCache::move_script);
 	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("clear_script_cache"), &BaristaScriptParseCache::clear_script_cache);
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("get_parser", "path", "status", "owner"), &BaristaScriptParseCache::get_parser, DEFVAL(godot::String()));
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("has_parser", "path"), &BaristaScriptParseCache::has_parser);
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("remove_parser", "path"), &BaristaScriptParseCache::remove_parser);
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("collect_parser_invalidation_closure", "path"), &BaristaScriptParseCache::collect_parser_invalidation_closure);
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("collect_parsers_reaching_namespace", "namespace_name"), &BaristaScriptParseCache::collect_parsers_reaching_namespace);
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("invalidate_analysis"), &BaristaScriptParseCache::invalidate_analysis);
+#ifdef DEBUG_ENABLED
+	ClassDB::bind_static_method("BaristaScriptParseCache", D_METHOD("invalidate_analysis_on_strict_settings_change"), &BaristaScriptParseCache::invalidate_analysis_on_strict_settings_change);
+#endif // DEBUG_ENABLED
 }
 
 int BaristaScriptParseCache::load(const godot::String &p_store_path) {
@@ -203,5 +214,49 @@ void BaristaScriptParseCache::move_script(const godot::String &p_from, const god
 void BaristaScriptParseCache::clear_script_cache() {
 	BSCache::clear();
 }
+
+godot::Dictionary BaristaScriptParseCache::get_parser(const godot::String &p_path, int p_status, const godot::String &p_owner) {
+	Error err = OK;
+	const BSParserRef::Status status = (BSParserRef::Status)CLAMP(p_status, 0, (int)BSParserRef::FULLY_SOLVED);
+	Ref<BSParserRef> ref = BSCache::get_parser(p_path, status, err, p_owner);
+	godot::Dictionary result;
+	result["valid"] = ref.is_valid();
+	result["error"] = (int)err;
+	result["status"] = ref.is_valid() ? (int)ref->get_status() : -1;
+	result["result"] = ref.is_valid() ? (int)ref->get_result() : (int)err;
+	result["path"] = ref.is_valid() ? ref->get_path() : godot::String();
+	result["source_hash"] = ref.is_valid() ? (int64_t)ref->get_source_hash() : 0;
+	return result;
+}
+
+bool BaristaScriptParseCache::has_parser(const godot::String &p_path) {
+	return BSCache::has_parser(p_path);
+}
+
+void BaristaScriptParseCache::remove_parser(const godot::String &p_path) {
+	BSCache::remove_parser(p_path);
+}
+
+godot::PackedStringArray BaristaScriptParseCache::collect_parser_invalidation_closure(const godot::String &p_path) {
+	godot::PackedStringArray result;
+	for (const String &path : BSCache::collect_parser_invalidation_closure(p_path)) {
+		result.push_back(path);
+	}
+	return result;
+}
+
+godot::PackedStringArray BaristaScriptParseCache::collect_parsers_reaching_namespace(const godot::String &p_namespace) {
+	return to_packed_strings(BSCache::collect_parsers_reaching_namespace(p_namespace));
+}
+
+void BaristaScriptParseCache::invalidate_analysis() {
+	BSCache::invalidate_analysis();
+}
+
+#ifdef DEBUG_ENABLED
+bool BaristaScriptParseCache::invalidate_analysis_on_strict_settings_change() {
+	return BSParser::invalidate_analysis_on_strict_settings_change();
+}
+#endif // DEBUG_ENABLED
 
 } // namespace barista_script

@@ -9,12 +9,34 @@
 #include "barista_script_language.h"
 
 #include "barista_script.h"
+#include "bs_analyzer.h"
+#include "bs_cache.h"
 #include "bs_global_class.h"
+#include "bs_parser.h"
 #include "bs_tokenizer.h"
 
 #include <godot_cpp/variant/packed_int32_array.hpp>
 
 namespace barista_script {
+
+namespace {
+
+class LanguageParserHost final : public BSParserHost {
+public:
+	Vector<String> get_conformance_files_in_namespace(const String &p_namespace) const override {
+		const BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+		if (language == nullptr) {
+			return Vector<String>();
+		}
+		return language->get_conformance_files_in_namespace(p_namespace);
+	}
+
+	bool is_bootstrap_path_allowed(const String &p_path) const override {
+		return BSAnalyzer::is_bootstrap_path_allowed(p_path);
+	}
+};
+
+} // namespace
 
 BaristaScriptInternedStrings::BaristaScriptInternedStrings() :
 		_init("_init"),
@@ -61,9 +83,17 @@ BaristaScriptLanguage::BaristaScriptLanguage() {
 	if (singleton == nullptr) {
 		singleton = this;
 	}
+	parser_host = memnew(LanguageParserHost);
 }
 
 BaristaScriptLanguage::~BaristaScriptLanguage() {
+	if (parser_host != nullptr) {
+		if (BSParserHost::get_singleton() == parser_host) {
+			BSParserHost::set_singleton(nullptr);
+		}
+		memdelete(static_cast<LanguageParserHost *>(parser_host));
+		parser_host = nullptr;
+	}
 	if (singleton == this) {
 		singleton = nullptr;
 	}
@@ -79,7 +109,13 @@ godot::String BaristaScriptLanguage::_get_name() const {
 	return "BaristaScript";
 }
 
-void BaristaScriptLanguage::_init() {}
+void BaristaScriptLanguage::_init() {
+	BSParserHost::set_singleton(parser_host);
+	load_declaration_index();
+#ifdef DEBUG_ENABLED
+	BSParser::invalidate_analysis_on_strict_settings_change();
+#endif // DEBUG_ENABLED
+}
 
 godot::String BaristaScriptLanguage::_get_type() const {
 	return "BaristaScript";
@@ -89,7 +125,12 @@ godot::String BaristaScriptLanguage::_get_extension() const {
 	return "barista";
 }
 
-void BaristaScriptLanguage::_finish() {}
+void BaristaScriptLanguage::_finish() {
+	if (BSParserHost::get_singleton() == parser_host) {
+		BSParserHost::set_singleton(nullptr);
+	}
+	declaration_index.clear();
+}
 
 godot::PackedStringArray BaristaScriptLanguage::_get_reserved_words() const {
 	// The tokenizer's keyword table is the only reserved-word list in the tree. `BSTokenizer`
@@ -309,6 +350,74 @@ bool BaristaScriptLanguage::_handles_global_class_type(const godot::String &p_ty
 
 godot::Dictionary BaristaScriptLanguage::_get_global_class_name(const godot::String &p_path) const {
 	return bs_resolve_global_class(p_path).to_dictionary();
+}
+
+Vector<String> BaristaScriptLanguage::get_conformance_files_in_namespace(const String &p_namespace) const {
+	return declaration_index.get_conformance_files_in_namespace(p_namespace);
+}
+
+uint64_t BaristaScriptLanguage::claim_declaration_refresh(const String &p_path) {
+	return declaration_index.claim_refresh(p_path);
+}
+
+bool BaristaScriptLanguage::commit_declaration_record(uint64_t p_token, const BSDeclarationRecord &p_record) {
+	Vector<String> changed;
+	const bool committed = declaration_index.commit_record(p_token, p_record, &changed);
+	if (committed) {
+		notify_conformance_namespaces_changed(changed);
+	}
+	return committed;
+}
+
+bool BaristaScriptLanguage::remove_declaration_path(const String &p_path, uint64_t p_token) {
+	Vector<String> changed;
+	const bool removed = declaration_index.remove_path(p_path, p_token, &changed);
+	if (removed) {
+		notify_conformance_namespaces_changed(changed);
+	}
+	return removed;
+}
+
+void BaristaScriptLanguage::synchronize_declaration_path_from_source(const String &p_path, const String &p_source) {
+	const String path = p_path.simplify_path();
+	const uint64_t token = declaration_index.claim_refresh(path);
+	const BSGlobalClass resolved = bs_resolve_global_class_from_source(p_source, path);
+	if (!resolved.declarations_parsed) {
+		Vector<String> changed;
+		declaration_index.remove_path(path, token, &changed);
+		notify_conformance_namespaces_changed(changed);
+		return;
+	}
+	BSDeclarationRecord record = BSDeclarationIndex::record_from_global_class(path, p_source, resolved);
+	Vector<String> changed;
+	if (declaration_index.commit_record(token, record, &changed)) {
+		notify_conformance_namespaces_changed(changed);
+	}
+}
+
+Error BaristaScriptLanguage::flush_declaration_index(const String &p_store_path) {
+	const String path = p_store_path.is_empty() ? BSDeclarationIndex::get_default_store_path() : p_store_path;
+	return declaration_index.flush(path);
+}
+
+BSDeclarationIndexLoadStatus BaristaScriptLanguage::load_declaration_index(const String &p_store_path) {
+	const String path = p_store_path.is_empty() ? BSDeclarationIndex::get_default_store_path() : p_store_path;
+	return declaration_index.load(path);
+}
+
+void BaristaScriptLanguage::notify_conformance_namespaces_changed(const Vector<String> &p_namespaces) {
+	HashSet<String> seen;
+	for (int i = 0; i < p_namespaces.size(); i++) {
+		const String ns = p_namespaces[i];
+		if (ns.is_empty() || seen.has(ns)) {
+			continue;
+		}
+		seen.insert(ns);
+		const Vector<String> reaching = BSCache::collect_parsers_reaching_namespace(ns);
+		for (int j = 0; j < reaching.size(); j++) {
+			BSCache::remove_parser(reaching[j]);
+		}
+	}
 }
 
 } // namespace barista_script

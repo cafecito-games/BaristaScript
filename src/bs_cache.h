@@ -25,10 +25,8 @@
  * - `BSCache` is the in-memory cache ported from Foundry's `FSCache` (fs_cache.h:90). Foundry keys
  *   it by full script path (fs_cache.h:91) and nothing in it persists to disk: the only on-disk
  *   artifacts it touches are compiled `.fsb`/`.fsc` binaries (fs_cache.cpp:84, fs_cache.cpp:95),
- *   which are the bytecode milestone (M4), not this one. The parser and analyzer objects the
- *   upstream cache holds (`FSParserRef`, `Ref<FoundryScript>`) do not exist yet, so this port keeps
- *   the layer's source-override, dependency-edge and file-reading halves, and the parser milestone
- *   reinstates the parse-tree halves against the same class.
+ *   which are the bytecode milestone (M4), not this one. The staged `FSParserRef` half is restored
+ *   here for M3; compiled-script halves remain M4. Source overrides and dependency edges stay.
  *
  * - `BSParseCache` is the on-disk parse-result store. Foundry has no counterpart to port -- reading
  *   fs_cache.cpp at the pinned revision is what establishes that -- so its record layout is new
@@ -204,16 +202,73 @@ public:
 	void clear();
 };
 
+namespace barista_script {
+class BSAnalyzer;
+class BSParser;
+} // namespace barista_script
+
 /**
- * The in-memory script cache, ported from Foundry's FSCache (fs_cache.h:90). The parser/analyzer
- * halves of the upstream class (parser_map, shallow/full/static script caches, fs_cache.h:93-98)
- * wait for the parser milestone; what ports now is the half the parse cache itself needs: source
- * overrides, source reading, and the dependency edges that decide what a change invalidates.
+ * One cached parser/analyzer entry per canonical script path.
+ *
+ * Ported from Foundry's `FSParserRef` (fs_cache.h:45 @ c9d5e35). Status rises monotonically through
+ * M3 phases. A latched `result` fails later callers without re-running. Raise never holds the cache
+ * mutex (issue #27): callers snapshot the ref under the lock, then raise outside it.
+ */
+class BSParserRef : public RefCounted {
+	GDCLASS(BSParserRef, RefCounted)
+
+public:
+	enum Status {
+		EMPTY,
+		PARSED,
+		INHERITANCE_SOLVED,
+		INTERFACE_SOLVED,
+		FULLY_SOLVED,
+	};
+
+private:
+	barista_script::BSParser *parser = nullptr;
+	barista_script::BSAnalyzer *analyzer = nullptr;
+	Status status = EMPTY;
+	Error result = OK;
+	String path;
+	uint32_t source_hash = 0;
+	bool clearing = false;
+	bool abandoned = false;
+	std::mutex raise_mutex;
+
+	friend class BSCache;
+
+protected:
+	static void _bind_methods() {}
+
+public:
+	Status get_status() const;
+	String get_path() const;
+	uint32_t get_source_hash() const;
+	Error get_result() const { return result; }
+	barista_script::BSParser *get_parser();
+	barista_script::BSAnalyzer *get_analyzer();
+	Error raise_status(Status p_new_status);
+	void clear();
+
+	BSParserRef() {}
+	~BSParserRef() override;
+};
+
+/**
+ * The in-memory script cache, ported from Foundry's FSCache (fs_cache.h:90). Holds source overrides,
+ * dependency edges, and the staged parser/analyzer map restored by issue #27.
  */
 class BSCache {
 	HashMap<String, String> source_overrides;
 	HashMap<String, HashSet<String>> dependencies;
 	HashMap<String, HashSet<String>> inverse_dependencies;
+	HashMap<String, BSParserRef *> parser_map;
+	HashMap<String, HashSet<String>> parser_dependencies;
+	HashMap<String, HashSet<String>> parser_inverse_dependencies;
+	HashMap<String, Vector<uint64_t>> abandoned_parser_map;
+	bool cleared = false;
 
 	std::mutex mutex;
 
@@ -223,6 +278,8 @@ class BSCache {
 	 * The caller holds the mutex.
 	 */
 	static void clear_dependency_edges(BSCache *p_cache, const String &p_path);
+	static void clear_parser_dependency_edges(BSCache *p_cache, const String &p_path);
+	static void update_parser_dependencies(const String &p_path, const barista_script::BSParser *p_parser);
 
 public:
 	static BSCache *get_singleton();
@@ -256,11 +313,23 @@ public:
 	 */
 	static HashSet<String> get_inverse_dependencies(const String &p_path);
 
-	/** Drops every trace of a path: override, dependency edges in both directions. Ported from
-	 * fs_cache.cpp:202 (remove_script) minus the parser/script maps that do not exist yet. */
+	/**
+	 * Returns a cached parser raised to at least `p_status`. Owner edges are recorded under the
+	 * lock; parsing/analysis run after the lock is released so dependency cycles cannot deadlock.
+	 * Self-dependencies and missing files create no invented entries.
+	 */
+	static Ref<BSParserRef> get_parser(const String &p_path, BSParserRef::Status p_status, Error &r_error, const String &p_owner = String());
+	static bool has_parser(const String &p_path);
+	static void remove_parser(const String &p_path);
+	static HashSet<String> collect_parser_invalidation_closure(const String &p_path);
+	static Vector<String> collect_parsers_reaching_namespace(const String &p_namespace);
+	/** Drops every parsed/analyzed artifact; preserves source overrides. */
+	static void invalidate_analysis();
+
+	/** Drops every trace of a path: override, dependency edges, parser/analyzer state. */
 	static void remove_script(const String &p_path);
 
-	/** Ported from fs_cache.cpp:176 (move_script) minus the parser/script maps. */
+	/** Removes old-path parser state; the new path rebuilds on next access. */
 	static void move_script(const String &p_from, const String &p_to);
 
 	static void clear();

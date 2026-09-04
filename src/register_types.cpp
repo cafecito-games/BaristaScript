@@ -13,10 +13,12 @@
 #include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
 #include "bs_corpus_sentinels.h"
+#include "bs_declaration_index_probe.h"
 #include "bs_global_class_probe.h"
 #include "bs_parser_probe.h"
 #include "bs_platform_probe.h"
 #include "bs_tokenizer_probe.h"
+#include "bs_cache.h"
 #include "bs_warning.h"
 
 #include <godot_cpp/classes/engine.hpp>
@@ -48,6 +50,9 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	// The corpus sentinels, so the GDScript harness reads the same two literals the C++ side and
 	// the Python tooling do rather than restating them.
 	GDREGISTER_CLASS(barista_script::BaristaScriptCorpusSentinels);
+	// Staged parser refs are production cache infrastructure; GDScript reaches them through the
+	// parse-cache handle, but ClassDB still needs the type registered for RefCounted identity.
+	GDREGISTER_CLASS(BSParserRef);
 #ifdef DEBUG_ENABLED
 	// The front-end's test surfaces, registered for the same reason -- and only in debug builds.
 	// Nothing but the GDScript suites reaches them, and those run against `template_debug`, so
@@ -57,6 +62,7 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptGlobalClassProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptPlatformProbe);
+	GDREGISTER_CLASS(barista_script::BaristaScriptDeclarationIndexProbe);
 	// The warning registry only exists in debug builds, like the warnings it names. Its binding is
 	// the only way `project/tests/warning_registry_test.gd` can reach it: godot-cpp's String and
 	// Variant are engine-backed, so there is no standalone C++ test binary to reach it from.

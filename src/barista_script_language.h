@@ -8,12 +8,16 @@
 
 #pragma once
 
+#include "bs_declaration_index.h"
 #include "bs_platform.h"
 
 #include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/classes/script_language_extension.hpp>
 
 namespace barista_script {
+
+class BSParserHost;
+
 
 /**
  * The interned names the front-end compares identifiers against.
@@ -121,6 +125,26 @@ public:
 
 	/** The interned special-method names. See `BaristaScriptInternedStrings`. */
 	static const BaristaScriptInternedStrings &get_interned_strings();
+
+	/** The private declaration index owned by this language (#44). */
+	BSDeclarationIndex &get_declaration_index() { return declaration_index; }
+	const BSDeclarationIndex &get_declaration_index() const { return declaration_index; }
+
+	Vector<String> get_conformance_files_in_namespace(const String &p_namespace) const;
+	/** Commit/remove helpers used by probes and the #43 analyzer seam. */
+	uint64_t claim_declaration_refresh(const String &p_path);
+	bool commit_declaration_record(uint64_t p_token, const BSDeclarationRecord &p_record);
+	bool remove_declaration_path(const String &p_path, uint64_t p_token);
+	void synchronize_declaration_path_from_source(const String &p_path, const String &p_source);
+	Error flush_declaration_index(const String &p_store_path = String());
+	BSDeclarationIndexLoadStatus load_declaration_index(const String &p_store_path = String());
+	void notify_conformance_namespaces_changed(const Vector<String> &p_namespaces);
+
+private:
+	BSDeclarationIndex declaration_index;
+	BSParserHost *parser_host = nullptr;
+
+public:
 
 	/**
 	 * The public functions of the language, in the shape the front-end wants them.

@@ -108,6 +108,7 @@ void BaristaScriptParserProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("nested_source", "prefix", "open", "close", "suffix", "depth"), &BaristaScriptParserProbe::nested_source);
 	ClassDB::bind_method(D_METHOD("max_nesting_depth"), &BaristaScriptParserProbe::max_nesting_depth);
 	ClassDB::bind_method(D_METHOD("tokenizer_format_version"), &BaristaScriptParserProbe::tokenizer_format_version);
+	ClassDB::bind_method(D_METHOD("can_reference", "self_type", "other_type"), &BaristaScriptParserProbe::can_reference);
 }
 
 Dictionary BaristaScriptParserProbe::parse_text(const PackedByteArray &p_source_utf8, const String &p_script_path) const {
@@ -224,6 +225,30 @@ int BaristaScriptParserProbe::max_nesting_depth() const {
 
 int BaristaScriptParserProbe::tokenizer_format_version() const {
 	return int(BSTokenizerBuffer::TOKENIZER_VERSION);
+}
+
+namespace {
+
+BSParser::DataType data_type_from_dictionary(const Dictionary &p_description) {
+	BSParser::DataType type;
+	type.kind = (BSParser::DataType::Kind)(int)p_description.get("kind", (int)BSParser::DataType::BUILTIN);
+	type.builtin_type = (Variant::Type)(int)p_description.get("builtin_type", (int)Variant::NIL);
+	type.is_meta_type = p_description.get("is_meta_type", false);
+	type.native_type = p_description.get("native_type", String());
+	type.script_path = p_description.get("script_path", String());
+	const Array elements = p_description.get("container_element_types", Array());
+	for (int i = 0; i < elements.size(); i++) {
+		type.container_element_types.push_back(data_type_from_dictionary(elements[i]));
+	}
+	return type;
+}
+
+} // namespace
+
+bool BaristaScriptParserProbe::can_reference(const Dictionary &p_self, const Dictionary &p_other) const {
+	const BSParser::DataType self_type = data_type_from_dictionary(p_self);
+	const BSParser::DataType other_type = data_type_from_dictionary(p_other);
+	return self_type.can_reference(other_type);
 }
 
 } // namespace barista_script

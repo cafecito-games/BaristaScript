@@ -12,7 +12,12 @@
 
 #include "bs_cache.h"
 
+#include "bs_analyzer.h"
+#include "bs_parser.h"
+
 #include <cstring>
+
+#include <godot_cpp/core/object.hpp>
 
 // ---------------------------------------------------------------------------
 // Miss-reason vocabulary. One definition of every name and every log line.
@@ -700,6 +705,32 @@ void BSCache::clear_dependency_edges(BSCache *p_cache, const String &p_path) {
 
 void BSCache::remove_script(const String &p_path) {
 	BSCache *cache = get_singleton();
+	if (cache == nullptr) {
+		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		if (cache->cleared) {
+			return;
+		}
+		if (HashMap<String, Vector<uint64_t>>::Iterator abandoned = cache->abandoned_parser_map.find(p_path)) {
+			for (uint64_t parser_ref_id : abandoned->value) {
+				Object *object = ObjectDB::get_instance(parser_ref_id);
+				BSParserRef *parser_ref = object != nullptr ? Object::cast_to<BSParserRef>(object) : nullptr;
+				if (parser_ref != nullptr) {
+					parser_ref->clear();
+				}
+			}
+		}
+		cache->abandoned_parser_map.erase(p_path);
+		if (cache->parser_map.has(p_path)) {
+			cache->parser_map[p_path]->clear();
+		}
+	}
+
+	remove_parser(p_path);
+
 	std::lock_guard<std::mutex> lock(cache->mutex);
 	clear_dependency_edges(cache, p_path);
 	cache->source_overrides.erase(p_path);
@@ -711,6 +742,7 @@ void BSCache::move_script(const String &p_from, const String &p_to) {
 	}
 	// The moved script keeps nothing of its old dependency edges; whoever reloads it records them
 	// again against the new path, which is why p_to is not consulted here.
+	remove_parser(p_from);
 	BSCache *cache = get_singleton();
 	std::lock_guard<std::mutex> lock(cache->mutex);
 	clear_dependency_edges(cache, p_from);
@@ -719,8 +751,300 @@ void BSCache::move_script(const String &p_from, const String &p_to) {
 
 void BSCache::clear() {
 	BSCache *cache = get_singleton();
+	if (cache == nullptr) {
+		return;
+	}
 	std::lock_guard<std::mutex> lock(cache->mutex);
+	cache->cleared = true;
+	for (KeyValue<String, BSParserRef *> &entry : cache->parser_map) {
+		entry.value->abandoned = true;
+		entry.value->clear();
+	}
+	cache->parser_map.clear();
+	cache->parser_dependencies.clear();
+	cache->parser_inverse_dependencies.clear();
+	cache->abandoned_parser_map.clear();
 	cache->source_overrides.clear();
 	cache->dependencies.clear();
 	cache->inverse_dependencies.clear();
+	cache->cleared = false;
+}
+
+void BSCache::clear_parser_dependency_edges(BSCache *p_cache, const String &p_path) {
+	if (HashMap<String, HashSet<String>>::Iterator forward = p_cache->parser_dependencies.find(p_path)) {
+		for (const String &dep : forward->value) {
+			if (HashMap<String, HashSet<String>>::Iterator inverse = p_cache->parser_inverse_dependencies.find(dep)) {
+				inverse->value.erase(p_path);
+				if (inverse->value.is_empty()) {
+					p_cache->parser_inverse_dependencies.erase(dep);
+				}
+			}
+		}
+		p_cache->parser_dependencies.erase(p_path);
+	}
+}
+
+void BSCache::update_parser_dependencies(const String &p_path, const barista_script::BSParser *p_parser) {
+	BSCache *cache = get_singleton();
+	if (cache == nullptr || p_parser == nullptr) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	clear_parser_dependency_edges(cache, p_path);
+	HashSet<String> deps;
+	for (const String &dep : p_parser->get_dependencies()) {
+		deps.insert(dep);
+		cache->parser_inverse_dependencies[dep].insert(p_path);
+	}
+	if (!deps.is_empty()) {
+		cache->parser_dependencies[p_path] = deps;
+	}
+}
+
+BSParserRef::Status BSParserRef::get_status() const {
+	return status;
+}
+
+String BSParserRef::get_path() const {
+	return path;
+}
+
+uint32_t BSParserRef::get_source_hash() const {
+	return source_hash;
+}
+
+barista_script::BSParser *BSParserRef::get_parser() {
+	if (parser == nullptr && status == EMPTY) {
+		parser = memnew(barista_script::BSParser);
+	}
+	return parser;
+}
+
+barista_script::BSAnalyzer *BSParserRef::get_analyzer() {
+	if (analyzer == nullptr) {
+		analyzer = memnew(barista_script::BSAnalyzer(get_parser()));
+	}
+	return analyzer;
+}
+
+Error BSParserRef::raise_status(Status p_new_status) {
+	std::lock_guard<std::mutex> raise_lock(raise_mutex);
+	ERR_FAIL_COND_V(clearing, ERR_BUG);
+	ERR_FAIL_COND_V(parser == nullptr && status != EMPTY, ERR_BUG);
+
+	while (result == OK && p_new_status > status) {
+		switch (status) {
+			case EMPTY: {
+				get_parser()->clear();
+				status = PARSED;
+				const String source = BSCache::get_source_code(path);
+				source_hash = source.hash();
+				result = get_parser()->parse(source, path, false);
+				if (result == OK) {
+					BSCache::update_parser_dependencies(path, get_parser());
+				}
+			} break;
+			case PARSED: {
+				status = INHERITANCE_SOLVED;
+				result = get_analyzer()->resolve_inheritance();
+			} break;
+			case INHERITANCE_SOLVED: {
+				status = INTERFACE_SOLVED;
+				result = get_analyzer()->resolve_interface();
+			} break;
+			case INTERFACE_SOLVED: {
+				status = FULLY_SOLVED;
+				result = get_analyzer()->resolve_body();
+			} break;
+			case FULLY_SOLVED: {
+				return result;
+			}
+		}
+	}
+
+	return result;
+}
+
+void BSParserRef::clear() {
+	if (clearing) {
+		return;
+	}
+	clearing = true;
+
+	barista_script::BSParser *lparser = parser;
+	barista_script::BSAnalyzer *lanalyzer = analyzer;
+
+	parser = nullptr;
+	analyzer = nullptr;
+	status = EMPTY;
+	result = OK;
+	source_hash = 0;
+
+	clearing = false;
+
+	if (lanalyzer != nullptr) {
+		memdelete(lanalyzer);
+	}
+	if (lparser != nullptr) {
+		memdelete(lparser);
+	}
+}
+
+BSParserRef::~BSParserRef() {
+	clear();
+
+	if (!abandoned) {
+		BSCache *cache = BSCache::get_singleton();
+		if (cache != nullptr) {
+			std::lock_guard<std::mutex> lock(cache->mutex);
+			cache->parser_map.erase(path);
+		}
+	}
+}
+
+Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p_status, Error &r_error, const String &p_owner) {
+	r_error = OK;
+	Ref<BSParserRef> ref;
+	BSCache *cache = get_singleton();
+	if (cache == nullptr || p_path.is_empty()) {
+		r_error = ERR_INVALID_PARAMETER;
+		return ref;
+	}
+
+	const String path = p_path.simplify_path();
+	const String owner = p_owner.simplify_path();
+
+	{
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		if (cache->cleared) {
+			r_error = ERR_BUSY;
+			return ref;
+		}
+		if (!owner.is_empty() && path != owner) {
+			cache->dependencies[owner].insert(path);
+			cache->parser_inverse_dependencies[path].insert(owner);
+		}
+
+		if (cache->parser_map.has(path)) {
+			ref = Ref<BSParserRef>(cache->parser_map[path]);
+			if (ref.is_null()) {
+				r_error = ERR_INVALID_DATA;
+				return ref;
+			}
+		} else {
+			// Missing files must not invent cache entries (unless an in-memory override supplies
+			// source). Checked under the cache lock so we do not re-enter through has_source_override().
+			if (!cache->source_overrides.has(path) && !FileAccess::file_exists(path)) {
+				r_error = ERR_FILE_NOT_FOUND;
+				return ref;
+			}
+			ref.instantiate();
+			ref->path = path;
+			cache->parser_map[path] = ref.ptr();
+		}
+	}
+
+	// Parse/analyze outside the cache mutex so a dependency cycle cannot deadlock.
+	r_error = ref->raise_status(p_status);
+	return ref;
+}
+
+bool BSCache::has_parser(const String &p_path) {
+	std::lock_guard<std::mutex> lock(get_singleton()->mutex);
+	return get_singleton()->parser_map.has(p_path.simplify_path());
+}
+
+HashSet<String> BSCache::collect_parser_invalidation_closure(const String &p_path) {
+	HashSet<String> closure;
+	BSCache *cache = get_singleton();
+	if (cache == nullptr || p_path.is_empty()) {
+		return closure;
+	}
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	List<String> frontier;
+	frontier.push_back(p_path.simplify_path());
+	while (!frontier.is_empty()) {
+		const String path = frontier.front()->get();
+		frontier.pop_front();
+		if (closure.has(path)) {
+			continue;
+		}
+		closure.insert(path);
+		if (HashMap<String, HashSet<String>>::ConstIterator inverse = cache->parser_inverse_dependencies.find(path)) {
+			for (const String &dependent : inverse->value) {
+				frontier.push_back(dependent);
+			}
+		}
+	}
+	return closure;
+}
+
+Vector<String> BSCache::collect_parsers_reaching_namespace(const String &p_namespace) {
+	Vector<String> members;
+	BSCache *cache = get_singleton();
+	if (cache == nullptr || p_namespace.is_empty()) {
+		return members;
+	}
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	for (const KeyValue<String, BSParserRef *> &entry : cache->parser_map) {
+		const BSParserRef *parser_ref = entry.value;
+		if (parser_ref == nullptr || parser_ref->status == BSParserRef::EMPTY) {
+			continue;
+		}
+		const barista_script::BSParser *parser = parser_ref->parser;
+		if (parser == nullptr) {
+			continue;
+		}
+		const barista_script::BSParser::ClassNode *head = parser->get_tree();
+		if (head == nullptr) {
+			continue;
+		}
+		if (head->namespace_name == p_namespace || head->imports.has(p_namespace)) {
+			members.push_back(entry.key);
+		}
+	}
+	return members;
+}
+
+void BSCache::remove_parser(const String &p_path) {
+	BSCache *cache = get_singleton();
+	if (cache == nullptr) {
+		return;
+	}
+	const String path = p_path.simplify_path();
+	HashSet<String> ideps;
+	{
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		clear_parser_dependency_edges(cache, path);
+		if (cache->parser_map.has(path)) {
+			BSParserRef *parser_ref = cache->parser_map[path];
+			parser_ref->abandoned = true;
+			cache->abandoned_parser_map[path].push_back(parser_ref->get_instance_id());
+			cache->parser_map.erase(path);
+		}
+		if (HashMap<String, HashSet<String>>::Iterator inverse = cache->parser_inverse_dependencies.find(path)) {
+			ideps = inverse->value;
+			cache->parser_inverse_dependencies.erase(path);
+		}
+	}
+	for (const String &idep_path : ideps) {
+		remove_parser(idep_path);
+	}
+}
+
+void BSCache::invalidate_analysis() {
+	BSCache *cache = get_singleton();
+	if (cache == nullptr) {
+		return;
+	}
+	Vector<String> parser_paths;
+	{
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		for (const KeyValue<String, BSParserRef *> &entry : cache->parser_map) {
+			parser_paths.push_back(entry.key);
+		}
+	}
+	for (const String &path : parser_paths) {
+		remove_parser(path);
+	}
 }
