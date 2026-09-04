@@ -403,8 +403,11 @@ func _test_declaration_head_kinds_and_conformance(failures: PackedStringArray) -
 
 	var conform_path := "res://tests/commit_conform.barista"
 	var conform_source := "namespace commitns\n\nextend Node uses CommitTrait:\n\tpass\n"
-	# Trait must exist for uses resolution; CommitTrait already synchronized above.
+	# Trait must exist for uses resolution; keep the source override while the conformance
+	# file analyzes (synchronize clears its own override after commit).
+	BaristaScriptParseCache.set_source_override("res://tests/commit_trait.barista", "trait_name CommitTrait\n")
 	index.synchronize_path_from_source(conform_path, conform_source)
+	BaristaScriptParseCache.clear_source_override("res://tests/commit_trait.barista")
 	var conformances := index.get_conformance_files_in_namespace("commitns")
 	_expect(failures, conformances.size() >= 1, "declaration-only conformance commits into namespace view")
 
@@ -553,11 +556,11 @@ func _test_namespace_change_invalidation(failures: PackedStringArray) -> void:
 	var conform_path := "res://tests/ns_conform.barista"
 	var consumer_old := "res://tests/ns_consumer_old.barista"
 	var consumer_new := "res://tests/ns_consumer_new.barista"
+	var trait_path := "res://tests/ns_trait.barista"
+	var trait_source := "trait_name NsTrait\n"
 
-	index.synchronize_path_from_source(conform_path,
-		"namespace oldns\n\nextend Node uses Object:\n\tpass\n")
-	# Object isn't a trait — use a synchronized trait instead.
-	index.synchronize_path_from_source("res://tests/ns_trait.barista", "trait_name NsTrait\n")
+	index.synchronize_path_from_source(trait_path, trait_source)
+	BaristaScriptParseCache.set_source_override(trait_path, trait_source)
 	index.synchronize_path_from_source(conform_path,
 		"namespace oldns\n\nextend Node uses NsTrait:\n\tpass\n")
 
@@ -569,6 +572,7 @@ func _test_namespace_change_invalidation(failures: PackedStringArray) -> void:
 	_expect(failures, BaristaScriptParseCache.has_parser(consumer_new), "new-namespace consumer cached")
 
 	# Analyzer-driven namespace change on the conformance file.
+	BaristaScriptParseCache.set_source_override(trait_path, trait_source)
 	index.synchronize_path_from_source(conform_path,
 		"namespace newns\n\nextend Node uses NsTrait:\n\tpass\n")
 	_expect(failures, not BaristaScriptParseCache.has_parser(consumer_old),
@@ -596,8 +600,11 @@ func _test_explicit_out_of_root_import(failures: PackedStringArray) -> void:
 			saw = true
 	_expect(failures, saw, "explicit out-of-root import emits analyzer diagnostic")
 	# Implicit out-of-root conformance stays host-filtered without that diagnostic for an in-root script.
+	BaristaScriptParseCache.set_source_override("res://outside/out_trait.barista",
+		"namespace outerspace\ntrait_name OuterTrait\n")
 	index.synchronize_path_from_source("res://outside/out_conform.barista",
 		"namespace outerspace\n\nextend Node uses OuterTrait:\n\tpass\n")
+	BaristaScriptParseCache.clear_source_override("res://outside/out_trait.barista")
 	_expect(failures, not index.host_is_bootstrap_path_allowed("res://outside/out_conform.barista"),
 		"implicit out-of-root conformance remains host-filtered")
 	index.set_bootstrap_root("")
