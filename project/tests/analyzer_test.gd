@@ -680,6 +680,25 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 	var emit_signal_ok_report: Dictionary = probe.analyze_source(emit_signal_ok, "res://tests/emit_signal_ok.barista")
 	_expect(failures, emit_signal_ok_report.get("valid", false) == true, "emit_signal matching payload valid")
 
+	# self.emit_signal must also run typed payload validation (#72 / PR #71 review).
+	var self_emit_signal_type := "class_name SelfEmitSignalType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tself.emit_signal(\"changed\", \"bad\")\n"
+	var self_emit_signal_report: Dictionary = probe.analyze_source(self_emit_signal_type, "res://tests/self_emit_signal_type.barista")
+	_expect(failures, self_emit_signal_report.get("valid", true) == false, "self.emit_signal wrong payload type invalid")
+	var saw_self_emit_signal := false
+	for message in self_emit_signal_report.get("errors", PackedStringArray()):
+		if "Invalid argument" in message and "emit_signal" in message:
+			saw_self_emit_signal = true
+	_expect(failures, saw_self_emit_signal, "self.emit_signal wrong-type diagnostic")
+
+	var self_emit := "class_name SelfChangedEmitType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tself.changed.emit(\"bad\")\n"
+	var self_emit_report: Dictionary = probe.analyze_source(self_emit, "res://tests/self_changed_emit_type.barista")
+	_expect(failures, self_emit_report.get("valid", true) == false, "self.changed.emit wrong payload type invalid")
+	var saw_self_emit := false
+	for message in self_emit_report.get("errors", PackedStringArray()):
+		if "Invalid argument" in message and "emit" in message:
+			saw_self_emit = true
+	_expect(failures, saw_self_emit, "self.changed.emit wrong-type diagnostic")
+
 
 func _test_match_and_flow(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
