@@ -15,6 +15,7 @@
 #include "bs_corpus_sentinels.h"
 #include "bs_global_class_probe.h"
 #include "bs_parser_probe.h"
+#include "bs_platform_probe.h"
 #include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
 
@@ -55,6 +56,7 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptGlobalClassProbe);
+	GDREGISTER_CLASS(barista_script::BaristaScriptPlatformProbe);
 	// The warning registry only exists in debug builds, like the warnings it names. Its binding is
 	// the only way `project/tests/warning_registry_test.gd` can reach it: godot-cpp's String and
 	// Variant are engine-backed, so there is no standalone C++ test binary to reach it from.

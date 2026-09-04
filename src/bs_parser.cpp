@@ -625,6 +625,7 @@ Error BSParser::parse_binary(const PackedByteArray &p_binary, const String &p_sc
 	Error err = buffer_tokenizer->set_code_buffer(p_binary);
 
 	if (err) {
+		tokenizer_failed = true;
 		memdelete(buffer_tokenizer);
 		return err;
 	}
