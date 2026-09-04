@@ -38,6 +38,7 @@ func _init() -> void:
 	_test_final_trait_flattening(failures)
 	_test_noreturn_flow(failures)
 	_test_unused_locals(failures)
+	_test_unused_class_members_and_signals(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1063,3 +1064,66 @@ func _test_unused_locals(failures: PackedStringArray) -> void:
 		if "keep" in str(warn.get("message", "")):
 			saw_keep_unused = true
 	_expect(failures, not saw_keep_unused, "used local does not warn as unused")
+
+
+func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
+	ProjectSettings.set_setting("debug/barista_script/warnings/unused_private_class_variable", 1) # WARN
+	ProjectSettings.set_setting("debug/barista_script/warnings/unused_signal", 1) # WARN
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	var unused_private := "class_name UnusedPrivateMember extends Node\nvar _orphan: int = 1\nfunc _ready() -> void:\n\tpass\n"
+	var private_report: Dictionary = probe.validate_source(unused_private, "res://tests/unused_private_member.barista", true)
+	_expect(failures, private_report.get("valid", false) == true, "unused private member stays valid at WARN")
+	var saw_private := false
+	for warn in private_report.get("warnings", []):
+		var code := str(warn.get("string_code", ""))
+		var msg := str(warn.get("message", ""))
+		if "UNUSED_PRIVATE_CLASS_VARIABLE" in code and "_orphan" in msg and "never used in the class" in msg:
+			saw_private = true
+	_expect(failures, saw_private, "unused private member produces UNUSED_PRIVATE_CLASS_VARIABLE message")
+
+	var used_private := "class_name UsedPrivateMember extends Node\nvar _keep: int = 1\nfunc _ready() -> void:\n\tvar _sink: int = _keep\n"
+	var used_private_report: Dictionary = probe.validate_source(used_private, "res://tests/used_private_member.barista", true)
+	var saw_used_private := false
+	for warn in used_private_report.get("warnings", []):
+		if "UNUSED_PRIVATE_CLASS_VARIABLE" in str(warn.get("string_code", "")) and "_keep" in str(warn.get("message", "")):
+			saw_used_private = true
+	_expect(failures, not saw_used_private, "used private member does not warn as unused")
+
+	var public_unused := "class_name PublicUnusedMember extends Node\nvar visible: int = 1\nfunc _ready() -> void:\n\tpass\n"
+	var public_report: Dictionary = probe.validate_source(public_unused, "res://tests/public_unused_member.barista", true)
+	var saw_public := false
+	for warn in public_report.get("warnings", []):
+		if "UNUSED_PRIVATE_CLASS_VARIABLE" in str(warn.get("string_code", "")):
+			saw_public = true
+	_expect(failures, not saw_public, "public unused member does not produce UNUSED_PRIVATE_CLASS_VARIABLE")
+
+	var unused_signal := "class_name UnusedSignalScript extends Node\nsignal lonely\nfunc _ready() -> void:\n\tpass\n"
+	var signal_report: Dictionary = probe.validate_source(unused_signal, "res://tests/unused_signal.barista", true)
+	_expect(failures, signal_report.get("valid", false) == true, "unused signal stays valid at WARN")
+	var saw_signal := false
+	for warn in signal_report.get("warnings", []):
+		var code := str(warn.get("string_code", ""))
+		var msg := str(warn.get("message", ""))
+		if "UNUSED_SIGNAL" in code and "lonely" in msg and "never explicitly used" in msg:
+			saw_signal = true
+	_expect(failures, saw_signal, "unused signal produces UNUSED_SIGNAL message")
+
+	var used_signal := "class_name UsedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\temit_signal(\"ping\")\n"
+	var used_signal_report: Dictionary = probe.validate_source(used_signal, "res://tests/used_signal.barista", true)
+	var saw_used_signal := false
+	for warn in used_signal_report.get("warnings", []):
+		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "ping" in str(warn.get("message", "")):
+			saw_used_signal = true
+	_expect(failures, not saw_used_signal, "emit_signal counts as signal use")
+
+	# Annotation surface: @warning_ignore needs resolve_annotation to populate resolved_arguments.
+	var ignored := "@warning_ignore(\"unused_signal\")\nclass_name IgnoredSignalScript extends Node\nsignal quiet\nfunc _ready() -> void:\n\tpass\n"
+	var ignored_report: Dictionary = probe.validate_source(ignored, "res://tests/ignored_signal.barista", true)
+	var saw_ignored := false
+	for warn in ignored_report.get("warnings", []):
+		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "quiet" in str(warn.get("message", "")):
+			saw_ignored = true
+	_expect(failures, not saw_ignored, "@warning_ignore(\"unused_signal\") suppresses UNUSED_SIGNAL via resolve_annotation")

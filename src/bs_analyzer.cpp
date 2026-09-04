@@ -987,6 +987,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 						if (is_self && p_call->function_name == SNAME("emit_signal")) {
 							call_site_validation.validate_local_object_emit_signal_args(p_call, true);
 						}
+						mark_implicit_signal_usage(p_call, is_self);
 						p_call->set_datatype(type_from_property(method_info.return_val));
 						return;
 					}
@@ -1005,6 +1006,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 		if (local_shape && fname != StringName()) {
 			if (fname == SNAME("emit_signal")) {
 				call_site_validation.validate_local_object_emit_signal_args(p_call, true);
+				mark_implicit_signal_usage(p_call, true);
 				BSParser::DataType void_type;
 				void_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 				void_type.kind = BSParser::DataType::BUILTIN;
@@ -1312,6 +1314,7 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
 	// Foundry applies function annotations before body analysis (resolve_class_body @ c9d5e35).
 	for (BSParser::AnnotationNode *annotation : p_function->annotations) {
 		if (annotation != nullptr) {
+			resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
 			annotation->apply(parser, p_function, current_class);
 		}
 	}
@@ -1431,6 +1434,7 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 					// (resolve_class_body @ c9d5e35) so `@onready` is visible to final-member rules.
 					for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
 						if (annotation != nullptr) {
+							resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_VARIABLE);
 							annotation->apply(parser, member.variable, current_class);
 						}
 					}
@@ -1440,10 +1444,28 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 				}
 				break;
 			case BSParser::ClassNode::Member::CONSTANT:
-				if (member.constant != nullptr && member.constant->initializer != nullptr) {
-					reduce_expression(member.constant->initializer);
-					if (member.constant->initializer->is_constant) {
-						member.constant->initializer->set_datatype(type_from_variant(member.constant->initializer->reduced_value));
+				if (member.constant != nullptr) {
+					for (BSParser::AnnotationNode *annotation : member.constant->annotations) {
+						if (annotation != nullptr) {
+							resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_CONSTANT);
+							annotation->apply(parser, member.constant, current_class);
+						}
+					}
+					if (member.constant->initializer != nullptr) {
+						reduce_expression(member.constant->initializer);
+						if (member.constant->initializer->is_constant) {
+							member.constant->initializer->set_datatype(type_from_variant(member.constant->initializer->reduced_value));
+						}
+					}
+				}
+				break;
+			case BSParser::ClassNode::Member::SIGNAL:
+				if (member.signal != nullptr) {
+					for (BSParser::AnnotationNode *annotation : member.signal->annotations) {
+						if (annotation != nullptr) {
+							resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_SIGNAL);
+							annotation->apply(parser, member.signal, current_class);
+						}
 					}
 				}
 				break;
@@ -1451,6 +1473,7 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 				break;
 		}
 	}
+	warn_unused_class_members(p_class);
 	current_class = previous;
 }
 
