@@ -142,9 +142,9 @@ void BSAnalyzer::warn_unused_class_members(BSParser::ClassNode *p_class) {
 				symbols.push_back(String(member.signal->identifier->name));
 				push_warning(member.signal->identifier, BSWarning::UNUSED_SIGNAL, symbols);
 			}
-		} else if (member.type == BSParser::ClassNode::Member::CLASS) {
-			warn_unused_class_members(member.m_class);
 		}
+		// Nested CLASS unused is handled when analyze_class_body recurses into the nested class
+		// (Foundry resolve_class_body does not re-walk nested members inside the unused pass).
 	}
 #else
 	(void)p_class;
