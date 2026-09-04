@@ -100,6 +100,7 @@ void BaristaScriptParserProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("parse_text", "source_utf8", "script_path"), &BaristaScriptParserProbe::parse_text);
 	ClassDB::bind_method(D_METHOD("parse_token_buffer", "token_buffer", "script_path"), &BaristaScriptParserProbe::parse_token_buffer);
 	ClassDB::bind_method(D_METHOD("reused_parse_reports", "source_utf8", "token_buffer", "script_path"), &BaristaScriptParserProbe::reused_parse_reports);
+	ClassDB::bind_method(D_METHOD("reused_token_buffer_reports", "first_buffer", "second_buffer", "script_path"), &BaristaScriptParserProbe::reused_token_buffer_reports);
 	ClassDB::bind_method(D_METHOD("tokenize_to_buffer", "source_utf8", "compress"), &BaristaScriptParserProbe::tokenize_to_buffer);
 	ClassDB::bind_method(D_METHOD("first_parse_diagnostic", "source_utf8", "script_path"), &BaristaScriptParserProbe::first_parse_diagnostic);
 	ClassDB::bind_method(D_METHOD("node_type_names"), &BaristaScriptParserProbe::node_type_names);
@@ -151,6 +152,18 @@ Array BaristaScriptParserProbe::reused_parse_reports(const PackedByteArray &p_so
 	}
 
 	const Error second_error = parser.parse_binary(p_token_buffer, p_script_path);
+	reports.push_back(render_report(parser, parser.list, second_error));
+	return reports;
+}
+
+Array BaristaScriptParserProbe::reused_token_buffer_reports(const PackedByteArray &p_first_buffer, const PackedByteArray &p_second_buffer, const String &p_script_path) const {
+	Array reports;
+	BSParser parser;
+
+	const Error first_error = parser.parse_binary(p_first_buffer, p_script_path);
+	reports.push_back(render_report(parser, parser.list, first_error));
+
+	const Error second_error = parser.parse_binary(p_second_buffer, p_script_path);
 	reports.push_back(render_report(parser, parser.list, second_error));
 	return reports;
 }

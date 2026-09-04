@@ -83,6 +83,16 @@ public:
 	 */
 	godot::Array reused_parse_reports(const godot::PackedByteArray &p_source_utf8, const godot::PackedByteArray &p_token_buffer, const godot::String &p_script_path) const;
 
+	/**
+	 * Two reports from **one** `BSParser`: a buffer parse of `p_first_buffer`, then a buffer parse
+	 * of `p_second_buffer` on the same instance.
+	 *
+	 * The same reuse contract as `reused_parse_reports()`, but both runs go through
+	 * `BSParser::parse_binary()` so a rejected buffer cannot leave `tokenizer_failed` set for a
+	 * later valid one.
+	 */
+	godot::Array reused_token_buffer_reports(const godot::PackedByteArray &p_first_buffer, const godot::PackedByteArray &p_second_buffer, const godot::String &p_script_path) const;
+
 	/** The compiled token buffer for this source, which is what a cache-warm parse replays. */
 	godot::PackedByteArray tokenize_to_buffer(const godot::PackedByteArray &p_source_utf8, bool p_compress) const;
 
