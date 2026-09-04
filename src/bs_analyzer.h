@@ -24,7 +24,6 @@ namespace barista_script {
  */
 class BSAnalyzer {
 	BSParser *parser = nullptr;
-	static String bootstrap_allowed_dependency_root;
 
 public:
 	explicit BSAnalyzer(BSParser *p_parser) :

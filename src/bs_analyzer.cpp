@@ -11,7 +11,19 @@
 
 namespace barista_script {
 
-String BSAnalyzer::bootstrap_allowed_dependency_root;
+namespace {
+
+String &bootstrap_root_storage() {
+	// Must not be a file-scope godot::String: constructing engine-backed types during .so load
+	// (before GDExtension interface pointers exist) segfaults.
+	static String *root = nullptr;
+	if (root == nullptr) {
+		root = memnew(String);
+	}
+	return *root;
+}
+
+} // namespace
 
 Error BSAnalyzer::resolve_inheritance() {
 	// #43 seam: inheritance resolution. Lifecycle advances after a successful parse.
@@ -30,6 +42,7 @@ Error BSAnalyzer::resolve_body() {
 }
 
 bool BSAnalyzer::is_bootstrap_path_allowed(const String &p_path) {
+	const String &bootstrap_allowed_dependency_root = bootstrap_root_storage();
 	if (bootstrap_allowed_dependency_root.is_empty()) {
 		return true;
 	}
@@ -38,16 +51,16 @@ bool BSAnalyzer::is_bootstrap_path_allowed(const String &p_path) {
 	if (path == root) {
 		return true;
 	}
-	const String prefix = root.ends_with("/") ? root : root + "/";
+	const String prefix = root.ends_with("/") ? root : root + String("/");
 	return path.begins_with(prefix);
 }
 
 void BSAnalyzer::set_bootstrap_allowed_dependency_root(const String &p_root) {
-	bootstrap_allowed_dependency_root = p_root.simplify_path();
+	bootstrap_root_storage() = p_root.simplify_path();
 }
 
 String BSAnalyzer::get_bootstrap_allowed_dependency_root() {
-	return bootstrap_allowed_dependency_root;
+	return bootstrap_root_storage();
 }
 
 } // namespace barista_script

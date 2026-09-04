@@ -724,7 +724,7 @@ void BSCache::remove_script(const String &p_path) {
 			}
 		}
 		cache->abandoned_parser_map.erase(p_path);
-		if (cache->parser_map.has(p_path)) {
+		if (cache->parser_map.has(p_path) && cache->parser_map[p_path].is_valid()) {
 			cache->parser_map[p_path]->clear();
 		}
 	}
@@ -756,9 +756,11 @@ void BSCache::clear() {
 	}
 	std::lock_guard<std::mutex> lock(cache->mutex);
 	cache->cleared = true;
-	for (KeyValue<String, BSParserRef *> &entry : cache->parser_map) {
-		entry.value->abandoned = true;
-		entry.value->clear();
+	for (KeyValue<String, Ref<BSParserRef>> &entry : cache->parser_map) {
+		if (entry.value.is_valid()) {
+			entry.value->abandoned = true;
+			entry.value->clear();
+		}
 	}
 	cache->parser_map.clear();
 	cache->parser_dependencies.clear();
@@ -835,13 +837,14 @@ Error BSParserRef::raise_status(Status p_new_status) {
 	while (result == OK && p_new_status > status) {
 		switch (status) {
 			case EMPTY: {
-				get_parser()->clear();
+				// Allocate the parser while status is still EMPTY (get_parser() only constructs then).
+				barista_script::BSParser *p = get_parser();
 				status = PARSED;
 				const String source = BSCache::get_source_code(path);
-				source_hash = source.hash();
-				result = get_parser()->parse(source, path, false);
+				source_hash = (uint32_t)source.hash();
+				result = p->parse(source, path, false);
 				if (result == OK) {
-					BSCache::update_parser_dependencies(path, get_parser());
+					BSCache::update_parser_dependencies(path, p);
 				}
 			} break;
 			case PARSED: {
@@ -926,7 +929,7 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 		}
 
 		if (cache->parser_map.has(path)) {
-			ref = Ref<BSParserRef>(cache->parser_map[path]);
+			ref = cache->parser_map[path];
 			if (ref.is_null()) {
 				r_error = ERR_INVALID_DATA;
 				return ref;
@@ -940,7 +943,7 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 			}
 			ref.instantiate();
 			ref->path = path;
-			cache->parser_map[path] = ref.ptr();
+			cache->parser_map[path] = ref;
 		}
 	}
 
@@ -986,9 +989,9 @@ Vector<String> BSCache::collect_parsers_reaching_namespace(const String &p_names
 		return members;
 	}
 	std::lock_guard<std::mutex> lock(cache->mutex);
-	for (const KeyValue<String, BSParserRef *> &entry : cache->parser_map) {
-		const BSParserRef *parser_ref = entry.value;
-		if (parser_ref == nullptr || parser_ref->status == BSParserRef::EMPTY) {
+	for (const KeyValue<String, Ref<BSParserRef>> &entry : cache->parser_map) {
+		const Ref<BSParserRef> &parser_ref = entry.value;
+		if (parser_ref.is_null() || parser_ref->status == BSParserRef::EMPTY) {
 			continue;
 		}
 		const barista_script::BSParser *parser = parser_ref->parser;
@@ -1017,9 +1020,11 @@ void BSCache::remove_parser(const String &p_path) {
 		std::lock_guard<std::mutex> lock(cache->mutex);
 		clear_parser_dependency_edges(cache, path);
 		if (cache->parser_map.has(path)) {
-			BSParserRef *parser_ref = cache->parser_map[path];
-			parser_ref->abandoned = true;
-			cache->abandoned_parser_map[path].push_back(parser_ref->get_instance_id());
+			Ref<BSParserRef> parser_ref = cache->parser_map[path];
+			if (parser_ref.is_valid()) {
+				parser_ref->abandoned = true;
+				cache->abandoned_parser_map[path].push_back(parser_ref->get_instance_id());
+			}
 			cache->parser_map.erase(path);
 		}
 		if (HashMap<String, HashSet<String>>::Iterator inverse = cache->parser_inverse_dependencies.find(path)) {
@@ -1040,7 +1045,7 @@ void BSCache::invalidate_analysis() {
 	Vector<String> parser_paths;
 	{
 		std::lock_guard<std::mutex> lock(cache->mutex);
-		for (const KeyValue<String, BSParserRef *> &entry : cache->parser_map) {
+		for (const KeyValue<String, Ref<BSParserRef>> &entry : cache->parser_map) {
 			parser_paths.push_back(entry.key);
 		}
 	}

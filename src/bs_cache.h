@@ -264,13 +264,15 @@ class BSCache {
 	HashMap<String, String> source_overrides;
 	HashMap<String, HashSet<String>> dependencies;
 	HashMap<String, HashSet<String>> inverse_dependencies;
-	HashMap<String, BSParserRef *> parser_map;
+	HashMap<String, Ref<BSParserRef>> parser_map;
 	HashMap<String, HashSet<String>> parser_dependencies;
 	HashMap<String, HashSet<String>> parser_inverse_dependencies;
 	HashMap<String, Vector<uint64_t>> abandoned_parser_map;
 	bool cleared = false;
 
 	std::mutex mutex;
+
+	friend class BSParserRef;
 
 	/**
 	 * Drops every dependency edge naming p_path, in both directions. Ported from

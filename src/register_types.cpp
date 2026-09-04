@@ -12,13 +12,13 @@
 #include "barista_script_language.h"
 #include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
+#include "bs_cache.h"
 #include "bs_corpus_sentinels.h"
 #include "bs_declaration_index_probe.h"
 #include "bs_global_class_probe.h"
 #include "bs_parser_probe.h"
 #include "bs_platform_probe.h"
 #include "bs_tokenizer_probe.h"
-#include "bs_cache.h"
 #include "bs_warning.h"
 
 #include <godot_cpp/classes/engine.hpp>

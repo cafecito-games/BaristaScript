@@ -1092,8 +1092,20 @@ bool BSParser::DataType::can_reference(const BSParser::DataType &p_other) const 
 		return true;
 	} else if (script_other.is_null()) {
 		return false;
-	} else if (script != script_other && !script_other->inherits_script(script)) {
-		return false;
+	} else if (script != script_other) {
+		// godot-cpp's Script binding does not expose inherits_script(); walk bases instead.
+		Ref<Script> cursor = script_other;
+		bool inherits = false;
+		while (cursor.is_valid()) {
+			if (cursor == script) {
+				inherits = true;
+				break;
+			}
+			cursor = cursor->get_base_script();
+		}
+		if (!inherits) {
+			return false;
+		}
 	}
 
 	return true;

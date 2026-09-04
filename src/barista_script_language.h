@@ -18,7 +18,6 @@ namespace barista_script {
 
 class BSParserHost;
 
-
 /**
  * The interned names the front-end compares identifiers against.
  *
@@ -145,7 +144,6 @@ private:
 	BSParserHost *parser_host = nullptr;
 
 public:
-
 	/**
 	 * The public functions of the language, in the shape the front-end wants them.
 	 *
