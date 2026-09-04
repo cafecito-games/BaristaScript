@@ -1119,6 +1119,40 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 			saw_used_signal = true
 	_expect(failures, not saw_used_signal, "emit_signal counts as signal use")
 
+	# Bare connect/disconnect/is_connected must also count (Foundry identifier callee = self) (#78).
+	var connect_signal := "class_name ConnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tconnect(\"ping\", Callable())\n"
+	var connect_report: Dictionary = probe.validate_source(connect_signal, "res://tests/connect_signal.barista", true)
+	var saw_connect_unused := false
+	for warn in connect_report.get("warnings", []):
+		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "ping" in str(warn.get("message", "")):
+			saw_connect_unused = true
+	_expect(failures, not saw_connect_unused, "bare connect counts as signal use")
+
+	var disconnect_signal := "class_name DisconnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tdisconnect(\"ping\", Callable())\n"
+	var disconnect_report: Dictionary = probe.validate_source(disconnect_signal, "res://tests/disconnect_signal.barista", true)
+	var saw_disconnect_unused := false
+	for warn in disconnect_report.get("warnings", []):
+		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "ping" in str(warn.get("message", "")):
+			saw_disconnect_unused = true
+	_expect(failures, not saw_disconnect_unused, "bare disconnect counts as signal use")
+
+	var is_connected_signal := "class_name IsConnectedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tvar _linked: bool = is_connected(\"ping\", Callable())\n"
+	var is_connected_report: Dictionary = probe.validate_source(is_connected_signal, "res://tests/is_connected_signal.barista", true)
+	var saw_is_connected_unused := false
+	for warn in is_connected_report.get("warnings", []):
+		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "ping" in str(warn.get("message", "")):
+			saw_is_connected_unused = true
+	_expect(failures, not saw_is_connected_unused, "bare is_connected counts as signal use")
+
+	# Nested unused: exactly one warning for the nested signal (no duplicate from outer unused pass).
+	var nested := "class_name NestedUnusedOuter extends Node\nclass Inner:\n\tsignal nested_lonely\n\tfunc _ready() -> void:\n\t\tpass\nfunc _ready() -> void:\n\tpass\n"
+	var nested_report: Dictionary = probe.validate_source(nested, "res://tests/nested_unused_signal.barista", true)
+	var nested_count := 0
+	for warn in nested_report.get("warnings", []):
+		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "nested_lonely" in str(warn.get("message", "")):
+			nested_count += 1
+	_expect(failures, nested_count == 1, "nested unused signal warns exactly once")
+
 	# Annotation surface: @warning_ignore needs resolve_annotation to populate resolved_arguments.
 	var ignored := "class_name IgnoredSignalScript extends Node\n@warning_ignore(\"unused_signal\")\nsignal quiet\nfunc _ready() -> void:\n\tpass\n"
 	var ignored_report: Dictionary = probe.validate_source(ignored, "res://tests/ignored_signal.barista", true)

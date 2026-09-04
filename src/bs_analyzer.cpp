@@ -1025,6 +1025,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 				MethodInfo method_info;
 				if (BSNativeDB::get_method_info(current_class->base_type.native_type, fname, &method_info)) {
 					call_site_validation.validate_call_arg(method_info, p_call);
+					// Foundry treats bare identifier callees as self for unused-signal accounting.
+					mark_implicit_signal_usage(p_call, true);
 					p_call->set_datatype(type_from_property(method_info.return_val));
 					return;
 				}
