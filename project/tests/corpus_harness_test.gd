@@ -144,7 +144,8 @@ func _test_line_ending_drift_fails(failures: Array[String]) -> void:
 
 
 func _test_mismatch_escape_visibility(failures: Array[String]) -> void:
-	var exotic_output := "\"\\" + "\t\n" + char(0) + char(127) + "abcé"
+	# Godot String cannot embed U+0000 (chr(0) becomes U+FFFD); chr(1) exercises the same \xNN path.
+	var exotic_output := "\"\\" + "\t\n" + String.chr(1) + String.chr(127) + "abcé"
 	var result := _run_harness(
 		"%s/passing" % FIXTURES_ROOT,
 		false,
@@ -168,7 +169,7 @@ func _test_mismatch_escape_visibility(failures: Array[String]) -> void:
 	)
 	_expect(
 		failures,
-		text.contains('actual:   "\\\"\\\\\\t\\n\\x00\\x7fabcé"'),
+		text.contains('actual:   "\\\"\\\\\\t\\n\\x01\\x7fabcé"'),
 		"control characters must render as visible escapes: %s" % text
 	)
 	for line in mismatch_lines:

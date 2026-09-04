@@ -364,7 +364,7 @@ func _escape_mismatch_value(value: String) -> String:
 				escaped += "\\t"
 			_:
 				if code < 0x20 or code == 0x7F:
-					escaped += "\\x%02x" % code
+					escaped += "\\x" + "%02x" % code
 				else:
 					escaped += value[index]
 	return escaped
