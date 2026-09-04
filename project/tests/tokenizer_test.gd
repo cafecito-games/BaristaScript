@@ -124,6 +124,7 @@ func _initialize() -> void:
 	_test_as_bang_is_not_as_followed_by_bang(probe)
 	_test_malformed_utf8_names_the_offending_byte(probe)
 	_test_integer_range_is_exact(probe)
+	_test_signed_literal_folding_boundaries(probe)
 
 	if failures.is_empty():
 		print("tokenizer contract: all assertions passed")
@@ -440,6 +441,53 @@ func _test_integer_range_is_exact(probe: BaristaScriptTokenizerProbe) -> void:
 			diagnostic.begins_with('Integer literal is out of range for "int"'),
 			"%s must be out of range, got: %s" % [spelling, diagnostic]
 		)
+
+	# Spaced sign is unary, so the magnitude is a positive literal and the signed minimum is not
+	# writable that way (issue #39 / GRAMMAR §2.6.1).
+	var spaced_min_diagnostic: String = probe.first_diagnostic(
+		"var value = - 9223372036854775808\n".to_utf8_buffer()
+	)
+	_expect(
+		spaced_min_diagnostic.begins_with('Integer literal is out of range for "int"'),
+		"spaced `- 9223372036854775808` must be out of range, got: %s" % spaced_min_diagnostic
+	)
+
+
+## Adjacent `+`/`-` + digit folds into one literal only when the preceding token cannot end a
+## value (issue #39). Whitespace, and signs after value-ending tokens, stay operators.
+func _test_signed_literal_folding_boundaries(probe: BaristaScriptTokenizerProbe) -> void:
+	var folded_negative := probe.dump_significant_tokens("var value = -2\n".to_utf8_buffer())
+	_expect(
+		folded_negative.has("Literal\tint:-2") and not folded_negative.has("-"),
+		"expression-start `-2` must be one negative literal, got %s" % [folded_negative]
+	)
+	var folded_positive := probe.dump_significant_tokens("var value = +2\n".to_utf8_buffer())
+	_expect(
+		folded_positive.has("Literal\tint:2") and not folded_positive.has("+"),
+		"expression-start `+2` must be one positive literal (no unary +), got %s" % [folded_positive]
+	)
+
+	var spaced_negative := probe.dump_significant_tokens("var value = - 2\n".to_utf8_buffer())
+	_expect(
+		spaced_negative.has("-") and spaced_negative.has("Literal\tint:2"),
+		"spaced `- 2` must be unary minus plus positive literal, got %s" % [spaced_negative]
+	)
+	var spaced_positive := probe.dump_significant_tokens("var value = + 2\n".to_utf8_buffer())
+	_expect(
+		spaced_positive.has("+") and spaced_positive.has("Literal\tint:2"),
+		"spaced `+ 2` must be unary plus plus positive literal, got %s" % [spaced_positive]
+	)
+
+	var glued_after_value := probe.dump_significant_tokens("var value = a-2\n".to_utf8_buffer())
+	_expect(
+		glued_after_value.has("-") and glued_after_value.has("Literal\tint:2"),
+		"`a-2` must keep binary minus (no signed literal), got %s" % [glued_after_value]
+	)
+	var spaced_after_value := probe.dump_significant_tokens("var value = a -2\n".to_utf8_buffer())
+	_expect(
+		spaced_after_value.has("-") and spaced_after_value.has("Literal\tint:2"),
+		"`a -2` must keep binary minus even with space before the sign, got %s" % [spaced_after_value]
+	)
 
 
 func _fixture_case_paths() -> Array[String]:

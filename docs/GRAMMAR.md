@@ -278,6 +278,13 @@ Rules enforced by the tokenizer:
 - A digit immediately following a `PERIOD` token lexes as a decimal integer **only**: no
   fractional part, exponent, base prefix, or trailing letter, so `t.0.1` is nested member
   access and `t.0e5` / `t.0x1` are lexer errors.
+- A `+` or `-` **immediately** followed by a digit (no intervening whitespace) is folded into
+  that numeric literal whenever the preceding token cannot end a value. Whitespace between the
+  sign and the digit prevents folding and yields an ordinary unary `PLUS`/`MINUS` token instead.
+  After a value-ending token the same characters are always the binary operator, even when the
+  digit is adjacent (`a-2` is `a`, `-`, `2`). This is what makes `-9223372036854775808` writable
+  (§5.2, §7.1): the sign is lexical content of the literal, not a unary applied to an out-of-range
+  positive magnitude.
 
 #### 2.6.2 Strings
 
@@ -951,11 +958,13 @@ From lowest to highest. Higher binds tighter.
 >
 > A *numeric literal* is the exception, and deliberately: a `+` or `-` immediately followed by a
 > digit is part of the literal whenever the preceding token cannot end a value (§2.6.1), so `-2`
-> never becomes a unary operator for `**` to bind tighter than, and `-2 ** 2` is `(-2) ** 2`. This
-> is not a precedence rule and cannot be changed by one — it is what makes
-> `-9223372036854775808`, the lower bound §7.1 states, writable at all: as unary minus applied to
-> `9223372036854775808` the magnitude has no `int` to live in. Foundry Script and GDScript lex it
-> the same way.
+> never becomes a unary operator for `**` to bind tighter than, and `-2 ** 2` is `(-2) ** 2`.
+> Whitespace blocks that fold (`- 2 ** 2` is `-(2 ** 2)`), and a sign after a value-ending token
+> stays binary even when glued to the digit (`a-2 ** 2` is `a - (2 ** 2)`). This is not a
+> precedence rule and cannot be changed by one — it is what makes `-9223372036854775808`, the
+> lower bound §7.1 states, writable at all: as unary minus applied to `9223372036854775808` the
+> magnitude has no `int` to live in. Foundry Script and GDScript lex the adjacent fold the same
+> way.
 
 ### 5.3 Prefix (null-denotation) forms
 
@@ -1578,7 +1587,9 @@ Details:
 
 BaristaScript has **one integer type, `int`**. It is the signed 64-bit `Variant::INT` carrier, with
 inclusive range `-9223372036854775808` … `9223372036854775807` — identical to GDScript's `int`, so
-an integer crossing the GDScript boundary (D5) needs no conversion and loses nothing.
+an integer crossing the GDScript boundary (D5) needs no conversion and loses nothing. The lower
+bound is writable only as a folded signed literal (§2.6.1, §5.2): `-9223372036854775808` is one
+token; `- 9223372036854775808` (unary minus plus a positive magnitude) is out of range.
 
 `uint`, `ulong`, and `long` are **reserved type names** (§2.5): recognized in type position and
 always rejected, never silently treated as user identifiers in a type. Integer literal suffixes

@@ -665,18 +665,45 @@ func _test_precedence_and_associativity(probe, failures: Array[String]) -> void:
 			_expect(failures, plain != different,
 				"precedence: `%s` parses the same as `%s`, so the levels are not distinguished" % [case[0], case[1]])
 
-	# The note under the table -- `**` binds tighter than unary sign -- holds for a unary operator,
-	# which `-a ** b` above asserts. It does not hold for a *literal* operand, and deliberately not:
-	# the tokenizer folds a leading sign into a numeric literal when the preceding token cannot end a
-	# value (docs/GRAMMAR.md section 2.6.1's last two rules, and `can_precede_bin_op()`), so `-2`
-	# never becomes a unary operator for `**` to bind tighter than. `-2 ** 2` is therefore
-	# `(-2) ** 2`, as it is in Foundry Script, whose tokenizer this is a port of. The example in
-	# section 5.2's note reads the other way; the discrepancy is recorded rather than papered over,
-	# and this asserts what the implementation actually does so a silent change cannot pass.
+	# BaristaScript §5.2 agrees with the implementation (issue #39): `**` binds tighter than a true
+	# unary sign (`-a ** b` above), while an immediately adjacent `+`/`-` + digit folds into the
+	# numeric literal when the preceding token cannot end a value (§2.6.1 / `can_precede_bin_op()`).
+	# Foundry's tokenizer matches this folding; its pinned GRAMMAR.md note that still describes
+	# `-2 ** 2` as unary sign is the stale prose, not BaristaScript's.
 	_expect(failures, _expression_tree(probe, "-2 ** 2") == _expression_tree(probe, "(-2) ** 2"),
 		"literal sign folding: `-2 ** 2` no longer parses as `(-2) ** 2`")
 	_expect(failures, _expression_tree(probe, "-2 ** 2") != _expression_tree(probe, "-(2 ** 2)"),
 		"literal sign folding: `-2 ** 2` now parses as `-(2 ** 2)`, which the tokenizer's folding rules out")
+	_expect(failures, _expression_tree(probe, "+2 ** 2") == _expression_tree(probe, "(+2) ** 2"),
+		"literal sign folding: `+2 ** 2` no longer parses as `(+2) ** 2`")
+	_expect(failures, _expression_tree(probe, "+2 ** 2") != _expression_tree(probe, "+(2 ** 2)"),
+		"literal sign folding: `+2 ** 2` now parses as `+(2 ** 2)`, which the tokenizer's folding rules out")
+
+	# Whitespace between sign and digit prevents folding, so the sign is a true unary operator and
+	# `PREC_POWER` wins: `- 2 ** 2` / `+ 2 ** 2` match the unary-applied-to-power grouping.
+	_expect(failures, _expression_tree(probe, "- 2 ** 2") == _expression_tree(probe, "-(2 ** 2)"),
+		"spaced unary sign: `- 2 ** 2` no longer parses as `-(2 ** 2)`")
+	_expect(failures, _expression_tree(probe, "- 2 ** 2") != _expression_tree(probe, "(-2) ** 2"),
+		"spaced unary sign: `- 2 ** 2` collapsed into the folded-literal grouping")
+	_expect(failures, _expression_tree(probe, "+ 2 ** 2") == _expression_tree(probe, "+(2 ** 2)"),
+		"spaced unary sign: `+ 2 ** 2` no longer parses as `+(2 ** 2)`")
+	_expect(failures, _expression_tree(probe, "+ 2 ** 2") != _expression_tree(probe, "(+2) ** 2"),
+		"spaced unary sign: `+ 2 ** 2` collapsed into the folded-literal grouping")
+
+	# After a value-ending token the sign is binary subtraction even when glued to the digit;
+	# whitespace before the sign does not override that preceding-token rule.
+	_expect(failures, _expression_tree(probe, "a-2 ** 2") == _expression_tree(probe, "a - (2 ** 2)"),
+		"after-value sign: `a-2 ** 2` no longer parses as `a - (2 ** 2)`")
+	_expect(failures, _expression_tree(probe, "a-2 ** 2") != _expression_tree(probe, "(a - 2) ** 2"),
+		"after-value sign: `a-2 ** 2` grouped as `(a - 2) ** 2`")
+	_expect(failures, _expression_tree(probe, "a -2 ** 2") == _expression_tree(probe, "a - (2 ** 2)"),
+		"after-value sign: `a -2 ** 2` no longer parses as `a - (2 ** 2)`")
+	_expect(failures, _expression_tree(probe, "a -2 ** 2") != _expression_tree(probe, "(a - 2) ** 2"),
+		"after-value sign: `a -2 ** 2` grouped as `(a - 2) ** 2`")
+
+	# Deferred to #43 (M3 analyzer constant folding): consume the AST shapes pinned above without
+	# re-tokenizing source or special-casing the spelling `-2`. Expected reduced values once that
+	# surface lands: `-2 ** 2` / `(-2) ** 2` → 4; `-(2 ** 2)` / `- 2 ** 2` → -4.
 
 	# The ternary is right-associative.
 	_expect(failures,
