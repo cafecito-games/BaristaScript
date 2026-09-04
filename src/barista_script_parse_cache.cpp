@@ -8,6 +8,8 @@
 
 #include "barista_script_parse_cache.h"
 
+#include <cstring>
+
 #include <godot_cpp/core/class_db.hpp>
 
 namespace {

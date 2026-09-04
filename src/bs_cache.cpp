@@ -12,6 +12,8 @@
 
 #include "bs_cache.h"
 
+#include <cstring>
+
 // ---------------------------------------------------------------------------
 // Miss-reason vocabulary. One definition of every name and every log line.
 // ---------------------------------------------------------------------------

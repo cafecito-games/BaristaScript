@@ -21,6 +21,7 @@ func _initialize() -> void:
 	_test_parse_failure_against_sentinel_fails(failures)
 	_test_trailing_whitespace_drift_fails(failures)
 	_test_line_ending_drift_fails(failures)
+	_test_mismatch_escape_visibility(failures)
 	_test_ignore_marker_directory_is_skipped_and_counted(failures)
 	_test_notest_helper_is_not_a_case(failures)
 	_test_zero_cases_fails_without_allow_empty(failures)
@@ -129,11 +130,56 @@ func _test_line_ending_drift_fails(failures: Array[String]) -> void:
 			return {"ok": true, "output": ""}
 	)
 	_expect(failures, result["exit_code"] == Harness.ExitCode.CASES_FAILED, "line-ending-only drift must fail")
+	var text := _text(result)
 	_expect(
 		failures,
-		_text(result).contains('expected: "%s\r"' % Harness.SUCCESS_SENTINEL),
-		"a carriage return in the expectation must survive into the exact comparison: %s" % _text(result)
+		text.contains('expected: "%s\\r"' % Harness.SUCCESS_SENTINEL),
+		"a carriage return in the expectation must render as a visible \\r escape: %s" % text
 	)
+	_expect(
+		failures,
+		not text.contains("\r"),
+		"mismatch output must not contain raw carriage returns: %s" % text
+	)
+
+
+func _test_mismatch_escape_visibility(failures: Array[String]) -> void:
+	var exotic_output := "\"\\" + "\t\n" + char(0) + char(127) + "abcé"
+	var result := _run_harness(
+		"%s/passing" % FIXTURES_ROOT,
+		false,
+		false,
+		func(_case_path: String) -> Dictionary:
+			return {"ok": false, "output": exotic_output}
+	)
+	_expect(failures, result["exit_code"] == Harness.ExitCode.CASES_FAILED, "exotic mismatch must fail the run")
+	var text := _text(result)
+	var mismatch_lines := PackedStringArray()
+	for line in result["output"]:
+		var line_text := String(line)
+		if line_text.contains("output mismatch"):
+			mismatch_lines.append(line_text)
+		elif line_text.begins_with("     expected:") or line_text.begins_with("     actual:"):
+			mismatch_lines.append(line_text)
+	_expect(
+		failures,
+		mismatch_lines.size() == 3,
+		"mismatch diagnostic must stay on three logical lines: %s" % text
+	)
+	_expect(
+		failures,
+		text.contains('actual:   "\\\"\\\\\\t\\n\\x00\\x7fabcé"'),
+		"control characters must render as visible escapes: %s" % text
+	)
+	for line in mismatch_lines:
+		_expect(
+			failures,
+			not line.contains(char(0))
+				and not line.contains(char(127))
+				and not line.contains("\t")
+				and not line.contains("\r"),
+			"mismatch lines must not contain raw control characters: %s" % line
+		)
 
 
 func _test_ignore_marker_directory_is_skipped_and_counted(failures: Array[String]) -> void:
