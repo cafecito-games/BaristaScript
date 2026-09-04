@@ -69,9 +69,18 @@ func _test_transitive_invalidation(failures: PackedStringArray) -> void:
 
 func _test_missing_and_self(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()
-	var missing := BaristaScriptParseCache.get_parser("res://tests/does_not_exist.barista", Status.EMPTY, "res://tests/owner.barista")
+	BaristaScriptParseCache.set_source_override("res://tests/owner.barista", "class_name OwnerFile extends Node\n")
+	var owner_ref := BaristaScriptParseCache.get_parser("res://tests/owner.barista", Status.EMPTY, "")
+	_expect(failures, owner_ref.valid, "owner fixture must cache")
+	var missing_path := "res://tests/does_not_exist.barista"
+	var missing := BaristaScriptParseCache.get_parser(missing_path, Status.EMPTY, "res://tests/owner.barista")
 	_expect(failures, not missing.valid, "missing file creates no entry")
-	_expect(failures, not BaristaScriptParseCache.has_parser("res://tests/does_not_exist.barista"), "missing path absent from map")
+	_expect(failures, not BaristaScriptParseCache.has_parser(missing_path), "missing path absent from map")
+	var missing_inverse := BaristaScriptParseCache.get_inverse_dependencies(missing_path)
+	_expect(failures, missing_inverse.is_empty(), "missing file creates no inverse edge")
+	# Removing a never-admitted missing path must not wipe the owner via a ghost edge.
+	BaristaScriptParseCache.remove_script(missing_path)
+	_expect(failures, BaristaScriptParseCache.has_parser("res://tests/owner.barista"), "ghost missing edge must not invalidate owner")
 
 	BaristaScriptParseCache.set_source_override("res://tests/self.barista", "class_name SelfFile extends Node\n")
 	var self_ref := BaristaScriptParseCache.get_parser("res://tests/self.barista", Status.EMPTY, "res://tests/self.barista")
