@@ -54,6 +54,11 @@ public:
 	 * On digest mismatch against available source, discards + reanalyzes before returning.
 	 */
 	godot::Dictionary lookup_qualified_name(const godot::String &p_qualified_name);
+
+	/** ScriptServer surfaces that must also digest-validate private names (#62). */
+	bool script_server_is_global_class_enum(const godot::String &p_name) const;
+	godot::String script_server_get_global_class_path(const godot::String &p_name) const;
+	godot::PackedStringArray script_server_get_global_class_list() const;
 };
 
 } // namespace barista_script

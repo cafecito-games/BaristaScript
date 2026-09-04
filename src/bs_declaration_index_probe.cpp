@@ -15,6 +15,7 @@
 #include "bs_analyzer.h"
 #include "bs_declaration_index.h"
 #include "bs_parser.h"
+#include "bs_script_server.h"
 
 #include <godot_cpp/core/class_db.hpp>
 
@@ -102,6 +103,9 @@ void BaristaScriptDeclarationIndexProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("host_is_bootstrap_path_allowed", "path"), &BaristaScriptDeclarationIndexProbe::host_is_bootstrap_path_allowed);
 	ClassDB::bind_method(D_METHOD("set_bootstrap_root", "root"), &BaristaScriptDeclarationIndexProbe::set_bootstrap_root);
 	ClassDB::bind_method(D_METHOD("lookup_qualified_name", "qualified_name"), &BaristaScriptDeclarationIndexProbe::lookup_qualified_name);
+	ClassDB::bind_method(D_METHOD("script_server_is_global_class_enum", "name"), &BaristaScriptDeclarationIndexProbe::script_server_is_global_class_enum);
+	ClassDB::bind_method(D_METHOD("script_server_get_global_class_path", "name"), &BaristaScriptDeclarationIndexProbe::script_server_get_global_class_path);
+	ClassDB::bind_method(D_METHOD("script_server_get_global_class_list"), &BaristaScriptDeclarationIndexProbe::script_server_get_global_class_list);
 }
 
 int BaristaScriptDeclarationIndexProbe::get_format_version() {
@@ -224,6 +228,24 @@ godot::Dictionary BaristaScriptDeclarationIndexProbe::lookup_qualified_name(cons
 		return godot::Dictionary();
 	}
 	return dictionary_from_record(record);
+}
+
+bool BaristaScriptDeclarationIndexProbe::script_server_is_global_class_enum(const godot::String &p_name) const {
+	return ScriptServer::is_global_class_enum(StringName(p_name));
+}
+
+godot::String BaristaScriptDeclarationIndexProbe::script_server_get_global_class_path(const godot::String &p_name) const {
+	return ScriptServer::get_global_class_path(StringName(p_name));
+}
+
+godot::PackedStringArray BaristaScriptDeclarationIndexProbe::script_server_get_global_class_list() const {
+	List<StringName> names;
+	ScriptServer::get_global_class_list(&names);
+	godot::PackedStringArray result;
+	for (const List<StringName>::Element *E = names.front(); E; E = E->next()) {
+		result.push_back(String(E->get()));
+	}
+	return result;
 }
 
 } // namespace barista_script

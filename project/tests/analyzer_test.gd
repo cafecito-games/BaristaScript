@@ -434,10 +434,54 @@ func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
 
 	BaristaScriptParseCache.set_source_override(path, source)
 	var looked := index.lookup_qualified_name("DigestFresh")
-	BaristaScriptParseCache.clear_source_override(path)
 	_expect(failures, not looked.is_empty(), "lookup reanalyzes and restores DigestFresh")
 	_expect(failures, int(looked.get("source_digest", 0)) == BaristaScriptDeclarationIndexProbe.compute_source_digest(source),
 		"restored digest matches current source")
+
+	# Re-poison and exercise ScriptServer path/list surfaces (#62).
+	token = index.claim_refresh(path)
+	_expect(failures, index.commit_record(token, {
+		"path": path,
+		"source_digest": 999999,
+		"namespace_name": "",
+		"qualified_name": "DigestFresh",
+		"kind": 1,
+		"base_type": "Node",
+		"is_abstract": false,
+		"is_tool": false,
+		"icon_path": "",
+		"global_annotations": PackedStringArray(),
+		"declares_retroactive_conformances": false,
+	}), "re-poison stale digest for ScriptServer")
+	var ss_path := index.script_server_get_global_class_path("DigestFresh")
+	_expect(failures, ss_path == path, "ScriptServer path lookup reanalyzes stale digest")
+	_expect(failures, "DigestFresh" in index.script_server_get_global_class_list(),
+		"ScriptServer class list includes digest-validated private name")
+
+	var enum_path := "res://tests/digest_enum.barista"
+	var enum_source := "enum_name DigestEnum:\n\tA = 0\n\tB = 1\n"
+	index.synchronize_path_from_source(enum_path, enum_source)
+	_expect(failures, index.script_server_is_global_class_enum("DigestEnum"),
+		"ScriptServer recognizes synchronized enum")
+	var enum_token := index.claim_refresh(enum_path)
+	_expect(failures, index.commit_record(enum_token, {
+		"path": enum_path,
+		"source_digest": 424242,
+		"namespace_name": "",
+		"qualified_name": "DigestEnum",
+		"kind": 4,
+		"base_type": "",
+		"is_abstract": true,
+		"is_tool": false,
+		"icon_path": "",
+		"global_annotations": PackedStringArray(),
+		"declares_retroactive_conformances": false,
+	}), "stale enum digest commits")
+	BaristaScriptParseCache.set_source_override(enum_path, enum_source)
+	_expect(failures, index.script_server_is_global_class_enum("DigestEnum"),
+		"ScriptServer enum lookup reanalyzes stale digest")
+	BaristaScriptParseCache.clear_source_override(path)
+	BaristaScriptParseCache.clear_source_override(enum_path)
 	index.clear()
 
 
