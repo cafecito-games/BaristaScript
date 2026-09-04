@@ -10,10 +10,15 @@
 
 #include "barista_script_language.h"
 #include "bs_analyzer.h"
+#include "bs_cache.h"
 
 namespace barista_script {
 
-void BaristaScript::_bind_methods() {}
+void BaristaScript::_bind_methods() {
+	// Script::is_valid() is not exposed to GDScript in Godot 4.7; bind an explicit wrapper so
+	// suites and editor tooling can ask the same question `_is_valid()` answers (#43).
+	ClassDB::bind_method(D_METHOD("is_valid"), &BaristaScript::_is_valid);
+}
 
 bool BaristaScript::_editor_can_reload_from_file() {
 	return true;
@@ -105,7 +110,15 @@ bool BaristaScript::_is_valid() const {
 	// Semantic validity must agree with `BaristaScriptLanguage::_validate()`: parse + analyze.
 	// Declaration-only resolution (`_get_global_class_name`) stays looser so mid-edit bodies do not
 	// drop the global name. Issue #43.
-	return bs_source_analyzes(source_code, canonicalize_path(get_path()));
+	const String path = canonicalize_path(get_path());
+	if (!path.is_empty()) {
+		BSCache::set_source_override(path, source_code);
+	}
+	const bool ok = bs_source_analyzes(source_code, path);
+	if (!path.is_empty()) {
+		BSCache::clear_source_override(path);
+	}
+	return ok;
 }
 
 bool BaristaScript::_is_abstract() const {

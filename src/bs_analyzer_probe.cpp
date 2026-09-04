@@ -12,6 +12,7 @@
 #include "bs_analyzer_probe.h"
 
 #include "bs_analyzer.h"
+#include "bs_cache.h"
 #include "bs_parser.h"
 
 namespace barista_script {
@@ -66,13 +67,16 @@ godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::Strin
 	result["has_unary_sign"] = false;
 	godot::PackedStringArray errors;
 
+	const String path = "res://tests/fold_probe.barista";
 	const String source = vformat("var probe_expression = %s\n", p_expression_source);
+	BSCache::set_source_override(path, source);
 	BSParser parser;
 	BSAnalyzer analyzer(&parser);
-	Error err = parser.parse(source, "res://tests/fold_probe.barista", false);
+	Error err = parser.parse(source, path, false);
 	if (err == OK) {
 		err = analyzer.analyze();
 	}
+	BSCache::clear_source_override(path);
 	for (const BSParser::ParserError &pe : parser.get_errors()) {
 		errors.push_back(pe.message);
 	}
@@ -101,12 +105,15 @@ godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::Strin
 
 godot::Dictionary BaristaScriptAnalyzerProbe::analyze_source(const godot::String &p_source, const godot::String &p_path) const {
 	godot::Dictionary result;
+	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
+	BSCache::set_source_override(path, p_source);
 	BSParser parser;
 	BSAnalyzer analyzer(&parser);
-	Error err = parser.parse(p_source, p_path, false);
+	Error err = parser.parse(p_source, path, false);
 	if (err == OK) {
 		err = analyzer.analyze();
 	}
+	BSCache::clear_source_override(path);
 	godot::PackedStringArray errors;
 	for (const BSParser::ParserError &pe : parser.get_errors()) {
 		errors.push_back(pe.message);
@@ -118,7 +125,11 @@ godot::Dictionary BaristaScriptAnalyzerProbe::analyze_source(const godot::String
 }
 
 bool BaristaScriptAnalyzerProbe::is_semantically_valid(const godot::String &p_source, const godot::String &p_path) const {
-	return bs_source_analyzes(p_source, p_path);
+	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
+	BSCache::set_source_override(path, p_source);
+	const bool ok = bs_source_analyzes(p_source, path);
+	BSCache::clear_source_override(path);
+	return ok;
 }
 
 } // namespace barista_script

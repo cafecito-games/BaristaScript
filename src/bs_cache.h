@@ -235,7 +235,9 @@ private:
 	uint32_t source_hash = 0;
 	bool clearing = false;
 	bool abandoned = false;
-	std::mutex raise_mutex;
+	// Recursive: raise_status may re-enter the same path while resolving inheritance cycles
+	// (A extends B extends A) via BSCache::get_parser from inside resolve_inheritance.
+	std::recursive_mutex raise_mutex;
 
 	friend class BSCache;
 

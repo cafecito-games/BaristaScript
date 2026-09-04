@@ -203,12 +203,17 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 	}
 
 	if (!p_class->extends_path.is_empty()) {
-		const String path = BaristaScript::canonicalize_path(p_class->extends_path);
+		String path = p_class->extends_path.strip_edges();
+		if (path.is_relative_path() && !parser->script_path.is_empty()) {
+			path = parser->script_path.get_base_dir().path_join(path).simplify_path();
+		}
+		path = BaristaScript::canonicalize_path(path);
 		if (!is_bootstrap_path_allowed(path) && path.begins_with("res://")) {
 			// Explicit out-of-root import diagnostic (#52): only when the path is outside the bootstrap root.
 			push_error(vformat(R"(Cannot depend on "%s": path is outside the bootstrap allowed dependency root.)", path), p_class);
 		}
 		Error err = OK;
+		// raise_mutex is recursive so A→B→A re-enters the still-raising path without deadlocking.
 		Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser->script_path);
 		if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr || base_ref->get_parser()->get_tree() == nullptr) {
 			push_error(vformat(R"(Could not resolve base script "%s".)", path), p_class);
@@ -416,18 +421,24 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 				analyze_class_interface(member.m_class);
 				break;
 			case BSParser::ClassNode::Member::FUNCTION:
-				if (member.function != nullptr && member.function->return_type != nullptr) {
-					BSParser::DataType return_type = member.function->get_datatype();
-					resolve_datatype(return_type, member.function);
-				}
-				if (member.function != nullptr && !member.function->type_parameters.is_empty()) {
-					push_error("Generic function specialization is not available until M5.", member.function);
+				if (member.function != nullptr) {
+					if (member.function->return_type != nullptr) {
+						member.function->set_datatype(datatype_from_type_node(member.function->return_type));
+					}
+					for (int p = 0; p < member.function->parameters.size(); p++) {
+						BSParser::ParameterNode *parameter = member.function->parameters[p];
+						if (parameter != nullptr && parameter->datatype_specifier != nullptr) {
+							parameter->set_datatype(datatype_from_type_node(parameter->datatype_specifier));
+						}
+					}
+					if (!member.function->type_parameters.is_empty()) {
+						push_error("Generic function specialization is not available until M5.", member.function);
+					}
 				}
 				break;
 			case BSParser::ClassNode::Member::VARIABLE:
 				if (member.variable != nullptr && member.variable->datatype_specifier != nullptr) {
-					BSParser::DataType var_type = member.variable->get_datatype();
-					resolve_datatype(var_type, member.variable);
+					member.variable->set_datatype(datatype_from_type_node(member.variable->datatype_specifier));
 				}
 				break;
 			default:

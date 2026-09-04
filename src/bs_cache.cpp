@@ -838,7 +838,7 @@ barista_script::BSAnalyzer *BSParserRef::get_analyzer() {
 }
 
 Error BSParserRef::raise_status(Status p_new_status) {
-	std::lock_guard<std::mutex> raise_lock(raise_mutex);
+	std::lock_guard<std::recursive_mutex> raise_lock(raise_mutex);
 	ERR_FAIL_COND_V(clearing, ERR_BUG);
 	ERR_FAIL_COND_V(parser == nullptr && status != EMPTY, ERR_BUG);
 
