@@ -65,6 +65,13 @@ public:
 	static bool is_compatible(const BSParser::DataType &p_target, const BSParser::DataType &p_source, bool p_allow_implicit_conversion = false);
 	static bool is_invariant_equal(const BSParser::DataType &p_a, const BSParser::DataType &p_b);
 	static bool allows_runtime_narrowing(const BSParser::DataType &p_narrow, const BSParser::DataType &p_wide);
+
+	/** Foundry FSTypeCompatibility rest-tail helpers @ c9d5e35 (trait signature matching). */
+	static bool rest_parameter_type_is_narrowing(const BSParser::DataType &p_rest_parameter_type);
+	static bool rest_parameter_accepts_required_arguments(const BSParser::DataType *p_implementation_rest_array,
+			const BSParser::DataType *p_required_rest_array, bool p_strict_null);
+	static bool rest_parameter_accepts_required_argument(const BSParser::DataType *p_implementation_rest_array,
+			const BSParser::DataType &p_required_argument_type, bool p_strict_null);
 };
 
 } // namespace barista_script

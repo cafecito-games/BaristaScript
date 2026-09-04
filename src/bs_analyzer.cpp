@@ -536,6 +536,34 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			result.builtin_type = Variant::STRING;
 		} else if (name == SNAME("Variant") || name == SNAME("void")) {
 			result.kind = BSParser::DataType::VARIANT;
+		} else if (name == SNAME("Self") && current_class != nullptr) {
+			// Foundry datatype_from_type_node @ c9d5e35: Self lowers to @Self bound by the
+			// declaring class so trait signature matching can reify it to the implementer.
+			if (!p_type_node->container_types.is_empty()) {
+				push_error(R"(Type "Self" cannot be specialized with type arguments.)", p_type_node);
+				result.kind = BSParser::DataType::VARIANT;
+				return result;
+			}
+			result.kind = BSParser::DataType::TYPE_PARAMETER;
+			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			result.type_parameter_name = SNAME("@Self");
+			result.type_parameter_scope = BSParser::DataType::TYPE_PARAMETER_CLASS;
+			result.type_parameter_index = -1;
+			result.is_nullable = p_type_node->is_nullable;
+			BSParser::DataType bound = current_class->get_datatype();
+			bound.is_meta_type = false;
+			bound.type_arguments.clear();
+			if (!bound.is_set() || bound.is_variant()) {
+				bound.kind = BSParser::DataType::CLASS;
+				bound.class_type = current_class;
+				bound.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+				bound.builtin_type = Variant::OBJECT;
+				bound.native_type = current_class->base_type.native_type;
+			}
+			if (bound.is_set() && !bound.is_variant()) {
+				result.type_parameter_bound.push_back(bound);
+			}
+			return result;
 		} else if (ClassDB::class_exists(name)) {
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = name;
@@ -595,6 +623,9 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 	}
 	p_class->resolved_interface = true;
 
+	BSParser::ClassNode *previous_class = current_class;
+	current_class = p_class;
+
 	HashSet<StringName> seen;
 	for (int i = 0; i < p_class->members.size(); i++) {
 		const BSParser::ClassNode::Member &member = p_class->members[i];
@@ -611,15 +642,7 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 				break;
 			case BSParser::ClassNode::Member::FUNCTION:
 				if (member.function != nullptr) {
-					if (member.function->return_type != nullptr) {
-						member.function->set_datatype(datatype_from_type_node(member.function->return_type));
-					}
-					for (int p = 0; p < member.function->parameters.size(); p++) {
-						BSParser::ParameterNode *parameter = member.function->parameters[p];
-						if (parameter != nullptr && parameter->datatype_specifier != nullptr) {
-							parameter->set_datatype(datatype_from_type_node(parameter->datatype_specifier));
-						}
-					}
+					resolve_function_signature_in_class(member.function, p_class);
 					if (!member.function->type_parameters.is_empty()) {
 						push_error("Generic function specialization is not available until M5.", member.function);
 					}
@@ -668,6 +691,7 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 	if (!p_class->type_parameters.is_empty()) {
 		push_error("Generic class specialization is not available until M5.", p_class);
 	}
+	current_class = previous_class;
 }
 
 Error BSAnalyzer::run_phase_interface_and_member_surface() {

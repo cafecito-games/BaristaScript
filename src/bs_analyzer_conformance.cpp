@@ -3,12 +3,13 @@
 /*                                                                        */
 /*  Hard fork of Foundry `modules/foundry_script/fs_analyzer_conformance   */
 /*  .cpp` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 (plus               */
-/*  validate_trait_requirements / find_trait_implementation from          */
-/*  fs_analyzer.cpp). FS* -> BS*; engine contact through bs_platform.h.   */
-/*  Starter slice for #60: trait abstract-method requirements,            */
-/*  retroactive `extend` missing-witness diagnostics, and witness-body    */
-/*  analysis hooks. Full FSConformanceRegistry / chain-coherence /        */
-/*  signature substitution remain follow-up under #60.                    */
+/*  validate_trait_requirements / find_trait_implementation /             */
+/*  validate_trait_method_signature from fs_analyzer.cpp). FS* -> BS*;   */
+/*  engine contact through bs_platform.h.                                 */
+/*  Non-generic trait method signature matching (async/static/arity/     */
+/*  params/returns/rest + Self reify + MethodInfo). Full                 */
+/*  FSConformanceRegistry / generic alpha-equivalence / witness dual-    */
+/*  scope remain follow-up under #60.                                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -22,6 +23,7 @@
 #include "bs_native_db.h"
 #include "bs_platform.h"
 #include "bs_trait_utils.h"
+#include "bs_type.h"
 
 namespace barista_script {
 
@@ -85,7 +87,58 @@ BSParser::ClassNode *_find_local_trait_by_name(BSParser::ClassNode *p_owner, con
 	return nullptr;
 }
 
+BSParser::DataType _self_type_for_class(BSParser::ClassNode *p_class) {
+	BSParser::DataType self_type;
+	if (p_class == nullptr) {
+		return self_type;
+	}
+	self_type = p_class->get_datatype();
+	self_type.is_meta_type = false;
+	self_type.type_arguments.clear();
+	if (!self_type.is_set() || self_type.is_variant()) {
+		self_type.kind = BSParser::DataType::CLASS;
+		self_type.class_type = p_class;
+		self_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		self_type.builtin_type = Variant::OBJECT;
+		self_type.native_type = p_class->base_type.native_type;
+		self_type.script_path = p_class->fqcn.begins_with("res://") ? p_class->fqcn : String();
+	}
+	return self_type;
+}
+
+BSParser::DataType _substitute_type_parameters_and_self(const BSParser::DataType &p_type,
+		const HashMap<StringName, BSParser::DataType> &p_bindings, const BSParser::DataType &p_self_type) {
+	BSParser::DataType substituted = BSParser::DataType::substitute(p_type, p_bindings);
+	if (!p_self_type.is_set()) {
+		return substituted;
+	}
+	HashMap<StringName, BSParser::DataType> self_bindings;
+	self_bindings.insert(SNAME("@Self"), p_self_type);
+	return BSParser::DataType::substitute(substituted, self_bindings);
+}
+
 } // namespace
+
+void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class) {
+	if (p_function == nullptr) {
+		return;
+	}
+	BSParser::ClassNode *previous_class = current_class;
+	current_class = p_class;
+	if (p_function->return_type != nullptr) {
+		p_function->set_datatype(datatype_from_type_node(p_function->return_type));
+	}
+	for (int p = 0; p < p_function->parameters.size(); p++) {
+		BSParser::ParameterNode *parameter = p_function->parameters[p];
+		if (parameter != nullptr && parameter->datatype_specifier != nullptr) {
+			parameter->set_datatype(datatype_from_type_node(parameter->datatype_specifier));
+		}
+	}
+	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->datatype_specifier != nullptr) {
+		p_function->rest_parameter->set_datatype(datatype_from_type_node(p_function->rest_parameter->datatype_specifier));
+	}
+	current_class = previous_class;
+}
 
 bool BSAnalyzer::find_trait_implementation(BSParser::ClassNode *p_class, const StringName &p_function_name,
 		TraitMethodImplementation &r_implementation) {
@@ -180,8 +233,7 @@ void BSAnalyzer::validate_trait_requirements(BSParser::ClassNode *p_class) {
 				}
 				continue;
 			}
-			// Signature substitution / MethodInfo comparison remains follow-up under #60.
-			(void)implementation;
+			validate_trait_method_signature(trait, p_class, member.function, implementation);
 		}
 	}
 
@@ -190,6 +242,215 @@ void BSAnalyzer::validate_trait_requirements(BSParser::ClassNode *p_class) {
 			validate_trait_requirements(p_class->members[i].m_class);
 		}
 	}
+}
+
+bool BSAnalyzer::validate_trait_method_info_signature(BSParser::ClassNode *p_trait,
+		BSParser::ClassNode *p_implementing_class, BSParser::FunctionNode *p_required_function,
+		const TraitMethodImplementation &p_implementation,
+		const HashMap<StringName, BSParser::DataType> &p_trait_substitution) {
+	if (p_required_function == nullptr || p_required_function->identifier == nullptr) {
+		return false;
+	}
+	const StringName function_name = p_required_function->identifier->name;
+	const String trait_method_name = bs_class_or_trait_diagnostic_name(p_trait) + "." + String(function_name) + "()";
+	const BSParser::DataType implementation_self_type = _self_type_for_class(p_implementing_class);
+
+	if (!p_required_function->type_parameters.is_empty()) {
+		String message = vformat(R"*(The function "%s()" signature does not match required generic trait method "%s".)*",
+				function_name, trait_method_name);
+		if (!p_implementation.method_info_source.is_empty()) {
+			message += " " + p_implementation.method_info_source;
+		}
+		push_error(message, p_required_function);
+		return false;
+	}
+
+	const bool required_is_coroutine = p_required_function->is_coroutine;
+	// Stock Godot MethodInfo has no METHOD_FLAG_ASYNC; Foundry extends MethodFlags with bit 256.
+	// Native DB entries therefore never report async — treat MethodInfo implementations as sync.
+	const bool implementation_is_coroutine = false;
+	if (required_is_coroutine != implementation_is_coroutine) {
+		String message;
+		if (required_is_coroutine) {
+			message = vformat(R"*(The function "%s()" must be async because it implements async trait method "%s".)*",
+					function_name, trait_method_name);
+		} else {
+			message = vformat(R"*(The function "%s()" cannot be async because it implements synchronous trait method "%s".)*",
+					function_name, trait_method_name);
+		}
+		if (!p_implementation.method_info_source.is_empty()) {
+			message += " " + p_implementation.method_info_source;
+		}
+		push_error(message, p_required_function);
+		return false;
+	}
+
+	bool valid = (p_required_function->is_static == ((p_implementation.method_info.flags & METHOD_FLAG_STATIC) != 0));
+
+	BSTypeCompatibility::Options options;
+	options.strict_null = strict_null_checks;
+	options.strict_dynamic = strict_dynamic_checks;
+
+	if (p_required_function->return_type != nullptr) {
+		const BSParser::DataType required_return_type = _substitute_type_parameters_and_self(
+				p_required_function->get_datatype(), p_trait_substitution, implementation_self_type);
+		const BSParser::DataType implementation_return_type = type_from_property(p_implementation.method_info.return_val, false, false);
+		if (implementation_return_type.is_variant()) {
+			valid = valid && required_return_type.is_variant();
+		} else if (required_return_type.is_set() && implementation_return_type.is_set()) {
+			valid = valid && BSTypeCompatibility::check(required_return_type, implementation_return_type, options).compatible;
+		}
+	}
+
+	const int required_min_argc = p_required_function->parameters.size() - p_required_function->default_arg_values.size();
+	const int required_max_argc = p_required_function->is_vararg() ? INT_MAX : p_required_function->parameters.size();
+	const int implementation_min_argc = p_implementation.method_info.arguments.size() - p_implementation.method_info.default_arguments.size();
+	const int implementation_max_argc = (p_implementation.method_info.flags & METHOD_FLAG_VARARG) ? INT_MAX : p_implementation.method_info.arguments.size();
+	valid = valid && implementation_min_argc <= required_min_argc && required_max_argc <= implementation_max_argc;
+
+	if (valid) {
+		for (int i = 0; i < p_required_function->parameters.size() && i < p_implementation.method_info.arguments.size(); i++) {
+			const BSParser::DataType required_parameter_type = _substitute_type_parameters_and_self(
+					p_required_function->parameters[i]->get_datatype(), p_trait_substitution, implementation_self_type);
+			const BSParser::DataType implementation_parameter_type = type_from_property(p_implementation.method_info.arguments[i], true, false);
+			if (required_parameter_type.is_variant() && required_parameter_type.is_hard_type()) {
+				valid = valid && implementation_parameter_type.is_variant();
+			} else if (implementation_parameter_type.is_set() && required_parameter_type.is_set()) {
+				valid = valid && BSTypeCompatibility::check(implementation_parameter_type, required_parameter_type, options).compatible;
+			}
+		}
+	}
+
+	if (!valid) {
+		String message = vformat(R"*(The native function "%s()" signature does not match required trait method "%s".)*",
+				function_name, trait_method_name);
+		if (!p_implementation.method_info_source.is_empty()) {
+			message += " " + p_implementation.method_info_source;
+		}
+		push_error(message, p_required_function);
+		return false;
+	}
+
+	return true;
+}
+
+bool BSAnalyzer::validate_trait_method_signature(BSParser::ClassNode *p_trait,
+		BSParser::ClassNode *p_implementing_class, BSParser::FunctionNode *p_required_function,
+		const TraitMethodImplementation &p_implementation,
+		const HashMap<StringName, BSParser::DataType> &p_trait_substitution) {
+	if (p_required_function == nullptr || p_required_function->identifier == nullptr) {
+		return false;
+	}
+	resolve_function_signature_in_class(p_required_function, p_trait);
+	if (p_implementation.has_method_info) {
+		return validate_trait_method_info_signature(p_trait, p_implementing_class, p_required_function, p_implementation,
+				p_trait_substitution);
+	}
+
+	BSParser::FunctionNode *implementation_function = p_implementation.function;
+	if (implementation_function == nullptr) {
+		return false;
+	}
+	resolve_function_signature_in_class(implementation_function, p_implementation.owner_class);
+
+	const StringName function_name = p_required_function->identifier->name;
+	const String trait_method_name = bs_class_or_trait_diagnostic_name(p_trait) + "." + String(function_name) + "()";
+	const BSParser::DataType implementation_self_type = _self_type_for_class(p_implementing_class);
+
+	if (p_required_function->is_coroutine != implementation_function->is_coroutine) {
+		if (p_required_function->is_coroutine) {
+			push_error(vformat(R"*(The function "%s()" must be async because it implements async trait method "%s".)*",
+							   function_name, trait_method_name),
+					implementation_function);
+		} else {
+			push_error(vformat(R"*(The function "%s()" cannot be async because it implements synchronous trait method "%s".)*",
+							   function_name, trait_method_name),
+					implementation_function);
+		}
+		return false;
+	}
+
+	bool valid = p_required_function->is_static == implementation_function->is_static;
+
+	// Generic method alpha-equivalence remains M5 / #60 follow-up; reject mismatched arity of type
+	// parameters so a non-generic implementer cannot silently satisfy a generic requirement.
+	if (p_required_function->type_parameters.size() != implementation_function->type_parameters.size()) {
+		valid = false;
+	}
+
+	BSTypeCompatibility::Options options;
+	options.strict_null = strict_null_checks;
+	options.strict_dynamic = strict_dynamic_checks;
+
+	if (p_required_function->return_type != nullptr) {
+		const BSParser::DataType required_return_type = _substitute_type_parameters_and_self(
+				p_required_function->get_datatype(), p_trait_substitution, implementation_self_type);
+		const BSParser::DataType implementation_return_type = _substitute_type_parameters_and_self(
+				implementation_function->get_datatype(), HashMap<StringName, BSParser::DataType>(), implementation_self_type);
+		if (implementation_return_type.is_variant()) {
+			valid = valid && required_return_type.is_variant();
+		} else if (implementation_return_type.kind == BSParser::DataType::BUILTIN &&
+				implementation_return_type.builtin_type == Variant::NIL) {
+			if (required_return_type.is_hard_type() &&
+					!(required_return_type.kind == BSParser::DataType::BUILTIN &&
+							required_return_type.builtin_type == Variant::NIL) &&
+					!required_return_type.is_variant()) {
+				valid = false;
+			}
+		} else if (required_return_type.is_set() && implementation_return_type.is_set()) {
+			valid = valid && BSTypeCompatibility::check(required_return_type, implementation_return_type, options).compatible;
+		}
+	}
+
+	const int required_min_argc = p_required_function->parameters.size() - p_required_function->default_arg_values.size();
+	const int required_max_argc = p_required_function->is_vararg() ? INT_MAX : p_required_function->parameters.size();
+	const int implementation_min_argc = implementation_function->parameters.size() - implementation_function->default_arg_values.size();
+	const int implementation_max_argc = implementation_function->is_vararg() ? INT_MAX : implementation_function->parameters.size();
+	valid = valid && implementation_min_argc <= required_min_argc && required_max_argc <= implementation_max_argc;
+
+	if (valid) {
+		for (int i = 0; i < p_required_function->parameters.size() && i < implementation_function->parameters.size(); i++) {
+			const BSParser::DataType required_parameter_type = _substitute_type_parameters_and_self(
+					p_required_function->parameters[i]->get_datatype(), p_trait_substitution, implementation_self_type);
+			const BSParser::DataType implementation_parameter_type = _substitute_type_parameters_and_self(
+					implementation_function->parameters[i]->get_datatype(), HashMap<StringName, BSParser::DataType>(),
+					implementation_self_type);
+			if (required_parameter_type.is_variant() && required_parameter_type.is_hard_type()) {
+				valid = valid && implementation_parameter_type.is_variant();
+			} else if (implementation_parameter_type.is_set() && required_parameter_type.is_set()) {
+				valid = valid && BSTypeCompatibility::check(implementation_parameter_type, required_parameter_type, options).compatible;
+			}
+		}
+	}
+
+	{
+		const BSParser::DataType required_rest_type = p_required_function->is_vararg()
+				? _substitute_type_parameters_and_self(p_required_function->rest_parameter->get_datatype(),
+						  p_trait_substitution, implementation_self_type)
+				: BSParser::DataType();
+		const BSParser::DataType implementation_rest_type = implementation_function->is_vararg()
+				? _substitute_type_parameters_and_self(implementation_function->rest_parameter->get_datatype(),
+						  HashMap<StringName, BSParser::DataType>(), implementation_self_type)
+				: BSParser::DataType();
+		valid = valid && BSTypeCompatibility::rest_parameter_accepts_required_arguments(implementation_function->is_vararg() ? &implementation_rest_type : nullptr, p_required_function->is_vararg() ? &required_rest_type : nullptr, strict_null_checks);
+
+		if (valid && implementation_function->is_vararg()) {
+			for (int i = implementation_function->parameters.size(); i < p_required_function->parameters.size(); i++) {
+				const BSParser::DataType required_parameter_type = _substitute_type_parameters_and_self(
+						p_required_function->parameters[i]->get_datatype(), p_trait_substitution, implementation_self_type);
+				valid = valid && BSTypeCompatibility::rest_parameter_accepts_required_argument(&implementation_rest_type, required_parameter_type, strict_null_checks);
+			}
+		}
+	}
+
+	if (!valid) {
+		push_error(vformat(R"*(The function "%s()" signature does not match required trait method "%s".)*",
+						   function_name, trait_method_name),
+				implementation_function);
+		return false;
+	}
+
+	return true;
 }
 
 BSParser::ClassNode *BSAnalyzer::resolve_builtin_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_builtin_type) {
@@ -419,6 +680,12 @@ bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, 
 			}
 
 			if (witnesses_by_name.has(function_name)) {
+				TraitMethodImplementation implementation;
+				implementation.function = witnesses_by_name.get(function_name);
+				implementation.owner_class = p_target;
+				if (!validate_trait_method_signature(requirement_trait, p_target, required, implementation)) {
+					valid = false;
+				}
 				continue;
 			}
 
@@ -428,7 +695,9 @@ bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, 
 
 			TraitMethodImplementation implementation;
 			if (find_trait_implementation(p_target, function_name, implementation)) {
-				(void)implementation;
+				if (!validate_trait_method_signature(requirement_trait, p_target, required, implementation)) {
+					valid = false;
+				}
 				continue;
 			}
 

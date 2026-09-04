@@ -7,7 +7,8 @@
 /*  local + member/static final definite assignment (#60 flow TU),        */
 /*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
 /*  unused private/signal + built-in annotation resolve (#60 surface),    */
-/*  trait requirement / conformance witness starter (#60 conformance TU). */
+/*  trait requirement / conformance witness + non-generic signature match */
+/*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -257,6 +258,18 @@ private:
 	void validate_trait_requirements(BSParser::ClassNode *p_class);
 	bool find_trait_implementation(BSParser::ClassNode *p_class, const StringName &p_function_name,
 			TraitMethodImplementation &r_implementation);
+	/**
+	 * Foundry validate_trait_method_signature @ c9d5e35 (non-generic slice): async/static/arity/
+	 * parameter/return/rest matching, with `Self` reified to the implementer. Generic method
+	 * alpha-equivalence / trait type-argument substitution remain follow-up under #60.
+	 */
+	bool validate_trait_method_signature(BSParser::ClassNode *p_trait, BSParser::ClassNode *p_implementing_class,
+			BSParser::FunctionNode *p_required_function, const TraitMethodImplementation &p_implementation,
+			const HashMap<StringName, BSParser::DataType> &p_trait_substitution = HashMap<StringName, BSParser::DataType>());
+	bool validate_trait_method_info_signature(BSParser::ClassNode *p_trait, BSParser::ClassNode *p_implementing_class,
+			BSParser::FunctionNode *p_required_function, const TraitMethodImplementation &p_implementation,
+			const HashMap<StringName, BSParser::DataType> &p_trait_substitution = HashMap<StringName, BSParser::DataType>());
+	void resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class);
 	/** Foundry resolve_conformances starter: target/shim resolve + missing-witness checks. */
 	void resolve_conformances(BSParser::ClassNode *p_class);
 	BSParser::ClassNode *resolve_conformance_target(BSParser::ConformanceNode *p_conformance, BSParser::DataType &r_target_type);
