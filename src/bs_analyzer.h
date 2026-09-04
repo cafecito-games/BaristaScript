@@ -163,7 +163,10 @@ private:
 	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee);
 	void check_match_exhaustiveness(BSParser::MatchNode *p_match);
 	bool suite_has_return(const BSParser::SuiteNode *p_suite) const;
+	/** True when a RETURN statement appears on some path (excludes `@noreturn` calls). */
+	bool suite_has_explicit_return(const BSParser::SuiteNode *p_suite) const;
 	bool node_terminates(const BSParser::Node *p_node) const;
+	bool node_has_explicit_return(const BSParser::Node *p_node) const;
 	void check_function_flow_finality(BSParser::FunctionNode *p_function);
 	void resolve_used_traits(BSParser::ClassNode *p_class);
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;

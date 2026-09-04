@@ -695,6 +695,20 @@ func _test_final_local_assignment(failures: PackedStringArray) -> void:
 	var branch_bad := "class_name FinalBranchBad extends Node\nfunc pick(flag: bool) -> int:\n\tfinal var x: int\n\tif flag:\n\t\tx = 1\n\treturn x\n"
 	var bad_report: Dictionary = probe.analyze_source(branch_bad, "res://tests/final_branch_bad.barista")
 	_expect(failures, bad_report.get("valid", true) == false, "final assigned on only one branch then read is invalid")
+	var saw_branch_bad := false
+	for message in bad_report.get("errors", PackedStringArray()):
+		if "before assignment" in message or "already assigned" in message or "final" in message.to_lower():
+			saw_branch_bad = true
+	_expect(failures, saw_branch_bad, "FinalBranchBad reports final assignment diagnostic")
+
+	var lambda_write := "class_name FinalLambdaWrite extends Node\nfunc _ready() -> void:\n\tfinal var x: int = 1\n\tvar f := func():\n\t\tx = 2\n\tf.call()\n"
+	var lambda_report: Dictionary = probe.analyze_source(lambda_write, "res://tests/final_lambda_write.barista")
+	_expect(failures, lambda_report.get("valid", true) == false, "assigning outer final inside lambda is invalid")
+	var saw_lambda := false
+	for message in lambda_report.get("errors", PackedStringArray()):
+		if "lambda" in message.to_lower():
+			saw_lambda = true
+	_expect(failures, saw_lambda, "illegal lambda final-write diagnostic")
 
 
 func _test_noreturn_flow(failures: PackedStringArray) -> void:
@@ -712,11 +726,21 @@ func _test_noreturn_flow(failures: PackedStringArray) -> void:
 			saw_complete = true
 	_expect(failures, saw_complete, "@noreturn complete-normally diagnostic")
 
+	var noreturn_nested := "class_name NoreturnNestedReturn extends Node\n@noreturn\nfunc die(flag: bool) -> void:\n\tif flag:\n\t\treturn\n\tpush_fatal(\"boom\")\n"
+	var nested_report: Dictionary = probe.analyze_source(noreturn_nested, "res://tests/noreturn_nested.barista")
+	_expect(failures, nested_report.get("valid", true) == false, "@noreturn with nested return is invalid")
+	var saw_cannot_return := false
+	for message in nested_report.get("errors", PackedStringArray()):
+		if "cannot return" in message:
+			saw_cannot_return = true
+	_expect(failures, saw_cannot_return, "@noreturn nested-return diagnostic")
+
 
 func _test_unused_locals(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
 	ProjectSettings.set_setting("debug/barista_script/warnings/unused_variable", 1) # WARN
+	ProjectSettings.set_setting("debug/barista_script/warnings/unused_parameter", 1) # WARN
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
 	var unused := "class_name UnusedLocal extends Node\nfunc _ready() -> void:\n\tvar orphan: int = 1\n"
 	var unused_report: Dictionary = probe.validate_source(unused, "res://tests/unused_local.barista", true)
@@ -726,6 +750,22 @@ func _test_unused_locals(failures: PackedStringArray) -> void:
 		if "UNUSED_VARIABLE" in str(warn.get("string_code", "")) or "never used" in str(warn.get("message", "")).to_lower():
 			saw_unused = true
 	_expect(failures, saw_unused, "unused local produces UNUSED_VARIABLE")
+
+	var write_only := "class_name WriteOnlyLocal extends Node\nfunc _ready() -> void:\n\tvar scratch: int\n\tscratch = 1\n"
+	var write_only_report: Dictionary = probe.validate_source(write_only, "res://tests/write_only_local.barista", true)
+	var saw_write_only := false
+	for warn in write_only_report.get("warnings", []):
+		if "scratch" in str(warn.get("message", "")) and ("UNUSED_VARIABLE" in str(warn.get("string_code", "")) or "never used" in str(warn.get("message", "")).to_lower()):
+			saw_write_only = true
+	_expect(failures, saw_write_only, "write-only local produces UNUSED_VARIABLE")
+
+	var unused_param := "class_name UnusedParam extends Node\nfunc greet(name: String) -> void:\n\tpass\n"
+	var param_report: Dictionary = probe.validate_source(unused_param, "res://tests/unused_param.barista", true)
+	var saw_param := false
+	for warn in param_report.get("warnings", []):
+		if "UNUSED_PARAMETER" in str(warn.get("string_code", "")) or ("name" in str(warn.get("message", "")) and "never used" in str(warn.get("message", "")).to_lower()):
+			saw_param = true
+	_expect(failures, saw_param, "unused parameter produces UNUSED_PARAMETER")
 
 	var used := "class_name UsedLocal extends Node\nfunc _ready() -> void:\n\tvar keep: int = 1\n\tvar _sink: int = keep\n"
 	var used_report: Dictionary = probe.validate_source(used, "res://tests/used_local.barista", true)
