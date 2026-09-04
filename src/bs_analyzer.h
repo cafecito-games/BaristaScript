@@ -6,7 +6,8 @@
 /*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
 /*  local + member/static final definite assignment (#60 flow TU),        */
 /*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
-/*  unused private/signal + built-in annotation resolve (#60 surface).    */
+/*  unused private/signal + built-in annotation resolve (#60 surface),    */
+/*  trait requirement / conformance witness starter (#60 conformance TU). */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -139,6 +140,19 @@ public:
 				bool p_flattened_trait_body = false);
 	};
 
+	/**
+	 * Foundry `TraitMethodImplementation` (@ c9d5e35): a concrete method that
+	 * satisfies a trait abstract requirement, either as a FunctionNode or as
+	 * MethodInfo from a native / foreign script surface.
+	 */
+	struct TraitMethodImplementation {
+		BSParser::FunctionNode *function = nullptr;
+		BSParser::ClassNode *owner_class = nullptr;
+		MethodInfo method_info;
+		String method_info_source;
+		bool has_method_info = false;
+	};
+
 	explicit BSAnalyzer(BSParser *p_parser);
 	~BSAnalyzer() = default;
 
@@ -195,6 +209,7 @@ private:
 	Error run_phase_interface_and_member_surface();
 	Error run_phase_body_expression_callable_signal();
 	Error run_phase_flow_finality();
+	Error run_phase_conformance_witness_body();
 	Error run_phase_finalize();
 
 	void resolve_class_inheritance(BSParser::ClassNode *p_class);
@@ -238,6 +253,19 @@ private:
 	bool node_has_explicit_return(const BSParser::Node *p_node) const;
 	void check_function_flow_finality(BSParser::FunctionNode *p_function);
 	void resolve_used_traits(BSParser::ClassNode *p_class);
+	/** Foundry validate_trait_requirements @ c9d5e35: abstract methods from used traits. */
+	void validate_trait_requirements(BSParser::ClassNode *p_class);
+	bool find_trait_implementation(BSParser::ClassNode *p_class, const StringName &p_function_name,
+			TraitMethodImplementation &r_implementation);
+	/** Foundry resolve_conformances starter: target/shim resolve + missing-witness checks. */
+	void resolve_conformances(BSParser::ClassNode *p_class);
+	BSParser::ClassNode *resolve_conformance_target(BSParser::ConformanceNode *p_conformance, BSParser::DataType &r_target_type);
+	BSParser::ClassNode *resolve_native_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_native_type);
+	BSParser::ClassNode *resolve_builtin_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_builtin_type);
+	BSParser::ClassNode *resolve_conformance_trait_use(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source);
+	bool validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target, BSParser::ClassNode *p_trait);
+	/** Foundry resolve_conformance_bodies: analyze witness methods against the target. */
+	void resolve_conformance_bodies(BSParser::ClassNode *p_class);
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
 	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
 	bool errors_are_only_m5_deferred() const;
