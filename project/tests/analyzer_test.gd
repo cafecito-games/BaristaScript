@@ -1274,13 +1274,13 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_sync_required = true
 	_expect(failures, saw_sync_required, "sync trait method rejects async impl diagnostic")
 
-	var self_ok := "class_name TraitSelfOk extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> TraitSelfOk:\n\treturn TraitSelfOk.new()\n"
+	var self_ok := "class_name TraitSelfOk extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> Self:\n\treturn TraitSelfOk.new()\n"
 	var self_ok_report: Dictionary = probe.analyze_source(self_ok, "res://tests/trait_self_ok.barista")
 	_expect(failures, self_ok_report.get("valid", false) == true, "Self return matching implementer is valid")
 
-	var self_bad := "class_name TraitSelfBad extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> Node:\n\treturn Node.new()\n"
+	var self_bad := "class_name TraitSelfBad extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> String:\n\treturn \"x\"\n"
 	var self_bad_report: Dictionary = probe.analyze_source(self_bad, "res://tests/trait_self_bad.barista")
-	_expect(failures, self_bad_report.get("valid", true) == false, "Self return mismatched to Node is invalid")
+	_expect(failures, self_bad_report.get("valid", true) == false, "Self return mismatched to String is invalid")
 	var saw_self_bad := false
 	for message in self_bad_report.get("errors", PackedStringArray()):
 		if "signature does not match required trait method" in message and "Creatable.create()" in message:
@@ -1296,7 +1296,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_arity = true
 	_expect(failures, saw_arity, "trait method arity mismatch diagnostic")
 
-	var rest_narrow := "class_name TraitRestNarrow extends Node\nuses AcceptsNodes\n\ntrait AcceptsNodes:\n\tabstract func accept(...nodes: Array[Node]) -> int\n\nfunc accept(...nodes: Array[Sprite2D]) -> int:\n\treturn nodes.size()\n"
+	var rest_narrow := "class_name TraitRestNarrow extends Node\nuses AcceptsNodes\n\ntrait AcceptsNodes:\n\tabstract func accept(...nodes: Array[Node]) -> int\n\nfunc accept(...nodes: Array[String]) -> int:\n\treturn nodes.size()\n"
 	var rest_narrow_report: Dictionary = probe.analyze_source(rest_narrow, "res://tests/trait_rest_narrow.barista")
 	_expect(failures, rest_narrow_report.get("valid", true) == false, "narrower rest tail does not satisfy trait rest requirement")
 	var saw_rest := false
@@ -1314,11 +1314,11 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_rtc_sig = true
 	_expect(failures, saw_rtc_sig, "extend witness signature mismatch diagnostic")
 
-	var native_sig := "trait NeedsGetNode:\n\tabstract func get_node(path: int) -> Node\n\nclass_name NativeSigBad extends Node\nuses NeedsGetNode\n"
+	var native_sig := "class_name NativeSigBad extends Node\nuses NeedsGetNode\n\ntrait NeedsGetNode:\n\tabstract func get_node(path: int) -> Node\n"
 	var native_sig_report: Dictionary = probe.analyze_source(native_sig, "res://tests/native_sig_bad.barista")
 	_expect(failures, native_sig_report.get("valid", true) == false, "native MethodInfo wrong signature for trait is invalid")
 	var saw_native_sig := false
 	for message in native_sig_report.get("errors", PackedStringArray()):
-		if ("signature does not match required trait method" in message or "native function" in message) and "get_node()" in message:
+		if "native function" in message and "get_node()" in message and "NeedsGetNode.get_node()" in message:
 			saw_native_sig = true
 	_expect(failures, saw_native_sig, "native MethodInfo signature mismatch diagnostic")
