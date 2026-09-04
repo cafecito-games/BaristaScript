@@ -462,22 +462,24 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("declares no Glob()", result.stdout + result.stderr)
 
-    def test_a_port_set_file_absent_from_the_capture_is_rejected(self):
-        document = real_manifest()
-        # A module file that is genuinely outside the port set, so the capture cannot contain it.
-        document["upstream"]["port_set"].append("fs_analyzer.cpp")
-        with TemporaryManifest(document) as path:
-            result = run_audit("--manifest", str(path))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fs_analyzer.cpp", result.stdout + result.stderr)
+	def test_a_port_set_file_absent_from_the_capture_is_rejected(self):
+		document = real_manifest()
+		# A module file that is genuinely outside the current capture. Prefer a real Foundry
+		# analyzer split unit that is not yet in the M3 port set (fs_analyzer.cpp itself is now
+		# in the capture after the analyzer slice).
+		document["upstream"]["port_set"].append("fs_analyzer_call_validation.cpp")
+		with TemporaryManifest(document) as path:
+			result = run_audit("--manifest", str(path))
+		self.assertNotEqual(result.returncode, 0)
+		self.assertIn("fs_analyzer_call_validation.cpp", result.stdout + result.stderr)
 
-    def test_site_outside_the_declared_port_set_is_rejected(self):
-        document = real_manifest()
-        document["entries"][0]["sites"] = ["fs_analyzer.cpp:12"]
-        with TemporaryManifest(document) as path:
-            result = run_audit("--manifest", str(path))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fs_analyzer.cpp", result.stdout + result.stderr)
+	def test_site_outside_the_declared_port_set_is_rejected(self):
+		document = real_manifest()
+		document["entries"][0]["sites"] = ["fs_analyzer_call_validation.cpp:12"]
+		with TemporaryManifest(document) as path:
+			result = run_audit("--manifest", str(path))
+		self.assertNotEqual(result.returncode, 0)
+		self.assertIn("fs_analyzer_call_validation.cpp", result.stdout + result.stderr)
 
 
 class VocabularyClosureTest(unittest.TestCase):
