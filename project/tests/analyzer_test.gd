@@ -781,6 +781,51 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_static_blank = true
 	_expect(failures, saw_static_blank, "blank static final never-assigned diagnostic")
 
+	var static_qualified := "class_name FinalStaticQualified extends Node\nfinal static var LABEL: String = \"ready\"\nfunc reset() -> void:\n\tFinalStaticQualified.LABEL = \"other\"\n"
+	var static_qualified_report: Dictionary = probe.analyze_source(static_qualified, "res://tests/final_static_qualified.barista")
+	_expect(failures, static_qualified_report.get("valid", true) == false, "ClassName.static final reassignment is invalid")
+	var saw_static_qualified := false
+	for message in static_qualified_report.get("errors", PackedStringArray()):
+		if "_static_init()" in message and "can only be assigned" in message:
+			saw_static_qualified = true
+	_expect(failures, saw_static_qualified, "ClassName.static final outside-_static_init diagnostic")
+
+	var onready_final := "class_name FinalOnreadyBad extends Node\n@onready final var id: int = 1\n"
+	var onready_report: Dictionary = probe.analyze_source(onready_final, "res://tests/final_onready_bad.barista")
+	_expect(failures, onready_report.get("valid", true) == false, "@onready final member is invalid")
+	var saw_onready := false
+	for message in onready_report.get("errors", PackedStringArray()):
+		if "@onready" in message:
+			saw_onready = true
+	_expect(failures, saw_onready, "@onready final rejection diagnostic")
+
+	var property_final := "class_name FinalPropertyBad extends Node\nfinal var id: int:\n\tget:\n\t\treturn 1\n"
+	var property_report: Dictionary = probe.analyze_source(property_final, "res://tests/final_property_bad.barista")
+	_expect(failures, property_report.get("valid", true) == false, "final property member is invalid")
+	var saw_property := false
+	for message in property_report.get("errors", PackedStringArray()):
+		if "property" in message.to_lower() or "getter" in message.to_lower() or "final" in message.to_lower():
+			saw_property = true
+	_expect(failures, saw_property, "final property rejection diagnostic")
+
+	var early_return := "class_name FinalMemberEarlyReturn extends Node\nfinal var id: int\nfunc _init(flag: bool) -> void:\n\tif flag:\n\t\treturn\n\tid = 1\n"
+	var early_report: Dictionary = probe.analyze_source(early_return, "res://tests/final_member_early_return.barista")
+	_expect(failures, early_report.get("valid", true) == false, "blank final not assigned on early-return path is invalid")
+	var saw_early := false
+	for message in early_report.get("errors", PackedStringArray()):
+		if "must be definitely assigned" in message or "before assignment" in message:
+			saw_early = true
+	_expect(failures, saw_early, "final member early-return definite-assignment diagnostic")
+
+	var use_before := "class_name FinalMemberUseBefore extends Node\nfinal var id: int\nfunc _init() -> void:\n\tvar _sink: int = id\n\tid = 1\n"
+	var use_before_report: Dictionary = probe.analyze_source(use_before, "res://tests/final_member_use_before.barista")
+	_expect(failures, use_before_report.get("valid", true) == false, "reading blank final member before assignment is invalid")
+	var saw_use_before := false
+	for message in use_before_report.get("errors", PackedStringArray()):
+		if "before assignment" in message:
+			saw_use_before = true
+	_expect(failures, saw_use_before, "final member use-before-assignment diagnostic")
+
 
 func _test_noreturn_flow(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()

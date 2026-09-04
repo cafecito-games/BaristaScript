@@ -888,19 +888,32 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 	}
 	reduce_expression(p_subscript->base);
 	if (p_subscript->is_attribute) {
-		// Bind `self.<member>` so flow finality can see MEMBER_VARIABLE / STATIC_VARIABLE on the
-		// attribute (Foundry resolve_subscript attribute path @ c9d5e35, member/static finals).
-		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr &&
-				p_subscript->base->type == BSParser::Node::SELF && current_class != nullptr &&
+		// Bind `self.<member>` and same-class `ClassName.<static>` so flow finality can see
+		// MEMBER_VARIABLE / STATIC_VARIABLE on the attribute (Foundry resolve_subscript @ c9d5e35).
+		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr && current_class != nullptr &&
 				current_class->has_member(p_subscript->attribute->name)) {
-			const BSParser::ClassNode::Member member = current_class->get_member(p_subscript->attribute->name);
-			if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
-				p_subscript->attribute->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
-				p_subscript->attribute->variable_source = member.variable;
-				member.variable->usages++;
-				p_subscript->attribute->set_datatype(member.variable->get_datatype());
-				p_subscript->set_datatype(member.variable->get_datatype());
-				return;
+			const bool self_receiver = p_subscript->base->type == BSParser::Node::SELF;
+			bool class_name_receiver = false;
+			if (p_subscript->base->type == BSParser::Node::IDENTIFIER) {
+				const BSParser::IdentifierNode *base_id = static_cast<const BSParser::IdentifierNode *>(p_subscript->base);
+				const StringName class_name = current_class->identifier != nullptr ? current_class->identifier->name : StringName();
+				const StringName global_name = current_class->get_global_name();
+				class_name_receiver = base_id->name == class_name || (global_name != StringName() && base_id->name == global_name);
+			}
+			if (self_receiver || class_name_receiver) {
+				const BSParser::ClassNode::Member member = current_class->get_member(p_subscript->attribute->name);
+				if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+					if (class_name_receiver && !member.variable->is_static) {
+						// ClassName.instance_member is not a legal static access; leave unbound.
+					} else {
+						p_subscript->attribute->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
+						p_subscript->attribute->variable_source = member.variable;
+						member.variable->usages++;
+						p_subscript->attribute->set_datatype(member.variable->get_datatype());
+						p_subscript->set_datatype(member.variable->get_datatype());
+						return;
+					}
+				}
 			}
 		}
 	} else {
@@ -1246,8 +1259,17 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 				analyze_function_body(member.function);
 				break;
 			case BSParser::ClassNode::Member::VARIABLE:
-				if (member.variable != nullptr && member.variable->initializer != nullptr) {
-					reduce_expression(member.variable->initializer);
+				if (member.variable != nullptr) {
+					// Foundry surface applies VARIABLE annotations before body/finality checks
+					// (resolve_class_body @ c9d5e35) so `@onready` is visible to final-member rules.
+					for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
+						if (annotation != nullptr) {
+							annotation->apply(parser, member.variable, current_class);
+						}
+					}
+					if (member.variable->initializer != nullptr) {
+						reduce_expression(member.variable->initializer);
+					}
 				}
 				break;
 			case BSParser::ClassNode::Member::CONSTANT:
