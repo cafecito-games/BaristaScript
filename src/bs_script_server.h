@@ -60,7 +60,7 @@ public:
 		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
 		if (language != nullptr) {
 			BSDeclarationRecord rec;
-			if (language->get_declaration_index().try_get_by_qualified_name(name, rec)) {
+			if (language->try_resolve_declaration(name, rec)) {
 				return true;
 			}
 		}

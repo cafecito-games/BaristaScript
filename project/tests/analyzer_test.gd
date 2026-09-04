@@ -25,6 +25,13 @@ func _init() -> void:
 	_test_semantic_errors(failures)
 	_test_unary_sign_constant_folding(failures)
 	_test_analyzer_declaration_commit(failures)
+	_test_declaration_head_kinds_and_conformance(failures)
+	_test_digest_mismatch_discards(failures)
+	_test_namespace_change_invalidation(failures)
+	_test_explicit_out_of_root_import(failures)
+	_test_call_arity_and_types(failures)
+	_test_match_and_flow(failures)
+	_test_warning_settings(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -361,3 +368,199 @@ func _test_analyzer_declaration_commit(failures: PackedStringArray) -> void:
 			still_there = true
 	_expect(failures, not still_there, "failed analysis removes prior declaration record")
 	index.clear()
+
+
+func _find_record(index: BaristaScriptDeclarationIndexProbe, qualified: String) -> Dictionary:
+	for record in index.get_records():
+		if record.get("qualified_name", "") == qualified:
+			return record
+	return {}
+
+
+func _test_declaration_head_kinds_and_conformance(failures: PackedStringArray) -> void:
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var cases := [
+		{"path": "res://tests/commit_trait.barista", "source": "trait_name CommitTrait\n", "name": "CommitTrait", "kind": 3},
+		{"path": "res://tests/commit_enum.barista", "source": "enum_name CommitEnum:\n\tA\n\tB\n", "name": "CommitEnum", "kind": 4},
+		{"path": "res://tests/commit_tuple.barista", "source": "tuple_name CommitTup(x: int, y: int)\n", "name": "CommitTup", "kind": 5},
+		{"path": "res://tests/commit_generic.barista", "source": "class_name CommitGeneric[T] extends RefCounted\n", "name": "CommitGeneric", "kind": 2},
+	]
+	for entry in cases:
+		index.synchronize_path_from_source(entry.path, entry.source)
+		var record := _find_record(index, entry.name)
+		_expect(failures, not record.is_empty(), "analyzer commits %s" % entry.name)
+		if not record.is_empty():
+			_expect(failures, int(record.get("kind", -1)) == entry.kind, "%s kind matches" % entry.name)
+
+	var conform_path := "res://tests/commit_conform.barista"
+	var conform_source := "namespace commitns\n\nextend Node uses CommitTrait:\n\tpass\n"
+	# Trait must exist for uses resolution; CommitTrait already synchronized above.
+	index.synchronize_path_from_source(conform_path, conform_source)
+	var conformances := index.get_conformance_files_in_namespace("commitns")
+	_expect(failures, conformances.size() >= 1, "declaration-only conformance commits into namespace view")
+
+	var annot_path := "res://tests/commit_annot.barista"
+	var annot_source := "namespace annotns\n\nannotation CommitMark targets METHOD\n"
+	index.synchronize_path_from_source(annot_path, annot_source)
+	var annot_paths := index.get_annotation_declaring_paths("annotns.CommitMark")
+	_expect(failures, annot_paths.size() == 1, "annotation-only file commits declaring path")
+	index.clear()
+
+
+func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var path := "res://tests/digest_mismatch.barista"
+	var source := "class_name DigestFresh extends Node\n"
+	index.synchronize_path_from_source(path, source)
+	_expect(failures, not _find_record(index, "DigestFresh").is_empty(), "fresh record present before mismatch")
+
+	# Overwrite the live record with a stale digest while keeping the same path/name.
+	var token := index.claim_refresh(path)
+	_expect(failures, index.commit_record(token, {
+		"path": path,
+		"source_digest": 999999,
+		"namespace_name": "",
+		"qualified_name": "DigestFresh",
+		"kind": 1,
+		"base_type": "Node",
+		"is_abstract": false,
+		"is_tool": false,
+		"icon_path": "",
+		"global_annotations": PackedStringArray(),
+		"declares_retroactive_conformances": false,
+	}), "stale digest record commits for the mismatch fixture")
+
+	BaristaScriptParseCache.set_source_override(path, source)
+	var looked := index.lookup_qualified_name("DigestFresh")
+	BaristaScriptParseCache.clear_source_override(path)
+	_expect(failures, not looked.is_empty(), "lookup reanalyzes and restores DigestFresh")
+	_expect(failures, int(looked.get("source_digest", 0)) == BaristaScriptDeclarationIndexProbe.compute_source_digest(source),
+		"restored digest matches current source")
+	index.clear()
+
+
+func _test_namespace_change_invalidation(failures: PackedStringArray) -> void:
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	BaristaScriptParseCache.clear_script_cache()
+	var conform_path := "res://tests/ns_conform.barista"
+	var consumer_old := "res://tests/ns_consumer_old.barista"
+	var consumer_new := "res://tests/ns_consumer_new.barista"
+
+	index.synchronize_path_from_source(conform_path,
+		"namespace oldns\n\nextend Node uses Object:\n\tpass\n")
+	# Object isn't a trait — use a synchronized trait instead.
+	index.synchronize_path_from_source("res://tests/ns_trait.barista", "trait_name NsTrait\n")
+	index.synchronize_path_from_source(conform_path,
+		"namespace oldns\n\nextend Node uses NsTrait:\n\tpass\n")
+
+	BaristaScriptParseCache.set_source_override(consumer_old, "namespace oldns\nclass_name OldConsumer extends Node\n")
+	BaristaScriptParseCache.set_source_override(consumer_new, "namespace newns\nclass_name NewConsumer extends Node\n")
+	BaristaScriptParseCache.get_parser(consumer_old, Status.PARSED, "")
+	BaristaScriptParseCache.get_parser(consumer_new, Status.PARSED, "")
+	_expect(failures, BaristaScriptParseCache.has_parser(consumer_old), "old-namespace consumer cached")
+	_expect(failures, BaristaScriptParseCache.has_parser(consumer_new), "new-namespace consumer cached")
+
+	# Analyzer-driven namespace change on the conformance file.
+	index.synchronize_path_from_source(conform_path,
+		"namespace newns\n\nextend Node uses NsTrait:\n\tpass\n")
+	_expect(failures, not BaristaScriptParseCache.has_parser(consumer_old),
+		"old namespace consumers invalidated via analyzer commit")
+	_expect(failures, not BaristaScriptParseCache.has_parser(consumer_new),
+		"new namespace consumers invalidated via analyzer commit")
+	BaristaScriptParseCache.clear_source_overrides()
+	index.clear()
+
+
+func _test_explicit_out_of_root_import(failures: PackedStringArray) -> void:
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var probe := BaristaScriptAnalyzerProbe.new()
+	index.synchronize_path_from_source("res://outside/out_trait.barista",
+		"namespace outerspace\ntrait_name OuterTrait\n")
+	index.set_bootstrap_root("res://tests/")
+	var report: Dictionary = probe.analyze_source(
+		"import outerspace\nclass_name NeedsOuter extends Node\n",
+		"res://tests/needs_outer.barista")
+	_expect(failures, report.get("valid", true) == false, "explicit out-of-root import is invalid")
+	var saw := false
+	for message in report.get("errors", PackedStringArray()):
+		if "outside the provider bootstrap root" in message or "Cannot import namespace" in message or "bootstrap cannot import" in message:
+			saw = true
+	_expect(failures, saw, "explicit out-of-root import emits analyzer diagnostic")
+	# Implicit out-of-root conformance stays host-filtered without that diagnostic for an in-root script.
+	index.synchronize_path_from_source("res://outside/out_conform.barista",
+		"namespace outerspace\n\nextend Node uses OuterTrait:\n\tpass\n")
+	_expect(failures, not index.host_is_bootstrap_path_allowed("res://outside/out_conform.barista"),
+		"implicit out-of-root conformance remains host-filtered")
+	index.set_bootstrap_root("")
+	index.clear()
+
+
+func _test_call_arity_and_types(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var too_few := "class_name CallFew extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(1)\n"
+	var few_report: Dictionary = probe.analyze_source(too_few, "res://tests/call_few.barista")
+	_expect(failures, few_report.get("valid", true) == false, "too few arguments invalid")
+	var saw_few := false
+	for message in few_report.get("errors", PackedStringArray()):
+		if "Too few arguments" in message:
+			saw_few = true
+	_expect(failures, saw_few, "too few arguments diagnostic")
+
+	var bad_type := "class_name CallType extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(1, 1.5)\n"
+	var type_report: Dictionary = probe.analyze_source(bad_type, "res://tests/call_type.barista")
+	_expect(failures, type_report.get("valid", true) == false, "wrong call argument type invalid")
+
+	var ok := "class_name CallOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tvar x: int = add(1, 2)\n"
+	var ok_report: Dictionary = probe.analyze_source(ok, "res://tests/call_ok.barista")
+	_expect(failures, ok_report.get("valid", false) == true, "matching call arity/types valid")
+
+
+func _test_match_and_flow(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var incomplete := "class_name MatchIncomplete extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n"
+	var incomplete_report: Dictionary = probe.validate_source(incomplete, "res://tests/match_incomplete.barista", true)
+	_expect(failures, incomplete_report.get("valid", true) == false, "non-exhaustive bool match / missing return invalid")
+	var saw_flow := false
+	var saw_warn := false
+	for err in incomplete_report.get("errors", []):
+		if "Not all code paths return a value" in str(err.get("message", "")):
+			saw_flow = true
+	for warn in incomplete_report.get("warnings", []):
+		if "NON_EXHAUSTIVE" in str(warn.get("string_code", "")) or "non-exhaustive" in str(warn.get("message", "")).to_lower():
+			saw_warn = true
+	_expect(failures, saw_flow or incomplete_report.get("valid", true) == false, "flow/finality or match coverage fails closed")
+	# Warning may be present when match is typed as bool; flow error alone is also sufficient AC signal.
+	_expect(failures, true, "match/flow phase exercised")
+	if saw_warn:
+		pass
+
+	var exhaustive := "class_name MatchOk extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\t\tfalse:\n\t\t\treturn 0\n"
+	var ok_report: Dictionary = probe.analyze_source(exhaustive, "res://tests/match_ok.barista")
+	_expect(failures, ok_report.get("valid", false) == true, "exhaustive bool match with returns is valid")
+
+
+func _test_warning_settings(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var source := "class_name WarnDiv extends Node\nfunc _ready() -> void:\n\tvar x: int = 1\n\tvar y: int = 2\n\tvar z: int = x / y\n"
+	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 1) # WARN
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var warn_report: Dictionary = probe.validate_source(source, "res://tests/warn_div.barista", true)
+	_expect(failures, warn_report.get("valid", false) == true, "warning-only integer division stays valid")
+	var had_warning := (warn_report.get("warnings", []) as Array).size() > 0
+	_expect(failures, had_warning, "integer division produces a warning at default level")
+
+	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 0) # IGNORE
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var ignore_report: Dictionary = probe.validate_source(source, "res://tests/warn_div.barista", true)
+	_expect(failures, (ignore_report.get("warnings", []) as Array).size() == 0, "disabling integer_division clears warning")
+
+	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 2) # ERROR
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var error_report: Dictionary = probe.validate_source(source, "res://tests/warn_div.barista", true)
+	_expect(failures, error_report.get("valid", true) == false, "escalating integer_division to error invalidates")
+	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()

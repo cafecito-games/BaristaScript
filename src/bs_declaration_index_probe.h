@@ -48,6 +48,12 @@ public:
 	godot::PackedStringArray host_conformance_files_in_namespace(const godot::String &p_namespace) const;
 	bool host_is_bootstrap_path_allowed(const godot::String &p_path) const;
 	void set_bootstrap_root(const godot::String &p_root);
+
+	/**
+	 * Digest-validating name lookup (#58). Returns an empty Dictionary when absent or discarded.
+	 * On digest mismatch against available source, discards + reanalyzes before returning.
+	 */
+	godot::Dictionary lookup_qualified_name(const godot::String &p_qualified_name);
 };
 
 } // namespace barista_script

@@ -36,6 +36,9 @@ public:
 
 	/** Whether `_is_valid` / analyze agree that the source is semantically valid. */
 	bool is_semantically_valid(const godot::String &p_source, const godot::String &p_path) const;
+
+	/** Language `_validate` dictionary for warning / error flag exercises. */
+	godot::Dictionary validate_source(const godot::String &p_source, const godot::String &p_path, bool p_warnings = true) const;
 };
 
 } // namespace barista_script

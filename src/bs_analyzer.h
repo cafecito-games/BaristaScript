@@ -1,10 +1,10 @@
 /**************************************************************************/
 /*  bs_analyzer.h                                                         */
 /*                                                                        */
-/*  M3 analyzer port seam (issue #43). Staged resolve_* mirror Foundry    */
-/*  FSAnalyzer @ c9d5e35. This slice lands inheritance, interface, body   */
-/*  reduction/constant-folding (#49), declaration commit (#52), and       */
-/*  _validate wiring. Remaining Foundry phase depth is follow-up work.    */
+/*  M3 analyzer port seam (issue #43 / #57). Staged resolve_* mirror      */
+/*  Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body fold       */
+/*  (#49), declaration commit (#52/#58), call/match/flow/warning depth    */
+/*  (#57 remainder). Full mechanical Foundry TU dump remains follow-up.   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -62,6 +62,9 @@ public:
 	 * After successful FULLY_SOLVED analysis, commit a declaration record; on failure remove any
 	 * prior record for the path (#52). No-op unless `set_update_declaration_index(true)`, and a
 	 * safe no-op when the language singleton is absent.
+	 *
+	 * M5-only deferred diagnostics still allow a declaration commit so GENERIC_CLASS heads remain
+	 * discoverable through the private index (#58); `_validate` / `_is_valid` stay invalid.
 	 */
 	void commit_or_remove_declaration(bool p_success);
 
@@ -73,11 +76,14 @@ private:
 	bool strict_dynamic_checks = false;
 	bool strict_null_checks = false;
 	bool update_declaration_index = false;
+	BSParser::ClassNode *current_class = nullptr;
+	BSParser::FunctionNode *current_function = nullptr;
 
 	Error run_phase_preflight();
 	Error run_phase_inheritance_resolution();
 	Error run_phase_interface_and_member_surface();
 	Error run_phase_body_expression_callable_signal();
+	Error run_phase_flow_finality();
 	Error run_phase_finalize();
 
 	void resolve_class_inheritance(BSParser::ClassNode *p_class);
@@ -99,7 +105,21 @@ private:
 	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);
 	void reduce_ternary(BSParser::TernaryOpNode *p_ternary);
 
+	void validate_bootstrap_namespace_imports();
+	bool validate_bootstrap_namespace_import(const String &p_import);
+	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee);
+	void check_match_exhaustiveness(BSParser::MatchNode *p_match);
+	bool suite_has_return(const BSParser::SuiteNode *p_suite) const;
+	void check_function_flow_finality(BSParser::FunctionNode *p_function);
+	void resolve_used_traits(BSParser::ClassNode *p_class);
+	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
+	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
+	bool errors_are_only_m5_deferred() const;
+
 	void push_error(const String &p_message, const BSParser::Node *p_origin = nullptr);
+#ifdef DEBUG_ENABLED
+	void push_warning(const BSParser::Node *p_origin, BSWarning::Code p_code, const Vector<String> &p_symbols = Vector<String>());
+#endif
 	void mark_phase(AnalyzerPhase p_phase);
 	void read_strict_settings();
 

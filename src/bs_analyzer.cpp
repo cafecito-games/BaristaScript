@@ -1,10 +1,9 @@
 /**************************************************************************/
 /*  bs_analyzer.cpp                                                       */
 /*                                                                        */
-/*  M3 analyzer port (issue #43) @ Foundry c9d5e35. Incremental green     */
-/*  slice: inheritance, interface surface, body reduction/#49 folding,    */
-/*  declaration commit (#52), validate wiring. Full Foundry phase depth   */
-/*  remains follow-up work under epic #42.                                */
+/*  M3 analyzer port (issue #43/#57) @ Foundry c9d5e35. Inheritance,      */
+/*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
+/*  flow/warning depth. Remaining mechanical Foundry TU dump is follow-up.*/
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -19,6 +18,7 @@
 #include "bs_declaration_index.h"
 #include "bs_global_class.h"
 #include "bs_script_server.h"
+#include "bs_warning.h"
 
 namespace barista_script {
 
@@ -140,6 +140,43 @@ void BSAnalyzer::push_error(const String &p_message, const BSParser::Node *p_ori
 	parser->push_error(p_message, p_origin);
 }
 
+#ifdef DEBUG_ENABLED
+void BSAnalyzer::push_warning(const BSParser::Node *p_origin, BSWarning::Code p_code, const Vector<String> &p_symbols) {
+	ERR_FAIL_NULL(parser);
+	if (p_origin == nullptr) {
+		return;
+	}
+	parser->push_warning(p_origin, p_code, p_symbols);
+}
+#endif
+
+bool BSAnalyzer::errors_are_only_m5_deferred() const {
+	ERR_FAIL_COND_V(parser == nullptr, false);
+	if (parser->get_errors().is_empty()) {
+		return false;
+	}
+	for (const BSParser::ParserError &error : parser->get_errors()) {
+		if (!error.message.contains("not available until M5")) {
+			return false;
+		}
+	}
+	return true;
+}
+
+BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const {
+	if (p_class == nullptr || p_name == StringName()) {
+		return nullptr;
+	}
+	if (!p_class->has_member(p_name)) {
+		return nullptr;
+	}
+	const BSParser::ClassNode::Member member = p_class->get_member(p_name);
+	if (member.type != BSParser::ClassNode::Member::FUNCTION) {
+		return nullptr;
+	}
+	return member.function;
+}
+
 bool BSAnalyzer::is_bootstrap_path_allowed(const String &p_path) {
 	const String &bootstrap_allowed_dependency_root = bootstrap_root_storage();
 	if (bootstrap_allowed_dependency_root.is_empty()) {
@@ -171,13 +208,93 @@ BSParser::DataType BSAnalyzer::type_from_variant(const Variant &p_value) {
 	return type;
 }
 
+void BSAnalyzer::validate_bootstrap_namespace_imports() {
+	ERR_FAIL_NULL(parser);
+	BSParser::ClassNode *head = parser->get_tree();
+	if (head == nullptr) {
+		return;
+	}
+	for (int i = 0; i < head->imports.size(); i++) {
+		validate_bootstrap_namespace_import(head->imports[i]);
+	}
+}
+
+bool BSAnalyzer::validate_bootstrap_namespace_import(const String &p_import) {
+	// Foundry FSAnalyzer::validate_bootstrap_namespace_import @ c9d5e35 — explicit import of a
+	// namespace whose only relevant providers lie outside the bootstrap root is analyzer-owned (#52/#58).
+	if (bootstrap_root_storage().is_empty()) {
+		return true;
+	}
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	bool found_namespace_member = false;
+	const String namespace_prefix = p_import + String(".");
+
+	List<StringName> global_classes;
+	ScriptServer::get_global_class_list(&global_classes);
+	for (const StringName &global_class : global_classes) {
+		if (!String(global_class).begins_with(namespace_prefix)) {
+			continue;
+		}
+		found_namespace_member = true;
+		const String path = ScriptServer::get_global_class_path(global_class);
+		if (!is_bootstrap_path_allowed(path)) {
+			push_error(vformat(R"(Build task bootstrap cannot import namespace "%s"; global class "%s" from "%s" is outside the provider bootstrap root "%s".)",
+							   p_import, global_class, path, bootstrap_root_storage()),
+					parser->get_tree());
+			return false;
+		}
+	}
+
+	if (language != nullptr) {
+		const Vector<BSDeclarationRecord> records = language->get_declaration_index().get_records();
+		for (int i = 0; i < records.size(); i++) {
+			const BSDeclarationRecord &record = records[i];
+			const bool in_namespace = record.namespace_name == p_import || record.qualified_name.begins_with(namespace_prefix);
+			if (!in_namespace) {
+				continue;
+			}
+			found_namespace_member = true;
+			if (!is_bootstrap_path_allowed(record.path)) {
+				if (!record.global_annotations.is_empty()) {
+					push_error(vformat(R"(Build task bootstrap cannot import namespace "%s"; annotation "%s" from "%s" is outside the provider bootstrap root "%s".)",
+									   p_import, record.global_annotations[0], record.path, bootstrap_root_storage()),
+							parser->get_tree());
+				} else {
+					push_error(vformat(R"(Build task bootstrap cannot import namespace "%s"; declaration "%s" from "%s" is outside the provider bootstrap root "%s".)",
+									   p_import, record.qualified_name, record.path, bootstrap_root_storage()),
+							parser->get_tree());
+				}
+				return false;
+			}
+		}
+
+		for (const String &conformance_path : language->get_conformance_files_in_namespace(p_import)) {
+			found_namespace_member = true;
+			if (!is_bootstrap_path_allowed(conformance_path)) {
+				push_error(vformat(R"(Build task bootstrap cannot import namespace "%s"; retroactive conformance from "%s" is outside the provider bootstrap root "%s".)",
+								   p_import, conformance_path, bootstrap_root_storage()),
+						parser->get_tree());
+				return false;
+			}
+		}
+	}
+
+	if (!found_namespace_member) {
+		push_error(vformat(R"(Could not find imported namespace "%s".)", p_import), parser->get_tree());
+		return false;
+	}
+	return true;
+}
+
 Error BSAnalyzer::run_phase_preflight() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
 	if (!parser->get_errors().is_empty()) {
 		return ERR_PARSE_ERROR;
 	}
+	validate_bootstrap_namespace_imports();
 	mark_phase(AnalyzerPhase::PREFLIGHT);
-	return OK;
+	mark_phase(AnalyzerPhase::DEPENDENCY_PARSE_AVAILABILITY);
+	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
 
 void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
@@ -381,21 +498,51 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = name;
 			result.builtin_type = Variant::OBJECT;
-		} else if (ScriptServer::is_global_class(name)) {
-			result.kind = BSParser::DataType::CLASS;
-			result.script_path = ScriptServer::get_global_class_path(name);
-			result.native_type = ScriptServer::get_global_class_native_base(name);
-			result.builtin_type = Variant::OBJECT;
 		} else {
-			push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
-			result.kind = BSParser::DataType::VARIANT;
-			return result;
+			String qualified = String(name);
+			BSParser::ClassNode *head = parser != nullptr ? parser->get_tree() : nullptr;
+			BSParser::DataType indexed = resolve_named_type(qualified, p_type_node);
+			if (indexed.kind == BSParser::DataType::VARIANT && head != nullptr && !head->namespace_name.is_empty()) {
+				indexed = resolve_named_type(head->namespace_name + String(".") + qualified, p_type_node);
+			}
+			if (indexed.kind == BSParser::DataType::VARIANT && head != nullptr) {
+				for (int i = 0; i < head->imports.size(); i++) {
+					indexed = resolve_named_type(head->imports[i] + String(".") + qualified, p_type_node);
+					if (indexed.kind != BSParser::DataType::VARIANT) {
+						break;
+					}
+				}
+			}
+			if (indexed.kind != BSParser::DataType::VARIANT) {
+				return indexed;
+			}
+			if (ScriptServer::is_global_class(name)) {
+				result.kind = BSParser::DataType::CLASS;
+				result.script_path = ScriptServer::get_global_class_path(name);
+				result.native_type = ScriptServer::get_global_class_native_base(name);
+				result.builtin_type = Variant::OBJECT;
+			} else {
+				push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
+				result.kind = BSParser::DataType::VARIANT;
+				return result;
+			}
 		}
 		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 		return result;
 	}
 
-	push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
+	String qualified;
+	for (int i = 0; i < p_type_node->type_chain.size(); i++) {
+		if (i > 0) {
+			qualified += ".";
+		}
+		qualified += String(p_type_node->type_chain[i]->name);
+	}
+	BSParser::DataType indexed = resolve_named_type(qualified, p_type_node);
+	if (indexed.kind != BSParser::DataType::VARIANT) {
+		return indexed;
+	}
+	push_error(vformat(R"(Could not find type "%s".)", qualified), p_type_node->type_chain[0]);
 	result.kind = BSParser::DataType::VARIANT;
 	return result;
 }
@@ -452,6 +599,7 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 
 Error BSAnalyzer::run_phase_interface_and_member_surface() {
 	analyze_class_interface(parser->get_tree());
+	resolve_used_traits(parser->get_tree());
 	mark_phase(AnalyzerPhase::INTERFACE_AND_MEMBER_SURFACE);
 	mark_phase(AnalyzerPhase::TRAIT_CONFORMANCE_REGISTRATION);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
@@ -515,6 +663,11 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 				BSParser::DataType result = type_from_variant(0);
 				result.is_constant = false;
 				p_binary_op->set_datatype(result);
+#ifdef DEBUG_ENABLED
+				if (p_binary_op->variant_op == Variant::OP_DIVIDE) {
+					push_warning(p_binary_op, BSWarning::INTEGER_DIVISION);
+				}
+#endif
 			} else if (left.builtin_type == Variant::FLOAT || right.builtin_type == Variant::FLOAT) {
 				BSParser::DataType result = type_from_variant(0.0);
 				result.is_constant = false;
@@ -545,6 +698,13 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 			p_binary_op->reduced_value = Variant();
 		}
 	}
+#ifdef DEBUG_ENABLED
+	if (p_binary_op->variant_op == Variant::OP_DIVIDE &&
+			p_binary_op->left_operand->reduced_value.get_type() == Variant::INT &&
+			p_binary_op->right_operand->reduced_value.get_type() == Variant::INT) {
+		push_warning(p_binary_op, BSWarning::INTEGER_DIVISION);
+	}
+#endif
 	p_binary_op->set_datatype(type_from_variant(p_binary_op->reduced_value));
 }
 
@@ -552,11 +712,81 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (p_identifier == nullptr) {
 		return;
 	}
-	// Local/member resolution is completed in later analyzer depth; unknown bare names fail closed
-	// only when used as a call target or assignment source after interface resolution.
+	if (current_function != nullptr) {
+		for (int i = 0; i < current_function->parameters.size(); i++) {
+			BSParser::ParameterNode *parameter = current_function->parameters[i];
+			if (parameter != nullptr && parameter->identifier != nullptr && parameter->identifier->name == p_identifier->name) {
+				p_identifier->set_datatype(parameter->get_datatype());
+				p_identifier->source_function = current_function;
+				return;
+			}
+		}
+	}
+	if (current_class != nullptr && current_class->has_member(p_identifier->name)) {
+		const BSParser::ClassNode::Member member = current_class->get_member(p_identifier->name);
+		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+			p_identifier->set_datatype(member.variable->get_datatype());
+			return;
+		}
+		if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
+			p_identifier->set_datatype(member.constant->get_datatype());
+			return;
+		}
+	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_identifier->set_datatype(type);
+}
+
+void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee) {
+	if (p_call == nullptr || p_callee == nullptr) {
+		return;
+	}
+	const int argc = p_call->arguments.size();
+	const int paramc = p_callee->parameters.size();
+	int required = paramc;
+	for (int i = paramc - 1; i >= 0; i--) {
+		if (p_callee->parameters[i] != nullptr && p_callee->parameters[i]->initializer != nullptr) {
+			required--;
+		} else {
+			break;
+		}
+	}
+	const StringName fname = p_call->function_name != StringName() ? p_call->function_name : (p_callee->identifier != nullptr ? p_callee->identifier->name : StringName());
+	if (argc < required) {
+		push_error(vformat(R"*(Too few arguments for "%s()" call. Expected at least %d but received %d.)*", fname, required, argc), p_call);
+		return;
+	}
+	if (argc > paramc) {
+		push_error(vformat(R"*(Too many arguments for "%s()" call. Expected at most %d but received %d.)*", fname, paramc, argc),
+				argc > 0 ? static_cast<const BSParser::Node *>(p_call->arguments[paramc]) : static_cast<const BSParser::Node *>(p_call));
+		return;
+	}
+	for (int i = 0; i < argc; i++) {
+		BSParser::ParameterNode *parameter = p_callee->parameters[i];
+		BSParser::ExpressionNode *argument = p_call->arguments[i];
+		if (parameter == nullptr || argument == nullptr) {
+			continue;
+		}
+		const BSParser::DataType expected = parameter->get_datatype();
+		const BSParser::DataType actual = argument->get_datatype();
+		if (!expected.is_set() || expected.is_variant() || !actual.is_set()) {
+			continue;
+		}
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = true;
+		options.strict_dynamic = strict_dynamic_checks;
+		options.strict_null = strict_null_checks;
+		if (argument->is_constant) {
+			options.constant_source_value = &argument->reduced_value;
+		}
+		if (!BSTypeCompatibility::check(expected, actual, options).compatible) {
+			push_error(vformat("Invalid argument for \"%s()\" function: argument %d should be \"%s\" but is \"%s\".",
+							   fname, i + 1, expected.to_string(), actual.to_string()),
+					argument);
+		}
+	}
+	p_call->set_datatype(p_callee->get_datatype());
 }
 
 void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
@@ -565,6 +795,21 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 	}
 	for (int i = 0; i < p_call->arguments.size(); i++) {
 		reduce_expression(p_call->arguments[i]);
+	}
+	if (current_class != nullptr) {
+		StringName fname = p_call->function_name;
+		if (fname == StringName() && p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER) {
+			fname = static_cast<BSParser::IdentifierNode *>(p_call->callee)->name;
+		}
+		// Same-class bare call: callee is the identifier itself (or null for some super forms).
+		const bool local_shape = p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER;
+		if (local_shape && fname != StringName()) {
+			BSParser::FunctionNode *callee = find_class_function(current_class, fname);
+			if (callee != nullptr) {
+				validate_local_call(p_call, callee);
+				return;
+			}
+		}
 	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
@@ -758,6 +1003,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					analyze_suite(match_node->branches[i]->block);
 				}
 			}
+			check_match_exhaustiveness(match_node);
 		} break;
 		case BSParser::Node::ASSERT: {
 			BSParser::AssertNode *assert_node = static_cast<BSParser::AssertNode *>(p_node);
@@ -786,13 +1032,17 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
 		return;
 	}
 	p_function->resolved_body = true;
+	BSParser::FunctionNode *previous = current_function;
+	current_function = p_function;
 	if (!p_function->has_body) {
 		if (!p_function->is_abstract) {
 			push_error(vformat(R"(Function "%s" must have a body or be declared abstract.)", p_function->identifier != nullptr ? p_function->identifier->name : StringName()), p_function);
 		}
+		current_function = previous;
 		return;
 	}
 	analyze_suite(p_function->body);
+	current_function = previous;
 }
 
 void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
@@ -800,6 +1050,8 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 		return;
 	}
 	p_class->resolved_body = true;
+	BSParser::ClassNode *previous = current_class;
+	current_class = p_class;
 	for (int i = 0; i < p_class->members.size(); i++) {
 		const BSParser::ClassNode::Member &member = p_class->members[i];
 		switch (member.type) {
@@ -826,17 +1078,261 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 				break;
 		}
 	}
+	current_class = previous;
+}
+
+void BSAnalyzer::check_match_exhaustiveness(BSParser::MatchNode *p_match) {
+	if (p_match == nullptr || p_match->test == nullptr) {
+		return;
+	}
+	p_match->covers_subject_domain = false;
+	p_match->subject_domain_name = String();
+	p_match->uncovered_domain_values = String();
+
+	bool has_default = false;
+	for (int i = 0; i < p_match->branches.size(); i++) {
+		BSParser::MatchBranchNode *branch = p_match->branches[i];
+		if (branch != nullptr && branch->has_wildcard) {
+			has_default = true;
+			break;
+		}
+	}
+	if (has_default) {
+		p_match->covers_subject_domain = true;
+		return;
+	}
+
+	const BSParser::DataType match_type = p_match->test->get_datatype();
+	if (match_type.kind == BSParser::DataType::BUILTIN && match_type.builtin_type == Variant::BOOL) {
+		HashSet<bool> covered;
+		for (int i = 0; i < p_match->branches.size(); i++) {
+			BSParser::MatchBranchNode *branch = p_match->branches[i];
+			if (branch == nullptr) {
+				continue;
+			}
+			for (int p = 0; p < branch->patterns.size(); p++) {
+				BSParser::PatternNode *pattern = branch->patterns[p];
+				if (pattern == nullptr) {
+					continue;
+				}
+				if (pattern->pattern_type == BSParser::PatternNode::PT_LITERAL && pattern->literal != nullptr &&
+						pattern->literal->value.get_type() == Variant::BOOL) {
+					covered.insert(bool(pattern->literal->value));
+				} else if (pattern->pattern_type == BSParser::PatternNode::PT_EXPRESSION && pattern->expression != nullptr &&
+						pattern->expression->is_constant && pattern->expression->reduced_value.get_type() == Variant::BOOL) {
+					covered.insert(bool(pattern->expression->reduced_value));
+				}
+			}
+		}
+		Vector<String> unhandled;
+		if (!covered.has(false)) {
+			unhandled.push_back("false");
+		}
+		if (!covered.has(true)) {
+			unhandled.push_back("true");
+		}
+		p_match->subject_domain_name = "bool";
+		if (unhandled.is_empty()) {
+			p_match->covers_subject_domain = true;
+			return;
+		}
+		PackedStringArray uncovered_packed;
+		for (int u = 0; u < unhandled.size(); u++) {
+			uncovered_packed.push_back(unhandled[u]);
+		}
+		p_match->uncovered_domain_values = String(", ").join(uncovered_packed);
+#ifdef DEBUG_ENABLED
+		Vector<String> symbols;
+		symbols.push_back("bool");
+		symbols.push_back(p_match->uncovered_domain_values);
+		push_warning(p_match, BSWarning::NON_EXHAUSTIVE_MATCH, symbols);
+#endif
+		return;
+	}
+
+#ifdef DEBUG_ENABLED
+	push_warning(p_match, BSWarning::MATCH_WITHOUT_DEFAULT);
+#endif
+}
+
+bool BSAnalyzer::suite_has_return(const BSParser::SuiteNode *p_suite) const {
+	if (p_suite == nullptr) {
+		return false;
+	}
+	for (int i = 0; i < p_suite->statements.size(); i++) {
+		const BSParser::Node *statement = p_suite->statements[i];
+		if (statement == nullptr) {
+			continue;
+		}
+		if (statement->type == BSParser::Node::RETURN) {
+			return true;
+		}
+		if (statement->type == BSParser::Node::IF) {
+			const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(statement);
+			if (suite_has_return(if_node->true_block) && suite_has_return(if_node->false_block)) {
+				return true;
+			}
+		}
+		if (statement->type == BSParser::Node::MATCH) {
+			const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(statement);
+			if (!match_node->covers_subject_domain || match_node->branches.is_empty()) {
+				continue;
+			}
+			bool all_branches = true;
+			for (int b = 0; b < match_node->branches.size(); b++) {
+				if (match_node->branches[b] == nullptr || !suite_has_return(match_node->branches[b]->block)) {
+					all_branches = false;
+					break;
+				}
+			}
+			if (all_branches) {
+				return true;
+			}
+		}
+		if (statement->type == BSParser::Node::SUITE && suite_has_return(static_cast<const BSParser::SuiteNode *>(statement))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void BSAnalyzer::check_function_flow_finality(BSParser::FunctionNode *p_function) {
+	if (p_function == nullptr || !p_function->has_body || p_function->body == nullptr) {
+		return;
+	}
+	const BSParser::DataType return_type = p_function->get_datatype();
+	const bool expects_value = return_type.is_set() && !return_type.is_variant() &&
+			!(return_type.kind == BSParser::DataType::BUILTIN && return_type.builtin_type == Variant::NIL);
+	if (!expects_value) {
+		return;
+	}
+	if (!suite_has_return(p_function->body)) {
+		push_error(R"(Not all code paths return a value.)", p_function);
+	}
+
+#ifdef DEBUG_ENABLED
+	for (int i = 0; i + 1 < p_function->body->statements.size(); i++) {
+		const BSParser::Node *statement = p_function->body->statements[i];
+		if (statement != nullptr && statement->type == BSParser::Node::RETURN) {
+			const StringName function_name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
+			Vector<String> symbols;
+			symbols.push_back(String(function_name));
+			push_warning(p_function->body->statements[i + 1], BSWarning::UNREACHABLE_CODE, symbols);
+			break;
+		}
+	}
+#endif
+}
+
+void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
+	if (p_class == nullptr) {
+		return;
+	}
+	for (int i = 0; i < p_class->used_traits.size(); i++) {
+		const BSParser::ClassNode::TraitUse &use = p_class->used_traits[i];
+		const String name = use.to_string();
+		if (name.is_empty()) {
+			continue;
+		}
+		if (!use.type_arguments.is_empty()) {
+			push_error("Generic trait specialization is not available until M5.", p_class);
+			continue;
+		}
+		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+		BSDeclarationRecord record;
+		bool found = false;
+		if (language != nullptr) {
+			found = language->try_resolve_declaration(name, record);
+			if (!found && !p_class->namespace_name.is_empty()) {
+				found = language->try_resolve_declaration(p_class->namespace_name + String(".") + name, record);
+			}
+			if (!found) {
+				for (int j = 0; j < p_class->imports.size(); j++) {
+					found = language->try_resolve_declaration(p_class->imports[j] + String(".") + name, record);
+					if (found) {
+						break;
+					}
+				}
+			}
+		}
+		if (!found && !ScriptServer::is_global_class(StringName(name))) {
+			push_error(vformat(R"(Could not find trait "%s".)", name), p_class);
+			continue;
+		}
+		if (found && record.kind != BSDeclarationKind::TRAIT) {
+			push_error(vformat(R"("%s" is not a trait.)", name), p_class);
+		}
+	}
+}
+
+BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source) {
+	BSParser::DataType result;
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	BSDeclarationRecord record;
+	if (language != nullptr && language->try_resolve_declaration(p_qualified, record)) {
+		switch (record.kind) {
+			case BSDeclarationKind::ENUM:
+				result.kind = BSParser::DataType::ENUM;
+				result.enum_type = StringName(record.qualified_name);
+				result.builtin_type = Variant::INT;
+				break;
+			case BSDeclarationKind::TUPLE:
+				result.kind = BSParser::DataType::TUPLE;
+				result.builtin_type = Variant::ARRAY;
+				break;
+			case BSDeclarationKind::TRAIT:
+			case BSDeclarationKind::CLASS:
+			case BSDeclarationKind::GENERIC_CLASS:
+				result.kind = BSParser::DataType::CLASS;
+				result.script_path = record.path;
+				result.native_type = StringName(record.base_type);
+				result.builtin_type = Variant::OBJECT;
+				break;
+			default:
+				result.kind = BSParser::DataType::VARIANT;
+				break;
+		}
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		return result;
+	}
+	if (ScriptServer::is_global_class(StringName(p_qualified))) {
+		result.kind = BSParser::DataType::CLASS;
+		result.script_path = ScriptServer::get_global_class_path(StringName(p_qualified));
+		result.native_type = ScriptServer::get_global_class_native_base(StringName(p_qualified));
+		result.builtin_type = Variant::OBJECT;
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		return result;
+	}
+	(void)p_source;
+	result.kind = BSParser::DataType::VARIANT;
+	return result;
 }
 
 Error BSAnalyzer::run_phase_body_expression_callable_signal() {
 	analyze_class_body(parser->get_tree());
 	mark_phase(AnalyzerPhase::BODY_EXPRESSION_CALLABLE_SIGNAL);
+	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
+}
+
+Error BSAnalyzer::run_phase_flow_finality() {
+	BSParser::ClassNode *head = parser->get_tree();
+	if (head != nullptr) {
+		for (int i = 0; i < head->members.size(); i++) {
+			const BSParser::ClassNode::Member &member = head->members[i];
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				check_function_flow_finality(member.function);
+			}
+		}
+	}
 	mark_phase(AnalyzerPhase::FLOW_FINALITY_INVARIANTS);
 	mark_phase(AnalyzerPhase::CONFORMANCE_WITNESS_BODY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
 
 Error BSAnalyzer::run_phase_finalize() {
+#ifdef DEBUG_ENABLED
+	parser->apply_pending_warnings();
+#endif
 	mark_phase(AnalyzerPhase::FINAL_DIAGNOSTICS_AND_DEPENDENCIES);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
@@ -871,8 +1367,14 @@ Error BSAnalyzer::resolve_body() {
 		commit_or_remove_declaration(false);
 		return err;
 	}
+	err = run_phase_flow_finality();
+	if (err != OK) {
+		commit_or_remove_declaration(false);
+		return err;
+	}
 	err = run_phase_finalize();
-	commit_or_remove_declaration(err == OK);
+	const bool success = err == OK || errors_are_only_m5_deferred();
+	commit_or_remove_declaration(success);
 	return err;
 }
 
@@ -892,13 +1394,19 @@ Error BSAnalyzer::analyze() {
 	}
 	run_phase_interface_and_member_surface();
 	err = run_phase_body_expression_callable_signal();
-	if (err != OK) {
+	if (err != OK && !errors_are_only_m5_deferred()) {
 		commit_or_remove_declaration(false);
 		return err;
 	}
+	Error flow_err = run_phase_flow_finality();
+	if (flow_err != OK && !errors_are_only_m5_deferred()) {
+		commit_or_remove_declaration(false);
+		return flow_err;
+	}
 	err = run_phase_finalize();
-	commit_or_remove_declaration(err == OK && parser->get_errors().is_empty());
-	return err;
+	const bool success = (err == OK && parser->get_errors().is_empty()) || errors_are_only_m5_deferred();
+	commit_or_remove_declaration(success);
+	return success && !errors_are_only_m5_deferred() ? OK : (parser->get_errors().is_empty() ? err : ERR_PARSE_ERROR);
 }
 
 void BSAnalyzer::commit_or_remove_declaration(bool p_success) {
