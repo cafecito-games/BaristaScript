@@ -75,11 +75,14 @@ public:
 
 	/**
 	 * Hard fork of Foundry `FSAnalyzer::FlowFinalityContext` (@ c9d5e35,
-	 * `fs_analyzer_flow_finality.cpp`). Ports LOCAL + INSTANCE + STATIC
-	 * `final var` definite assignment / illegal writes. Trait flattening and
-	 * flow narrowing remain follow-up under #60.
+	 * `fs_analyzer_flow_finality.cpp`). LOCAL + INSTANCE + STATIC `final var`
+	 * definite assignment / illegal writes, plus trait-member flattening into
+	 * implementers. Flow narrowing remains follow-up under #60.
 	 */
 	class FlowFinalityContext {
+		BSAnalyzer *analyzer = nullptr;
+		HashSet<const BSParser::VariableNode *> flattened_trait_final_nodes;
+
 	public:
 		enum class FinalAssignmentScope {
 			LOCAL,
@@ -91,6 +94,16 @@ public:
 			HashSet<const BSParser::VariableNode *> assigned;
 			HashSet<const BSParser::VariableNode *> maybe_assigned;
 			bool reachable = true;
+		};
+
+		/** Clears `flattened_trait_final_nodes` for one member/static final pass. */
+		class FlattenedTraitFinalNodesScope {
+			FlowFinalityContext *context = nullptr;
+
+		public:
+			explicit FlattenedTraitFinalNodesScope(FlowFinalityContext &p_context);
+			void insert(const BSParser::VariableNode *p_variable);
+			~FlattenedTraitFinalNodesScope();
 		};
 
 		explicit FlowFinalityContext(BSAnalyzer *p_analyzer);
@@ -105,24 +118,24 @@ public:
 		static void merge_final_assignment_branches(const FinalAssignmentState &p_first, const FinalAssignmentState &p_second, FinalAssignmentState &r_out);
 		const BSParser::VariableNode *final_member_assignment_target(const BSParser::ExpressionNode *p_expression,
 				const HashSet<const BSParser::VariableNode *> &p_finals,
-				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, bool *r_is_self_receiver = nullptr) const;
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, bool *r_is_self_receiver = nullptr,
+				bool p_flattened_trait_body = false) const;
 		void scan_illegal_final_writes(const BSParser::Node *p_node,
 				const HashSet<const BSParser::VariableNode *> &p_finals,
-				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, bool p_in_init);
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, bool p_in_init,
+				bool p_flattened_trait_body = false);
 		void analyze_final_definite_assignment_statement(const BSParser::Node *p_statement,
 				const HashSet<const BSParser::VariableNode *> &p_finals,
 				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, FinalAssignmentState &r_state,
-				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere);
+				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere, bool p_flattened_trait_body = false);
 		void analyze_final_definite_assignment_suite(const BSParser::SuiteNode *p_suite,
 				const HashSet<const BSParser::VariableNode *> &p_finals,
 				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, FinalAssignmentState &r_state,
-				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere);
+				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere, bool p_flattened_trait_body = false);
 		void check_final_reads_in_expression(const BSParser::ExpressionNode *p_expression,
 				const HashSet<const BSParser::VariableNode *> &p_finals,
-				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state);
-
-	private:
-		BSAnalyzer *analyzer = nullptr;
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state,
+				bool p_flattened_trait_body = false);
 	};
 
 	explicit BSAnalyzer(BSParser *p_parser);
