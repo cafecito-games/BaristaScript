@@ -13,6 +13,9 @@ produces.
 | **total** | **340** |
 
 Plus 2 `.notest.barista` helper sources, which are skipped and never counted.
+Upstream at this pin holds 344 runnable parser cases; the triage ledger in
+`tests/corpus_baseline.json` accounts for every non-import disposition so
+`upstream_total == imported + excluded + deferred`.
 
 Each `.out` holds one line: the success sentinel, or the exact diagnostic the front end must
 produce, compared byte for byte. Upstream's `.out` files carry a status word and then the *runtime*
