@@ -33,6 +33,7 @@ func _init() -> void:
 	_test_match_and_flow(failures)
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
+	_test_final_member_and_static_assignment(failures)
 	_test_noreturn_flow(failures)
 	_test_unused_locals(failures)
 	BaristaScriptParseCache.clear_script_cache()
@@ -709,6 +710,76 @@ func _test_final_local_assignment(failures: PackedStringArray) -> void:
 		if "lambda" in message.to_lower():
 			saw_lambda = true
 	_expect(failures, saw_lambda, "illegal lambda final-write diagnostic")
+
+
+func _test_final_member_and_static_assignment(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var member_ok := "class_name FinalMemberOk extends Node\nfinal var id: int\nfunc _init(p_id: int) -> void:\n\tid = p_id\n"
+	var member_ok_report: Dictionary = probe.analyze_source(member_ok, "res://tests/final_member_ok.barista")
+	_expect(failures, member_ok_report.get("valid", false) == true, "blank final assigned once in _init is valid")
+
+	var member_outside := "class_name FinalMemberOutside extends Node\nfinal var id: int\nfunc _init() -> void:\n\tid = 1\nfunc reset() -> void:\n\tid = 2\n"
+	var outside_report: Dictionary = probe.analyze_source(member_outside, "res://tests/final_member_outside.barista")
+	_expect(failures, outside_report.get("valid", true) == false, "final member assigned outside _init is invalid")
+	var saw_outside := false
+	for message in outside_report.get("errors", PackedStringArray()):
+		if "_init()" in message and "can only be assigned" in message:
+			saw_outside = true
+	_expect(failures, saw_outside, "final member outside-_init diagnostic")
+
+	var member_twice := "class_name FinalMemberTwice extends Node\nfinal var id: int\nfunc _init() -> void:\n\tid = 1\n\tid = 2\n"
+	var twice_report: Dictionary = probe.analyze_source(member_twice, "res://tests/final_member_twice.barista")
+	_expect(failures, twice_report.get("valid", true) == false, "final member assigned twice in _init is invalid")
+	var saw_twice := false
+	for message in twice_report.get("errors", PackedStringArray()):
+		if "already assigned" in message:
+			saw_twice = true
+	_expect(failures, saw_twice, "final member double-assign diagnostic")
+
+	var member_blank := "class_name FinalMemberBlank extends Node\nfinal var id: int\nfunc _init() -> void:\n\tpass\n"
+	var blank_report: Dictionary = probe.analyze_source(member_blank, "res://tests/final_member_blank.barista")
+	_expect(failures, blank_report.get("valid", true) == false, "blank final never assigned in _init is invalid")
+	var saw_blank := false
+	for message in blank_report.get("errors", PackedStringArray()):
+		if "must be definitely assigned" in message and "_init()" in message:
+			saw_blank = true
+	_expect(failures, saw_blank, "blank final never-assigned diagnostic")
+
+	var member_branches := "class_name FinalMemberBranches extends Node\nfinal var label: String\nfunc _init(positive: bool) -> void:\n\tif positive:\n\t\tlabel = \"pos\"\n\telse:\n\t\tlabel = \"neg\"\n"
+	var branches_report: Dictionary = probe.analyze_source(member_branches, "res://tests/final_member_branches.barista")
+	_expect(failures, branches_report.get("valid", false) == true, "final member assigned on both branches is valid")
+
+	var member_self := "class_name FinalMemberSelf extends Node\nfinal var id: int\nfunc _init(p_id: int) -> void:\n\tself.id = p_id\nfunc bump() -> void:\n\tself.id = 99\n"
+	var self_report: Dictionary = probe.analyze_source(member_self, "res://tests/final_member_self.barista")
+	_expect(failures, self_report.get("valid", true) == false, "self.final reassigned outside _init is invalid")
+	var saw_self := false
+	for message in self_report.get("errors", PackedStringArray()):
+		if "_init()" in message and "can only be assigned" in message:
+			saw_self = true
+	_expect(failures, saw_self, "self.final outside-_init diagnostic")
+
+	var static_ok := "class_name FinalStaticOk extends Node\nfinal static var LABEL: String\nstatic func _static_init() -> void:\n\tLABEL = \"ready\"\n"
+	var static_ok_report: Dictionary = probe.analyze_source(static_ok, "res://tests/final_static_ok.barista")
+	_expect(failures, static_ok_report.get("valid", false) == true, "blank static final assigned once in _static_init is valid")
+
+	var static_outside := "class_name FinalStaticOutside extends Node\nfinal static var LABEL: String = \"ready\"\nfunc reset() -> void:\n\tLABEL = \"other\"\n"
+	var static_outside_report: Dictionary = probe.analyze_source(static_outside, "res://tests/final_static_outside.barista")
+	_expect(failures, static_outside_report.get("valid", true) == false, "static final reassigned outside _static_init is invalid")
+	var saw_static_outside := false
+	for message in static_outside_report.get("errors", PackedStringArray()):
+		if "_static_init()" in message and "can only be assigned" in message:
+			saw_static_outside = true
+	_expect(failures, saw_static_outside, "static final outside-_static_init diagnostic")
+
+	var static_blank := "class_name FinalStaticBlank extends Node\nfinal static var LABEL: String\n"
+	var static_blank_report: Dictionary = probe.analyze_source(static_blank, "res://tests/final_static_blank.barista")
+	_expect(failures, static_blank_report.get("valid", true) == false, "blank static final without _static_init is invalid")
+	var saw_static_blank := false
+	for message in static_blank_report.get("errors", PackedStringArray()):
+		if "must be definitely assigned" in message and "_static_init()" in message:
+			saw_static_blank = true
+	_expect(failures, saw_static_blank, "blank static final never-assigned diagnostic")
 
 
 func _test_noreturn_flow(failures: PackedStringArray) -> void:

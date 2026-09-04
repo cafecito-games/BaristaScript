@@ -3,8 +3,8 @@
 /*                                                                        */
 /*  Hard fork of Foundry `modules/foundry_script/fs_analyzer_flow_finality */
 /*  .cpp` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6. FS* -> BS*; engine  */
-/*  contact through bs_platform.h. LOCAL-scope final definite assignment  */
-/*  slice for #60; member/static/trait/narrowing remain follow-up.        */
+/*  contact through bs_platform.h. LOCAL + INSTANCE + STATIC final        */
+/*  definite assignment for #60; trait flattening / narrowing follow-up.  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -48,6 +48,241 @@ void BSAnalyzer::FlowFinalityContext::merge_final_assignment_branches(const Fina
 	}
 	for (const BSParser::VariableNode *variable : p_second.maybe_assigned) {
 		r_out.maybe_assigned.insert(variable);
+	}
+}
+
+void BSAnalyzer::FlowFinalityContext::check_final_member_assignments(BSParser::ClassNode *p_class) {
+	if (p_class == nullptr || analyzer == nullptr) {
+		return;
+	}
+	// A trait's members are flattened into and checked on each implementing class (Foundry @ c9d5e35).
+	if (p_class->is_trait) {
+		return;
+	}
+
+	HashSet<const BSParser::VariableNode *> finals;
+	HashMap<StringName, const BSParser::VariableNode *> finals_by_name;
+	BSParser::FunctionNode *init_function = nullptr;
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+			BSParser::VariableNode *variable = member.variable;
+			if (variable->is_final && !variable->is_static) {
+				if (variable->property != BSParser::VariableNode::PROP_NONE) {
+					analyzer->push_error(vformat(R"(Final variable "%s" cannot declare a getter or setter.)", variable->identifier->name), variable);
+				} else if (variable->onready) {
+					analyzer->push_error(vformat(R"(Final variable "%s" cannot be annotated with "@onready".)", variable->identifier->name), variable);
+				} else if (variable->identifier != nullptr) {
+					finals.insert(variable);
+					finals_by_name[variable->identifier->name] = variable;
+				}
+			}
+		} else if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+			if (member.function != nullptr && member.function->identifier != nullptr && member.function->identifier->name == SNAME("_init")) {
+				init_function = member.function;
+			}
+		}
+	}
+
+	// Trait flattening remains #60 follow-up; scan this class's own bodies for illegal writes.
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+			BSParser::FunctionNode *function = member.function;
+			if (function != nullptr) {
+				scan_illegal_final_writes(function->body, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, function == init_function);
+			}
+		} else if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
+			for (int f = 0; f < member.m_enum->functions.size(); f++) {
+				BSParser::FunctionNode *function = member.m_enum->functions[f];
+				if (function != nullptr) {
+					scan_illegal_final_writes(function->body, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, false);
+				}
+			}
+		} else if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+			scan_illegal_final_writes(member.variable->initializer, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, false);
+			if (member.variable->property == BSParser::VariableNode::PROP_INLINE) {
+				if (member.variable->getter != nullptr) {
+					scan_illegal_final_writes(member.variable->getter->body, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, false);
+				}
+				if (member.variable->setter != nullptr) {
+					scan_illegal_final_writes(member.variable->setter->body, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, false);
+				}
+			}
+		}
+	}
+
+	if (!finals.is_empty()) {
+		FinalAssignmentState init_state;
+		Vector<const BSParser::VariableNode *> blank_finals;
+		for (int i = 0; i < p_class->members.size(); i++) {
+			const BSParser::ClassNode::Member &member = p_class->members[i];
+			if (member.type != BSParser::ClassNode::Member::VARIABLE || member.variable == nullptr) {
+				continue;
+			}
+			BSParser::VariableNode *variable = member.variable;
+			if (variable->initializer != nullptr) {
+				check_final_reads_in_expression(variable->initializer, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, init_state);
+			}
+			if (!finals.has(variable)) {
+				continue;
+			}
+			if (variable->initializer != nullptr) {
+				init_state.assigned.insert(variable);
+				init_state.maybe_assigned.insert(variable);
+			} else {
+				blank_finals.push_back(variable);
+			}
+		}
+
+		if (init_function != nullptr) {
+			for (int i = 0; i < init_function->parameters.size(); i++) {
+				if (init_function->parameters[i] != nullptr) {
+					check_final_reads_in_expression(init_function->parameters[i]->initializer, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, init_state);
+				}
+			}
+			HashSet<const BSParser::VariableNode *> assigned_anywhere;
+			analyze_final_definite_assignment_suite(init_function->body, finals, finals_by_name, FinalAssignmentScope::INSTANCE_MEMBER, init_state, assigned_anywhere);
+			if (init_state.reachable) {
+				for (int i = 0; i < blank_finals.size(); i++) {
+					const BSParser::VariableNode *variable = blank_finals[i];
+					if (!init_state.assigned.has(variable)) {
+						analyzer->push_error(vformat(R"*(Final variable "%s" must be definitely assigned in its declaration or in "_init()".)*", variable->identifier->name), variable);
+					}
+				}
+			}
+		} else {
+			for (int i = 0; i < blank_finals.size(); i++) {
+				const BSParser::VariableNode *variable = blank_finals[i];
+				analyzer->push_error(vformat(R"*(Final variable "%s" must be definitely assigned in its declaration or in "_init()".)*", variable->identifier->name), variable);
+			}
+		}
+	}
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::CLASS) {
+			check_final_member_assignments(member.m_class);
+		}
+	}
+}
+
+void BSAnalyzer::FlowFinalityContext::check_final_static_assignments(BSParser::ClassNode *p_class) {
+	if (p_class == nullptr || analyzer == nullptr) {
+		return;
+	}
+	if (p_class->is_trait) {
+		return;
+	}
+
+	HashSet<const BSParser::VariableNode *> finals;
+	HashMap<StringName, const BSParser::VariableNode *> finals_by_name;
+	BSParser::FunctionNode *static_init_function = nullptr;
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+			BSParser::VariableNode *variable = member.variable;
+			if (variable->is_final && variable->is_static) {
+				if (variable->property != BSParser::VariableNode::PROP_NONE) {
+					analyzer->push_error(vformat(R"(Final variable "%s" cannot declare a getter or setter.)", variable->identifier->name), variable);
+				} else if (variable->onready) {
+					analyzer->push_error(vformat(R"(Final variable "%s" cannot be annotated with "@onready".)", variable->identifier->name), variable);
+				} else if (variable->identifier != nullptr) {
+					finals.insert(variable);
+					finals_by_name[variable->identifier->name] = variable;
+				}
+			}
+		} else if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+			if (member.function != nullptr && member.function->identifier != nullptr && member.function->identifier->name == SNAME("_static_init")) {
+				static_init_function = member.function;
+			}
+		}
+	}
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+			BSParser::FunctionNode *function = member.function;
+			if (function != nullptr) {
+				scan_illegal_final_writes(function->body, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, function == static_init_function);
+			}
+		} else if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
+			for (int f = 0; f < member.m_enum->functions.size(); f++) {
+				BSParser::FunctionNode *function = member.m_enum->functions[f];
+				if (function != nullptr) {
+					scan_illegal_final_writes(function->body, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, false);
+				}
+			}
+		} else if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+			scan_illegal_final_writes(member.variable->initializer, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, false);
+			if (member.variable->property == BSParser::VariableNode::PROP_INLINE) {
+				if (member.variable->getter != nullptr) {
+					scan_illegal_final_writes(member.variable->getter->body, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, false);
+				}
+				if (member.variable->setter != nullptr) {
+					scan_illegal_final_writes(member.variable->setter->body, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, false);
+				}
+			}
+		}
+	}
+
+	if (!finals.is_empty()) {
+		FinalAssignmentState init_state;
+		Vector<const BSParser::VariableNode *> blank_finals;
+		for (int i = 0; i < p_class->members.size(); i++) {
+			const BSParser::ClassNode::Member &member = p_class->members[i];
+			if (member.type != BSParser::ClassNode::Member::VARIABLE || member.variable == nullptr) {
+				continue;
+			}
+			BSParser::VariableNode *variable = member.variable;
+			if (!variable->is_static) {
+				continue;
+			}
+			if (variable->initializer != nullptr) {
+				check_final_reads_in_expression(variable->initializer, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, init_state);
+			}
+			if (!finals.has(variable)) {
+				continue;
+			}
+			if (variable->initializer != nullptr) {
+				init_state.assigned.insert(variable);
+				init_state.maybe_assigned.insert(variable);
+			} else {
+				blank_finals.push_back(variable);
+			}
+		}
+
+		if (static_init_function != nullptr) {
+			for (int i = 0; i < static_init_function->parameters.size(); i++) {
+				if (static_init_function->parameters[i] != nullptr) {
+					check_final_reads_in_expression(static_init_function->parameters[i]->initializer, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, init_state);
+				}
+			}
+			HashSet<const BSParser::VariableNode *> assigned_anywhere;
+			analyze_final_definite_assignment_suite(static_init_function->body, finals, finals_by_name, FinalAssignmentScope::STATIC_MEMBER, init_state, assigned_anywhere);
+			if (init_state.reachable) {
+				for (int i = 0; i < blank_finals.size(); i++) {
+					const BSParser::VariableNode *variable = blank_finals[i];
+					if (!init_state.assigned.has(variable)) {
+						analyzer->push_error(vformat(R"*(Final variable "%s" must be definitely assigned in its declaration or in "_static_init()".)*", variable->identifier->name), variable);
+					}
+				}
+			}
+		} else {
+			for (int i = 0; i < blank_finals.size(); i++) {
+				const BSParser::VariableNode *variable = blank_finals[i];
+				analyzer->push_error(vformat(R"*(Final variable "%s" must be definitely assigned in its declaration or in "_static_init()".)*", variable->identifier->name), variable);
+			}
+		}
+	}
+
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::CLASS) {
+			check_final_static_assignments(member.m_class);
+		}
 	}
 }
 
@@ -218,14 +453,13 @@ const BSParser::VariableNode *BSAnalyzer::FlowFinalityContext::final_member_assi
 		const HashSet<const BSParser::VariableNode *> &p_finals,
 		const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, bool *r_is_self_receiver) const {
 	(void)p_finals;
-	(void)p_finals_by_name;
 	if (r_is_self_receiver != nullptr) {
 		*r_is_self_receiver = false;
 	}
 	if (p_expression == nullptr) {
 		return nullptr;
 	}
-	// LOCAL / STATIC: bare identifier with the matching source. INSTANCE_MEMBER is follow-up under #60.
+	// LOCAL / STATIC: bare identifier with the matching source. STATIC also accepts qualified forms.
 	if (p_scope != FinalAssignmentScope::INSTANCE_MEMBER) {
 		if (p_expression->type == BSParser::Node::IDENTIFIER) {
 			const BSParser::IdentifierNode *identifier = static_cast<const BSParser::IdentifierNode *>(p_expression);
@@ -237,7 +471,61 @@ const BSParser::VariableNode *BSAnalyzer::FlowFinalityContext::final_member_assi
 				return identifier->variable_source;
 			}
 		}
+		if (p_scope == FinalAssignmentScope::STATIC_MEMBER && p_expression->type == BSParser::Node::SUBSCRIPT) {
+			const BSParser::SubscriptNode *subscript = static_cast<const BSParser::SubscriptNode *>(p_expression);
+			if (subscript->is_attribute && subscript->attribute != nullptr &&
+					subscript->attribute->source == BSParser::IdentifierNode::STATIC_VARIABLE &&
+					subscript->attribute->variable_source != nullptr && subscript->attribute->variable_source->is_final) {
+				const BSParser::VariableNode *static_final = subscript->attribute->variable_source;
+				HashMap<StringName, const BSParser::VariableNode *>::ConstIterator found = p_finals_by_name.find(subscript->attribute->name);
+				if (found && found->value == static_final && r_is_self_receiver != nullptr) {
+					*r_is_self_receiver = true;
+				}
+				return static_final;
+			}
+		}
 		return nullptr;
+	}
+
+	if (p_expression->type == BSParser::Node::IDENTIFIER) {
+		const BSParser::IdentifierNode *identifier = static_cast<const BSParser::IdentifierNode *>(p_expression);
+		const bool is_member = identifier->source == BSParser::IdentifierNode::MEMBER_VARIABLE || identifier->source == BSParser::IdentifierNode::INHERITED_VARIABLE;
+		if (is_member && identifier->variable_source != nullptr && identifier->variable_source->is_final) {
+			if (r_is_self_receiver != nullptr) {
+				*r_is_self_receiver = true;
+			}
+			return identifier->variable_source;
+		}
+		return nullptr;
+	}
+	if (p_expression->type == BSParser::Node::SUBSCRIPT) {
+		const BSParser::SubscriptNode *subscript = static_cast<const BSParser::SubscriptNode *>(p_expression);
+		if (subscript->is_attribute && subscript->attribute != nullptr && subscript->base != nullptr) {
+			const bool attribute_is_variable = subscript->attribute->source == BSParser::IdentifierNode::MEMBER_VARIABLE ||
+					subscript->attribute->source == BSParser::IdentifierNode::INHERITED_VARIABLE ||
+					subscript->attribute->source == BSParser::IdentifierNode::STATIC_VARIABLE;
+			const BSParser::VariableNode *attribute_final = (attribute_is_variable && subscript->attribute->variable_source != nullptr &&
+																	subscript->attribute->variable_source->is_final && !subscript->attribute->variable_source->is_static)
+					? subscript->attribute->variable_source
+					: nullptr;
+			if (subscript->base->type == BSParser::Node::SELF) {
+				HashMap<StringName, const BSParser::VariableNode *>::ConstIterator found = p_finals_by_name.find(subscript->attribute->name);
+				if (found) {
+					if (r_is_self_receiver != nullptr) {
+						*r_is_self_receiver = true;
+					}
+					return found->value;
+				}
+				if (attribute_final != nullptr) {
+					if (r_is_self_receiver != nullptr) {
+						*r_is_self_receiver = true;
+					}
+					return attribute_final;
+				}
+			} else if (attribute_final != nullptr) {
+				return attribute_final;
+			}
+		}
 	}
 	return nullptr;
 }
@@ -286,11 +574,14 @@ void BSAnalyzer::FlowFinalityContext::scan_illegal_final_writes(const BSParser::
 			const BSParser::AssignmentNode *assignment = static_cast<const BSParser::AssignmentNode *>(p_node);
 			bool is_self_receiver = false;
 			const BSParser::VariableNode *target = final_member_assignment_target(assignment->assignee, p_finals, p_finals_by_name, p_scope, &is_self_receiver);
-			(void)is_self_receiver;
 			if (p_scope == FinalAssignmentScope::LOCAL) {
 				if (target != nullptr && p_finals.has(target) && !p_in_init) {
 					analyzer->push_error(vformat(R"(Final variable "%s" cannot be assigned inside a lambda.)", target->identifier->name), assignment->assignee);
 				}
+			} else if (target != nullptr && !(p_finals.has(target) && is_self_receiver && p_in_init)) {
+				// Only legal write: this class's own final on self, lexically in `_init` / `_static_init`.
+				const char *slot_function = p_scope == FinalAssignmentScope::STATIC_MEMBER ? "_static_init()" : "_init()";
+				analyzer->push_error(vformat(R"*(Final variable "%s" can only be assigned in its declaration or in "%s".)*", target->identifier->name, slot_function), assignment->assignee);
 			}
 			scan_illegal_final_writes(assignment->assignee, p_finals, p_finals_by_name, p_scope, p_in_init);
 			scan_illegal_final_writes(assignment->assigned_value, p_finals, p_finals_by_name, p_scope, p_in_init);
@@ -540,6 +831,15 @@ void BSAnalyzer::FlowFinalityContext::analyze_final_definite_assignment_statemen
 		case BSParser::Node::RETURN: {
 			const BSParser::ReturnNode *return_node = static_cast<const BSParser::ReturnNode *>(p_statement);
 			check_final_reads_in_expression(return_node->return_value, p_finals, p_finals_by_name, p_scope, r_state);
+			// Member/static blank finals must be assigned before `_init`/`_static_init` returns.
+			if (p_scope != FinalAssignmentScope::LOCAL) {
+				const char *init_name = p_scope == FinalAssignmentScope::STATIC_MEMBER ? "_static_init()" : "_init()";
+				for (const BSParser::VariableNode *variable : p_finals) {
+					if (!r_state.assigned.has(variable)) {
+						analyzer->push_error(vformat(R"*(Final variable "%s" must be definitely assigned before returning from "%s".)*", variable->identifier->name, init_name), return_node);
+					}
+				}
+			}
 			r_state.reachable = false;
 		} break;
 		case BSParser::Node::BREAK:
