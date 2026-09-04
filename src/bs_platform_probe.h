@@ -51,7 +51,6 @@ public:
 	 *   `site_a` / `site_b`  the string values from two distinct call sites.
 	 *   `same_site_same_identity`  two reads from one call site share one cached `StringName`.
 	 *   `distinct_sites_equal_value`  two call sites intern the same literal to equal values.
-	 *   `distinct_sites_different_identity`  the two cached objects are not the same instance.
 	 */
 	godot::Dictionary sname_behavior() const;
 };

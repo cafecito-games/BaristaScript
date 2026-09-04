@@ -57,6 +57,8 @@ func _initialize() -> void:
 	_test_final_trait_is_rejected(probe, failures)
 	_test_removed_type_spelling_reports_once_from_one_definition(probe, failures)
 	_test_removed_type_spelling_in_every_parser_owned_type_position(probe, failures)
+	_test_a_valid_current_version_token_buffer_parses(probe, failures)
+	_test_token_buffer_lexical_and_parser_failures_are_distinct(probe, failures)
 	_test_token_buffer_from_another_format_is_refused(probe, failures)
 	_test_a_previous_format_version_buffer_is_refused(probe, failures)
 	_test_a_reused_parser_clears_tokenizer_failure(probe, failures)
@@ -79,7 +81,7 @@ func _initialize() -> void:
 	_test_node_type_names_are_distinct(probe, failures)
 
 	if failures.is_empty():
-		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 24])
+		print("%s %d test groups passed" % [SUCCESS_SENTINEL, 26])
 	quit(SuiteGuard.report("parser_test", failures))
 
 
@@ -302,24 +304,43 @@ func _test_removed_type_spelling_in_every_parser_owned_type_position(probe, fail
 			"reserved type name in `%s`: wrong diagnostic: %s" % [source.strip_edges(), report["diagnostics"]])
 
 
+## A token buffer this build wrote and that decodes successfully is replayed through
+## `parse_binary()` without reporting a lexical failure.
+func _test_a_valid_current_version_token_buffer_parses(probe, failures: Array[String]) -> void:
+	var buffer: PackedByteArray = probe.tokenize_to_buffer("func a() -> void:\n\tpass\n".to_utf8_buffer(), false)
+	_expect(failures, buffer.size() > 8, "token buffer: nothing written")
+
+	var report: Dictionary = probe.parse_token_buffer(buffer, PATH)
+	_expect(failures, report["error"] == OK,
+		"current-version token buffer: rejected: %s" % [report["diagnostics"]])
+	_expect(failures, not report["tokenizer_failed"],
+		"current-version token buffer: reported a lexical failure")
+
+
+## A decoded token buffer is only labelled a lexical failure when its token stream
+## contains a tokenizer ERROR token. Parser-only breakage on a clean stream is not.
+func _test_token_buffer_lexical_and_parser_failures_are_distinct(probe, failures: Array[String]) -> void:
+	var parser_only_source := "func a( -> void:\n\tpass\n"
+	var parser_only_buffer: PackedByteArray = probe.tokenize_to_buffer(parser_only_source.to_utf8_buffer(), false)
+	var parser_only_report: Dictionary = probe.parse_token_buffer(parser_only_buffer, PATH)
+	_expect(failures, parser_only_report["error"] != OK,
+		"parser-only syntax error in a token buffer: returned OK")
+	_expect(failures, not parser_only_report["tokenizer_failed"],
+		"parser-only syntax error in a token buffer: reported a lexical failure")
+
+	var lexical_failure_source := "var x = 1L\n"
+	var lexical_buffer: PackedByteArray = probe.tokenize_to_buffer(lexical_failure_source.to_utf8_buffer(), false)
+	var lexical_report: Dictionary = probe.parse_token_buffer(lexical_buffer, PATH)
+	_expect(failures, lexical_report["tokenizer_failed"],
+		"a token buffer whose stream contains an ERROR token: did not report a lexical failure")
+
+
 ## A token buffer this build did not write is refused rather than misread. The
 ## cache's own fail-closed table owns the store; this is the parser's side of it:
 ## a payload whose schema does not match is never consumed.
 func _test_token_buffer_from_another_format_is_refused(probe, failures: Array[String]) -> void:
 	var buffer: PackedByteArray = probe.tokenize_to_buffer("func a() -> void:\n\tpass\n".to_utf8_buffer(), false)
 	_expect(failures, buffer.size() > 8, "token buffer: nothing written")
-
-	var valid_report: Dictionary = probe.parse_token_buffer(buffer, PATH)
-	_expect(failures, valid_report["error"] == OK,
-		"current-version token buffer: rejected: %s" % [valid_report["diagnostics"]])
-	_expect(failures, not valid_report["tokenizer_failed"],
-		"current-version token buffer: reported a lexical failure")
-
-	var parser_only := _parse(probe, "func a( -> void:\n\tpass\n")
-	_expect(failures, parser_only["error"] != OK,
-		"parser-only syntax error: returned OK")
-	_expect(failures, not parser_only["tokenizer_failed"],
-		"parser-only syntax error: reported a lexical failure")
 
 	var corrupted := buffer.duplicate()
 	# The version field follows the 4-byte magic.
@@ -332,6 +353,8 @@ func _test_token_buffer_from_another_format_is_refused(probe, failures: Array[St
 	_expect(failures, (report["diagnostics"] as PackedStringArray).is_empty(),
 		"token buffer with a foreign version: reported parser diagnostics")
 	_expect(failures, not report["has_tree"], "token buffer with a foreign version: presented a tree")
+	_expect(failures, (report["nodes"] as PackedStringArray).is_empty(),
+		"token buffer with a foreign version: allocated nodes")
 
 	var truncated := buffer.slice(0, buffer.size() / 2)
 	var truncated_report: Dictionary = probe.parse_token_buffer(truncated, PATH)
@@ -341,6 +364,8 @@ func _test_token_buffer_from_another_format_is_refused(probe, failures: Array[St
 	_expect(failures, (truncated_report["diagnostics"] as PackedStringArray).is_empty(),
 		"truncated token buffer: reported parser diagnostics")
 	_expect(failures, not truncated_report["has_tree"], "truncated token buffer: presented a tree")
+	_expect(failures, (truncated_report["nodes"] as PackedStringArray).is_empty(),
+		"truncated token buffer: allocated nodes")
 
 	var empty_report: Dictionary = probe.parse_token_buffer(PackedByteArray(), PATH)
 	_expect(failures, empty_report["error"] != OK, "empty token buffer: consumed")
@@ -349,6 +374,8 @@ func _test_token_buffer_from_another_format_is_refused(probe, failures: Array[St
 	_expect(failures, (empty_report["diagnostics"] as PackedStringArray).is_empty(),
 		"empty token buffer: reported parser diagnostics")
 	_expect(failures, not empty_report["has_tree"], "empty token buffer: presented a tree")
+	_expect(failures, (empty_report["nodes"] as PackedStringArray).is_empty(),
+		"empty token buffer: allocated nodes")
 
 
 ## A buffer this build's *predecessor* wrote is refused, not reinterpreted.

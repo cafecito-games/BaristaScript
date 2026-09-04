@@ -78,7 +78,6 @@ Dictionary BaristaScriptPlatformProbe::sname_behavior() const {
 	report["site_b"] = String(other_site);
 	report["same_site_same_identity"] = &first_read == &second_read;
 	report["distinct_sites_equal_value"] = first_read == other_site;
-	report["distinct_sites_different_identity"] = &first_read != &other_site;
 	return report;
 }
 

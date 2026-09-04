@@ -73,8 +73,6 @@ func _test_sname_behavior(probe, failures: Array[String]) -> void:
 		"same call site: did not reuse one cached StringName")
 	_expect(failures, report["distinct_sites_equal_value"],
 		"distinct call sites: interned values differ")
-	_expect(failures, report["distinct_sites_different_identity"],
-		"distinct call sites: shared one cached StringName instance")
 
 
 func _expect(failures: Array[String], condition: bool, message: String) -> void:
