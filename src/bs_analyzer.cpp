@@ -950,6 +950,11 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 					MethodInfo method_info;
 					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
 						call_site_validation.validate_call_arg(method_info, p_call);
+						// Foundry @ c9d5e35: after MethodInfo on self.emit_signal, still run typed
+						// payload checks against the named local signal (vararg MethodInfo alone is not enough).
+						if (is_self && p_call->function_name == SNAME("emit_signal")) {
+							call_site_validation.validate_local_object_emit_signal_args(p_call, true);
+						}
 						p_call->set_datatype(type_from_property(method_info.return_val));
 						return;
 					}
