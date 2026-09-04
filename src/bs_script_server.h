@@ -82,7 +82,7 @@ public:
 		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
 		if (language != nullptr) {
 			BSDeclarationRecord rec;
-			if (language->get_declaration_index().try_get_by_qualified_name(name, rec)) {
+			if (language->try_resolve_declaration(name, rec)) {
 				return rec.kind == BSDeclarationKind::ENUM;
 			}
 		}
@@ -102,7 +102,7 @@ public:
 		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
 		if (language != nullptr) {
 			BSDeclarationRecord rec;
-			if (language->get_declaration_index().try_get_by_qualified_name(name, rec)) {
+			if (language->try_resolve_declaration(name, rec)) {
 				return rec.path;
 			}
 		}
@@ -131,7 +131,7 @@ public:
 		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
 		if (language != nullptr) {
 			BSDeclarationRecord rec;
-			if (language->get_declaration_index().try_get_by_path(path, rec)) {
+			if (language->try_resolve_declaration(String(p_name), rec)) {
 				return StringName(rec.base_type);
 			}
 		}
@@ -155,8 +155,16 @@ public:
 		if (language != nullptr) {
 			const Vector<BSDeclarationRecord> records = language->get_declaration_index().get_records();
 			for (int i = 0; i < records.size(); i++) {
-				const StringName name = StringName(records[i].qualified_name);
-				if (name == StringName() || seen.has(name)) {
+				const String qualified = records[i].qualified_name;
+				if (qualified.is_empty()) {
+					continue;
+				}
+				const StringName name = StringName(qualified);
+				if (seen.has(name)) {
+					continue;
+				}
+				BSDeclarationRecord validated;
+				if (!language->try_resolve_declaration(qualified, validated)) {
 					continue;
 				}
 				seen.insert(name);
