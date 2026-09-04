@@ -902,6 +902,9 @@ Error BSAnalyzer::analyze() {
 }
 
 void BSAnalyzer::commit_or_remove_declaration(bool p_success) {
+	if (!update_declaration_index) {
+		return;
+	}
 	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
 	if (language == nullptr || parser == nullptr) {
 		return;

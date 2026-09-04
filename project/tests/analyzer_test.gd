@@ -346,6 +346,14 @@ func _test_analyzer_declaration_commit(failures: PackedStringArray) -> void:
 			found = true
 	_expect(failures, found, "successful analysis commits CommitOk declaration")
 
+	# Read-only analyze / is_valid must not mutate the index (PR #59 review).
+	var before := index.get_record_count()
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var read_only: Dictionary = probe.analyze_source(ok_source, ok_path)
+	_expect(failures, read_only.get("valid", false), "read-only analyze still reports valid")
+	_expect(failures, probe.is_semantically_valid(ok_source, ok_path), "is_valid agrees without committing")
+	_expect(failures, index.get_record_count() == before, "analyze/is_valid must not change declaration index")
+
 	index.synchronize_path_from_source(ok_path, "class_name CommitOk extends MissingBaseDefinitely\n")
 	var still_there := false
 	for record in index.get_records():

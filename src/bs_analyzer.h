@@ -40,6 +40,14 @@ public:
 	Error resolve_body();
 	Error analyze();
 
+	/**
+	 * When true, successful/failed analysis updates the private declaration index. Default false
+	 * so `_validate()` / `_is_valid()` / probes remain read-only. Only intentional refresh paths
+	 * (e.g. `synchronize_declaration_path_from_source`) should enable this (#52 / PR #59 review).
+	 */
+	void set_update_declaration_index(bool p_enabled) { update_declaration_index = p_enabled; }
+	bool get_update_declaration_index() const { return update_declaration_index; }
+
 	static bool is_bootstrap_path_allowed(const String &p_path);
 	static void set_bootstrap_allowed_dependency_root(const String &p_root);
 	static String get_bootstrap_allowed_dependency_root();
@@ -52,7 +60,8 @@ public:
 
 	/**
 	 * After successful FULLY_SOLVED analysis, commit a declaration record; on failure remove any
-	 * prior record for the path (#52). Safe no-op when the language singleton is absent.
+	 * prior record for the path (#52). No-op unless `set_update_declaration_index(true)`, and a
+	 * safe no-op when the language singleton is absent.
 	 */
 	void commit_or_remove_declaration(bool p_success);
 
@@ -63,6 +72,7 @@ private:
 	AnalyzerPhase highest_completed_phase = AnalyzerPhase::NONE;
 	bool strict_dynamic_checks = false;
 	bool strict_null_checks = false;
+	bool update_declaration_index = false;
 
 	Error run_phase_preflight();
 	Error run_phase_inheritance_resolution();

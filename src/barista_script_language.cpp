@@ -453,12 +453,14 @@ bool BaristaScriptLanguage::remove_declaration_path(const String &p_path, uint64
 
 void BaristaScriptLanguage::synchronize_declaration_path_from_source(const String &p_path, const String &p_source) {
 	const String path = p_path.simplify_path();
-	// #52: analysis must not run while holding index mutexes. analyze() commits or removes.
+	// #52: analysis must not run while holding index mutexes. Only this intentional refresh path
+	// opts into declaration-index mutation; `_validate` / `_is_valid` stay read-only.
 	if (!path.is_empty()) {
 		BSCache::set_source_override(path, p_source);
 	}
 	BSParser parser;
 	BSAnalyzer analyzer(&parser);
+	analyzer.set_update_declaration_index(true);
 	Error err = parser.parse(p_source, path, false);
 	if (err != OK) {
 		const uint64_t token = declaration_index.claim_refresh(path);
