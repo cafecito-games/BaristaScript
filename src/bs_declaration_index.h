@@ -116,8 +116,9 @@ public:
 
 	/**
 	 * Commits a successful analysis/declaration result when `p_token` is still current. Returns
-	 * false when a newer refresh superseded this one (no mutation). On commit, rebuilds derived
-	 * views and reports namespaces whose conformance sets changed via `r_changed_namespaces`.
+	 * false when a newer refresh superseded this one (no mutation), or when the record fails the
+	 * same canonical-path / kind gates `load` enforces. On commit, rebuilds derived views and
+	 * reports namespaces whose conformance sets changed via `r_changed_namespaces`.
 	 */
 	bool commit_record(uint64_t p_token, const BSDeclarationRecord &p_record, Vector<String> *r_changed_namespaces = nullptr);
 

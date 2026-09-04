@@ -931,10 +931,6 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 			r_error = ERR_BUSY;
 			return ref;
 		}
-		if (!owner.is_empty() && path != owner) {
-			cache->dependencies[owner].insert(path);
-			cache->parser_inverse_dependencies[path].insert(owner);
-		}
 
 		if (cache->parser_map.has(path)) {
 			ref = cache->parser_map[path];
@@ -943,8 +939,9 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 				return ref;
 			}
 		} else {
-			// Missing files must not invent cache entries (unless an in-memory override or builtin
-			// source supplies the text). Checked under the cache lock so we do not re-enter.
+			// Missing files must not invent cache entries or dependency edges (unless an
+			// in-memory override or builtin source supplies the text). Checked under the
+			// cache lock so we do not re-enter through has_source_override().
 			String builtin_source;
 			const bool has_builtin = barista_script::BSBuiltinSources::get_source(path, builtin_source);
 			if (!cache->source_overrides.has(path) && !has_builtin && !FileAccess::file_exists(path)) {
@@ -954,6 +951,13 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 			ref.instantiate();
 			ref->path = path;
 			cache->parser_map[path] = ref;
+		}
+
+		// Record edges only after the path is admitted so missing files cannot leave ghost
+		// inverse dependencies that would later invalidate owners (#56 / #27 AC).
+		if (!owner.is_empty() && path != owner) {
+			cache->dependencies[owner].insert(path);
+			cache->parser_inverse_dependencies[path].insert(owner);
 		}
 	}
 
