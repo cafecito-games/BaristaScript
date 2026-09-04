@@ -1109,6 +1109,12 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
 	p_function->resolved_body = true;
 	BSParser::FunctionNode *previous = current_function;
 	current_function = p_function;
+	// Foundry applies function annotations before body analysis (resolve_class_body @ c9d5e35).
+	for (BSParser::AnnotationNode *annotation : p_function->annotations) {
+		if (annotation != nullptr) {
+			annotation->apply(parser, p_function, current_class);
+		}
+	}
 	if (!p_function->has_body) {
 		if (!p_function->is_abstract) {
 			push_error(vformat(R"(Function "%s" must have a body or be declared abstract.)", p_function->identifier != nullptr ? p_function->identifier->name : StringName()), p_function);
