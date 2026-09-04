@@ -21,7 +21,8 @@
 			"fs_builtin_sources.h",
 			"fs_builtin_sources.cpp",
 			"fs_analyzer.h",
-			"fs_analyzer.cpp"
+			"fs_analyzer.cpp",
+			"fs_analyzer_flow_finality.cpp"
 		],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},

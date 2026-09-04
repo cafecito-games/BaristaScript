@@ -1,10 +1,10 @@
 /**************************************************************************/
 /*  bs_analyzer.h                                                         */
 /*                                                                        */
-/*  M3 analyzer port seam (issue #43 / #57). Staged resolve_* mirror      */
-/*  Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body fold       */
-/*  (#49), declaration commit (#52/#58), call/match/flow/warning depth    */
-/*  (#57 remainder). Full mechanical Foundry TU dump remains follow-up.   */
+/*  M3 analyzer port seam (issue #43 / #57 / #60). Staged resolve_*        */
+/*  mirror Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body     */
+/*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
+/*  local-final definite assignment + noreturn (#60 flow TU slice).       */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -30,6 +30,56 @@ public:
 		FLOW_FINALITY_INVARIANTS = 6,
 		CONFORMANCE_WITNESS_BODY = 7,
 		FINAL_DIAGNOSTICS_AND_DEPENDENCIES = 8,
+	};
+
+	/**
+	 * Hard fork of Foundry `FSAnalyzer::FlowFinalityContext` (@ c9d5e35,
+	 * `fs_analyzer_flow_finality.cpp`). This slice ports LOCAL-scope `final var`
+	 * definite assignment / illegal writes; member/static/trait finality and
+	 * flow narrowing remain follow-up under #60.
+	 */
+	class FlowFinalityContext {
+	public:
+		enum class FinalAssignmentScope {
+			LOCAL,
+			INSTANCE_MEMBER,
+			STATIC_MEMBER,
+		};
+
+		struct FinalAssignmentState {
+			HashSet<const BSParser::VariableNode *> assigned;
+			HashSet<const BSParser::VariableNode *> maybe_assigned;
+			bool reachable = true;
+		};
+
+		explicit FlowFinalityContext(BSAnalyzer *p_analyzer);
+
+		void check_final_local_assignments(BSParser::ClassNode *p_class);
+		void analyze_function_local_finals(const BSParser::FunctionNode *p_function);
+		void collect_local_finals(const BSParser::Node *p_node,
+				HashSet<const BSParser::VariableNode *> &r_finals,
+				HashMap<StringName, const BSParser::VariableNode *> &r_finals_by_name);
+		static void merge_final_assignment_branches(const FinalAssignmentState &p_first, const FinalAssignmentState &p_second, FinalAssignmentState &r_out);
+		const BSParser::VariableNode *final_member_assignment_target(const BSParser::ExpressionNode *p_expression,
+				const HashSet<const BSParser::VariableNode *> &p_finals,
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, bool *r_is_self_receiver = nullptr) const;
+		void scan_illegal_final_writes(const BSParser::Node *p_node,
+				const HashSet<const BSParser::VariableNode *> &p_finals,
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, bool p_in_init);
+		void analyze_final_definite_assignment_statement(const BSParser::Node *p_statement,
+				const HashSet<const BSParser::VariableNode *> &p_finals,
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, FinalAssignmentState &r_state,
+				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere);
+		void analyze_final_definite_assignment_suite(const BSParser::SuiteNode *p_suite,
+				const HashSet<const BSParser::VariableNode *> &p_finals,
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, FinalAssignmentState &r_state,
+				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere);
+		void check_final_reads_in_expression(const BSParser::ExpressionNode *p_expression,
+				const HashSet<const BSParser::VariableNode *> &p_finals,
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state);
+
+	private:
+		BSAnalyzer *analyzer = nullptr;
 	};
 
 	explicit BSAnalyzer(BSParser *p_parser);
@@ -78,6 +128,7 @@ private:
 	bool update_declaration_index = false;
 	BSParser::ClassNode *current_class = nullptr;
 	BSParser::FunctionNode *current_function = nullptr;
+	FlowFinalityContext flow_finality;
 
 	Error run_phase_preflight();
 	Error run_phase_inheritance_resolution();
@@ -94,6 +145,8 @@ private:
 	void analyze_function_body(BSParser::FunctionNode *p_function);
 	void analyze_suite(BSParser::SuiteNode *p_suite);
 	void analyze_statement(BSParser::Node *p_node);
+	void warn_unused_locals(BSParser::SuiteNode *p_suite);
+	void warn_unused_parameters(BSParser::FunctionNode *p_function);
 
 	void reduce_literal(BSParser::LiteralNode *p_literal);
 	void reduce_unary_op(BSParser::UnaryOpNode *p_unary_op);
@@ -110,6 +163,7 @@ private:
 	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee);
 	void check_match_exhaustiveness(BSParser::MatchNode *p_match);
 	bool suite_has_return(const BSParser::SuiteNode *p_suite) const;
+	bool node_terminates(const BSParser::Node *p_node) const;
 	void check_function_flow_finality(BSParser::FunctionNode *p_function);
 	void resolve_used_traits(BSParser::ClassNode *p_class);
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;

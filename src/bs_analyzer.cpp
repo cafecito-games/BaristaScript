@@ -1,9 +1,9 @@
 /**************************************************************************/
 /*  bs_analyzer.cpp                                                       */
 /*                                                                        */
-/*  M3 analyzer port (issue #43/#57) @ Foundry c9d5e35. Inheritance,      */
+/*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
-/*  flow/warning depth. Remaining mechanical Foundry TU dump is follow-up.*/
+/*  flow (#61), local-final definite assignment + noreturn (#60 TU).      */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -116,7 +116,8 @@ String &BSAnalyzer::bootstrap_root_storage() {
 }
 
 BSAnalyzer::BSAnalyzer(BSParser *p_parser) :
-		parser(p_parser) {
+		parser(p_parser),
+		flow_finality(this) {
 	read_strict_settings();
 }
 
@@ -712,10 +713,65 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (p_identifier == nullptr) {
 		return;
 	}
+	// Suite locals (including parameters) are declared during parse; bind them first so flow
+	// finality can see LOCAL_VARIABLE / variable_source for `final var` assignment targets.
+	if (p_identifier->suite != nullptr && p_identifier->suite->has_local(p_identifier->name)) {
+		const BSParser::SuiteNode::Local &local = p_identifier->suite->get_local(p_identifier->name);
+		p_identifier->source_function = local.source_function;
+		switch (local.type) {
+			case BSParser::SuiteNode::Local::CONSTANT: {
+				p_identifier->source = BSParser::IdentifierNode::LOCAL_CONSTANT;
+				p_identifier->constant_source = local.constant;
+				if (local.constant != nullptr) {
+					local.constant->usages++;
+					p_identifier->set_datatype(local.constant->get_datatype());
+					if (local.constant->initializer != nullptr && local.constant->initializer->is_constant) {
+						p_identifier->is_constant = true;
+						p_identifier->reduced_value = local.constant->initializer->reduced_value;
+					}
+				}
+				return;
+			}
+			case BSParser::SuiteNode::Local::VARIABLE: {
+				p_identifier->source = BSParser::IdentifierNode::LOCAL_VARIABLE;
+				p_identifier->variable_source = local.variable;
+				if (local.variable != nullptr) {
+					local.variable->usages++;
+					p_identifier->set_datatype(local.variable->get_datatype());
+				}
+				return;
+			}
+			case BSParser::SuiteNode::Local::PARAMETER: {
+				p_identifier->source = BSParser::IdentifierNode::FUNCTION_PARAMETER;
+				p_identifier->parameter_source = local.parameter;
+				if (local.parameter != nullptr) {
+					local.parameter->usages++;
+					p_identifier->set_datatype(local.parameter->get_datatype());
+				}
+				return;
+			}
+			case BSParser::SuiteNode::Local::FOR_VARIABLE:
+			case BSParser::SuiteNode::Local::PATTERN_BIND:
+			case BSParser::SuiteNode::Local::CASE_BIND: {
+				p_identifier->source = local.type == BSParser::SuiteNode::Local::FOR_VARIABLE ? BSParser::IdentifierNode::LOCAL_ITERATOR : BSParser::IdentifierNode::LOCAL_BIND;
+				p_identifier->bind_source = local.bind;
+				if (local.bind != nullptr) {
+					local.bind->usages++;
+					p_identifier->set_datatype(local.bind->get_datatype());
+				}
+				return;
+			}
+			default:
+				break;
+		}
+	}
 	if (current_function != nullptr) {
 		for (int i = 0; i < current_function->parameters.size(); i++) {
 			BSParser::ParameterNode *parameter = current_function->parameters[i];
 			if (parameter != nullptr && parameter->identifier != nullptr && parameter->identifier->name == p_identifier->name) {
+				p_identifier->source = BSParser::IdentifierNode::FUNCTION_PARAMETER;
+				p_identifier->parameter_source = parameter;
+				parameter->usages++;
 				p_identifier->set_datatype(parameter->get_datatype());
 				p_identifier->source_function = current_function;
 				return;
@@ -725,10 +781,16 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (current_class != nullptr && current_class->has_member(p_identifier->name)) {
 		const BSParser::ClassNode::Member member = current_class->get_member(p_identifier->name);
 		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_VARIABLE;
+			p_identifier->variable_source = member.variable;
+			member.variable->usages++;
 			p_identifier->set_datatype(member.variable->get_datatype());
 			return;
 		}
 		if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+			p_identifier->constant_source = member.constant;
+			member.constant->usages++;
 			p_identifier->set_datatype(member.constant->get_datatype());
 			return;
 		}
@@ -807,9 +869,16 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 			BSParser::FunctionNode *callee = find_class_function(current_class, fname);
 			if (callee != nullptr) {
 				validate_local_call(p_call, callee);
+				p_call->is_noreturn = callee->is_noreturn;
 				return;
 			}
 		}
+	}
+	// Foundry marks `push_fatal` as noreturn at call sites (fs_analyzer.cpp @ c9d5e35).
+	if (p_call->function_name == SNAME("push_fatal") ||
+			(p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER &&
+					static_cast<BSParser::IdentifierNode *>(p_call->callee)->name == SNAME("push_fatal"))) {
+		p_call->is_noreturn = true;
 	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
@@ -929,6 +998,12 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			BSParser::AssignmentNode *assignment = static_cast<BSParser::AssignmentNode *>(p_expression);
 			reduce_expression(assignment->assigned_value);
 			reduce_expression(assignment->assignee);
+			if (assignment->assignee != nullptr && assignment->assignee->type == BSParser::Node::IDENTIFIER) {
+				BSParser::IdentifierNode *assignee = static_cast<BSParser::IdentifierNode *>(assignment->assignee);
+				if (assignee->variable_source != nullptr) {
+					assignee->variable_source->assignments++;
+				}
+			}
 			if (assignment->assigned_value != nullptr) {
 				assignment->set_datatype(assignment->assigned_value->get_datatype());
 			}
@@ -1034,6 +1109,12 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
 	p_function->resolved_body = true;
 	BSParser::FunctionNode *previous = current_function;
 	current_function = p_function;
+	// Foundry applies function annotations before body analysis (resolve_class_body @ c9d5e35).
+	for (BSParser::AnnotationNode *annotation : p_function->annotations) {
+		if (annotation != nullptr) {
+			annotation->apply(parser, p_function, current_class);
+		}
+	}
 	if (!p_function->has_body) {
 		if (!p_function->is_abstract) {
 			push_error(vformat(R"(Function "%s" must have a body or be declared abstract.)", p_function->identifier != nullptr ? p_function->identifier->name : StringName()), p_function);
@@ -1042,7 +1123,87 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
 		return;
 	}
 	analyze_suite(p_function->body);
+	warn_unused_parameters(p_function);
+	warn_unused_locals(p_function->body);
 	current_function = previous;
+}
+
+void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
+#ifdef DEBUG_ENABLED
+	if (p_function == nullptr || p_function->is_abstract) {
+		return;
+	}
+	for (int i = 0; i < p_function->parameters.size(); i++) {
+		BSParser::ParameterNode *parameter = p_function->parameters[i];
+		if (parameter == nullptr || parameter->identifier == nullptr) {
+			continue;
+		}
+		if (parameter->usages == 0 && !String(parameter->identifier->name).begins_with("_")) {
+			Vector<String> symbols;
+			symbols.push_back(String(parameter->identifier->name));
+			push_warning(parameter, BSWarning::UNUSED_PARAMETER, symbols);
+		}
+	}
+	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->identifier != nullptr) {
+		if (p_function->rest_parameter->usages == 0 && !String(p_function->rest_parameter->identifier->name).begins_with("_")) {
+			Vector<String> symbols;
+			symbols.push_back(String(p_function->rest_parameter->identifier->name));
+			push_warning(p_function->rest_parameter, BSWarning::UNUSED_PARAMETER, symbols);
+		}
+	}
+#else
+	(void)p_function;
+#endif
+}
+
+void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
+#ifdef DEBUG_ENABLED
+	if (p_suite == nullptr) {
+		return;
+	}
+	for (int i = 0; i < p_suite->locals.size(); i++) {
+		const BSParser::SuiteNode::Local &local = p_suite->locals[i];
+		if (local.type == BSParser::SuiteNode::Local::VARIABLE && local.variable != nullptr && local.variable->identifier != nullptr) {
+			if (local.variable->usages == 0 && !String(local.variable->identifier->name).begins_with("_")) {
+				Vector<String> symbols;
+				symbols.push_back(String(local.variable->identifier->name));
+				push_warning(local.variable, BSWarning::UNUSED_VARIABLE, symbols);
+			}
+		} else if (local.type == BSParser::SuiteNode::Local::CONSTANT && local.constant != nullptr && local.constant->identifier != nullptr) {
+			if (local.constant->usages == 0 && !String(local.constant->identifier->name).begins_with("_")) {
+				Vector<String> symbols;
+				symbols.push_back(String(local.constant->identifier->name));
+				push_warning(local.constant, BSWarning::UNUSED_LOCAL_CONSTANT, symbols);
+			}
+		}
+	}
+	for (int i = 0; i < p_suite->statements.size(); i++) {
+		BSParser::Node *statement = p_suite->statements[i];
+		if (statement == nullptr) {
+			continue;
+		}
+		if (statement->type == BSParser::Node::SUITE) {
+			warn_unused_locals(static_cast<BSParser::SuiteNode *>(statement));
+		} else if (statement->type == BSParser::Node::IF) {
+			BSParser::IfNode *if_node = static_cast<BSParser::IfNode *>(statement);
+			warn_unused_locals(if_node->true_block);
+			warn_unused_locals(if_node->false_block);
+		} else if (statement->type == BSParser::Node::WHILE) {
+			warn_unused_locals(static_cast<BSParser::WhileNode *>(statement)->loop);
+		} else if (statement->type == BSParser::Node::FOR) {
+			warn_unused_locals(static_cast<BSParser::ForNode *>(statement)->loop);
+		} else if (statement->type == BSParser::Node::MATCH) {
+			BSParser::MatchNode *match_node = static_cast<BSParser::MatchNode *>(statement);
+			for (int b = 0; b < match_node->branches.size(); b++) {
+				if (match_node->branches[b] != nullptr) {
+					warn_unused_locals(match_node->branches[b]->block);
+				}
+			}
+		}
+	}
+#else
+	(void)p_suite;
+#endif
 }
 
 void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
@@ -1155,6 +1316,26 @@ void BSAnalyzer::check_match_exhaustiveness(BSParser::MatchNode *p_match) {
 #endif
 }
 
+bool BSAnalyzer::node_terminates(const BSParser::Node *p_node) const {
+	if (p_node == nullptr) {
+		return false;
+	}
+	if (p_node->type == BSParser::Node::RETURN) {
+		return true;
+	}
+	if (p_node->type == BSParser::Node::CALL && static_cast<const BSParser::CallNode *>(p_node)->is_noreturn) {
+		return true;
+	}
+	if (p_node->type == BSParser::Node::SUITE) {
+		return suite_has_return(static_cast<const BSParser::SuiteNode *>(p_node));
+	}
+	if (p_node->type == BSParser::Node::IF) {
+		const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(p_node);
+		return suite_has_return(if_node->true_block) && suite_has_return(if_node->false_block);
+	}
+	return false;
+}
+
 bool BSAnalyzer::suite_has_return(const BSParser::SuiteNode *p_suite) const {
 	if (p_suite == nullptr) {
 		return false;
@@ -1164,7 +1345,7 @@ bool BSAnalyzer::suite_has_return(const BSParser::SuiteNode *p_suite) const {
 		if (statement == nullptr) {
 			continue;
 		}
-		if (statement->type == BSParser::Node::RETURN) {
+		if (node_terminates(statement)) {
 			return true;
 		}
 		if (statement->type == BSParser::Node::IF) {
@@ -1200,20 +1381,36 @@ void BSAnalyzer::check_function_flow_finality(BSParser::FunctionNode *p_function
 	if (p_function == nullptr || !p_function->has_body || p_function->body == nullptr) {
 		return;
 	}
+
+	if (p_function->is_noreturn) {
+		bool has_return = false;
+		for (int i = 0; i < p_function->body->statements.size(); i++) {
+			const BSParser::Node *statement = p_function->body->statements[i];
+			if (statement != nullptr && statement->type == BSParser::Node::RETURN) {
+				has_return = true;
+				break;
+			}
+		}
+		if (has_return) {
+			push_error(R"(A "@noreturn" function cannot return.)", p_function);
+		} else if (!suite_has_return(p_function->body)) {
+			push_error(R"(A "@noreturn" function cannot complete normally.)", p_function);
+		}
+	}
+
 	const BSParser::DataType return_type = p_function->get_datatype();
 	const bool expects_value = return_type.is_set() && !return_type.is_variant() &&
 			!(return_type.kind == BSParser::DataType::BUILTIN && return_type.builtin_type == Variant::NIL);
-	if (!expects_value) {
-		return;
-	}
-	if (!suite_has_return(p_function->body)) {
-		push_error(R"(Not all code paths return a value.)", p_function);
+	if (expects_value && !p_function->is_noreturn) {
+		if (!suite_has_return(p_function->body)) {
+			push_error(R"(Not all code paths return a value.)", p_function);
+		}
 	}
 
 #ifdef DEBUG_ENABLED
 	for (int i = 0; i + 1 < p_function->body->statements.size(); i++) {
 		const BSParser::Node *statement = p_function->body->statements[i];
-		if (statement != nullptr && statement->type == BSParser::Node::RETURN) {
+		if (statement != nullptr && (statement->type == BSParser::Node::RETURN || (statement->type == BSParser::Node::CALL && static_cast<const BSParser::CallNode *>(statement)->is_noreturn))) {
 			const StringName function_name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
 			Vector<String> symbols;
 			symbols.push_back(String(function_name));
@@ -1317,6 +1514,7 @@ Error BSAnalyzer::run_phase_body_expression_callable_signal() {
 Error BSAnalyzer::run_phase_flow_finality() {
 	BSParser::ClassNode *head = parser->get_tree();
 	if (head != nullptr) {
+		flow_finality.check_final_local_assignments(head);
 		for (int i = 0; i < head->members.size(); i++) {
 			const BSParser::ClassNode::Member &member = head->members[i];
 			if (member.type == BSParser::ClassNode::Member::FUNCTION) {

@@ -32,6 +32,9 @@ func _init() -> void:
 	_test_call_arity_and_types(failures)
 	_test_match_and_flow(failures)
 	_test_warning_settings(failures)
+	_test_final_local_assignment(failures)
+	_test_noreturn_flow(failures)
+	_test_unused_locals(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -642,7 +645,8 @@ func _test_match_and_flow(failures: PackedStringArray) -> void:
 
 func _test_warning_settings(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var source := "class_name WarnDiv extends Node\nfunc _ready() -> void:\n\tvar z: int = 1 / 2\n"
+	# Underscore-prefixed local avoids UNUSED_VARIABLE so this fixture isolates INTEGER_DIVISION.
+	var source := "class_name WarnDiv extends Node\nfunc _ready() -> void:\n\tvar _z: int = 1 / 2\n"
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
 	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 1) # WARN
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
@@ -662,3 +666,71 @@ func _test_warning_settings(failures: PackedStringArray) -> void:
 	_expect(failures, error_report.get("valid", true) == false, "escalating integer_division to error invalidates")
 	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 1)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_final_local_assignment(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var reassign := "class_name FinalReassign extends Node\nfunc _ready() -> void:\n\tfinal var x: int = 1\n\tx = 2\n"
+	var reassign_report: Dictionary = probe.analyze_source(reassign, "res://tests/final_reassign.barista")
+	_expect(failures, reassign_report.get("valid", true) == false, "reassigning initialized final is invalid")
+	var saw_reassign := false
+	for message in reassign_report.get("errors", PackedStringArray()):
+		if "already assigned" in message:
+			saw_reassign = true
+	_expect(failures, saw_reassign, "final reassignment diagnostic")
+
+	var use_before := "class_name FinalUseBefore extends Node\nfunc use() -> int:\n\tfinal var x: int\n\treturn x\n"
+	var before_report: Dictionary = probe.analyze_source(use_before, "res://tests/final_use_before.barista")
+	_expect(failures, before_report.get("valid", true) == false, "reading blank final before assignment is invalid")
+	var saw_before := false
+	for message in before_report.get("errors", PackedStringArray()):
+		if "before assignment" in message:
+			saw_before = true
+	_expect(failures, saw_before, "final use-before-assignment diagnostic")
+
+	var branch_ok := "class_name FinalBranchOk extends Node\nfunc pick(flag: bool) -> int:\n\tfinal var x: int\n\tif flag:\n\t\tx = 1\n\telse:\n\t\tx = 2\n\treturn x\n"
+	var ok_report: Dictionary = probe.analyze_source(branch_ok, "res://tests/final_branch_ok.barista")
+	_expect(failures, ok_report.get("valid", false) == true, "final assigned on both branches then read is valid")
+
+	var branch_bad := "class_name FinalBranchBad extends Node\nfunc pick(flag: bool) -> int:\n\tfinal var x: int\n\tif flag:\n\t\tx = 1\n\treturn x\n"
+	var bad_report: Dictionary = probe.analyze_source(branch_bad, "res://tests/final_branch_bad.barista")
+	_expect(failures, bad_report.get("valid", true) == false, "final assigned on only one branch then read is invalid")
+
+
+func _test_noreturn_flow(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var noreturn_ok := "class_name NoreturnOk extends Node\n@noreturn\nfunc die() -> void:\n\tpush_fatal(\"boom\")\nfunc value() -> int:\n\tdie()\n"
+	var ok_report: Dictionary = probe.analyze_source(noreturn_ok, "res://tests/noreturn_ok.barista")
+	_expect(failures, ok_report.get("valid", false) == true, "noreturn callee terminates return paths")
+
+	var noreturn_incomplete := "class_name NoreturnIncomplete extends Node\n@noreturn\nfunc die() -> void:\n\tpass\n"
+	var incomplete_report: Dictionary = probe.analyze_source(noreturn_incomplete, "res://tests/noreturn_incomplete.barista")
+	_expect(failures, incomplete_report.get("valid", true) == false, "@noreturn function that completes normally is invalid")
+	var saw_complete := false
+	for message in incomplete_report.get("errors", PackedStringArray()):
+		if "cannot complete normally" in message:
+			saw_complete = true
+	_expect(failures, saw_complete, "@noreturn complete-normally diagnostic")
+
+
+func _test_unused_locals(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
+	ProjectSettings.set_setting("debug/barista_script/warnings/unused_variable", 1) # WARN
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var unused := "class_name UnusedLocal extends Node\nfunc _ready() -> void:\n\tvar orphan: int = 1\n"
+	var unused_report: Dictionary = probe.validate_source(unused, "res://tests/unused_local.barista", true)
+	_expect(failures, unused_report.get("valid", false) == true, "unused local stays valid at WARN")
+	var saw_unused := false
+	for warn in unused_report.get("warnings", []):
+		if "UNUSED_VARIABLE" in str(warn.get("string_code", "")) or "never used" in str(warn.get("message", "")).to_lower():
+			saw_unused = true
+	_expect(failures, saw_unused, "unused local produces UNUSED_VARIABLE")
+
+	var used := "class_name UsedLocal extends Node\nfunc _ready() -> void:\n\tvar keep: int = 1\n\tvar _sink: int = keep\n"
+	var used_report: Dictionary = probe.validate_source(used, "res://tests/used_local.barista", true)
+	var saw_keep_unused := false
+	for warn in used_report.get("warnings", []):
+		if "keep" in str(warn.get("message", "")):
+			saw_keep_unused = true
+	_expect(failures, not saw_keep_unused, "used local does not warn as unused")
