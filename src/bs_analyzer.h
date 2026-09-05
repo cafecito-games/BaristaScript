@@ -275,6 +275,8 @@ private:
 	BSParser::FunctionNode *current_function = nullptr;
 	/** Foundry `current_lambda` (@ c9d5e35): set while reducing a lambda body for capture marking. */
 	BSParser::LambdaNode *current_lambda = nullptr;
+	/** Foundry pending_body_resolution_lambdas (@ c9d5e35): flush after each suite statement. */
+	Vector<BSParser::LambdaNode *> pending_lambda_bodies;
 	CallSiteValidationContext call_site_validation;
 	FlowFinalityContext flow_finality;
 
@@ -307,6 +309,8 @@ private:
 	void analyze_class_body(BSParser::ClassNode *p_class);
 	/** `p_is_lambda`: Foundry resolve_function_body — skip clearing captured-source tracking. */
 	void analyze_function_body(BSParser::FunctionNode *p_function, bool p_is_lambda = false);
+	/** Foundry resolve_pending_lambda_bodies @ c9d5e35. */
+	void resolve_pending_lambda_bodies();
 	void analyze_suite(BSParser::SuiteNode *p_suite);
 	void analyze_statement(BSParser::Node *p_node);
 	void warn_unused_locals(BSParser::SuiteNode *p_suite);

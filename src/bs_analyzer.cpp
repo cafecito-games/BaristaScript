@@ -1431,8 +1431,9 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 }
 
 void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
-	// Foundry reduce_lambda @ c9d5e35 (eager body): Callable type, then analyze under current_lambda
-	// so capturable locals mark flow-narrowing captures for later call clearing.
+	// Foundry reduce_lambda @ c9d5e35: Callable type + signature now; body after the statement
+	// via resolve_pending_lambda_bodies so capture marking runs under the outer suite's
+	// flow-narrowing scope without nesting body analysis inside the initializer reduce.
 	if (p_lambda == nullptr) {
 		return;
 	}
@@ -1449,7 +1450,29 @@ void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
 	BSParser::LambdaNode *previous_lambda = current_lambda;
 	current_lambda = p_lambda;
 	resolve_function_signature_in_class(p_lambda->function, current_class);
-	analyze_function_body(p_lambda->function, true);
+	current_lambda = previous_lambda;
+
+	pending_lambda_bodies.push_back(p_lambda);
+}
+
+void BSAnalyzer::resolve_pending_lambda_bodies() {
+	if (pending_lambda_bodies.is_empty()) {
+		return;
+	}
+
+	BSParser::LambdaNode *previous_lambda = current_lambda;
+	Vector<BSParser::LambdaNode *> lambdas = pending_lambda_bodies;
+	pending_lambda_bodies.clear();
+
+	for (int i = 0; i < lambdas.size(); i++) {
+		BSParser::LambdaNode *lambda = lambdas[i];
+		if (lambda == nullptr || lambda->function == nullptr) {
+			continue;
+		}
+		current_lambda = lambda;
+		analyze_function_body(lambda->function, true);
+	}
+
 	current_lambda = previous_lambda;
 }
 
@@ -2738,6 +2761,9 @@ void BSAnalyzer::analyze_suite(BSParser::SuiteNode *p_suite) {
 	}
 	for (int i = 0; i < p_suite->statements.size(); i++) {
 		analyze_statement(p_suite->statements[i]);
+		// Foundry resolve_suite @ c9d5e35: flush lambda bodies after each statement so capture
+		// marking sees the outer suite's live flow-narrowing map.
+		resolve_pending_lambda_bodies();
 	}
 }
 
@@ -2923,6 +2949,11 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 		}
 	}
 	warn_unused_class_members(p_class);
+	if (!pending_lambda_bodies.is_empty()) {
+		// Foundry resolve_class_body @ c9d5e35: any leftover pending lambdas (e.g. class-level
+		// initializers) must still resolve before leaving the body phase.
+		resolve_pending_lambda_bodies();
+	}
 	current_class = previous;
 }
 
