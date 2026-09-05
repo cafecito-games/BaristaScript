@@ -50,6 +50,7 @@ func _init() -> void:
 	_test_contextual_case_shorthand(failures)
 	_test_tagged_union_match_exhaustiveness(failures)
 	_test_callable_bind_unbind(failures)
+	_test_callable_callv_rpc(failures)
 	_test_surface_inheritance_member_depth(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
@@ -2159,6 +2160,97 @@ func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 		"callable bind remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for callable bind")
+
+
+func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
+	# Foundry Callable.callv / call_deferred / rpc / rpc_id transforms @ c9d5e35 (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var callv_type_bad := _src_class("CallableCallvTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tone.callv([\"not an int\"])\n")
+	var callv_type_bad_report: Dictionary = probe.analyze_source(callv_type_bad, "res://tests/callable_callv_type_bad.barista")
+	_expect(failures, callv_type_bad_report.get("valid", true) == false, "callv String element where int expected is invalid")
+	var saw_callv_type := false
+	for message in callv_type_bad_report.get("errors", PackedStringArray()):
+		if 'argument 1 should be "int"' in message or 'should be "int" but is "String"' in message:
+			saw_callv_type = true
+	_expect(failures, saw_callv_type, "callv array-literal element type mismatch diagnostic")
+
+	var callv_ok := _src_class("CallableCallvOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> int:\n\treturn add.callv([2, 3])\n")
+	var callv_ok_report: Dictionary = probe.analyze_source(callv_ok, "res://tests/callable_callv_ok.barista")
+	_expect(failures, callv_ok_report.get("valid", false) == true, "callv with matching array-literal types is valid")
+
+	var callv_arity := _src_class("CallableCallvArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.callv([1])\n")
+	var callv_arity_report: Dictionary = probe.analyze_source(callv_arity, "res://tests/callable_callv_arity.barista")
+	_expect(failures, callv_arity_report.get("valid", true) == false, "callv missing array element is invalid")
+	var saw_callv_few := false
+	for message in callv_arity_report.get("errors", PackedStringArray()):
+		if "Too few arguments for \"callv()\" call" in message:
+			saw_callv_few = true
+	_expect(failures, saw_callv_few, "callv too-few-arguments diagnostic")
+
+	var deferred_ok := _src_class("CallableDeferredOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.call_deferred(2, 3)\n")
+	var deferred_ok_report: Dictionary = probe.analyze_source(deferred_ok, "res://tests/callable_deferred_ok.barista")
+	_expect(failures, deferred_ok_report.get("valid", false) == true, "call_deferred with matching arity is valid")
+
+	var deferred_type_bad := _src_class("CallableDeferredTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tone.call_deferred(\"not an int\")\n")
+	var deferred_type_bad_report: Dictionary = probe.analyze_source(deferred_type_bad, "res://tests/callable_deferred_type_bad.barista")
+	_expect(failures, deferred_type_bad_report.get("valid", true) == false, "call_deferred type mismatch is invalid")
+
+	var rpc_ok := _src_class("CallableRpcOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.rpc(2, 3)\n")
+	var rpc_ok_report: Dictionary = probe.analyze_source(rpc_ok, "res://tests/callable_rpc_ok.barista")
+	_expect(failures, rpc_ok_report.get("valid", false) == true, "rpc with matching arity is valid")
+
+	var rpc_id_ok := _src_class("CallableRpcIdOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.rpc_id(1, 2, 3)\n")
+	var rpc_id_ok_report: Dictionary = probe.analyze_source(rpc_id_ok, "res://tests/callable_rpc_id_ok.barista")
+	_expect(failures, rpc_id_ok_report.get("valid", false) == true, "rpc_id peer_id plus matching target arity is valid")
+
+	var rpc_id_peer_type := _src_class("CallableRpcIdPeerType extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tone.rpc_id(\"peer\", 1)\n")
+	var rpc_id_peer_type_report: Dictionary = probe.analyze_source(rpc_id_peer_type, "res://tests/callable_rpc_id_peer_type.barista")
+	_expect(failures, rpc_id_peer_type_report.get("valid", true) == false, "rpc_id non-int peer_id is invalid")
+	var saw_peer_type := false
+	for message in rpc_id_peer_type_report.get("errors", PackedStringArray()):
+		if 'argument 1 should be "int"' in message or 'should be "int" but is "String"' in message:
+			saw_peer_type = true
+	_expect(failures, saw_peer_type, "rpc_id peer_id type mismatch diagnostic")
+
+	var rpc_id_arity := _src_class("CallableRpcIdArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.rpc_id(1, 2)\n")
+	var rpc_id_arity_report: Dictionary = probe.analyze_source(rpc_id_arity, "res://tests/callable_rpc_id_arity.barista")
+	_expect(failures, rpc_id_arity_report.get("valid", true) == false, "rpc_id missing target arg after peer_id is invalid")
+	var saw_rpc_id_few := false
+	for message in rpc_id_arity_report.get("errors", PackedStringArray()):
+		if "Too few arguments for \"rpc_id()\" call" in message:
+			saw_rpc_id_few = true
+	_expect(failures, saw_rpc_id_few, "rpc_id too-few-arguments diagnostic includes peer_id offset")
+
+	var over_callv := _src_class("CallableOverBoundCallv extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).callv([])\n")
+	var over_callv_report: Dictionary = probe.analyze_source(over_callv, "res://tests/callable_over_bound_callv.barista")
+	_expect(failures, over_callv_report.get("valid", true) == false, "over-bound callv invocation is invalid")
+
+	var over_deferred := _src_class("CallableOverBoundDeferred extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).call_deferred()\n")
+	var over_deferred_report: Dictionary = probe.analyze_source(over_deferred, "res://tests/callable_over_bound_deferred.barista")
+	_expect(failures, over_deferred_report.get("valid", true) == false, "over-bound call_deferred invocation is invalid")
+
+	var over_rpc := _src_class("CallableOverBoundRpc extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).rpc()\n")
+	var over_rpc_report: Dictionary = probe.analyze_source(over_rpc, "res://tests/callable_over_bound_rpc.barista")
+	_expect(failures, over_rpc_report.get("valid", true) == false, "over-bound rpc invocation is invalid")
+
+	var over_rpc_id := _src_class("CallableOverBoundRpcId extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).rpc_id(1)\n")
+	var over_rpc_id_report: Dictionary = probe.analyze_source(over_rpc_id, "res://tests/callable_over_bound_rpc_id.barista")
+	_expect(failures, over_rpc_id_report.get("valid", true) == false, "over-bound rpc_id invocation is invalid")
+	var saw_over_rpc_id := false
+	for message in over_rpc_id_report.get("errors", PackedStringArray()):
+		if "over-bound" in message:
+			saw_over_rpc_id = true
+	_expect(failures, saw_over_rpc_id, "over-bound rpc_id invocation diagnostic")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(callv_ok, "res://tests/callable_callv_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "callable callv remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(callv_ok, "res://tests/callable_callv_is_valid.barista"),
+		"callable callv remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for callable callv/rpc")
 
 
 func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void:

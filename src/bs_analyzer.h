@@ -5,8 +5,9 @@
 /*  resolve_*; inheritance/interface/body fold (#49); declaration commit  */
 /*  (#52/#58); call/match/flow (#61); final DA + null/`is` narrowing;     */
 /*  CallSiteValidationContext / connect-callable; unused surface; ENUM_CASE*/
-/*  / `.Case` / exhaustiveness; Callable.bind/unbind/call; pending-warning*/
-/*  finalize on flow-finality early exit; trait conformance witness (#60).*/
+/*  / `.Case` / exhaustiveness; Callable.bind/unbind/call/callv/rpc;      */
+/*  pending-warning finalize on flow-finality early exit; trait           */
+/*  conformance witness (#60).                                            */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -71,10 +72,13 @@ public:
 		BSParser::DataType over_bound_callable_type(const BSParser::DataType &p_source_callable_type) const;
 		BSParser::DataType transformed_callable_type(const BSParser::DataType &p_source_callable_type, const Vector<BSParser::DataType> &p_parameter_types, int p_default_arg_count, bool p_is_vararg) const;
 		BSParser::ArrayNode *array_literal_argument(const BSParser::CallNode *p_call, int p_argument_index) const;
+		/** Foundry validate_callable_array_literal_args for Callable.callv array-literal element checks. */
+		void validate_callable_array_literal_args(const Vector<BSParser::DataType> &p_par_types, int p_default_args_count, bool p_is_vararg, BSParser::ArrayNode *p_array, const StringName &p_function, const Vector<int> &p_extra_allowed_argument_counts = Vector<int>(), int p_trailing_unbound_argument_count = 0, const BSParser::DataType *p_rest_parameter_type = nullptr);
 		/**
-		 * Foundry get_function_signature Callable.bind/bindv/unbind/call slice (@ c9d5e35).
-		 * When `p_call` is a typed-Callable attribute call, validates args and types the result.
-		 * Returns true when the call was handled (including over-bound invocation errors).
+		 * Foundry get_function_signature Callable.bind/bindv/unbind/call/callv/call_deferred/rpc/rpc_id
+		 * slice (@ c9d5e35). When `p_call` is a typed-Callable attribute call, validates args and
+		 * types the result. Returns true when the call was handled (including over-bound invocation
+		 * errors). AsyncCallable→coroutine wrapping on call/callv remains residual under #60.
 		 */
 		bool try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type);
 
