@@ -1828,7 +1828,7 @@ godot::Dictionary BaristaScriptAnalyzerProbe::complete_self_referential_enum_typ
 			result["shell_is_enum"] = shell.kind == BSParser::DataType::ENUM && shell.is_tagged_union;
 			result["shell_values_empty"] = shell.enum_values.is_empty();
 
-			const BSParser::DataType completed = BSAnalyzer::complete_self_referential_enum_type(shell);
+			const BSParser::DataType completed = BSAnalyzer::test_complete_self_referential_enum_type(shell);
 			result["completed_values_count"] = completed.enum_values.size();
 			result["completed_has_end"] = completed.enum_values.has(SNAME("End"));
 			result["completed_has_link"] = completed.enum_values.has(SNAME("Link"));
@@ -1839,7 +1839,7 @@ godot::Dictionary BaristaScriptAnalyzerProbe::complete_self_referential_enum_typ
 					completed_link->field_types.size() == 1 &&
 					completed_link->field_types[0].enum_values.is_empty();
 
-			const BSParser::DataType completed_twice = BSAnalyzer::complete_self_referential_enum_type(completed);
+			const BSParser::DataType completed_twice = BSAnalyzer::test_complete_self_referential_enum_type(completed);
 			result["idempotent_values"] = completed_twice.enum_values.size() == completed.enum_values.size();
 			const BSParser::DataType::EnumCasePayload *twice_link = completed_twice.enum_case_payloads.getptr(SNAME("Link"));
 			result["idempotent_nested_shell"] = twice_link != nullptr &&
@@ -1849,7 +1849,7 @@ godot::Dictionary BaristaScriptAnalyzerProbe::complete_self_referential_enum_typ
 
 		if (branch_payload != nullptr && branch_payload->field_types.size() == 1) {
 			const BSParser::DataType completed_array =
-					BSAnalyzer::complete_self_referential_enum_type(branch_payload->field_types[0]);
+					BSAnalyzer::test_complete_self_referential_enum_type(branch_payload->field_types[0]);
 			result["array_container_size"] = completed_array.container_element_types.size();
 			if (completed_array.container_element_types.size() == 1) {
 				result["array_element_values_count"] = completed_array.container_element_types[0].enum_values.size();

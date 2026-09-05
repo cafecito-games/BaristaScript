@@ -776,6 +776,14 @@ private:
 	void read_strict_settings();
 
 	static String &bootstrap_root_storage();
+
+#ifdef DEBUG_ENABLED
+public:
+	/** Foundry test_complete_self_referential_enum_type @ c9d5e35. */
+	static BSParser::DataType test_complete_self_referential_enum_type(const BSParser::DataType &p_type) {
+		return complete_self_referential_enum_type(p_type);
+	}
+#endif
 };
 
 /** Shared helper: parse + analyze; true when no errors remain. */
