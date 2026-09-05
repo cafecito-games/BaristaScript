@@ -75,6 +75,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::class_trait_binding_chain_coherence);
 	ClassDB::bind_method(D_METHOD("recorded_trait_arguments_query"),
 			&BaristaScriptAnalyzerProbe::recorded_trait_arguments_query);
+	ClassDB::bind_method(D_METHOD("trait_target_assignability"),
+			&BaristaScriptAnalyzerProbe::trait_target_assignability);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -1344,6 +1346,212 @@ godot::Dictionary BaristaScriptAnalyzerProbe::recorded_trait_arguments_query() c
 	registry->clear_file(native_file);
 	registry->clear_file(builtin_file);
 	registry->clear_file(empty_near_file);
+
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::trait_target_assignability() const {
+	godot::Dictionary result;
+
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	ERR_FAIL_COND_V(registry == nullptr, result);
+
+	const String conflict_file = "res://tests/tta_conflict.barista";
+	const String match_file = "res://tests/tta_match.barista";
+	const String empty_file = "res://tests/tta_empty.barista";
+	const String native_file = "res://tests/tta_native.barista";
+	const String builtin_file = "res://tests/tta_builtin.barista";
+
+	registry->clear_file(conflict_file);
+	registry->clear_file(match_file);
+	registry->clear_file(empty_file);
+	registry->clear_file(native_file);
+	registry->clear_file(builtin_file);
+
+	BSParser::IdentifierNode trait_id;
+	trait_id.name = SNAME("TtaKeeper");
+	BSParser::IdentifierNode param_id;
+	param_id.name = SNAME("T");
+	BSParser::TypeParameterNode type_parameter;
+	type_parameter.identifier = &param_id;
+
+	BSParser::ClassNode trait;
+	trait.is_trait = true;
+	trait.identifier = &trait_id;
+	trait.fqcn = "res://tests/tta_keeper.barista";
+	trait.type_parameters.push_back(&type_parameter);
+
+	auto make_builtin = [](Variant::Type p_type) -> BSParser::DataType {
+		BSParser::DataType type;
+		type.kind = BSParser::DataType::BUILTIN;
+		type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		type.builtin_type = p_type;
+		return type;
+	};
+
+	BSParser::DataType target;
+	target.kind = BSParser::DataType::CLASS;
+	target.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	target.class_type = &trait;
+	target.type_arguments.push_back(make_builtin(Variant::STRING));
+
+	auto builtin_recorded = [](Variant::Type p_type) -> Vector<BSConformanceRegistry::RecordedTypeArgument> {
+		BSConformanceRegistry::RecordedTypeArgument argument;
+		argument.kind = BSConformanceRegistry::RecordedTypeArgument::BUILTIN;
+		argument.builtin_type = p_type;
+		Vector<BSConformanceRegistry::RecordedTypeArgument> arguments;
+		arguments.push_back(argument);
+		return arguments;
+	};
+
+	auto make_conformance = [](const String &p_target_key, const StringName &p_trait,
+									const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_args,
+									const String &p_source) -> BSConformanceRegistry::Conformance {
+		BSConformanceRegistry::Conformance entry;
+		entry.target_keys.push_back(p_target_key);
+		entry.target_fqcn = p_target_key;
+		entry.target_script_path = p_target_key.begins_with("res://") ? p_target_key : String();
+		entry.target_is_root_class = true;
+		entry.trait_name = p_trait;
+		entry.trait_type_arguments = p_args;
+		entry.target_label = p_target_key;
+		entry.source_file = p_source;
+		entry.conformance_index = 0;
+		return entry;
+	};
+
+	// CLASS source: registry-recorded INT conflicts with Keeper[String] destination.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(make_conformance("res://tests/tta_source.barista", SNAME("TtaKeeper"),
+				builtin_recorded(Variant::INT), conflict_file));
+		registry->try_replace_file_conformances(conflict_file, candidates);
+
+		BSParser::ClassNode source_class;
+		source_class.fqcn = "res://tests/tta_source.barista";
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &source_class;
+
+		const BSTypeCompatibility::Result check_result = BSTypeCompatibility::check(target, source);
+		result["class_registry_conflict_rejects"] = !check_result.compatible;
+		result["class_registry_membership"] = registry->has_conformance(
+				"res://tests/tta_source.barista", SNAME("TtaKeeper"));
+	}
+
+	// CLASS source: matching recorded STRING stays compatible.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(make_conformance("res://tests/tta_match_source.barista", SNAME("TtaKeeper"),
+				builtin_recorded(Variant::STRING), match_file));
+		registry->try_replace_file_conformances(match_file, candidates);
+
+		BSParser::ClassNode source_class;
+		source_class.fqcn = "res://tests/tta_match_source.barista";
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &source_class;
+
+		result["class_registry_match_accepts"] = BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	// CLASS source: empty recorded args = gradual no-evidence, stays compatible.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(make_conformance("res://tests/tta_empty_source.barista", SNAME("TtaKeeper"),
+				Vector<BSConformanceRegistry::RecordedTypeArgument>(), empty_file));
+		registry->try_replace_file_conformances(empty_file, candidates);
+
+		BSParser::ClassNode source_class;
+		source_class.fqcn = "res://tests/tta_empty_source.barista";
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &source_class;
+
+		result["class_registry_no_evidence_accepts"] = BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	// NATIVE source: Object conformance with conflicting args reachable from Node.
+	{
+		BSConformanceRegistry::Conformance entry = make_conformance(
+				"Object", SNAME("TtaKeeper"), builtin_recorded(Variant::INT), native_file);
+		entry.target_script_path = String();
+		entry.target_native_base = SNAME("Object");
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(entry);
+		registry->try_replace_file_conformances(native_file, candidates);
+
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::NATIVE;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.native_type = SNAME("Node");
+
+		result["native_conflict_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+		result["native_membership"] = registry->native_class_conforms(SNAME("Node"), SNAME("TtaKeeper"));
+	}
+
+	// BUILTIN source: INT conforms with conflicting recorded args.
+	{
+		BSConformanceRegistry::Conformance entry = make_conformance(
+				String(Variant::get_type_name(Variant::INT)), SNAME("TtaKeeper"),
+				builtin_recorded(Variant::FLOAT), builtin_file);
+		entry.target_script_path = String();
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(entry);
+		registry->try_replace_file_conformances(builtin_file, candidates);
+
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::BUILTIN;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.builtin_type = Variant::INT;
+
+		result["builtin_conflict_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+		result["builtin_membership"] = registry->builtin_type_conforms(Variant::INT, SNAME("TtaKeeper"));
+	}
+
+	// Declared `uses` projection: class binds Keeper[int] against Keeper[String] destination.
+	{
+		BSParser::IdentifierNode implementer_id;
+		implementer_id.name = SNAME("TtaUsesInt");
+		BSParser::ClassNode implementer;
+		implementer.identifier = &implementer_id;
+		implementer.fqcn = "res://tests/tta_uses_int.barista";
+		BSParser::ClassNode::TraitUse trait_use;
+		trait_use.resolved_trait = &trait;
+		trait_use.resolved_type_arguments.push_back(make_builtin(Variant::INT));
+		implementer.used_traits.push_back(trait_use);
+		implementer.resolved_traits.push_back(&trait);
+
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &implementer;
+
+		Vector<BSParser::DataType> projected;
+		result["uses_project_ok"] = BSTypeCompatibility::project_class_trait_arguments(source, &trait, projected) &&
+				projected.size() == 1 &&
+				projected[0].kind == BSParser::DataType::BUILTIN &&
+				projected[0].builtin_type == Variant::INT;
+		result["uses_projection_conflict_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	// Trait typed as itself with matching args (source is the trait specialization).
+	{
+		BSParser::DataType source = target;
+		result["trait_self_match_accepts"] = BSTypeCompatibility::check(target, source).compatible;
+
+		source.type_arguments.write[0] = make_builtin(Variant::INT);
+		result["trait_self_conflict_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	registry->clear_file(conflict_file);
+	registry->clear_file(match_file);
+	registry->clear_file(empty_file);
+	registry->clear_file(native_file);
+	registry->clear_file(builtin_file);
 
 	return result;
 }

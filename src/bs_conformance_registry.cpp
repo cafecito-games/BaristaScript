@@ -589,6 +589,27 @@ bool BSConformanceRegistry::get_builtin_recorded_trait_arguments(Variant::Type p
 	return _recorded_trait_arguments_for_key(Variant::get_type_name(p_type), p_trait_name, r_arguments);
 }
 
+bool BSConformanceRegistry::native_class_conforms(const StringName &p_native_class,
+		const StringName &p_trait_name) const {
+	if (p_native_class == StringName() || p_trait_name == StringName()) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(mutex);
+	for (StringName cursor = p_native_class; cursor != StringName(); cursor = ClassDB::get_parent_class(cursor)) {
+		if (_has_visible_conformance(String(cursor), p_trait_name)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool BSConformanceRegistry::builtin_type_conforms(Variant::Type p_type, const StringName &p_trait_name) const {
+	if (p_type == Variant::NIL || p_type == Variant::OBJECT || p_trait_name == StringName()) {
+		return false;
+	}
+	return has_conformance(Variant::get_type_name(p_type), p_trait_name);
+}
+
 String BSConformanceRegistry::get_conformance_source(const String &p_target_key, const StringName &p_trait_name) const {
 	if (p_target_key.is_empty() || p_trait_name == StringName()) {
 		return String();

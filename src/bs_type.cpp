@@ -9,15 +9,18 @@
 /*  target, erased-source runtime check). destination_is_undecidable     */
 /*  type-parameter walk for gradual Self-union admission. Free-T         */
 /*  undecidable laundering remains M5 residual until method/class type   */
-/*  parameters are live. project_registry_trait_arguments walks CLASS    */
-/*  chains for declaration-side recorded trait args (#60); trait-target  */
-/*  assignability call-site wiring remains residual.                     */
+/*  parameters are live. Trait-target assignability consults declared    */
+/*  uses projection and registry recorded-arg conflict (#60). Runtime    */
+/*  Function* store / WITNESS_COLLISION / complete_self_referential_enum */
+/*  remain residual.                                                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
 #include "bs_type.h"
+
+#include "bs_trait_utils.h"
 
 namespace barista_script {
 
@@ -289,6 +292,266 @@ bool BSTypeCompatibility::destination_is_undecidable_type_parameter(const BSPars
 			_depends_on_receiver_type_parameter(p_type, _nullable_is_expressible_at_root(p_type), 0, true);
 }
 
+namespace {
+
+// Foundry _path_identifies_script @ c9d5e35: a resource path identifies the one class that owns
+// the file. Foundry checks `is_root_script()` so an inner class does not inherit a sibling's
+// path-keyed conformance. BaristaScript has no `is_root_script` flag yet — every compiled
+// `.barista` Script resource is a file owner — so path always identifies. Residual under #60
+// if/when inner-class Script wraps land.
+bool _path_identifies_script(const Ref<Script> &p_script) {
+	(void)p_script;
+	return true;
+}
+
+// Foundry _class_has_trait @ c9d5e35: resolved_traits walk + registry membership on the chain.
+bool _class_has_trait(const BSParser::ClassNode *p_class, const BSParser::ClassNode *p_trait) {
+	if (p_class == nullptr || p_trait == nullptr) {
+		return false;
+	}
+
+	if (p_class == p_trait || p_class->fqcn == p_trait->fqcn) {
+		return true;
+	}
+
+	const StringName trait_name = bs_trait_identity_name(p_trait);
+	const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	const BSParser::ClassNode *current = p_class;
+	int depth = 0;
+	while (current != nullptr) {
+		if (unlikely(depth++ > TYPE_WALK_MAX_DEPTH)) {
+			return false;
+		}
+		for (int i = 0; i < current->resolved_traits.size(); i++) {
+			const BSParser::ClassNode *trait = current->resolved_traits[i];
+			if (trait == p_trait || (trait != nullptr && trait->fqcn == p_trait->fqcn)) {
+				return true;
+			}
+		}
+
+		if (registry != nullptr &&
+				(registry->has_conformance(current->fqcn, trait_name) ||
+						registry->has_conformance(current->get_global_name(), trait_name))) {
+			return true;
+		}
+
+		if (current->base_type.kind == BSParser::DataType::CLASS) {
+			current = current->base_type.class_type;
+		} else if (current->base_type.kind == BSParser::DataType::SCRIPT && current->base_type.script_type.is_valid()) {
+			if (registry == nullptr) {
+				return false;
+			}
+			// Residual (#60): no has_script_trait on BaristaScript; registry + native base only.
+			return (_path_identifies_script(current->base_type.script_type) &&
+						   registry->has_conformance(current->base_type.script_path, trait_name)) ||
+					registry->has_conformance(current->base_type.script_type->get_global_name(), trait_name) ||
+					registry->native_class_conforms(current->base_type.script_type->get_instance_base_type(), trait_name);
+		} else if (current->base_type.kind == BSParser::DataType::NATIVE) {
+			return registry != nullptr && registry->native_class_conforms(current->base_type.native_type, trait_name);
+		} else {
+			break;
+		}
+	}
+
+	return false;
+}
+
+// Foundry _project_class_trait_arguments @ c9d5e35: declared `uses` projection via
+// bs_trait_type_argument_bindings / bs_reify_self_in_trait_argument.
+bool _project_class_trait_arguments(const BSParser::DataType &p_source,
+		const BSParser::ClassNode *p_trait, Vector<BSParser::DataType> &r_arguments) {
+	if (p_trait == nullptr || p_trait->type_parameters.is_empty()) {
+		return false;
+	}
+
+	BSParser::DataType current = p_source;
+	int depth = 0;
+	while (current.kind == BSParser::DataType::CLASS && current.class_type != nullptr) {
+		if (unlikely(depth++ > TYPE_WALK_MAX_DEPTH)) {
+			return false;
+		}
+
+		if (current.class_type == p_trait || current.class_type->fqcn == p_trait->fqcn) {
+			if (current.type_arguments.size() != p_trait->type_parameters.size()) {
+				return false;
+			}
+			r_arguments = current.type_arguments;
+			return true;
+		}
+
+		HashMap<StringName, BSParser::DataType> class_bindings;
+		const Vector<BSParser::TypeParameterNode *> &type_parameters = current.class_type->type_parameters;
+		const int binding_count = MIN(type_parameters.size(), current.type_arguments.size());
+		for (int i = 0; i < binding_count; i++) {
+			const BSParser::TypeParameterNode *type_parameter = type_parameters[i];
+			if (type_parameter != nullptr && type_parameter->identifier != nullptr) {
+				class_bindings.insert(type_parameter->identifier->name, current.type_arguments[i]);
+			}
+		}
+
+		const HashMap<StringName, BSParser::DataType> substitution =
+				bs_trait_type_argument_bindings(current.class_type, p_trait);
+		if (!substitution.is_empty()) {
+			r_arguments.clear();
+			for (int i = 0; i < p_trait->type_parameters.size(); i++) {
+				const BSParser::TypeParameterNode *type_parameter = p_trait->type_parameters[i];
+				BSParser::DataType argument;
+				if (type_parameter != nullptr && type_parameter->identifier != nullptr) {
+					const BSParser::DataType *bound = substitution.getptr(type_parameter->identifier->name);
+					if (bound != nullptr) {
+						argument = class_bindings.is_empty()
+								? *bound
+								: BSParser::DataType::substitute(*bound, class_bindings);
+					}
+				}
+				r_arguments.push_back(bs_reify_self_in_trait_argument(current.class_type, argument));
+			}
+			return true;
+		}
+
+		BSParser::DataType parent = current.class_type->base_type;
+		if (!class_bindings.is_empty()) {
+			parent = BSParser::DataType::substitute(parent, class_bindings);
+		}
+		current = parent;
+	}
+
+	return false;
+}
+
+bool _recorded_script_identities_intersect(const BSConformanceRegistry::RecordedTypeArgument &p_left,
+		const BSConformanceRegistry::RecordedTypeArgument &p_right) {
+	const String left_identities[] = { p_left.script_fqcn, p_left.script_global_name };
+	const String right_identities[] = { p_right.script_fqcn, p_right.script_global_name };
+	for (const String &left : left_identities) {
+		if (left.is_empty()) {
+			continue;
+		}
+		for (const String &right : right_identities) {
+			if (!right.is_empty() && left == right) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool _recorded_arguments_disagree(const BSConformanceRegistry::RecordedTypeArgument &p_left,
+		const BSConformanceRegistry::RecordedTypeArgument &p_right, int p_depth = 0) {
+	using RecordedTypeArgument = BSConformanceRegistry::RecordedTypeArgument;
+	if (unlikely(p_depth > TYPE_WALK_MAX_DEPTH)) {
+		return false;
+	}
+	if (p_left.kind == RecordedTypeArgument::UNKNOWN || p_right.kind == RecordedTypeArgument::UNKNOWN) {
+		return false;
+	}
+	if (p_left.kind != p_right.kind || p_left.is_nullable != p_right.is_nullable) {
+		return true;
+	}
+	switch (p_left.kind) {
+		case RecordedTypeArgument::BUILTIN:
+			// D1: carrier alone; no NumericType width comparison.
+			if (p_left.builtin_type != p_right.builtin_type) {
+				return true;
+			}
+			break;
+		case RecordedTypeArgument::NATIVE_CLASS:
+			if (p_left.native_class != p_right.native_class) {
+				return true;
+			}
+			break;
+		case RecordedTypeArgument::SCRIPT_CLASS:
+			if (!_recorded_script_identities_intersect(p_left, p_right)) {
+				return true;
+			}
+			break;
+		case RecordedTypeArgument::UNKNOWN:
+			break;
+	}
+
+	if (p_left.type_arguments.size() == p_right.type_arguments.size()) {
+		for (int i = 0; i < p_left.type_arguments.size(); i++) {
+			if (_recorded_arguments_disagree(p_left.type_arguments[i], p_right.type_arguments[i], p_depth + 1)) {
+				return true;
+			}
+		}
+	}
+	if (p_left.container_element_types.size() == p_right.container_element_types.size()) {
+		for (int i = 0; i < p_left.container_element_types.size(); i++) {
+			if (_recorded_arguments_disagree(p_left.container_element_types[i], p_right.container_element_types[i],
+						p_depth + 1)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool _recorded_arguments_conflict(const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_recorded,
+		const Vector<BSParser::DataType> &p_expected) {
+	if (p_recorded.size() != p_expected.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_recorded.size(); i++) {
+		if (_recorded_arguments_disagree(p_recorded[i], BSConformanceRegistry::reduce_type_argument(p_expected[i]))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Foundry _project_registry_trait_arguments @ c9d5e35.
+bool _project_registry_trait_arguments(const BSParser::DataType &p_source,
+		const StringName &p_trait_name, Vector<BSConformanceRegistry::RecordedTypeArgument> &r_arguments) {
+	r_arguments.clear();
+	if (p_trait_name == StringName()) {
+		return false;
+	}
+
+	const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	if (registry == nullptr) {
+		return false;
+	}
+
+	const BSParser::ClassNode *current = p_source.class_type;
+	int depth = 0;
+	while (current != nullptr) {
+		if (unlikely(depth++ > TYPE_WALK_MAX_DEPTH)) {
+			return false;
+		}
+
+		if (registry->get_recorded_trait_arguments(current->fqcn, p_trait_name, r_arguments) ||
+				registry->get_recorded_trait_arguments(String(current->get_global_name()), p_trait_name, r_arguments)) {
+			return true;
+		}
+		if (registry->has_conformance(current->fqcn, p_trait_name) ||
+				registry->has_conformance(current->get_global_name(), p_trait_name)) {
+			// This level conforms but recorded nothing, and a nearer conformance shadows any further
+			// one, so the chain proves nothing rather than answering from a more distant record.
+			return false;
+		}
+
+		if (current->base_type.kind == BSParser::DataType::CLASS) {
+			current = current->base_type.class_type;
+		} else if (current->base_type.kind == BSParser::DataType::SCRIPT && current->base_type.script_type.is_valid()) {
+			return (_path_identifies_script(current->base_type.script_type) &&
+						   registry->get_recorded_trait_arguments(current->base_type.script_path, p_trait_name, r_arguments)) ||
+					registry->get_recorded_trait_arguments(
+							String(current->base_type.script_type->get_global_name()), p_trait_name, r_arguments) ||
+					registry->get_native_recorded_trait_arguments(
+							current->base_type.script_type->get_instance_base_type(), p_trait_name, r_arguments);
+		} else if (current->base_type.kind == BSParser::DataType::NATIVE) {
+			return registry->get_native_recorded_trait_arguments(current->base_type.native_type, p_trait_name, r_arguments);
+		} else {
+			break;
+		}
+	}
+
+	return false;
+}
+
+} // namespace
+
 BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const Options &p_options) {
 	if (!p_target.is_set() || !p_source.is_set()) {
 		return Result(false, false, false);
@@ -446,6 +709,85 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 			// takes the same arm — the store / Self contract layers decide further exactness.
 			result.compatible = true;
 			result.requires_runtime_check = true;
+		}
+		return result;
+	}
+
+	// Foundry FSTypeCompatibility::check @ c9d5e35 (~1352–1447): non-meta trait CLASS targets.
+	// Nominal membership alone does not prove the source conforms at the destination's type
+	// arguments — gradual no-evidence stays compatible; recorded / projected contradictions reject.
+	if (p_target.kind == BSParser::DataType::CLASS && p_target.class_type != nullptr &&
+			p_target.class_type->is_trait && !p_target.is_meta_type) {
+		Result result(false, false, false);
+		if (p_source.kind == BSParser::DataType::CLASS && !p_source.is_meta_type) {
+			result.compatible = _class_has_trait(p_source.class_type, p_target.class_type);
+			if (result.compatible && p_target.has_type_arguments()) {
+				Vector<BSParser::DataType> projected;
+				if (_project_class_trait_arguments(p_source, p_target.class_type, projected)) {
+					if (projected.size() == p_target.type_arguments.size()) {
+						for (int i = 0; i < projected.size(); i++) {
+							if (!projected[i].is_set()) {
+								continue;
+							}
+							// Concrete projected vs destination: reduce both and reject only confident
+							// disagreements. Unset / TYPE_PARAMETER reductions stay UNKNOWN (gradual).
+							// Full ArgumentEvidence / compare_projected_argument remains #60 residual
+							// for open-parameter destination literalism (Keeper[X] slots).
+							if (_recorded_arguments_disagree(
+										BSConformanceRegistry::reduce_type_argument(projected[i]),
+										BSConformanceRegistry::reduce_type_argument(p_target.type_arguments[i]))) {
+								result.compatible = false;
+								break;
+							}
+						}
+					}
+				} else {
+					Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+					if (_project_registry_trait_arguments(p_source, bs_trait_identity_name(p_target.class_type), recorded) &&
+							_recorded_arguments_conflict(recorded, p_target.type_arguments)) {
+						result.compatible = false;
+					}
+				}
+			}
+			return result;
+		}
+		if (p_source.kind == BSParser::DataType::SCRIPT && p_source.script_type.is_valid() && !p_source.is_meta_type) {
+			const StringName trait_name = bs_trait_identity_name(p_target.class_type);
+			const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+			// Residual (#60): BaristaScript has no has_script_trait / parse-trait set yet; membership
+			// for SCRIPT sources is registry + native-base conformance only (Foundry fallback path).
+			result.compatible = registry != nullptr &&
+					((_path_identifies_script(p_source.script_type) &&
+							 registry->has_conformance(p_source.script_path, trait_name)) ||
+							registry->has_conformance(p_source.script_type->get_global_name(), trait_name) ||
+							registry->native_class_conforms(p_source.script_type->get_instance_base_type(), trait_name));
+			return result;
+		}
+		if (p_source.kind == BSParser::DataType::NATIVE && !p_source.is_meta_type) {
+			const StringName trait_name = bs_trait_identity_name(p_target.class_type);
+			const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+			result.compatible = registry != nullptr && registry->native_class_conforms(p_source.native_type, trait_name);
+			if (result.compatible && p_target.has_type_arguments()) {
+				Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+				if (registry->get_native_recorded_trait_arguments(p_source.native_type, trait_name, recorded) &&
+						_recorded_arguments_conflict(recorded, p_target.type_arguments)) {
+					result.compatible = false;
+				}
+			}
+			return result;
+		}
+		if (p_source.kind == BSParser::DataType::BUILTIN && !p_source.is_meta_type) {
+			const StringName trait_name = bs_trait_identity_name(p_target.class_type);
+			const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+			result.compatible = registry != nullptr && registry->builtin_type_conforms(p_source.builtin_type, trait_name);
+			if (result.compatible && p_target.has_type_arguments()) {
+				Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+				if (registry->get_builtin_recorded_trait_arguments(p_source.builtin_type, trait_name, recorded) &&
+						_recorded_arguments_conflict(recorded, p_target.type_arguments)) {
+					result.compatible = false;
+				}
+			}
+			return result;
 		}
 		return result;
 	}
@@ -633,78 +975,6 @@ bool BSTypeCompatibility::rest_parameter_accepts_required_argument(const BSParse
 			.compatible;
 }
 
-namespace {
-
-static bool _recorded_script_identities_intersect(const BSConformanceRegistry::RecordedTypeArgument &p_left,
-		const BSConformanceRegistry::RecordedTypeArgument &p_right) {
-	const String left_identities[] = { p_left.script_fqcn, p_left.script_global_name };
-	const String right_identities[] = { p_right.script_fqcn, p_right.script_global_name };
-	for (const String &left : left_identities) {
-		if (left.is_empty()) {
-			continue;
-		}
-		for (const String &right : right_identities) {
-			if (!right.is_empty() && left == right) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-static bool _recorded_arguments_disagree(const BSConformanceRegistry::RecordedTypeArgument &p_left,
-		const BSConformanceRegistry::RecordedTypeArgument &p_right, int p_depth = 0) {
-	using RecordedTypeArgument = BSConformanceRegistry::RecordedTypeArgument;
-	if (unlikely(p_depth > TYPE_WALK_MAX_DEPTH)) {
-		return false;
-	}
-	if (p_left.kind == RecordedTypeArgument::UNKNOWN || p_right.kind == RecordedTypeArgument::UNKNOWN) {
-		return false;
-	}
-	if (p_left.kind != p_right.kind || p_left.is_nullable != p_right.is_nullable) {
-		return true;
-	}
-	switch (p_left.kind) {
-		case RecordedTypeArgument::BUILTIN:
-			// D1: carrier alone; no NumericType width comparison.
-			if (p_left.builtin_type != p_right.builtin_type) {
-				return true;
-			}
-			break;
-		case RecordedTypeArgument::NATIVE_CLASS:
-			if (p_left.native_class != p_right.native_class) {
-				return true;
-			}
-			break;
-		case RecordedTypeArgument::SCRIPT_CLASS:
-			if (!_recorded_script_identities_intersect(p_left, p_right)) {
-				return true;
-			}
-			break;
-		case RecordedTypeArgument::UNKNOWN:
-			break;
-	}
-
-	if (p_left.type_arguments.size() == p_right.type_arguments.size()) {
-		for (int i = 0; i < p_left.type_arguments.size(); i++) {
-			if (_recorded_arguments_disagree(p_left.type_arguments[i], p_right.type_arguments[i], p_depth + 1)) {
-				return true;
-			}
-		}
-	}
-	if (p_left.container_element_types.size() == p_right.container_element_types.size()) {
-		for (int i = 0; i < p_left.container_element_types.size(); i++) {
-			if (_recorded_arguments_disagree(p_left.container_element_types[i], p_right.container_element_types[i],
-						p_depth + 1)) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-} // namespace
-
 bool BSTypeCompatibility::recorded_arguments_conflict(
 		const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_recorded,
 		const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_other) {
@@ -719,69 +989,16 @@ bool BSTypeCompatibility::recorded_arguments_conflict(
 	return false;
 }
 
-namespace {
-
-// Foundry _path_identifies_script @ c9d5e35: a resource path identifies the one class that owns
-// the file. Foundry checks `is_root_script()` so an inner class does not inherit a sibling's
-// path-keyed conformance. BaristaScript has no `is_root_script` flag yet — every compiled
-// `.barista` Script resource is a file owner — so path always identifies. Residual under #60
-// if/when inner-class Script wraps land.
-bool _path_identifies_script(const Ref<Script> &p_script) {
-	(void)p_script;
-	return true;
+bool BSTypeCompatibility::recorded_arguments_conflict(
+		const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_recorded,
+		const Vector<BSParser::DataType> &p_expected) {
+	return _recorded_arguments_conflict(p_recorded, p_expected);
 }
 
-// Foundry _project_registry_trait_arguments @ c9d5e35.
-bool _project_registry_trait_arguments(const BSParser::DataType &p_source,
-		const StringName &p_trait_name, Vector<BSConformanceRegistry::RecordedTypeArgument> &r_arguments) {
-	r_arguments.clear();
-	if (p_trait_name == StringName()) {
-		return false;
-	}
-
-	const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
-	if (registry == nullptr) {
-		return false;
-	}
-
-	const BSParser::ClassNode *current = p_source.class_type;
-	int depth = 0;
-	while (current != nullptr) {
-		if (unlikely(depth++ > TYPE_WALK_MAX_DEPTH)) {
-			return false;
-		}
-
-		if (registry->get_recorded_trait_arguments(current->fqcn, p_trait_name, r_arguments) ||
-				registry->get_recorded_trait_arguments(String(current->get_global_name()), p_trait_name, r_arguments)) {
-			return true;
-		}
-		if (registry->has_conformance(current->fqcn, p_trait_name) ||
-				registry->has_conformance(current->get_global_name(), p_trait_name)) {
-			// This level conforms but recorded nothing, and a nearer conformance shadows any further
-			// one, so the chain proves nothing rather than answering from a more distant record.
-			return false;
-		}
-
-		if (current->base_type.kind == BSParser::DataType::CLASS) {
-			current = current->base_type.class_type;
-		} else if (current->base_type.kind == BSParser::DataType::SCRIPT && current->base_type.script_type.is_valid()) {
-			return (_path_identifies_script(current->base_type.script_type) &&
-						   registry->get_recorded_trait_arguments(current->base_type.script_path, p_trait_name, r_arguments)) ||
-					registry->get_recorded_trait_arguments(
-							String(current->base_type.script_type->get_global_name()), p_trait_name, r_arguments) ||
-					registry->get_native_recorded_trait_arguments(
-							current->base_type.script_type->get_instance_base_type(), p_trait_name, r_arguments);
-		} else if (current->base_type.kind == BSParser::DataType::NATIVE) {
-			return registry->get_native_recorded_trait_arguments(current->base_type.native_type, p_trait_name, r_arguments);
-		} else {
-			break;
-		}
-	}
-
-	return false;
+bool BSTypeCompatibility::project_class_trait_arguments(const BSParser::DataType &p_source,
+		const BSParser::ClassNode *p_trait, Vector<BSParser::DataType> &r_arguments) {
+	return _project_class_trait_arguments(p_source, p_trait, r_arguments);
 }
-
-} // namespace
 
 bool BSTypeCompatibility::project_registry_trait_arguments(const BSParser::DataType &p_source,
 		const StringName &p_trait_name, Vector<BSConformanceRegistry::RecordedTypeArgument> &r_arguments) {

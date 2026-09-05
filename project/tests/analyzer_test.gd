@@ -66,6 +66,7 @@ func _init() -> void:
 	_test_conformance_hidden_witness(failures)
 	_test_class_trait_binding_chain_coherence(failures)
 	_test_recorded_trait_arguments_query(failures)
+	_test_trait_target_assignability(failures)
 	_test_self_type_parameter_compat(failures)
 	_test_enum_self_payload_field_leg(failures)
 	_test_self_contract_assign_return(failures)
@@ -3270,6 +3271,49 @@ func _test_recorded_trait_arguments_query(failures: PackedStringArray) -> void:
 		_src_class("RtaIndexGuard extends Node\n"), "res://tests/rta_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"recorded-trait-args probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_trait_target_assignability(failures: PackedStringArray) -> void:
+	# Foundry FSTypeCompatibility::check trait-target recorded/projected args @ c9d5e35 (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.trait_target_assignability()
+
+	_expect(failures, report.get("class_registry_membership", false) == true,
+		"CLASS source has registry membership for TtaKeeper")
+	_expect(failures, report.get("class_registry_conflict_rejects", false) == true,
+		"CLASS→Keeper[String] rejects registry-recorded INT args")
+	_expect(failures, report.get("class_registry_match_accepts", false) == true,
+		"CLASS→Keeper[String] accepts matching recorded STRING args")
+	_expect(failures, report.get("class_registry_no_evidence_accepts", false) == true,
+		"CLASS→Keeper[String] accepts gradual no-evidence empty record")
+
+	_expect(failures, report.get("native_membership", false) == true,
+		"Node reaches Object native_class_conforms for TtaKeeper")
+	_expect(failures, report.get("native_conflict_rejects", false) == true,
+		"NATIVE→Keeper[String] rejects recorded INT args")
+
+	_expect(failures, report.get("builtin_membership", false) == true,
+		"INT builtin_type_conforms to TtaKeeper")
+	_expect(failures, report.get("builtin_conflict_rejects", false) == true,
+		"BUILTIN→Keeper[String] rejects recorded FLOAT args")
+
+	_expect(failures, report.get("uses_project_ok", false) == true,
+		"project_class_trait_arguments returns declared uses INT binding")
+	_expect(failures, report.get("uses_projection_conflict_rejects", false) == true,
+		"declared uses Keeper[int] conflicts with Keeper[String] destination")
+
+	_expect(failures, report.get("trait_self_match_accepts", false) == true,
+		"Keeper[String]→Keeper[String] self-specialization accepts")
+	_expect(failures, report.get("trait_self_conflict_rejects", false) == true,
+		"Keeper[int]→Keeper[String] self-specialization rejects")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("TtaIndexGuard extends Node\n"), "res://tests/tta_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"trait-target-assignability probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
 
 

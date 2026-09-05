@@ -88,6 +88,12 @@ public:
 	 * recorded_trait_arguments @ c9d5e35.
 	 */
 	godot::Dictionary recorded_trait_arguments_query() const;
+
+	/**
+	 * Drive BSTypeCompatibility::check trait-target assignability with recorded /
+	 * projected type-argument conflict rejection (Foundry fs_type.cpp ~1352–1447).
+	 */
+	godot::Dictionary trait_target_assignability() const;
 };
 
 } // namespace barista_script
