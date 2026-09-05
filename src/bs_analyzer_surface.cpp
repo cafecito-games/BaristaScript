@@ -8,8 +8,8 @@
 /*  OwnerResolutionFailures / DependentResolutionFailureReplays /         */
 /*  ForeignAnalyzerVisibilityScope (@ c9d5e35). Class-phase INTERFACE/BODY*/
 /*  foreign recording/replay lives in analyze_class_interface/body        */
-/*  (`bs_analyzer.cpp`); FSConformanceRegistry::ScopedVisibility remains  */
-/*  residual under #60.                                                   */
+/*  (`bs_analyzer.cpp`); ForeignAnalyzerVisibilityScope installs          */
+/*  BSConformanceRegistry::ScopedVisibility for owner ConformanceVisibility.*/
 /*  FS* -> BS*; engine contact through bs_platform.h.                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */

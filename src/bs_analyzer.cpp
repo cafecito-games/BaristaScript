@@ -226,6 +226,7 @@ String &BSAnalyzer::bootstrap_root_storage() {
 }
 
 BSAnalyzer::BSAnalyzer(BSParser *p_parser) :
+		conformance_visibility(this),
 		parser(p_parser),
 		call_site_validation(this),
 		flow_finality(this) {
@@ -4297,6 +4298,7 @@ Error BSAnalyzer::run_phase_finalize() {
 
 Error BSAnalyzer::resolve_inheritance() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
+	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
 	Error err = run_phase_preflight();
 	if (err != OK) {
 		commit_or_remove_declaration(false);
@@ -4311,6 +4313,7 @@ Error BSAnalyzer::resolve_inheritance() {
 
 Error BSAnalyzer::resolve_interface() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
+	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
 	Error err = run_phase_interface_and_member_surface();
 	if (err != OK) {
 		commit_or_remove_declaration(false);
@@ -4320,6 +4323,7 @@ Error BSAnalyzer::resolve_interface() {
 
 Error BSAnalyzer::resolve_body() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
+	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
 	Error err = run_phase_body_expression_callable_signal();
 	if (err != OK) {
 		commit_or_remove_declaration(false);
@@ -4346,6 +4350,7 @@ Error BSAnalyzer::resolve_body() {
 
 Error BSAnalyzer::analyze() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
+	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
 	Error err = run_phase_preflight();
 	if (err != OK) {
 		commit_or_remove_declaration(false);

@@ -7,9 +7,9 @@
 /*  validate_trait_method_signature from fs_analyzer.cpp). FS* -> BS*;   */
 /*  engine contact through bs_platform.h.                                 */
 /*  Non-generic trait method signature matching (async/static/arity/     */
-/*  params/returns/rest + Self reify + MethodInfo). Full                 */
-/*  FSConformanceRegistry / generic alpha-equivalence / witness dual-    */
-/*  scope remain follow-up under #60.                                     */
+/*  params/returns/rest + Self reify + MethodInfo). ConformanceVisibility*/
+/*  can_see BFS. Full FSConformanceRegistry registration / generic       */
+/*  alpha-equivalence / witness dual-scope remain follow-up under #60.   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -20,6 +20,7 @@
 #include "barista_script.h"
 #include "barista_script_language.h"
 #include "bs_cache.h"
+#include "bs_conformance_registry.h"
 #include "bs_native_db.h"
 #include "bs_platform.h"
 #include "bs_trait_utils.h"
@@ -873,6 +874,49 @@ void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {
 		}
 		current_class = previous_class;
 	}
+}
+
+BSAnalyzer::ConformanceVisibility::ConformanceVisibility(BSAnalyzer *p_analyzer) {
+	analyzer = p_analyzer;
+}
+
+bool BSAnalyzer::ConformanceVisibility::can_see(const String &p_source_file) const {
+	if (analyzer == nullptr || analyzer->parser == nullptr || p_source_file.is_empty()) {
+		return true;
+	}
+	if (p_source_file == analyzer->parser->script_path || visible_files.has(p_source_file)) {
+		return true;
+	}
+
+	// Breadth-first over the dependency graph, from two sources per file:
+	//
+	//  - What it *declares*: the `preload` and `extends` paths its parse tree carries.
+	//  - What it has *resolved*: `depended_parsers`, which reaches on through files this
+	//    analysis has already pulled in.
+	//
+	// Every file reached on the way is a dependency too, so the whole visited set is
+	// memoized. Only positive answers are kept: the graph grows during an analysis, so a
+	// "no" can become a "yes".
+	List<BSParser *> pending;
+	HashSet<const BSParser *> seen;
+	pending.push_back(analyzer->parser);
+	seen.insert(analyzer->parser);
+	while (!pending.is_empty()) {
+		BSParser *current = pending.front()->get();
+		pending.pop_front();
+		for (const String &declared : current->get_dependencies()) {
+			visible_files.insert(declared);
+		}
+		for (const KeyValue<String, Ref<BSParserRef>> &dependency : current->get_depended_parsers()) {
+			visible_files.insert(dependency.key);
+			BSParser *dependency_parser = dependency.value.is_valid() ? dependency.value->get_parser() : nullptr;
+			if (dependency_parser != nullptr && !seen.has(dependency_parser)) {
+				seen.insert(dependency_parser);
+				pending.push_back(dependency_parser);
+			}
+		}
+	}
+	return visible_files.has(p_source_file);
 }
 
 } // namespace barista_script
