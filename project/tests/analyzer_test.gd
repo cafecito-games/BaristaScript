@@ -3211,6 +3211,17 @@ func _test_class_trait_binding_chain_coherence(failures: PackedStringArray) -> v
 	_expect(failures, String(report.get("conflict_conflicting_file", "")) == "res://tests/ctb_binding.barista",
 		"conflict points at the binding declaring file")
 
+	_expect(failures, report.get("edge_loader_binding_ok", false) == true,
+		"loader publishes ClassTraitBinding with load edge without conflict")
+	_expect(failures, report.get("edge_reverse_chain_coherence", false) == true,
+		"reverse load edge licenses CHAIN_COHERENCE when Visibility cannot see loader")
+	_expect(failures, report.get("edge_reverse_rejected", false) == true,
+		"reverse-edge CHAIN_COHERENCE rejects the loaded Conformance")
+	_expect(failures, report.get("edge_reverse_store_empty", false) == true,
+		"reverse-edge rejected Conformance is not stored")
+	_expect(failures, report.get("edge_noedge_uncompared", false) == true,
+		"contradicting pair with no load edge either way stays uncompared")
+
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
 	var _ignored: Dictionary = probe.analyze_source(

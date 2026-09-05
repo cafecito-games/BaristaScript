@@ -1024,6 +1024,136 @@ godot::Dictionary BaristaScriptAnalyzerProbe::class_trait_binding_chain_coherenc
 	registry->clear_file(conformance_file);
 	registry->clear_file(agree_file);
 
+	// --- Reverse load-edge licensing (Foundry ncc_binding_edge_* @ c9d5e35) ---
+	// The loaded file cannot see the loader. Comparison is licensed by the loader's
+	// recorded load edge via `_file_loads(existing->source_file, p_source_file)`.
+	const String loader_file = "res://tests/ctb_load_edge_loader.barista";
+	const String loaded_file = "res://tests/ctb_load_edge_loaded.barista";
+	const StringName edge_trait = SNAME("CtbLoadEdgeStorage");
+	registry->clear_file(loader_file);
+	registry->clear_file(loaded_file);
+
+	class LoadsOnlySelf : public BSConformanceRegistry::Visibility {
+		String allowed;
+
+	public:
+		explicit LoadsOnlySelf(const String &p_allowed) :
+				allowed(p_allowed) {}
+		bool can_see(const String &p_source_file) const override {
+			return p_source_file == allowed;
+		}
+	};
+
+	HashSet<String> loader_loads;
+	loader_loads.insert(loaded_file);
+
+	// Case A: loader publishes a ClassTraitBinding first (with load edge); loaded later
+	// publishes a contradicting Conformance without Visibility of the loader.
+	{
+		BSConformanceRegistry::ClassTraitBinding loader_binding;
+		loader_binding.target_fqcn = "res://tests/ctb_load_edge_holder.barista";
+		loader_binding.target_label = "CtbLoadEdgeHolder";
+		loader_binding.target_native_base = SNAME("RefCounted");
+		loader_binding.trait_name = edge_trait;
+		loader_binding.trait_label = "CtbLoadEdgeStorage";
+		loader_binding.trait_type_arguments = builtin_args(Variant::STRING);
+		loader_binding.source_file = loader_file;
+
+		Vector<BSConformanceRegistry::ClassTraitBinding> loader_bindings;
+		loader_bindings.push_back(loader_binding);
+
+		LoadsOnlySelf loader_visibility(loader_file);
+		{
+			const BSConformanceRegistry::ScopedVisibility scoped(&loader_visibility);
+			const BSConformanceRegistry::RegistrationResult loader_result =
+					registry->try_replace_file_conformances(loader_file,
+							Vector<BSConformanceRegistry::Conformance>(), loader_bindings, loader_loads);
+			result["edge_loader_binding_ok"] = loader_result.binding_conflicts.is_empty();
+		}
+
+		LoadsOnlySelf loaded_visibility(loaded_file);
+		const BSConformanceRegistry::ScopedVisibility scoped(&loaded_visibility);
+
+		BSConformanceRegistry::Conformance loaded_conform;
+		loaded_conform.target_keys.push_back("RefCounted");
+		loaded_conform.target_fqcn = "RefCounted";
+		loaded_conform.target_script_path = String();
+		loaded_conform.target_is_root_class = true;
+		loaded_conform.trait_name = edge_trait;
+		loaded_conform.trait_type_arguments = builtin_args(Variant::INT);
+		loaded_conform.target_native_base = SNAME("RefCounted");
+		loaded_conform.target_label = "RefCounted";
+		loaded_conform.source_file = loaded_file;
+		loaded_conform.conformance_index = 0;
+
+		Vector<BSConformanceRegistry::Conformance> loaded_candidates;
+		loaded_candidates.push_back(loaded_conform);
+		const BSConformanceRegistry::RegistrationResult loaded_result =
+				registry->try_replace_file_conformances(loaded_file, loaded_candidates);
+
+		bool edge_chain = false;
+		for (int i = 0; i < loaded_result.conflicts.size(); i++) {
+			if (loaded_result.conflicts[i].kind == BSConformanceRegistry::RegistrationConflict::CHAIN_COHERENCE &&
+					loaded_result.conflicts[i].conflicting_source_file == loader_file) {
+				edge_chain = true;
+				break;
+			}
+		}
+		result["edge_reverse_chain_coherence"] = edge_chain;
+		result["edge_reverse_rejected"] = loaded_result.registered_count == 0 && edge_chain;
+		result["edge_reverse_store_empty"] = registry->get_file_conformances(loaded_file).is_empty();
+	}
+
+	registry->clear_file(loader_file);
+	registry->clear_file(loaded_file);
+
+	// Case B: no load edge either way — contradicting pair stays uncompared.
+	{
+		const String unrelated_file = "res://tests/ctb_load_edge_unrelated.barista";
+		const String other_file = "res://tests/ctb_load_edge_other.barista";
+		registry->clear_file(unrelated_file);
+
+		HashSet<String> unrelated_loads;
+		unrelated_loads.insert(other_file);
+		BSConformanceRegistry::Conformance unrelated_conform;
+		unrelated_conform.target_keys.push_back("RefCounted");
+		unrelated_conform.target_fqcn = "RefCounted";
+		unrelated_conform.target_is_root_class = true;
+		unrelated_conform.trait_name = edge_trait;
+		unrelated_conform.trait_type_arguments = builtin_args(Variant::INT);
+		unrelated_conform.target_native_base = SNAME("RefCounted");
+		unrelated_conform.target_label = "RefCounted";
+		unrelated_conform.source_file = unrelated_file;
+		unrelated_conform.conformance_index = 0;
+		Vector<BSConformanceRegistry::Conformance> unrelated_candidates;
+		unrelated_candidates.push_back(unrelated_conform);
+		registry->try_replace_file_conformances(unrelated_file, unrelated_candidates,
+				Vector<BSConformanceRegistry::ClassTraitBinding>(), unrelated_loads);
+
+		BSConformanceRegistry::ClassTraitBinding noedge_binding;
+		noedge_binding.target_fqcn = "res://tests/ctb_load_edge_holder.barista";
+		noedge_binding.target_label = "CtbLoadEdgeHolder";
+		noedge_binding.target_native_base = SNAME("RefCounted");
+		noedge_binding.trait_name = edge_trait;
+		noedge_binding.trait_label = "CtbLoadEdgeStorage";
+		noedge_binding.trait_type_arguments = builtin_args(Variant::STRING);
+		noedge_binding.source_file = loader_file;
+		Vector<BSConformanceRegistry::ClassTraitBinding> noedge_bindings;
+		noedge_bindings.push_back(noedge_binding);
+
+		LoadsOnlySelf binding_visibility(loader_file);
+		const BSConformanceRegistry::ScopedVisibility scoped(&binding_visibility);
+		const BSConformanceRegistry::RegistrationResult noedge_result =
+				registry->try_replace_file_conformances(loader_file,
+						Vector<BSConformanceRegistry::Conformance>(), noedge_bindings);
+		result["edge_noedge_uncompared"] = noedge_result.binding_conflicts.is_empty();
+
+		registry->clear_file(unrelated_file);
+	}
+
+	registry->clear_file(loader_file);
+	registry->clear_file(loaded_file);
+
 	return result;
 }
 

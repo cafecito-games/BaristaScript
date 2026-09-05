@@ -5,8 +5,8 @@
 /*  stack + declaration store with atomic try_replace_file_conformances  */
 /*  + find_witness_location / find_hidden_witness_declaration            */
 /*  (method-name keys) + RecordedTypeArgument / ClassTraitBinding        */
-/*  chain coherence against uses bindings. Full p_loaded_files load      */
-/*  graph and runtime Function* witnesses remain residual under #60.     */
+/*  chain coherence against uses bindings + p_loaded_files load-graph    */
+/*  licensing. Runtime Function* witnesses remain residual under #60.    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -450,9 +450,16 @@ BSConformanceRegistry::RegistrationResult BSConformanceRegistry::try_replace_fil
 		}
 	}
 
-	// Residual #60: do not persist load edges yet; keep the store empty so `_file_loads` stays false.
-	(void)p_loaded_files;
-	loaded_files_by_file.erase(p_source_file);
+	// The load edges this file resolved are published with what it declares: they are what lets the file
+	// at the other end of an edge, judging its own declarations later, tell that these were licensed to
+	// be compared against it. Both the conformance side and the binding side read them, so a file that
+	// publishes either records its edges -- and a file that publishes neither has nothing to license and
+	// stays out of the store.
+	if (p_loaded_files.is_empty() || (accepted.is_empty() && p_trait_bindings.is_empty())) {
+		loaded_files_by_file.erase(p_source_file);
+	} else {
+		loaded_files_by_file[p_source_file] = p_loaded_files;
+	}
 
 	for (const ClassTraitBinding &binding : p_trait_bindings) {
 		BindingConflict binding_conflict;

@@ -1241,8 +1241,9 @@ Error BSAnalyzer::run_phase_interface_and_member_surface() {
 	analyze_class_interface(parser->get_tree());
 	resolve_used_traits(parser->get_tree());
 	mark_phase(AnalyzerPhase::INTERFACE_AND_MEMBER_SURFACE);
-	// Foundry TRAIT_CONFORMANCE: registration / extend targets only.
+	// Foundry TRAIT_CONFORMANCE: raise load-graph deps, then registration / extend targets.
 	// Abstract-method requirements belong in FLOW_FINALITY_INVARIANTS.
+	raise_declared_conformance_dependencies();
 	resolve_conformances(parser->get_tree());
 	mark_phase(AnalyzerPhase::TRAIT_CONFORMANCE_REGISTRATION);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;

@@ -6,10 +6,10 @@
 /*  declaration store with atomic try_replace_file_conformances +        */
 /*  witness method-name keys / find_witness_location /                   */
 /*  find_hidden_witness_declaration + RecordedTypeArgument /             */
-/*  ClassTraitBinding chain-coherence against uses bindings.             */
-/*  Full p_loaded_files load-graph licensing, runtime Function*          */
-/*  witnesses, and native/builtin recorded-argument query APIs remain    */
-/*  residual under #60.                                                   */
+/*  ClassTraitBinding chain-coherence against uses bindings +            */
+/*  p_loaded_files load-graph licensing. Runtime Function* witnesses and */
+/*  native/builtin recorded-argument query APIs remain residual under    */
+/*  #60.                                                                  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -197,8 +197,9 @@ private:
 	HashMap<String, Vector<Conformance>> conformances_by_file;
 	HashMap<String, HashMap<StringName, String>> index;
 	HashMap<String, Vector<ClassTraitBinding>> trait_bindings_by_file;
-	// Residual #60: full cross-file load licensing graph. Stubbed empty so `_file_loads`
-	// is always false; `_is_visible` still licenses comparisons when no Visibility is set.
+	// Cross-file load licensing graph. A file that publishes conformances or class-`uses`
+	// bindings records the files it loads so a later analysis on the other end of an edge
+	// can still join them when its own directional Visibility cannot reach back.
 	HashMap<String, HashSet<String>> loaded_files_by_file;
 
 	void _rebuild_index();
@@ -227,9 +228,9 @@ public:
 	 *
 	 * Previous entries stay visible to other readers until this commits. An empty
 	 * candidate list clears the file's conformances. `p_trait_bindings` replaces
-	 * class-`uses` bindings in the same indivisible step. `p_loaded_files` is
-	 * accepted for Foundry signature parity but the load-graph store remains
-	 * residual under #60 (edges are not consulted until that port lands).
+	 * class-`uses` bindings in the same indivisible step. `p_loaded_files` is the
+	 * set of files `p_source_file` loads; recorded whenever the file publishes
+	 * accepted conformances or bindings (erased when empty / nothing to license).
 	 */
 	RegistrationResult try_replace_file_conformances(const String &p_source_file,
 			const Vector<Conformance> &p_candidates,
