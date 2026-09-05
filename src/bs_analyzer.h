@@ -12,6 +12,7 @@
 /*  user-facing builtin type annotations via get_builtin_type (#60),      */
 /*  ENUM_CASE / case-bind / container match pattern depth (#60),           */
 /*  contextual `.Case` match / `is` qualification (#60),                  */
+/*  expression-position `.Case` construction for assign/return (#60),     */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -256,6 +257,11 @@ private:
 	CallSiteValidationContext call_site_validation;
 	FlowFinalityContext flow_finality;
 
+	// Foundry reduced_contextual_enum_cases / resolved_contextual_enum_cases @ c9d5e35:
+	// shorthands reduced before their consumer supplies a union, then the end-of-body sweep.
+	LocalVector<BSParser::ExpressionNode *> reduced_contextual_enum_cases;
+	HashSet<const BSParser::ExpressionNode *> resolved_contextual_enum_cases;
+
 	Error run_phase_preflight();
 	Error run_phase_inheritance_resolution();
 	Error run_phase_interface_and_member_surface();
@@ -321,8 +327,7 @@ private:
 	/**
 	 * Foundry resolve_match_pattern @ c9d5e35: LITERAL / EXPRESSION / WILDCARD / BIND /
 	 * ENUM_CASE / ARRAY / DICTIONARY / TUPLE / REST, including contextual `.Case` match /
-	 * `is` qualification. Tagged-union exhaustiveness and expression-position construction
-	 * remain follow-up under #60.
+	 * `is` qualification. Tagged-union exhaustiveness remains follow-up under #60.
 	 */
 	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type = nullptr, bool p_subject_errored = false);
 	/** Foundry resolve_match_case_pattern @ c9d5e35: `Message.Move(x, _)` / `.Move(x, _)` payload typing. */
@@ -342,9 +347,23 @@ private:
 			bool p_subject_errored = false);
 	/**
 	 * Foundry resolve_contextual_case_value_pattern @ c9d5e35: payload-less `.Quit` as a
-	 * match expression pattern. Assignment/return expression construction remains #60.
+	 * match expression pattern.
 	 */
 	bool resolve_contextual_case_value_pattern(BSParser::ExpressionNode *p_expression, const BSParser::DataType *p_match_test_type, bool p_subject_errored = false);
+	/**
+	 * Foundry resolve_contextual_enum_case @ c9d5e35: qualify `.Case` / `.Case(...)` against the
+	 * consumer's expected tagged-union type (assign / return / annotated var). Array / dict /
+	 * cast / ternary consumer wiring beyond assign/return remains follow-up under #60.
+	 */
+	bool resolve_contextual_enum_case(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
+	bool contextual_enum_case_awaits_expected_type(BSParser::ExpressionNode *p_expression);
+	void register_contextual_enum_case(BSParser::ExpressionNode *p_expression);
+	void report_unqualified_contextual_enum_cases();
+	/**
+	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic slice): arity + payload
+	 * field compatibility + constant bake. Self/generic payload depth remains #60.
+	 */
+	void reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type);
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);

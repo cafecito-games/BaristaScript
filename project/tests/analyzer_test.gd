@@ -1772,7 +1772,7 @@ func _test_enum_case_match_and_case_binds(failures: PackedStringArray) -> void:
 
 func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 	# Foundry resolve_contextual_case_pattern_type / resolve_contextual_case_value_pattern
-	# + reduce_type_test contextual `.Case` @ c9d5e35 (#60 residual).
+	# + reduce_type_test contextual `.Case` + resolve_contextual_enum_case assign/return @ c9d5e35.
 	var probe := BaristaScriptAnalyzerProbe.new()
 
 	var match_payload := _src_class("CtxMatchPayload extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\t.Move(dx, dy):\n\t\t\treturn dx + dy\n\t\t_:\n\t\t\treturn 0\n")
@@ -1861,11 +1861,66 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 	var is_quit_ok_report: Dictionary = probe.analyze_source(is_quit_ok, "res://tests/ctx_is_quit_ok.barista")
 	_expect(failures, is_quit_ok_report.get("valid", false) == true, "is .Quit contextual tag test is valid")
 
+	# Foundry resolve_contextual_enum_case @ c9d5e35: expression-position assign/return construction.
+	var var_ok := _src_class("CtxVarOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle() -> void:\n\tvar idle: Message = .Quit\n\tvar moved: Message = .Move(1, 2)\n")
+	var var_ok_report: Dictionary = probe.analyze_source(var_ok, "res://tests/ctx_var_ok.barista")
+	_expect(failures, var_ok_report.get("valid", false) == true, "annotated var .Quit / .Move construction is valid")
+
+	var assign_ok := _src_class("CtxAssignOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nvar member: Message = Message.Quit\nfunc handle() -> void:\n\tvar local: Message = Message.Quit\n\tlocal = .Move(3, 4)\n\tmember = .Quit\n")
+	var assign_ok_report: Dictionary = probe.analyze_source(assign_ok, "res://tests/ctx_assign_ok.barista")
+	_expect(failures, assign_ok_report.get("valid", false) == true, "assignment RHS .Case construction is valid")
+
+	var return_ok := _src_class("CtxReturnOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc make_quit() -> Message:\n\treturn .Quit\nfunc make_move() -> Message:\n\treturn .Move(5, 6)\n")
+	var return_ok_report: Dictionary = probe.analyze_source(return_ok, "res://tests/ctx_return_ok.barista")
+	_expect(failures, return_ok_report.get("valid", false) == true, "return .Case construction is valid")
+
+	var param_default_ok := _src_class("CtxParamDefaultOk extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(msg: Message = .Quit) -> Message:\n\treturn msg\n")
+	var param_default_ok_report: Dictionary = probe.analyze_source(param_default_ok, "res://tests/ctx_param_default_ok.barista")
+	_expect(failures, param_default_ok_report.get("valid", false) == true, "parameter default .Quit construction is valid")
+
+	var untyped := _src_class("CtxUntyped extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle() -> void:\n\tvar inferred = .Quit\n")
+	var untyped_report: Dictionary = probe.analyze_source(untyped, "res://tests/ctx_untyped.barista")
+	_expect(failures, untyped_report.get("valid", true) == false, "untyped .Quit without expected union is invalid")
+	var saw_annotate := false
+	for message in untyped_report.get("errors", PackedStringArray()):
+		if 'needs an expected tagged-union type; annotate the target' in message:
+			saw_annotate = true
+	_expect(failures, saw_annotate, "untyped contextual construction annotate-target diagnostic")
+
+	var wrong_expected := _src_class("CtxWrongExpected extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle() -> void:\n\tvar counter: int = .Quit\n")
+	var wrong_expected_report: Dictionary = probe.analyze_source(wrong_expected, "res://tests/ctx_wrong_expected.barista")
+	_expect(failures, wrong_expected_report.get("valid", true) == false, ".Quit into int expected type is invalid")
+	var saw_expects := false
+	for message in wrong_expected_report.get("errors", PackedStringArray()):
+		if 'needs an expected tagged-union type, but this position expects "int"' in message:
+			saw_expects = true
+	_expect(failures, saw_expects, "non-union expected-type contextual construction diagnostic")
+
+	var payload_form := _src_class("CtxPayloadForm extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle() -> void:\n\tvar bad: Message = .Move\n")
+	var payload_form_report: Dictionary = probe.analyze_source(payload_form, "res://tests/ctx_payload_form.barista")
+	_expect(failures, payload_form_report.get("valid", true) == false, "bare .Move construction is invalid")
+	var saw_payload_form := false
+	for message in payload_form_report.get("errors", PackedStringArray()):
+		if 'carries a payload and must be constructed' in message:
+			saw_payload_form = true
+	_expect(failures, saw_payload_form, "bare .Move construction payload-form diagnostic")
+
+	var arity_bad := _src_class("CtxConstructArity extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle() -> void:\n\tvar bad: Message = .Move(1)\n")
+	var arity_bad_report: Dictionary = probe.analyze_source(arity_bad, "res://tests/ctx_construct_arity.barista")
+	_expect(failures, arity_bad_report.get("valid", true) == false, ".Move arity mismatch construction is invalid")
+	var saw_construct_arity := false
+	for message in arity_bad_report.get("errors", PackedStringArray()):
+		if 'expects 2 argument(s), but 1 were given' in message:
+			saw_construct_arity = true
+	_expect(failures, saw_construct_arity, "contextual construction payload arity diagnostic")
+
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
 	var validate_report: Dictionary = probe.validate_source(match_payload, "res://tests/ctx_match_validate.barista", true)
 	_expect(failures, validate_report.get("valid", false) == true, "contextual match remains valid under validate()")
 	_expect(failures, probe.is_semantically_valid(match_payload, "res://tests/ctx_match_is_valid.barista"),
 		"contextual match remains valid under is_semantically_valid()")
+	_expect(failures, probe.is_semantically_valid(var_ok, "res://tests/ctx_var_is_valid.barista"),
+		"contextual assign construction remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for contextual case")

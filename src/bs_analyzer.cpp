@@ -10,7 +10,7 @@
 /*  unused private/signal surface, trait requirement / conformance        */
 /*  witness starter (#60 conformance TU), ENUM_CASE / case-bind /         */
 /*  container match pattern depth (#60), contextual `.Case` match / `is`  */
-/*  qualification (#60).                                                  */
+/*  qualification (#60), expression-position `.Case` assign/return (#60). */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -1133,6 +1133,23 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 	// Attribute call: `receiver.method(...)` — signal.emit and member-method shapes.
 	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
 		BSParser::SubscriptNode *subscript = static_cast<BSParser::SubscriptNode *>(p_call->callee);
+		if (subscript != nullptr && subscript->base == nullptr) {
+			if (subscript->is_contextual_enum_case) {
+				// Foundry @ c9d5e35: contextual `.Case(...)` waits for the consumer's expected type.
+				if (p_call->function_name == StringName() && subscript->attribute != nullptr) {
+					p_call->function_name = subscript->attribute->name;
+				}
+				register_contextual_enum_case(p_call);
+				BSParser::DataType call_type;
+				call_type.kind = BSParser::DataType::VARIANT;
+				p_call->set_datatype(call_type);
+				return;
+			}
+			BSParser::DataType call_type;
+			call_type.kind = BSParser::DataType::VARIANT;
+			p_call->set_datatype(call_type);
+			return;
+		}
 		if (subscript != nullptr && subscript->is_attribute && subscript->attribute != nullptr) {
 			reduce_expression(subscript->base);
 			const bool is_self = subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF;
@@ -1261,6 +1278,13 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 
 void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 	if (p_subscript == nullptr) {
+		return;
+	}
+	if (p_subscript->base == nullptr) {
+		if (p_subscript->is_contextual_enum_case) {
+			// Foundry @ c9d5e35: payload-less `.Quit` waits for the consumer's expected type.
+			register_contextual_enum_case(p_subscript);
+		}
 		return;
 	}
 	reduce_expression(p_subscript->base);
@@ -1862,6 +1886,257 @@ bool BSAnalyzer::resolve_contextual_case_value_pattern(BSParser::ExpressionNode 
 	return true;
 }
 
+// Foundry contextual_enum_case_reference @ c9d5e35: `.Quit` is a bare subscript; `.Move(1, 2)`
+// is that subscript with a call suffix.
+static BSParser::SubscriptNode *_contextual_enum_case_reference(BSParser::ExpressionNode *p_expression, BSParser::CallNode **r_call) {
+	*r_call = nullptr;
+	if (p_expression == nullptr) {
+		return nullptr;
+	}
+	if (p_expression->type == BSParser::Node::CALL) {
+		BSParser::CallNode *call = static_cast<BSParser::CallNode *>(p_expression);
+		if (!call->is_contextual_enum_case || call->callee == nullptr || call->callee->type != BSParser::Node::SUBSCRIPT) {
+			return nullptr;
+		}
+		*r_call = call;
+		return static_cast<BSParser::SubscriptNode *>(call->callee);
+	}
+	if (p_expression->type == BSParser::Node::SUBSCRIPT) {
+		BSParser::SubscriptNode *reference = static_cast<BSParser::SubscriptNode *>(p_expression);
+		return reference->is_contextual_enum_case ? reference : nullptr;
+	}
+	return nullptr;
+}
+
+void BSAnalyzer::register_contextual_enum_case(BSParser::ExpressionNode *p_expression) {
+	reduced_contextual_enum_cases.push_back(p_expression);
+}
+
+bool BSAnalyzer::contextual_enum_case_awaits_expected_type(BSParser::ExpressionNode *p_expression) {
+	if (p_expression == nullptr) {
+		return false;
+	}
+	if (p_expression->type == BSParser::Node::TERNARY_OPERATOR) {
+		BSParser::TernaryOpNode *ternary = static_cast<BSParser::TernaryOpNode *>(p_expression);
+		return contextual_enum_case_awaits_expected_type(ternary->true_expr) ||
+				contextual_enum_case_awaits_expected_type(ternary->false_expr);
+	}
+	BSParser::CallNode *call = nullptr;
+	return _contextual_enum_case_reference(p_expression, &call) != nullptr &&
+			!resolved_contextual_enum_cases.has(p_expression);
+}
+
+void BSAnalyzer::report_unqualified_contextual_enum_cases() {
+	for (BSParser::ExpressionNode *expression : reduced_contextual_enum_cases) {
+		resolve_contextual_enum_case(expression, BSParser::DataType());
+	}
+	reduced_contextual_enum_cases.clear();
+}
+
+void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type) {
+	// Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic slice): arity, payload
+	// field compatibility, nested contextual shorthand qualification, and constant bake.
+	if (p_call == nullptr) {
+		return;
+	}
+	call_site_validation.reject_named_call_arguments(p_call);
+
+	const StringName case_name = p_call->function_name != StringName()
+			? p_call->function_name
+			: (p_call->callee != nullptr && p_call->callee->type == BSParser::Node::SUBSCRIPT &&
+									  static_cast<BSParser::SubscriptNode *>(p_call->callee)->attribute != nullptr
+							  ? static_cast<BSParser::SubscriptNode *>(p_call->callee)->attribute->name
+							  : StringName());
+	const BSParser::DataType::EnumCasePayload *payload = p_enum_meta_type.get_enum_case_payload(case_name);
+	ERR_FAIL_NULL(payload);
+
+	const int64_t *tag = p_enum_meta_type.enum_values.getptr(case_name);
+	p_call->is_enum_case_construction = true;
+	p_call->enum_case_tag = tag != nullptr ? *tag : 0;
+	p_call->function_name = case_name;
+
+	const BSParser::DataType case_value_type = type_from_metatype(p_enum_meta_type);
+	const int expected_count = payload->field_types.size();
+	if (p_call->arguments.size() != expected_count) {
+		push_error(vformat(R"*(Enum case "%s.%s" expects %d argument(s), but %d were given.)*",
+						   p_enum_meta_type.enum_type, case_name, expected_count, p_call->arguments.size()),
+				p_call);
+		p_call->set_datatype(case_value_type);
+		return;
+	}
+
+	bool payload_is_bakeable = true;
+	for (int i = 0; i < expected_count; i++) {
+		const BSParser::DataType &field_type = payload->field_types[i];
+		BSParser::ExpressionNode *argument = p_call->arguments[i];
+		if (argument == nullptr) {
+			payload_is_bakeable = false;
+			continue;
+		}
+		// Nested shorthand in payload position takes its union from the field type.
+		resolve_contextual_enum_case(argument, field_type);
+		const BSParser::DataType argument_type = argument->get_datatype();
+		if (!argument_type.is_set()) {
+			payload_is_bakeable = false;
+			continue;
+		}
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = true;
+		options.strict_dynamic = strict_dynamic_checks;
+		options.strict_null = strict_null_checks;
+		if (argument->is_constant) {
+			options.constant_source_value = &argument->reduced_value;
+		}
+		if (!BSTypeCompatibility::check(field_type, argument_type, options).compatible) {
+			push_error(vformat(R"*(Invalid argument %d for enum case "%s.%s": should be "%s" but is "%s".)*",
+							   i + 1, p_enum_meta_type.enum_type, case_name, field_type.to_string(), argument_type.to_string()),
+					argument);
+			payload_is_bakeable = false;
+			continue;
+		}
+		if (!argument->is_constant) {
+			payload_is_bakeable = false;
+		}
+	}
+
+	if (payload_is_bakeable) {
+		for (int i = 0; i < expected_count && payload_is_bakeable; i++) {
+			const BSParser::ExpressionNode *argument = p_call->arguments[i];
+			const Variant &value = argument->reduced_value;
+			switch (value.get_type()) {
+				case Variant::OBJECT:
+					payload_is_bakeable = false;
+					break;
+				case Variant::ARRAY:
+					payload_is_bakeable = static_cast<Array>(value).is_read_only();
+					break;
+				case Variant::DICTIONARY:
+					payload_is_bakeable = static_cast<Dictionary>(value).is_read_only();
+					break;
+				default:
+					break;
+			}
+			const BSParser::DataType &field_type = payload->field_types[i];
+			if (field_type.kind == BSParser::DataType::BUILTIN && field_type.has_container_element_types()) {
+				payload_is_bakeable = false;
+			} else if (field_type.kind != BSParser::DataType::VARIANT && field_type.kind != BSParser::DataType::ENUM &&
+					field_type.kind != BSParser::DataType::BUILTIN) {
+				payload_is_bakeable = false;
+			}
+		}
+	}
+	if (payload_is_bakeable) {
+		Array case_value;
+		case_value.push_back(p_call->enum_case_tag);
+		for (int i = 0; i < expected_count; i++) {
+			case_value.push_back(p_call->arguments[i]->reduced_value);
+		}
+		case_value.make_read_only();
+		p_call->is_constant = true;
+		p_call->reduced_value = case_value;
+	}
+
+	p_call->set_datatype(case_value_type);
+}
+
+bool BSAnalyzer::resolve_contextual_enum_case(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
+	// Foundry resolve_contextual_enum_case @ c9d5e35: qualify expression-position `.Case`.
+	if (p_expression != nullptr && p_expression->type == BSParser::Node::TERNARY_OPERATOR) {
+		BSParser::TernaryOpNode *ternary = static_cast<BSParser::TernaryOpNode *>(p_expression);
+		const bool true_awaits = contextual_enum_case_awaits_expected_type(ternary->true_expr);
+		const bool false_awaits = contextual_enum_case_awaits_expected_type(ternary->false_expr);
+		if (!true_awaits && !false_awaits) {
+			return false;
+		}
+		if (true_awaits) {
+			resolve_contextual_enum_case(ternary->true_expr, p_expected_type);
+		}
+		if (false_awaits) {
+			resolve_contextual_enum_case(ternary->false_expr, p_expected_type);
+		}
+		return true;
+	}
+
+	BSParser::CallNode *call = nullptr;
+	BSParser::SubscriptNode *reference = _contextual_enum_case_reference(p_expression, &call);
+	if (reference == nullptr) {
+		return false;
+	}
+
+	if (resolved_contextual_enum_cases.has(p_expression)) {
+		return true;
+	}
+	resolved_contextual_enum_cases.insert(p_expression);
+
+	BSParser::DataType unqualified_type;
+	unqualified_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	unqualified_type.kind = BSParser::DataType::VARIANT;
+
+	if (reference->attribute == nullptr) {
+		p_expression->set_datatype(unqualified_type);
+		return true;
+	}
+	const StringName case_name = reference->attribute->name;
+
+	BSParser::DataType enum_meta_type;
+	if (!tagged_union_metatype_from_expected_type(p_expected_type, p_expression, enum_meta_type)) {
+		const String case_suffix = call != nullptr ? "(...)" : "";
+		const bool expected_type_is_nameable = p_expected_type.is_set() && !p_expected_type.has_no_type() &&
+				p_expected_type.is_hard_type() && !p_expected_type.is_unresolved_inference_fallback;
+		if (expected_type_is_nameable) {
+			const String qualified_example = vformat(R"(Result[int, String].%s%s)", case_name, case_suffix);
+			push_error(vformat(R"*(Contextual shorthand ".%s" needs an expected tagged-union type, but this position expects "%s"; spell the case with its union, e.g. "%s".)*",
+							   case_name, p_expected_type.to_string_diagnostic(), qualified_example),
+					p_expression);
+			p_expression->set_datatype(unqualified_type);
+			return true;
+		}
+		const String annotated_example = vformat(R"(var x: Result[int, String] = .%s%s)", case_name, case_suffix);
+		push_error(vformat(R"*(Contextual shorthand ".%s" needs an expected tagged-union type; annotate the target, e.g. "%s".)*",
+						   case_name, annotated_example),
+				p_expression);
+		p_expression->set_datatype(unqualified_type);
+		return true;
+	}
+
+	if (!enum_meta_type.enum_values.has(case_name)) {
+		push_error(vformat(R"(Tagged union "%s" has no case "%s".)", enum_meta_type.enum_type, case_name), p_expression);
+		p_expression->set_datatype(unqualified_type);
+		return true;
+	}
+
+	const BSParser::DataType case_value_type = type_from_metatype(enum_meta_type);
+	const bool carries_payload = enum_meta_type.get_enum_case_payload(case_name) != nullptr;
+
+	if (call == nullptr) {
+		if (carries_payload) {
+			push_error(vformat(R"*(Enum case "%s.%s" carries a payload and must be constructed, e.g. ".%s(...)".)*",
+							   enum_meta_type.enum_type, case_name, case_name),
+					p_expression);
+			p_expression->set_datatype(case_value_type);
+			return true;
+		}
+		reference->attribute->set_datatype(case_value_type);
+		reference->set_datatype(case_value_type);
+		reference->is_constant = true;
+		reference->reduced_value = _tagged_union_case_singleton(enum_meta_type.enum_values[case_name]);
+		return true;
+	}
+
+	if (!carries_payload) {
+		push_error(vformat(R"*(Enum case "%s.%s" carries no payload, so it is written as a value, e.g. ".%s".)*",
+						   enum_meta_type.enum_type, case_name, case_name),
+				p_expression);
+		p_expression->set_datatype(case_value_type);
+		return true;
+	}
+
+	reference->attribute->set_datatype(case_value_type);
+	reference->set_datatype(enum_meta_type);
+	reduce_call_enum_case_construction(call, enum_meta_type);
+	return true;
+}
+
 void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root) {
 	(void)p_is_root;
 	if (p_expression == nullptr || p_expression->reduced) {
@@ -1917,6 +2192,10 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			}
 			// Foundry: assignment clears prior narrowing for the assignee (new value may not satisfy it).
 			flow_finality.clear_flow_narrowing(assignment->assignee);
+			if (assignment->assignee != nullptr && assignment->assigned_value != nullptr) {
+				// Contextual `.Case` on the RHS takes its union from the assignee (@ c9d5e35).
+				resolve_contextual_enum_case(assignment->assigned_value, assignment->assignee->get_datatype());
+			}
 			if (assignment->assigned_value != nullptr) {
 				assignment->set_datatype(assignment->assigned_value->get_datatype());
 			}
@@ -1946,6 +2225,10 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				declared = datatype_from_type_node(variable->datatype_specifier);
 				variable->set_datatype(declared);
 			}
+			if (variable->initializer != nullptr) {
+				// Foundry assignable path: contextual `.Case` takes its union from the declared type.
+				resolve_contextual_enum_case(variable->initializer, declared);
+			}
 			if (declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
 				BSTypeCompatibility::Options options;
 				options.allow_implicit_conversion = true;
@@ -1961,10 +2244,51 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				}
 			}
 		} break;
+		case BSParser::Node::CONSTANT: {
+			BSParser::ConstantNode *constant = static_cast<BSParser::ConstantNode *>(p_node);
+			if (constant->initializer != nullptr) {
+				reduce_expression(constant->initializer);
+			}
+			BSParser::DataType declared = constant->get_datatype();
+			if (constant->datatype_specifier != nullptr) {
+				declared = datatype_from_type_node(constant->datatype_specifier);
+				constant->set_datatype(declared);
+			}
+			if (constant->initializer != nullptr) {
+				resolve_contextual_enum_case(constant->initializer, declared);
+				if ((!declared.is_set() || declared.is_variant()) && constant->initializer->is_constant &&
+						!constant->initializer->get_datatype().is_set()) {
+					constant->initializer->set_datatype(type_from_variant(constant->initializer->reduced_value));
+					constant->set_datatype(constant->initializer->get_datatype());
+				} else if ((!declared.is_set() || declared.is_variant()) && constant->initializer->get_datatype().is_set()) {
+					constant->set_datatype(constant->initializer->get_datatype());
+				}
+			}
+			if (declared.is_set() && !declared.is_variant() && constant->initializer != nullptr && constant->initializer->get_datatype().is_set()) {
+				BSTypeCompatibility::Options options;
+				options.allow_implicit_conversion = true;
+				options.strict_dynamic = strict_dynamic_checks;
+				options.strict_null = strict_null_checks;
+				if (constant->initializer->is_constant) {
+					options.constant_source_value = &constant->initializer->reduced_value;
+				}
+				if (!BSTypeCompatibility::check(declared, constant->initializer->get_datatype(), options).compatible) {
+					push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+									   constant->initializer->get_datatype().to_string(), declared.to_string()),
+							constant);
+				}
+			}
+		} break;
 		case BSParser::Node::RETURN: {
 			BSParser::ReturnNode *ret = static_cast<BSParser::ReturnNode *>(p_node);
 			if (ret->return_value != nullptr) {
 				reduce_expression(ret->return_value);
+				// Foundry: contextual `.Case` return takes its union from the function return type.
+				BSParser::DataType expected_return;
+				if (current_function != nullptr) {
+					expected_return = current_function->get_datatype();
+				}
+				resolve_contextual_enum_case(ret->return_value, expected_return);
 			}
 		} break;
 		case BSParser::Node::IF: {
@@ -2149,6 +2473,7 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 					}
 					if (member.variable->initializer != nullptr) {
 						reduce_expression(member.variable->initializer);
+						resolve_contextual_enum_case(member.variable->initializer, member.variable->get_datatype());
 					}
 				}
 				break;
@@ -2160,9 +2485,15 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 							annotation->apply(parser, member.constant, current_class);
 						}
 					}
+					if (member.constant->datatype_specifier != nullptr) {
+						member.constant->set_datatype(datatype_from_type_node(member.constant->datatype_specifier));
+					}
 					if (member.constant->initializer != nullptr) {
 						reduce_expression(member.constant->initializer);
-						if (member.constant->initializer->is_constant) {
+						resolve_contextual_enum_case(member.constant->initializer, member.constant->get_datatype());
+						if (member.constant->initializer->is_constant &&
+								(!member.constant->get_datatype().is_set() || member.constant->get_datatype().is_variant()) &&
+								!member.constant->initializer->get_datatype().is_set()) {
 							member.constant->initializer->set_datatype(type_from_variant(member.constant->initializer->reduced_value));
 						}
 					}
@@ -2598,6 +2929,8 @@ BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSP
 
 Error BSAnalyzer::run_phase_body_expression_callable_signal() {
 	analyze_class_body(parser->get_tree());
+	// Foundry @ c9d5e35: shorthands no consumer qualified sat in a no-expected-type position.
+	report_unqualified_contextual_enum_cases();
 	mark_phase(AnalyzerPhase::BODY_EXPRESSION_CALLABLE_SIGNAL);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
@@ -2624,6 +2957,8 @@ Error BSAnalyzer::run_phase_flow_finality() {
 
 Error BSAnalyzer::run_phase_conformance_witness_body() {
 	resolve_conformance_bodies(parser->get_tree());
+	// Foundry @ c9d5e35: witness bodies need their own unqualified-shorthand sweep.
+	report_unqualified_contextual_enum_cases();
 	mark_phase(AnalyzerPhase::CONFORMANCE_WITNESS_BODY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
