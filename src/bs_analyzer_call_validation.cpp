@@ -184,8 +184,13 @@ void BSAnalyzer::CallSiteValidationContext::validate_call_arg(const List<BSParse
 			expected_type = element_type;
 		}
 		if (expected_type == nullptr) {
+			// A vararg slot past the declared parameters, and a default the analyzer synthesized, carry
+			// no parameter type. A contextual case shorthand written there has no union to take.
+			analyzer->resolve_contextual_enum_case(p_call->arguments[i], BSParser::DataType());
 			continue;
 		}
+		// A contextual case shorthand in argument position takes its union from the parameter type.
+		analyzer->qualify_contextual_enum_case_consumer(p_call->arguments[i], *expected_type);
 		validate_argument_against_type(*expected_type, p_call->arguments[i], i + 1, p_call->function_name, p_call);
 	}
 }

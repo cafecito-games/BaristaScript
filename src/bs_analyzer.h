@@ -1,6 +1,14 @@
 /**************************************************************************/
 /*  bs_analyzer.h                                                         */
 /*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
+/**************************************************************************/
+/*  bs_analyzer.h                                                         */
+/*                                                                        */
 /*  M3 analyzer port seam (issue #43 / #57 / #60). Staged resolve_*        */
 /*  mirror Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body     */
 /*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
@@ -13,6 +21,7 @@
 /*  ENUM_CASE / case-bind / container match pattern depth (#60),           */
 /*  contextual `.Case` match / `is` qualification (#60),                  */
 /*  expression-position `.Case` construction for assign/return (#60),     */
+/*  array/dict/cast/ternary `.Case` consumer finalization (#60),          */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -310,6 +319,8 @@ private:
 	void reduce_array(BSParser::ArrayNode *p_array);
 	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);
 	void reduce_ternary(BSParser::TernaryOpNode *p_ternary);
+	/** Foundry reduce_cast @ c9d5e35: cast type qualifies contextual `.Case` in operand position. */
+	void reduce_cast(BSParser::CastNode *p_cast);
 	/** Foundry reduce_type_test (@ c9d5e35): resolve `is T` + case-bind payload typing. */
 	void reduce_type_test(BSParser::TypeTestNode *p_type_test);
 	/** Foundry resolve_type_test_case_binds @ c9d5e35: type `is Message.Move(x, y)` binds. */
@@ -352,13 +363,23 @@ private:
 	bool resolve_contextual_case_value_pattern(BSParser::ExpressionNode *p_expression, const BSParser::DataType *p_match_test_type, bool p_subject_errored = false);
 	/**
 	 * Foundry resolve_contextual_enum_case @ c9d5e35: qualify `.Case` / `.Case(...)` against the
-	 * consumer's expected tagged-union type (assign / return / annotated var). Array / dict /
-	 * cast / ternary consumer wiring beyond assign/return remains follow-up under #60.
+	 * consumer's expected tagged-union type (assign / return / annotated var / cast / call arg /
+	 * container element via update_container_literal_element_types).
 	 */
 	bool resolve_contextual_enum_case(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
 	bool contextual_enum_case_awaits_expected_type(BSParser::ExpressionNode *p_expression);
 	void register_contextual_enum_case(BSParser::ExpressionNode *p_expression);
 	void report_unqualified_contextual_enum_cases();
+	/**
+	 * Foundry update_container_literal_element_types @ c9d5e35 (contextual-`.Case` slice): push the
+	 * consumer's Array/Dictionary element types into literal elements so nested shorthands resolve.
+	 * Full Self / gradual / type-handle element checking remains follow-up under #60.
+	 */
+	bool update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
+	void update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type);
+	void update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type);
+	/** resolve_contextual_enum_case + container-literal element descent for one consumer site. */
+	void qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
 	/**
 	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic slice): arity + payload
 	 * field compatibility + constant bake. Self/generic payload depth remains #60.
