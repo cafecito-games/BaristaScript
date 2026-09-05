@@ -2096,6 +2096,12 @@ func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 	var default_survival_report: Dictionary = probe.analyze_source(default_survival, "res://tests/callable_bind_default_survival.barista")
 	_expect(failures, default_survival_report.get("valid", false) == true, "bind preserves trailing default survival arity")
 
+	# Foundry default-survival: Node bound into a trailing Node slot may shift onto a leading
+	# Node2D parameter via allows_runtime_narrowing, keeping the trailing default callable.
+	var narrow_survival := _src_class("CallableBindNarrowSurvival extends Node\nfunc takes(narrow: Node2D, wide: Node = null) -> int:\n\treturn 1\nfunc test() -> int:\n\tvar n: Node = Node2D.new()\n\treturn takes.bind(n).call()\n")
+	var narrow_survival_report: Dictionary = probe.analyze_source(narrow_survival, "res://tests/callable_bind_narrow_survival.barista")
+	_expect(failures, narrow_survival_report.get("valid", false) == true, "bind preserves default survival under native subtype narrowing")
+
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
 	var validate_report: Dictionary = probe.validate_source(bind_call_ok, "res://tests/callable_bind_validate.barista", true)

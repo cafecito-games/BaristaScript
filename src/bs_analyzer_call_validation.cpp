@@ -903,7 +903,10 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		if (argument_type.is_variant() || !argument_type.is_hard_type()) {
 			return analyzer->strict_dynamic_checks && argument_type.is_variant();
 		}
-		return !BSTypeCompatibility::is_compatible(p_expected_type, argument_type, true);
+		// Foundry @ c9d5e35: conflict only when incompatible and not runtime-narrowable, so
+		// native subtype binds can still shift trailing defaults (default_survival_for_bind).
+		return !BSTypeCompatibility::is_compatible(p_expected_type, argument_type, true) &&
+				!BSTypeCompatibility::allows_runtime_narrowing(p_expected_type, argument_type);
 	};
 
 	auto bound_arguments_reaching_target = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments) -> int {
