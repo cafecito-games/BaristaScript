@@ -408,7 +408,7 @@
 			],
 			"non_mappings": [
 				"core/variant/container_type_validate.h, which Foundry extended with numeric_type and type_arguments, has no godot-cpp equivalent and is not mapped here; BaristaScript owns its own type descriptor (D2).",
-				"Variant::get_validated_operator_evaluator / get_operator_return_type are core-only; BSVariantOperators in bs_platform.h recreates them via variant_get_ptr_operator_evaluator + Variant::evaluate for analyzer get_operation_type."
+				"Variant::get_validated_operator_evaluator / get_operator_return_type are core-only; BSVariantOperators (declared in bs_platform.h, implemented in bs_platform_shims.cpp) recreates them via variant_get_ptr_operator_evaluator + Variant::evaluate for analyzer get_operation_type."
 			]
 		},
 		{
