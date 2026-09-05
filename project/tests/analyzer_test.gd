@@ -1637,7 +1637,7 @@ func _test_union_store_carrier_select(failures: PackedStringArray) -> void:
 	# prefer exact alternatives; converting alternatives need a numeric store-carrier conversion.
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	# Exact alternative preferred over a converting one (int before float conversion).
+	# Exact-path validity: int fits int|float without conversion (selection order not asserted here).
 	var exact_prefers_int := "class_name UnionExactPrefersInt extends Node\nfunc take(n: int) -> void:\n\tvar _x: int | float = n\n"
 	var exact_prefers_int_report: Dictionary = probe.analyze_source(exact_prefers_int, "res://tests/union_exact_prefers_int.barista")
 	_expect(failures, exact_prefers_int_report.get("valid", false) == true, "int → int|float exact alternative is valid")
