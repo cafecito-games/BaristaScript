@@ -47,11 +47,55 @@ runs:
         version: ${{ inputs.em-version }}
         no-cache: true
 
-    - name: Setup MinGW
+    # Chocolatey's community feed occasionally returns 503 while installing the
+    # pinned mingw package. Retry a few times before failing the job — the
+    # egor-tensin/setup-mingw action itself has no retry loop.
+    - name: Setup MinGW (attempt 1)
+      id: setup-mingw-1
       if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw'
+      continue-on-error: true
       uses: egor-tensin/setup-mingw@v2
       with:
         version: ${{ inputs.mingw-version }}
+
+    - name: Wait before MinGW retry
+      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure'
+      shell: pwsh
+      run: Start-Sleep -Seconds 20
+
+    - name: Setup MinGW (attempt 2)
+      id: setup-mingw-2
+      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure'
+      continue-on-error: true
+      uses: egor-tensin/setup-mingw@v2
+      with:
+        version: ${{ inputs.mingw-version }}
+
+    - name: Wait before MinGW final retry
+      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure' && steps.setup-mingw-2.outcome == 'failure'
+      shell: pwsh
+      run: Start-Sleep -Seconds 40
+
+    - name: Setup MinGW (attempt 3)
+      id: setup-mingw-3
+      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure' && steps.setup-mingw-2.outcome == 'failure'
+      uses: egor-tensin/setup-mingw@v2
+      with:
+        version: ${{ inputs.mingw-version }}
+
+    - name: Confirm MinGW setup
+      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw'
+      shell: pwsh
+      run: |
+        $ok = ($env:SETUP_MINGW_1 -eq 'success') -or ($env:SETUP_MINGW_2 -eq 'success') -or ($env:SETUP_MINGW_3 -eq 'success')
+        if (-not $ok) {
+          throw "MinGW setup failed after 3 attempts (Chocolatey/community feed)."
+        }
+        Write-Host "MinGW setup succeeded."
+      env:
+        SETUP_MINGW_1: ${{ steps.setup-mingw-1.outcome }}
+        SETUP_MINGW_2: ${{ steps.setup-mingw-2.outcome }}
+        SETUP_MINGW_3: ${{ steps.setup-mingw-3.outcome }}
 
     - name: Setup SCons
       if: inputs.buildtool == 'scons'
