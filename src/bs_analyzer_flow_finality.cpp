@@ -4,8 +4,8 @@
 /*  Hard fork of Foundry `modules/foundry_script/fs_analyzer_flow_finality */
 /*  .cpp` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6. FS* -> BS*; engine  */
 /*  contact through bs_platform.h. LOCAL + INSTANCE + STATIC final        */
-/*  definite assignment + trait flattening for #60; if/while/assert       */
-/*  null-check + `is` type-test flow narrowing starter (#60).             */
+/*  definite assignment + trait flattening for #60; if/while/assert +     */
+/*  match-branch flow narrowing (#60).                                    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -1214,7 +1214,8 @@ void BSAnalyzer::FlowFinalityContext::analyze_final_definite_assignment_suite(co
 }
 
 // --- Flow narrowing (@ c9d5e35 fs_analyzer_flow_finality.cpp). Match-branch
-// narrowing and D1 numeric width subsumption remain follow-up under #60.
+// narrowing lands here; D1 numeric width subsumption and ENUM_CASE / case-bind
+// payload typing remain follow-up under #60.
 
 static bool _is_null_literal(const BSParser::ExpressionNode *p_expression) {
 	if (p_expression == nullptr || p_expression->type != BSParser::Node::LITERAL) {
@@ -1222,6 +1223,103 @@ static bool _is_null_literal(const BSParser::ExpressionNode *p_expression) {
 	}
 	const BSParser::LiteralNode *literal = static_cast<const BSParser::LiteralNode *>(p_expression);
 	return literal->value.get_type() == Variant::NIL;
+}
+
+static bool _match_pattern_is_null_literal(const BSParser::PatternNode *p_pattern) {
+	return p_pattern != nullptr &&
+			p_pattern->pattern_type == BSParser::PatternNode::PT_LITERAL &&
+			p_pattern->literal != nullptr &&
+			_is_null_literal(p_pattern->literal);
+}
+
+static bool _match_branch_accepts_null(const BSParser::MatchBranchNode *p_branch) {
+	if (p_branch == nullptr) {
+		return false;
+	}
+	if (p_branch->has_wildcard) {
+		return true;
+	}
+	for (const BSParser::PatternNode *pattern : p_branch->patterns) {
+		if (_match_pattern_is_null_literal(pattern)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool _match_pattern_type_narrowing(const BSParser::PatternNode *p_pattern, BSParser::DataType &r_type) {
+	if (p_pattern == nullptr) {
+		return false;
+	}
+
+	// A case pattern narrows the subject to the matched case, exactly like `is Message.Move(x, y)`.
+	if (p_pattern->pattern_type == BSParser::PatternNode::PT_ENUM_CASE) {
+		if (!p_pattern->case_datatype.is_set() || !p_pattern->case_datatype.is_tagged_union_type()) {
+			return false;
+		}
+		r_type = p_pattern->case_datatype;
+		r_type.is_meta_type = false;
+		return true;
+	}
+
+	if (p_pattern->pattern_type != BSParser::PatternNode::PT_EXPRESSION) {
+		return false;
+	}
+
+	const BSParser::ExpressionNode *expression = p_pattern->expression;
+	if (expression == nullptr) {
+		return false;
+	}
+
+	// `value is T` against the match subject narrows exactly like the same test in a condition.
+	if (p_pattern->is_subject_type_test) {
+		const BSParser::TypeTestNode *type_test = static_cast<const BSParser::TypeTestNode *>(expression);
+		if (!type_test->test_datatype.is_set()) {
+			return false;
+		}
+
+		r_type = type_test->test_datatype;
+		r_type.is_meta_type = false;
+		return true;
+	}
+
+	if (expression->type == BSParser::Node::TYPE_TEST) {
+		return false;
+	}
+
+	if (!expression->is_constant && !expression->get_datatype().is_meta_type) {
+		return false;
+	}
+
+	const BSParser::DataType &pattern_type = expression->get_datatype();
+	if (!pattern_type.is_set()) {
+		return false;
+	}
+
+	switch (pattern_type.kind) {
+		case BSParser::DataType::CLASS:
+		case BSParser::DataType::NATIVE:
+		case BSParser::DataType::SCRIPT:
+			r_type = pattern_type;
+			r_type.is_meta_type = false;
+			return true;
+		case BSParser::DataType::BUILTIN:
+			if (pattern_type.builtin_type == Variant::OBJECT) {
+				r_type = pattern_type;
+				return true;
+			}
+			break;
+		default:
+			break;
+	}
+	return false;
+}
+
+static bool _match_branch_type_narrowing(const BSParser::MatchBranchNode *p_branch, BSParser::DataType &r_type) {
+	if (p_branch == nullptr || p_branch->has_wildcard || p_branch->patterns.size() != 1) {
+		return false;
+	}
+	return _match_pattern_type_narrowing(p_branch->patterns[0], r_type);
 }
 
 // D1-trimmed: exact alternative identity only (no fixed-width numeric ranges).
@@ -1303,6 +1401,27 @@ void BSAnalyzer::FlowFinalityContext::apply_flow_narrowing(const BSParser::Ident
 	BSParser::DataType narrowed_type = p_type;
 	narrowed_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
 	flow_narrowed_types[key] = narrowed_type;
+}
+
+void BSAnalyzer::FlowFinalityContext::apply_match_branch_flow_narrowing(BSParser::ExpressionNode *p_match_test, BSParser::MatchBranchNode *p_match_branch) {
+	if (p_match_test == nullptr || p_match_test->type != BSParser::Node::IDENTIFIER || p_match_branch == nullptr) {
+		return;
+	}
+
+	BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(p_match_test);
+	if (flow_narrowing_key_from_identifier(identifier) == nullptr) {
+		return;
+	}
+
+	BSParser::DataType narrowed_type;
+	if (_match_branch_type_narrowing(p_match_branch, narrowed_type)) {
+		apply_flow_narrowing(identifier, narrowed_type);
+		return;
+	}
+
+	if (identifier->get_datatype().is_nullable && !_match_branch_accepts_null(p_match_branch)) {
+		apply_flow_narrowing(identifier);
+	}
 }
 
 void BSAnalyzer::FlowFinalityContext::clear_flow_narrowing(const BSParser::ExpressionNode *p_expression) {
