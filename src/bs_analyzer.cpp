@@ -1,6 +1,14 @@
 /**************************************************************************/
 /*  bs_analyzer.cpp                                                       */
 /*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
+/**************************************************************************/
+/*  bs_analyzer.cpp                                                       */
+/*                                                                        */
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
 /*  flow (#61), final DA, CallSiteValidationContext / connect-callable,   */
@@ -15,6 +23,7 @@
 /*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
 /*  Non-generic SelfFieldLeg + Self-contract RETURN assign/return (#60). */
 /*  Gradual Self-union admission + self_free union members (#60 residual). */
+/*  complete_self_referential_enum_type + specialize helpers (#60 residual). */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -2608,7 +2617,7 @@ void BSAnalyzer::resolve_type_test_case_binds(BSParser::TypeTestNode *p_type_tes
 		}
 		BSParser::DataType bind_type;
 		if (payload != nullptr && i < payload->field_types.size()) {
-			bind_type = payload->field_types[i];
+			bind_type = complete_self_referential_enum_type(payload->field_types[i]);
 		} else {
 			bind_type.kind = BSParser::DataType::VARIANT;
 			bind_type.type_source = BSParser::DataType::INFERRED;
@@ -2898,7 +2907,7 @@ void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_patte
 		BSParser::DataType field_type;
 		const BSParser::DataType *field_type_ptr = nullptr;
 		if (payload != nullptr && i < payload->field_types.size()) {
-			field_type = payload->field_types[i];
+			field_type = complete_self_referential_enum_type(payload->field_types[i]);
 			field_type_ptr = &field_type;
 		}
 		resolve_match_pattern(p_match_pattern->array[i], nullptr, field_type_ptr, p_subject_errored);
@@ -3676,9 +3685,9 @@ bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type,
 } // namespace
 
 void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type) {
-	// Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic SelfFieldLeg slice):
-	// spelling-aware `@Self` payload admission. Generic open-schema / type-argument bindings /
-	// complete_self_referential_enum_type / union-member collapse remain #60 residuals.
+	// Foundry reduce_call_enum_case_construction @ c9d5e35 (SelfFieldLeg + self-ref completion):
+	// spelling-aware `@Self` payload admission + complete_self_referential_enum_type on fields.
+	// open_union_members_collapse / full open-schema alternative admission remain #60 residuals.
 	if (p_call == nullptr) {
 		return;
 	}
@@ -3817,6 +3826,50 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 		return _substitute_self_type_parameter(p_field_type, declaring_self);
 	};
 
+	// Foundry open-schema + type-argument bindings @ c9d5e35. Non-generic unions leave
+	// bindings empty; generic fixtures remain M5-blocked at resolve_enum_values, but the
+	// specialize path is wired for when open payloads + arguments are present.
+	const BSParser::EnumNode *declaration = nullptr;
+	if (declaring_class != nullptr) {
+		if (declaring_class->is_enum_file) {
+			declaration = declaring_class->enum_file_decl;
+		} else if (declaring_class->has_member(p_enum_meta_type.enum_type)) {
+			const BSParser::ClassNode::Member member = declaring_class->get_member(p_enum_meta_type.enum_type);
+			if (member.type == BSParser::ClassNode::Member::ENUM) {
+				declaration = member.m_enum;
+			}
+		}
+	}
+	HashMap<StringName, BSParser::DataType> type_argument_bindings;
+	BSParser::DataType open_declaration_type;
+	if (declaration != nullptr && !declaration->type_parameters.is_empty()) {
+		type_argument_bindings = enum_type_argument_bindings(declaration, p_enum_meta_type.type_arguments);
+		if (!type_argument_bindings.is_empty()) {
+			open_declaration_type = declaration->get_datatype();
+		}
+	}
+	const auto open_payload_field = [&](const StringName &p_case_name, int p_index) -> const BSParser::DataType * {
+		if (!open_declaration_type.is_set()) {
+			return nullptr;
+		}
+		const BSParser::DataType::EnumCasePayload *open_payload = open_declaration_type.get_enum_case_payload(p_case_name);
+		if (open_payload == nullptr || p_index >= open_payload->field_types.size()) {
+			return nullptr;
+		}
+		return &open_payload->field_types[p_index];
+	};
+
+	// Foundry checked_payload_field_type @ c9d5e35: complete recursive shells after spelling /
+	// type-argument transform. open_union_members_collapse remains an explicit #60 residual.
+	const auto checked_payload_field_type = [&](int p_index, const BSParser::DataType &p_specialized_field) -> BSParser::DataType {
+		const BSParser::DataType *open_field = open_payload_field(case_name, p_index);
+		if (open_field == nullptr) {
+			return payload_field_type_for_spelling(complete_self_referential_enum_type(p_specialized_field));
+		}
+		return complete_self_referential_enum_type(
+				BSParser::DataType::substitute(payload_field_type_for_spelling(*open_field), type_argument_bindings));
+	};
+
 	BSParser::DataType case_value_type = type_from_metatype(p_enum_meta_type);
 	const int expected_count = payload->field_types.size();
 	if (p_call->arguments.size() != expected_count) {
@@ -3829,7 +3882,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 
 	bool payload_is_bakeable = true;
 	for (int i = 0; i < expected_count; i++) {
-		const BSParser::DataType field_type = payload_field_type_for_spelling(payload->field_types[i]);
+		const BSParser::DataType field_type = checked_payload_field_type(i, payload->field_types[i]);
 		BSParser::ExpressionNode *argument = p_call->arguments[i];
 		if (argument == nullptr) {
 			payload_is_bakeable = false;
@@ -3894,7 +3947,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 				default:
 					break;
 			}
-			const BSParser::DataType &field_type = payload->field_types[i];
+			const BSParser::DataType field_type = complete_self_referential_enum_type(payload->field_types[i]);
 			if (field_type.kind == BSParser::DataType::BUILTIN && field_type.has_container_element_types()) {
 				payload_is_bakeable = false;
 			} else if (field_type.kind != BSParser::DataType::VARIANT && field_type.kind != BSParser::DataType::ENUM &&

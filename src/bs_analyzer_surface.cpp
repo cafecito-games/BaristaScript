@@ -3,12 +3,14 @@
 /*                                                                        */
 /*  #60 class-body surface diagnostics. Ports unused-private /            */
 /*  unused-signal post-pass, built-in resolve_annotation,                 */
-/*  resolve_enum_values, same-file scope inheritance helpers, CLASS       */
-/*  inheritance member bind, and resolve_class_member with external       */
-/*  OwnerResolutionFailures / DependentResolutionFailureReplays /         */
-/*  ForeignAnalyzerVisibilityScope (@ c9d5e35). Class-phase INTERFACE/BODY*/
-/*  foreign recording/replay lives in analyze_class_interface/body        */
-/*  (`bs_analyzer.cpp`); ForeignAnalyzerVisibilityScope installs          */
+/*  resolve_enum_values, complete_self_referential_enum_type /            */
+/*  enum_type_argument_bindings / specialize_enum_type, same-file scope   */
+/*  inheritance helpers, CLASS inheritance member bind, and               */
+/*  resolve_class_member with external OwnerResolutionFailures /          */
+/*  DependentResolutionFailureReplays / ForeignAnalyzerVisibilityScope    */
+/*  (@ c9d5e35). Class-phase INTERFACE/BODY foreign recording/replay lives*/
+/*  in analyze_class_interface/body (`bs_analyzer.cpp`);                  */
+/*  ForeignAnalyzerVisibilityScope installs                               */
 /*  BSConformanceRegistry::ScopedVisibility for owner ConformanceVisibility.*/
 /*  FS* -> BS*; engine contact through bs_platform.h.                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -258,6 +260,94 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 	p_enum->dictionary = dictionary;
 	current_class = previous_class;
 	return enum_type;
+}
+
+// Foundry complete_self_referential_enum_type @ c9d5e35 (`fs_analyzer_surface.cpp` ~920).
+// A tagged union's payload field type may name the union itself, in which case it was captured
+// while only the union's identity was published (see resolve_enum_values) and carries no cases.
+// Re-read the declaration so a value typed from that field — a match bind, an element of a
+// payload collection — sees the union's complete case set instead of the identity shell.
+BSParser::DataType BSAnalyzer::complete_self_referential_enum_type(const BSParser::DataType &p_type) {
+	BSParser::DataType completed = p_type;
+
+	if (completed.kind == BSParser::DataType::ENUM && completed.is_tagged_union &&
+			completed.enum_values.is_empty() && completed.class_type != nullptr) {
+		const BSParser::ClassNode *owner = completed.class_type;
+		const BSParser::EnumNode *declaration = nullptr;
+		if (owner->is_enum_file) {
+			declaration = owner->enum_file_decl;
+		} else if (owner->has_member(completed.enum_type)) {
+			const BSParser::ClassNode::Member member = owner->get_member(completed.enum_type);
+			if (member.type == BSParser::ClassNode::Member::ENUM) {
+				declaration = member.m_enum;
+			}
+		}
+
+		if (declaration != nullptr) {
+			const BSParser::DataType declared_type = declaration->get_datatype();
+			if (declared_type.is_set() && declared_type.kind == BSParser::DataType::ENUM &&
+					!declared_type.enum_values.is_empty()) {
+				completed.enum_values = declared_type.enum_values;
+				completed.enum_case_payloads = declared_type.enum_case_payloads;
+				// The schema just re-read from the declaration names the declaration's own parameters,
+				// while the shell carries the arguments the use site applied. Specializing here is what
+				// keeps a recursive generic union concrete at every level instead of degrading a nested
+				// value back to the open declaration.
+				completed = specialize_enum_type(completed, declaration,
+						enum_type_argument_bindings(declaration, completed.type_arguments));
+			}
+		}
+	}
+
+	// A payload field may nest the union anywhere a datatype can appear: a typed collection or
+	// tuple (`Array[Chain]`), a callable signature (`Callable[[], Chain]`), a generic argument
+	// (`Box[Chain]`), or a type-parameter bound. Descend into every such slot. `enum_case_payloads`
+	// is deliberately excluded: a union's payload map names the union itself, so it has no finite
+	// fixed point, and each level reaches this helper again when it is used to type a value.
+	auto complete_each = [](Vector<BSParser::DataType> &r_types) {
+		for (int i = 0; i < r_types.size(); i++) {
+			r_types.write[i] = complete_self_referential_enum_type(r_types[i]);
+		}
+	};
+	complete_each(completed.container_element_types);
+	complete_each(completed.method_parameter_types);
+	complete_each(completed.method_return_type);
+	complete_each(completed.method_rest_parameter_type);
+	complete_each(completed.type_parameter_bound);
+	complete_each(completed.type_arguments);
+
+	return completed;
+}
+
+HashMap<StringName, BSParser::DataType> BSAnalyzer::enum_type_argument_bindings(
+		const BSParser::EnumNode *p_declaration, const Vector<BSParser::DataType> &p_arguments) {
+	HashMap<StringName, BSParser::DataType> bindings;
+	if (p_declaration == nullptr || p_declaration->type_parameters.size() != p_arguments.size()) {
+		return bindings;
+	}
+	for (int i = 0; i < p_arguments.size(); i++) {
+		const BSParser::TypeParameterNode *parameter = p_declaration->type_parameters[i];
+		if (parameter != nullptr && parameter->identifier != nullptr) {
+			bindings.insert(parameter->identifier->name, p_arguments[i]);
+		}
+	}
+	return bindings;
+}
+
+BSParser::DataType BSAnalyzer::specialize_enum_type(const BSParser::DataType &p_type,
+		const BSParser::EnumNode *p_declaration,
+		const HashMap<StringName, BSParser::DataType> &p_bindings) {
+	if (p_declaration == nullptr || p_bindings.is_empty() || p_type.enum_case_payloads.is_empty()) {
+		return p_type;
+	}
+
+	BSParser::DataType result = p_type;
+	for (KeyValue<StringName, BSParser::DataType::EnumCasePayload> &entry : result.enum_case_payloads) {
+		for (int i = 0; i < entry.value.field_types.size(); i++) {
+			entry.value.field_types.write[i] = BSParser::DataType::substitute(entry.value.field_types[i], p_bindings);
+		}
+	}
+	return result;
 }
 
 BSParser::DataType BSAnalyzer::lookup_local_enum_meta_type(const StringName &p_name, BSParser::Node *p_source) {

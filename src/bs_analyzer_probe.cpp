@@ -2,6 +2,7 @@
 /*  bs_analyzer_probe.cpp                                                 */
 /*                                                                        */
 /*  Debug-only analyzer probe for #43/#49/#52 GDScript suites.            */
+/*  Includes complete_self_referential_enum_type (#60 residual).          */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -79,6 +80,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::trait_target_assignability);
 	ClassDB::bind_method(D_METHOD("witness_collision_arbitration"),
 			&BaristaScriptAnalyzerProbe::witness_collision_arbitration);
+	ClassDB::bind_method(D_METHOD("complete_self_referential_enum_type"),
+			&BaristaScriptAnalyzerProbe::complete_self_referential_enum_type);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -1751,6 +1754,112 @@ godot::Dictionary BaristaScriptAnalyzerProbe::witness_collision_arbitration() co
 		registry->clear_file(registry_second);
 	}
 
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::complete_self_referential_enum_type() const {
+	// Foundry Recursive completion is finite and stable @ c9d5e35 (non-generic Chain slice).
+	godot::Dictionary result;
+
+	const String path = "res://tests/complete_self_ref_enum.barista";
+	const String source =
+			"class_name CompleteSelfRefHost extends Node\n"
+			"enum Chain:\n"
+			"\tEnd\n"
+			"\tLink(next: Chain)\n"
+			"\tBranch(children: Array[Chain])\n"
+			"func build() -> Chain:\n"
+			"\treturn Chain.Link(Chain.Link(Chain.End))\n"
+			"func length(node: Chain) -> int:\n"
+			"\tmatch node:\n"
+			"\t\tChain.End:\n"
+			"\t\t\treturn 0\n"
+			"\t\tChain.Link(var next):\n"
+			"\t\t\tmatch next:\n"
+			"\t\t\t\tChain.End:\n"
+			"\t\t\t\t\treturn 1\n"
+			"\t\t\t\tChain.Link(_):\n"
+			"\t\t\t\t\treturn 2\n"
+			"\t\t\t\tChain.Branch(_):\n"
+			"\t\t\t\t\treturn 3\n"
+			"\t\tChain.Branch(_):\n"
+			"\t\t\treturn 4\n"
+			"\treturn 0\n";
+
+	BSCache::set_source_override(path, source);
+	BSParser parser;
+	BSAnalyzer analyzer(&parser);
+	Error err = parser.parse(source, path, false);
+	if (err == OK) {
+		err = analyzer.analyze();
+	}
+	godot::PackedStringArray errors;
+	for (const BSParser::ParserError &pe : parser.get_errors()) {
+		errors.push_back(pe.message);
+	}
+	result["analyze_ok"] = err == OK && errors.is_empty();
+	result["errors"] = errors;
+
+	const BSParser::EnumNode *chain = nullptr;
+	const BSParser::ClassNode *tree = parser.get_tree();
+	if (tree != nullptr) {
+		for (int i = 0; i < tree->members.size(); i++) {
+			const BSParser::ClassNode::Member &member = tree->members[i];
+			if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr &&
+					member.m_enum->identifier != nullptr && member.m_enum->identifier->name == SNAME("Chain")) {
+				chain = member.m_enum;
+				break;
+			}
+		}
+	}
+	result["found_chain"] = chain != nullptr;
+
+	if (chain != nullptr) {
+		const BSParser::DataType declared = chain->get_datatype();
+		result["declared_case_count"] = declared.enum_values.size();
+
+		const BSParser::DataType::EnumCasePayload *link_payload = declared.get_enum_case_payload(SNAME("Link"));
+		const BSParser::DataType::EnumCasePayload *branch_payload = declared.get_enum_case_payload(SNAME("Branch"));
+		result["has_link_payload"] = link_payload != nullptr && link_payload->field_types.size() == 1;
+		result["has_branch_payload"] = branch_payload != nullptr && branch_payload->field_types.size() == 1;
+
+		if (link_payload != nullptr && link_payload->field_types.size() == 1) {
+			const BSParser::DataType &shell = link_payload->field_types[0];
+			result["shell_is_enum"] = shell.kind == BSParser::DataType::ENUM && shell.is_tagged_union;
+			result["shell_values_empty"] = shell.enum_values.is_empty();
+
+			const BSParser::DataType completed = BSAnalyzer::complete_self_referential_enum_type(shell);
+			result["completed_values_count"] = completed.enum_values.size();
+			result["completed_has_end"] = completed.enum_values.has(SNAME("End"));
+			result["completed_has_link"] = completed.enum_values.has(SNAME("Link"));
+			result["completed_has_branch"] = completed.enum_values.has(SNAME("Branch"));
+
+			const BSParser::DataType::EnumCasePayload *completed_link = completed.enum_case_payloads.getptr(SNAME("Link"));
+			result["nested_link_stays_shell"] = completed_link != nullptr &&
+					completed_link->field_types.size() == 1 &&
+					completed_link->field_types[0].enum_values.is_empty();
+
+			const BSParser::DataType completed_twice = BSAnalyzer::complete_self_referential_enum_type(completed);
+			result["idempotent_values"] = completed_twice.enum_values.size() == completed.enum_values.size();
+			const BSParser::DataType::EnumCasePayload *twice_link = completed_twice.enum_case_payloads.getptr(SNAME("Link"));
+			result["idempotent_nested_shell"] = twice_link != nullptr &&
+					twice_link->field_types.size() == 1 &&
+					twice_link->field_types[0].enum_values.is_empty();
+		}
+
+		if (branch_payload != nullptr && branch_payload->field_types.size() == 1) {
+			const BSParser::DataType completed_array =
+					BSAnalyzer::complete_self_referential_enum_type(branch_payload->field_types[0]);
+			result["array_container_size"] = completed_array.container_element_types.size();
+			if (completed_array.container_element_types.size() == 1) {
+				result["array_element_values_count"] = completed_array.container_element_types[0].enum_values.size();
+			} else {
+				result["array_element_values_count"] = 0;
+			}
+		}
+	}
+
+	BSCache::clear_source_override(path);
 	return result;
 }
 

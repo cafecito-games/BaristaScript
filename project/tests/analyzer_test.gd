@@ -70,6 +70,7 @@ func _init() -> void:
 	_test_witness_collision_arbitration(failures)
 	_test_self_type_parameter_compat(failures)
 	_test_enum_self_payload_field_leg(failures)
+	_test_complete_self_referential_enum_type(failures)
 	_test_self_contract_assign_return(failures)
 	_test_self_contract_gradual_union(failures)
 	BaristaScriptParseCache.clear_script_cache()
@@ -3468,6 +3469,45 @@ func _test_enum_self_payload_field_leg(failures: PackedStringArray) -> void:
 		_src_class("EnumSelfIndexGuard extends Node\n"), "res://tests/enum_self_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"enum Self payload probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_complete_self_referential_enum_type(failures: PackedStringArray) -> void:
+	# Foundry complete_self_referential_enum_type @ c9d5e35 (#60 residual).
+	# Non-generic recursive Chain: empty payload shells gain cases; nested edges stay shells;
+	# Array[Chain] completes through its element; nested construction type-checks.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.complete_self_referential_enum_type()
+
+	_expect(failures, report.get("analyze_ok", false) == true, "recursive Chain host analyzes cleanly")
+	_expect(failures, report.get("found_chain", false) == true, "Chain enum located after analyze")
+	_expect(failures, report.get("declared_case_count", 0) == 3, "Chain declares End/Link/Branch")
+	_expect(failures, report.get("shell_is_enum", false) == true, "Link.next captured as tagged-union shell")
+	_expect(failures, report.get("shell_values_empty", false) == true, "Link.next starts as empty identity shell")
+	_expect(failures, report.get("completed_values_count", 0) == 3, "complete fills End/Link/Branch")
+	_expect(failures, report.get("completed_has_end", false) == true, "completed shell has End")
+	_expect(failures, report.get("completed_has_link", false) == true, "completed shell has Link")
+	_expect(failures, report.get("completed_has_branch", false) == true, "completed shell has Branch")
+	_expect(failures, report.get("nested_link_stays_shell", false) == true,
+		"recursive Link.next inside completed payloads stays an empty shell")
+	_expect(failures, report.get("idempotent_values", false) == true, "completing twice keeps case count")
+	_expect(failures, report.get("idempotent_nested_shell", false) == true, "completing twice keeps nested shells")
+	_expect(failures, report.get("array_container_size", 0) == 1, "Branch children is a one-element container")
+	_expect(failures, report.get("array_element_values_count", 0) == 3,
+		"complete descends into Array[Chain] element")
+
+	# Nested construction + nested match over a completed bind (behavioral consumer path).
+	var nested := _src_class("CompleteSelfRefNested extends Node\nenum Chain:\n\tEnd\n\tLink(next: Chain)\nfunc build() -> Chain:\n\treturn Chain.Link(Chain.Link(Chain.End))\nfunc length(node: Chain) -> int:\n\tmatch node:\n\t\tChain.End:\n\t\t\treturn 0\n\t\tChain.Link(var next):\n\t\t\tmatch next:\n\t\t\t\tChain.End:\n\t\t\t\t\treturn 1\n\t\t\t\tChain.Link(_):\n\t\t\t\t\treturn 2\n")
+	var nested_report: Dictionary = probe.analyze_source(nested, "res://tests/complete_self_ref_nested.barista")
+	_expect(failures, nested_report.get("valid", false) == true,
+		"nested Chain.Link construction and recursive match binds type-check")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("CompleteSelfRefIndexGuard extends Node\n"), "res://tests/complete_self_ref_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"complete_self_referential_enum_type probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
 
 

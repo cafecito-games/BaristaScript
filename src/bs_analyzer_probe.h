@@ -2,6 +2,7 @@
 /*  bs_analyzer_probe.h                                                   */
 /*                                                                        */
 /*  Debug-only analyzer probe for #43/#49/#52 GDScript suites.            */
+/*  Includes complete_self_referential_enum_type (#60 residual).          */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -101,6 +102,14 @@ public:
 	 * (Foundry resolve_conformances / _declaration_witnesses_collide @ c9d5e35).
 	 */
 	godot::Dictionary witness_collision_arbitration() const;
+
+	/**
+	 * Drive complete_self_referential_enum_type on a non-generic recursive tagged union
+	 * (Foundry Recursive completion is finite and stable @ c9d5e35): empty Link shell
+	 * gains cases; nested Link edges stay shells; Array[Chain] completes through element;
+	 * completion is idempotent. Also checks nested Chain.Link(Chain.End) construction.
+	 */
+	godot::Dictionary complete_self_referential_enum_type() const;
 };
 
 } // namespace barista_script
