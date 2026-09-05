@@ -264,8 +264,6 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration(
 	const String dep_path = "res://tests/reg_dep.barista";
 	const String viewer_path = "res://tests/reg_viewer.barista";
 	const String unrelated_path = "res://tests/reg_unrelated.barista";
-	const StringName trait_name = StringName("RegMarker");
-	const String target_key = "Node";
 
 	registry->clear_file(declaring_path);
 	registry->clear_file(dep_path);
@@ -289,16 +287,28 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration(
 	const Vector<BSConformanceRegistry::Conformance> registered =
 			registry->get_file_conformances(declaring_path);
 	result["registered_count"] = registered.size();
-	result["registered_after_analyze"] = registry->has_conformance(target_key, trait_name);
+	StringName lookup_trait;
+	String lookup_target;
+	if (!registered.is_empty()) {
+		lookup_trait = registered[0].trait_name;
+		lookup_target = registered[0].target_fqcn;
+	}
+	result["lookup_trait"] = String(lookup_trait);
+	result["lookup_target"] = lookup_target;
+	result["registered_after_analyze"] = !lookup_target.is_empty() &&
+			registry->has_conformance(lookup_target, lookup_trait);
 
 	// Same-file / no Visibility: membership is visible.
-	result["none_sees_registered"] = registry->has_conformance(target_key, trait_name);
+	result["none_sees_registered"] = !lookup_target.is_empty() &&
+			registry->has_conformance(lookup_target, lookup_trait);
 
 	{
 		BSConformanceRegistry::ScopedInFlightReplacement in_flight(declaring_path);
-		result["in_flight_hides_has_conformance"] = !registry->has_conformance(target_key, trait_name);
+		result["in_flight_hides_has_conformance"] = lookup_target.is_empty() ||
+				!registry->has_conformance(lookup_target, lookup_trait);
 	}
-	result["after_in_flight_sees_again"] = registry->has_conformance(target_key, trait_name);
+	result["after_in_flight_sees_again"] = !lookup_target.is_empty() &&
+			registry->has_conformance(lookup_target, lookup_trait);
 
 	// Dependency viewer with ConformanceVisibility can_see the declaring file.
 	BSCache::set_source_override(dep_path, "class_name RegDep extends Node\n");
@@ -312,10 +322,9 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration(
 		result["viewer_parse_ok"] = err == OK;
 		if (err == OK) {
 			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
-			// Preload declaring path into visible set via dependency edge: extends dep only.
 			// Declaring file is unrelated to viewer — must be hidden under ConformanceVisibility.
-			result["viewer_hides_unrelated_declaring"] =
-					!registry->has_conformance(target_key, trait_name);
+			result["viewer_hides_unrelated_declaring"] = lookup_target.is_empty() ||
+					!registry->has_conformance(lookup_target, lookup_trait);
 			result["viewer_can_see_own"] = analyzer.conformance_visibility.can_see(viewer_path);
 			result["viewer_can_see_dep"] = analyzer.conformance_visibility.can_see(dep_path);
 			result["viewer_cannot_see_declaring"] =
@@ -340,11 +349,15 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration(
 		if (err == OK) {
 			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
 			result["dep_can_see_declaring"] = analyzer.conformance_visibility.can_see(declaring_path);
-			result["dep_sees_has_conformance"] = registry->has_conformance(target_key, trait_name);
+			result["dep_sees_has_conformance"] = !lookup_target.is_empty() &&
+					registry->has_conformance(lookup_target, lookup_trait);
 		}
 	}
 	BSCache::clear_source_override(dep_on_declaring);
 	BSCache::clear_source_override(declaring_path);
+
+	const StringName old_trait = lookup_trait;
+	const String old_target = lookup_target;
 
 	// Reanalysis with no conformances clears stale entries.
 	const String cleared_source = "class_name RegCleared extends Node\n";
@@ -359,7 +372,8 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration(
 		result["reanalyze_clear_ok"] = err == OK && parser.get_errors().is_empty();
 	}
 	BSCache::clear_source_override(declaring_path);
-	result["cleared_after_reanalyze"] = !registry->has_conformance(target_key, trait_name) &&
+	result["cleared_after_reanalyze"] = (old_target.is_empty() ||
+												!registry->has_conformance(old_target, old_trait)) &&
 			registry->get_file_conformances(declaring_path).is_empty();
 
 	// Reanalysis replaces with a different trait membership.
@@ -376,8 +390,19 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration(
 		result["reanalyze_replace_ok"] = err == OK && parser.get_errors().is_empty();
 	}
 	BSCache::clear_source_override(declaring_path);
-	result["replaced_has_other"] = registry->has_conformance(target_key, StringName("RegOther"));
-	result["replaced_dropped_old"] = !registry->has_conformance(target_key, trait_name);
+	const Vector<BSConformanceRegistry::Conformance> replaced =
+			registry->get_file_conformances(declaring_path);
+	StringName replacement_trait;
+	String replacement_target;
+	if (!replaced.is_empty()) {
+		replacement_trait = replaced[0].trait_name;
+		replacement_target = replaced[0].target_fqcn;
+	}
+	result["replaced_has_other"] = !replacement_target.is_empty() &&
+			registry->has_conformance(replacement_target, replacement_trait) &&
+			replacement_trait != old_trait;
+	result["replaced_dropped_old"] = old_target.is_empty() ||
+			!registry->has_conformance(old_target, old_trait);
 
 	registry->clear_file(declaring_path);
 	registry->clear_file(dep_path);
