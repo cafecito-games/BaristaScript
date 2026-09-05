@@ -3,9 +3,10 @@
 /*                                                                        */
 /*  Hard fork of Foundry fs_conformance_registry.h @ c9d5e35. Starter:   */
 /*  Visibility / ScopedVisibility / ScopedInFlightReplacement +          */
-/*  declaration store with atomic try_replace_file_conformances.         */
-/*  ClassTraitBinding / RecordedTypeArgument coherence / runtime         */
-/*  witnesses remain residual under #60.                                  */
+/*  declaration store with atomic try_replace_file_conformances +        */
+/*  witness method-name keys / find_witness_location. ClassTraitBinding / */
+/*  RecordedTypeArgument coherence / runtime Function* witnesses remain  */
+/*  residual under #60.                                                   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -30,9 +31,17 @@ namespace barista_script {
 class BSConformanceRegistry {
 public:
 	/**
-	 * One declaration-side conformance entry. Witness maps, RecordedTypeArgument
-	 * coherence, and runtime witnesses are deferred; the fields here are enough
-	 * for visibility-filtered membership lookups and atomic per-file replace.
+	 * Method-name keys for witnesses on one (target, trait) entry. Foundry stores
+	 * `FunctionNode *` values; Barista stores names only so lookups never
+	 * dereference borrowed pointers across reloads. `find_conformance_witness`
+	 * re-finds live nodes from the declaring parse tree via conformance_index.
+	 */
+	using WitnessMap = HashSet<StringName>;
+
+	/**
+	 * One declaration-side conformance entry. RecordedTypeArgument coherence and
+	 * runtime Function* witnesses remain residual; witness *names* + index are
+	 * enough for visibility-filtered membership and member-miss re-resolve.
 	 */
 	struct Conformance {
 		Vector<String> target_keys;
@@ -45,6 +54,7 @@ public:
 		String target_label;
 		String source_file;
 		int conformance_index = -1;
+		WitnessMap witnesses;
 	};
 
 	/** Limits which declaring files a caller is allowed to see. */
@@ -158,6 +168,15 @@ public:
 
 	String get_conformance_source(const String &p_target_key, const StringName &p_trait_name) const;
 	Vector<Conformance> get_file_conformances(const String &p_source_file) const;
+
+	/**
+	 * Locates the visible conformance that supplies a witness for `p_method` on
+	 * the target whose fully-qualified class name is `p_target_fqcn`. Matching is
+	 * on the exact FQCN (not looser aliases). Returns declaring file +
+	 * conformance_index only — never a borrowed FunctionNode.
+	 */
+	bool find_witness_location(const String &p_target_fqcn, const StringName &p_method,
+			String &r_source_file, int &r_conformance_index) const;
 
 #ifdef DEBUG_ENABLED
 	/** Test surface for ScopedVisibility / in-flight hiding (wraps `_is_visible`). */

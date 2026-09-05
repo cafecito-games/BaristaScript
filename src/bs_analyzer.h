@@ -22,6 +22,7 @@
 /*  member + class-phase INTERFACE/BODY failure replay;                   */
 /*  ConformanceVisibility can_see BFS; resolve_conformances registers via */
 /*  try_replace_file_conformances + ScopedInFlightReplacement;            */
+/*  find_conformance_witness + reduce_call member-miss fallback;          */
 /*  reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→     */
 /*  coroutine wrap; Coroutine[T] annotation decode; direct async-call wrap*/
 /*  + mark_coroutine_handle_capture (#60 residual).                       */
@@ -672,6 +673,12 @@ private:
 	void resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class);
 	/** Foundry resolve_conformances: validate + register into BSConformanceRegistry. */
 	void resolve_conformances(BSParser::ClassNode *p_class);
+	/**
+	 * Foundry find_conformance_witness @ c9d5e35: locate a retroactive-conformance witness
+	 * for `p_method` on `p_target_type` via registry find_witness_location, then re-find
+	 * the live FunctionNode in the declaring parse tree (never dereference stored pointers).
+	 */
+	BSParser::FunctionNode *find_conformance_witness(const BSParser::DataType &p_target_type, const StringName &p_method);
 	BSParser::ClassNode *resolve_conformance_target(BSParser::ConformanceNode *p_conformance, BSParser::DataType &r_target_type);
 	BSParser::ClassNode *resolve_native_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_native_type);
 	BSParser::ClassNode *resolve_builtin_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_builtin_type);

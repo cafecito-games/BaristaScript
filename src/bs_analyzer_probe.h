@@ -59,6 +59,12 @@ public:
 	 * Returns Dictionary of bool checks plus registered_count.
 	 */
 	godot::Dictionary conformance_registry_registration() const;
+
+	/**
+	 * Drive witness method-name registration + find_witness_location + member-miss
+	 * call resolution via find_conformance_witness. Returns Dictionary of bool checks.
+	 */
+	godot::Dictionary conformance_witness_lookup() const;
 };
 
 } // namespace barista_script
