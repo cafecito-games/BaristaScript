@@ -538,6 +538,25 @@ private:
 	BSParser::DataType resolve_enum_values(BSParser::EnumNode *p_enum, const BSParser::DataType &p_enum_type, BSParser::ClassNode *p_owner);
 	/** Foundry make_class_enum_type shell used before resolve_enum_values. */
 	static BSParser::DataType make_class_enum_type(const StringName &p_enum_name, BSParser::ClassNode *p_class, const String &p_script_path, bool p_meta = true);
+	/**
+	 * Foundry complete_self_referential_enum_type @ c9d5e35 (`fs_analyzer_surface.cpp`):
+	 * refill empty tagged-union identity shells from the declaration and recurse into nested
+	 * datatype slots. Payload maps stay shells (finite fixed point).
+	 */
+	static BSParser::DataType complete_self_referential_enum_type(const BSParser::DataType &p_type);
+	/**
+	 * Foundry enum_type_argument_bindings @ c9d5e35: map declaration parameters to use-site
+	 * arguments. Empty when arity mismatches or the union is non-generic.
+	 */
+	static HashMap<StringName, BSParser::DataType> enum_type_argument_bindings(
+			const BSParser::EnumNode *p_declaration, const Vector<BSParser::DataType> &p_arguments);
+	/**
+	 * Foundry specialize_enum_type @ c9d5e35: substitute one declaration level of payload
+	 * field types with use-site bindings. Nested union schemas are not re-derived here.
+	 */
+	static BSParser::DataType specialize_enum_type(const BSParser::DataType &p_type,
+			const BSParser::EnumNode *p_declaration,
+			const HashMap<StringName, BSParser::DataType> &p_bindings);
 	/** Look up a same-file / enclosing-class named enum member (lazy-resolves values). */
 	BSParser::DataType lookup_local_enum_meta_type(const StringName &p_name, BSParser::Node *p_source);
 
@@ -655,9 +674,9 @@ private:
 	/** resolve_contextual_enum_case + container-literal element descent for one consumer site. */
 	void qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
 	/**
-	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic SelfFieldLeg slice):
-	 * arity + payload field compatibility with Self spelling legs + constant bake.
-	 * Generic open-schema / type-argument / union-collapse machinery remains #60.
+	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (SelfFieldLeg + self-ref completion):
+	 * arity + payload field compatibility with Self spelling legs + constant bake +
+	 * complete_self_referential_enum_type on payload fields. open_union_members_collapse remains #60.
 	 */
 	void reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type);
 	/** Foundry datatype_contains_self_type_parameter @ c9d5e35. */
@@ -757,6 +776,14 @@ private:
 	void read_strict_settings();
 
 	static String &bootstrap_root_storage();
+
+#ifdef DEBUG_ENABLED
+public:
+	/** Foundry test_complete_self_referential_enum_type @ c9d5e35. */
+	static BSParser::DataType test_complete_self_referential_enum_type(const BSParser::DataType &p_type) {
+		return complete_self_referential_enum_type(p_type);
+	}
+#endif
 };
 
 /** Shared helper: parse + analyze; true when no errors remain. */
