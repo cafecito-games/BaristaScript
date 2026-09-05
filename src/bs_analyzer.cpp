@@ -1794,7 +1794,6 @@ BSParser::DataType _self_type_parameter_for_class(BSParser::ClassNode *p_class);
 bool _datatype_contains_self_type_parameter(const BSParser::DataType &p_type);
 BSParser::DataType _substitute_self_type_parameter(const BSParser::DataType &p_type, const BSParser::DataType &p_self_type);
 bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value);
-bool _self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type);
 } // namespace
 
 void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee) {
@@ -3216,33 +3215,6 @@ bool _datatype_contains_self_type_parameter(const BSParser::DataType &p_type) {
 	return false;
 }
 
-void _clear_receiver_self_contract(BSParser::DataType &r_type) {
-	// Foundry clear_receiver_self_contract @ c9d5e35 (fs_analyzer_call_validation.cpp): strip the
-	// receiver-contract stamp when a signature is captured into a Callable where no call site can
-	// decide identity. Walk mirrors every slot identity admission reads.
-	r_type.is_receiver_self_contract = false;
-	for (int i = 0; i < r_type.container_element_types.size(); i++) {
-		_clear_receiver_self_contract(r_type.container_element_types.write[i]);
-	}
-	for (int i = 0; i < r_type.type_arguments.size(); i++) {
-		BSParser::DataType type_argument = r_type.type_arguments[i];
-		_clear_receiver_self_contract(type_argument);
-		r_type.set_type_argument(i, type_argument);
-	}
-	for (int i = 0; i < r_type.method_parameter_types.size(); i++) {
-		_clear_receiver_self_contract(r_type.method_parameter_types.write[i]);
-	}
-	for (int i = 0; i < r_type.method_return_type.size(); i++) {
-		_clear_receiver_self_contract(r_type.method_return_type.write[i]);
-	}
-	for (int i = 0; i < r_type.method_rest_parameter_type.size(); i++) {
-		_clear_receiver_self_contract(r_type.method_rest_parameter_type.write[i]);
-	}
-	for (int i = 0; i < r_type.union_members.size(); i++) {
-		_clear_receiver_self_contract(r_type.union_members.write[i]);
-	}
-}
-
 BSParser::DataType _substitute_self_type_parameter(const BSParser::DataType &p_type, const BSParser::DataType &p_self_type) {
 	if (!p_self_type.is_set()) {
 		return p_type;
@@ -3605,6 +3577,38 @@ bool _self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_
 
 bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value);
 
+// Foundry self_free_union_members_admit_value @ c9d5e35: alternatives that name no Self are answered
+// by ordinary compatibility (implicit conversion first; exact builtin match when conversion widened).
+bool _self_free_union_members_admit_value(
+		const Vector<BSParser::DataType> &p_members,
+		bool p_nullable,
+		const BSParser::DataType &p_value_type,
+		const BSParser::ExpressionNode *p_value_source) {
+	(void)p_value_source;
+	if (p_members.is_empty()) {
+		return false;
+	}
+	BSParser::DataType self_free_union = BSParser::DataType::make_union(p_members);
+	if (!self_free_union.is_set()) {
+		return false;
+	}
+	self_free_union.is_nullable = self_free_union.is_nullable || p_nullable;
+	BSTypeCompatibility::Options allow_conversion;
+	allow_conversion.allow_implicit_conversion = true;
+	if (!BSTypeCompatibility::check(self_free_union, p_value_type, allow_conversion).compatible) {
+		return false;
+	}
+	if (self_free_union.kind == BSParser::DataType::UNION ||
+			self_free_union.kind != BSParser::DataType::BUILTIN ||
+			p_value_type.kind != BSParser::DataType::BUILTIN ||
+			self_free_union.builtin_type == p_value_type.builtin_type) {
+		return true;
+	}
+	BSTypeCompatibility::Options exact;
+	exact.allow_implicit_conversion = false;
+	return BSTypeCompatibility::check(self_free_union, p_value_type, exact).compatible;
+}
+
 bool _self_contract_union_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value) {
 	if (p_value_type.kind == BSParser::DataType::UNION) {
 		for (const BSParser::DataType &value_member : p_value_type.union_members) {
@@ -3620,8 +3624,10 @@ bool _self_contract_union_admits_value_type(const BSParser::DataType &p_expected
 		return true;
 	}
 
+	Vector<BSParser::DataType> self_free_members;
 	for (const BSParser::DataType &member : p_expected_type.union_members) {
 		if (!_datatype_contains_self_type_parameter(member)) {
+			self_free_members.push_back(member);
 			continue;
 		}
 		BSParser::DataType alternative = member;
@@ -3636,16 +3642,14 @@ bool _self_contract_union_admits_value_type(const BSParser::DataType &p_expected
 			return true;
 		}
 	}
-	// Self-free union members: ordinary compatibility (Foundry self_free_union_members_admit_value residual
-	// beyond bare Self RETURN — fall through to reject when no Self alternative admitted).
-	return false;
-}
-
-bool _self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type) {
-	// Foundry self_contract_admits_gradual_value: only UNION destinations. Full gradual undecidable /
-	// erased-parameter refusal remains #60 residual.
-	(void)p_value_type;
-	return p_expected_type.kind == BSParser::DataType::UNION;
+	if (!_self_free_union_members_admit_value(
+				self_free_members, p_expected_type.is_nullable, p_value_type, p_value_source)) {
+		return false;
+	}
+	if (r_matched_value != nullptr) {
+		*r_matched_value = p_value_type;
+	}
+	return true;
 }
 
 bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value) {
@@ -3920,8 +3924,28 @@ bool BSAnalyzer::self_contract_admits_value_type(const BSParser::DataType &p_exp
 	return _self_contract_admits_value_type(p_expected_type, p_value_type, p_kind, p_value_source, nullptr);
 }
 
+bool BSAnalyzer::gradual_destination_is_undecidable(const BSParser::DataType &p_destination) const {
+	// Foundry gradual_destination_is_undecidable @ c9d5e35.
+	BSTypeCompatibility::Options options;
+	const bool static_context = current_function != nullptr && current_function->is_static;
+	options.receiver_is_available = !static_context;
+	return BSTypeCompatibility::destination_is_undecidable_type_parameter(p_destination, options);
+}
+
 bool BSAnalyzer::self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type) const {
-	return _self_contract_admits_gradual_value(p_expected_type, p_value_type);
+	// Foundry self_contract_admits_gradual_value @ c9d5e35: UNION-only booking of a runtime check.
+	// Refuses the same two promises ordinary validation refuses: strict_dynamic Variant, and an
+	// undecidable (erased / receiver-missing) destination.
+	if (p_expected_type.kind != BSParser::DataType::UNION) {
+		return false;
+	}
+	if (p_value_type.is_variant() && strict_dynamic_checks) {
+		return false;
+	}
+	if (gradual_destination_is_undecidable(p_expected_type)) {
+		return false;
+	}
+	return true;
 }
 
 bool BSAnalyzer::self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) const {
@@ -4198,7 +4222,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 						_datatype_contains_self_type_parameter(assignee_type)) {
 					const bool value_is_gradual = op_type.is_variant() || !op_type.is_hard_type();
 					if ((value_is_gradual
-										? !_self_contract_admits_gradual_value(assignee_type, op_type)
+										? !self_contract_admits_gradual_value(assignee_type, op_type)
 										: !_self_contract_admits_value_type(assignee_type, op_type, BSAnalyzer::SelfContractKind::RETURN, assignment->assigned_value, nullptr))) {
 						mark_node_unsafe(assignment);
 						push_error(vformat(R"(Value of type "%s" cannot be assigned to a variable of type "%s".)",
@@ -4249,7 +4273,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				if (_datatype_contains_self_type_parameter(declared)) {
 					const bool value_is_gradual = initializer_type.is_variant() || !initializer_type.is_hard_type();
 					if ((value_is_gradual
-										? !_self_contract_admits_gradual_value(declared, initializer_type)
+										? !self_contract_admits_gradual_value(declared, initializer_type)
 										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, variable->initializer, nullptr))) {
 						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
 										   initializer_type.to_string(), declared.to_string()) +
@@ -4301,7 +4325,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				if (_datatype_contains_self_type_parameter(declared)) {
 					const bool value_is_gradual = initializer_type.is_variant() || !initializer_type.is_hard_type();
 					if ((value_is_gradual
-										? !_self_contract_admits_gradual_value(declared, initializer_type)
+										? !self_contract_admits_gradual_value(declared, initializer_type)
 										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, constant->initializer, nullptr))) {
 						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
 										   initializer_type.to_string(), declared.to_string()) +
@@ -4348,7 +4372,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					const BSParser::DataType result = ret->return_value->get_datatype();
 					const bool value_is_gradual = result.is_variant() || !result.is_hard_type();
 					if ((value_is_gradual
-										? !_self_contract_admits_gradual_value(expected_return, result)
+										? !self_contract_admits_gradual_value(expected_return, result)
 										: !_self_contract_admits_value_type(expected_return, result, BSAnalyzer::SelfContractKind::RETURN, ret->return_value, nullptr))) {
 						push_error(vformat(R"(Cannot return value of type "%s" because the function return type is "%s".)",
 										   result.to_string(),

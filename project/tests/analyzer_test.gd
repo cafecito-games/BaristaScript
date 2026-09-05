@@ -67,6 +67,7 @@ func _init() -> void:
 	_test_self_type_parameter_compat(failures)
 	_test_enum_self_payload_field_leg(failures)
 	_test_self_contract_assign_return(failures)
+	_test_self_contract_gradual_union(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -3356,4 +3357,54 @@ func _test_self_contract_assign_return(failures: PackedStringArray) -> void:
 		_src_class("SelfContractIndexGuard extends Node\n"), "res://tests/self_contract_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"Self-contract assign/return probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_self_contract_gradual_union(failures: PackedStringArray) -> void:
+	# Foundry self_contract_admits_gradual_value + self_free_union_members_admit_value @ c9d5e35.
+	# Bare Self is rejected as a union member; nested (int, Self) mirrors Foundry fixtures.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	# Soft: Variant into Self-bearing union is booked (admitted), same as a plain union.
+	var soft_self := _src_class("GradualSelfUnionSoft extends Node\nfunc drive() -> void:\n\tvar dynamic: Variant = 5\n\tvar link: int | (int, Self) = dynamic\n")
+	var soft_self_report: Dictionary = probe.analyze_source(soft_self, "res://tests/gradual_self_union_soft.barista")
+	_expect(failures, soft_self_report.get("valid", false) == true, "soft Variant admits into Self-bearing union")
+
+	var soft_plain := _src_class("GradualPlainUnionSoft extends Node\nfunc drive() -> void:\n\tvar dynamic: Variant = 5\n\tvar link: int | String = dynamic\n")
+	var soft_plain_report: Dictionary = probe.analyze_source(soft_plain, "res://tests/gradual_plain_union_soft.barista")
+	_expect(failures, soft_plain_report.get("valid", false) == true, "soft Variant admits into plain union")
+
+	# Strict dynamic: Variant into either union refused.
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", true)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var strict_self_report: Dictionary = probe.analyze_source(soft_self, "res://tests/gradual_self_union_strict.barista")
+	_expect(failures, strict_self_report.get("valid", true) == false, "strict_dynamic refuses Variant into Self-bearing union")
+	var strict_plain_report: Dictionary = probe.analyze_source(soft_plain, "res://tests/gradual_plain_union_strict.barista")
+	_expect(failures, strict_plain_report.get("valid", true) == false, "strict_dynamic refuses Variant into plain union")
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	# Self-free alternative still admits ordinary values (int through int | (int, Self)).
+	var free_ok := _src_class("SelfFreeUnionAdmit extends Node\nfunc drive() -> void:\n\tvar link: int | (int, Self) = 5\n\tlink = 7\n")
+	var free_ok_report: Dictionary = probe.analyze_source(free_ok, "res://tests/self_free_union_admit.barista")
+	_expect(failures, free_ok_report.get("valid", false) == true, "Self-free union alternative admits ordinary int")
+
+	# Self-bearing alternative still requires Self contract: foreign same-class into (int, Self) rejected.
+	var self_ok := _src_class("SelfBearingUnionOk extends Node\nfunc drive() -> void:\n\tvar pair: (int, Self) = (1, self)\n\tvar link: int | (int, Self) = pair\n")
+	var self_ok_report: Dictionary = probe.analyze_source(self_ok, "res://tests/self_bearing_union_ok.barista")
+	_expect(failures, self_ok_report.get("valid", false) == true, "Self-bearing union alternative admits (int, Self) pair")
+
+	var self_bad := _src_class("SelfBearingUnionBad extends Node\nfunc drive(other: SelfBearingUnionBad) -> void:\n\tvar pair: (int, SelfBearingUnionBad) = (1, other)\n\tvar link: int | (int, Self) = pair\n")
+	var self_bad_report: Dictionary = probe.analyze_source(self_bad, "res://tests/self_bearing_union_bad.barista")
+	_expect(failures, self_bad_report.get("valid", true) == false, "Self-bearing union alternative rejects foreign same-class pair")
+
+	# Declaration-index stays opt-in under analyze probes.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("GradualSelfUnionIndexGuard extends Node\n"), "res://tests/gradual_self_union_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"Self-contract gradual-union probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()

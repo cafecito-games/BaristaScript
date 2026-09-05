@@ -6,8 +6,10 @@
 /*  Target-UNION uses two-pass select + numeric store-carrier gate.       */
 /*  Coroutine[T] assignability matches phantom results invariantly.       */
 /*  TYPE_PARAMETER / @Self assignability arms (identity, undecidable     */
-/*  target, erased-source runtime check). Free-T undecidable laundering  */
-/*  remains M5 residual until method/class type parameters are live.     */
+/*  target, erased-source runtime check). destination_is_undecidable     */
+/*  type-parameter walk for gradual Self-union admission. Free-T         */
+/*  undecidable laundering remains M5 residual until method/class type   */
+/*  parameters are live.                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -145,6 +147,144 @@ bool BSTypeCompatibility::resolve_final_class_bound(const BSParser::DataType &p_
 	resolved.is_coroutine = resolved.is_coroutine || p_type.is_coroutine;
 	r_resolved = resolved;
 	return true;
+}
+
+bool BSTypeCompatibility::final_class_bound_survives_lowering(const BSParser::DataType &p_resolved_bound, bool p_wrappers_are_expressible) {
+	// Foundry final_class_bound_survives_lowering @ c9d5e35.
+	if (p_wrappers_are_expressible) {
+		return true;
+	}
+	return !p_resolved_bound.is_nullable && !(p_resolved_bound.is_meta_type && !p_resolved_bound.is_type_handle_annotation);
+}
+
+namespace {
+
+// Mirrors Variant::MAX_RECURSION_DEPTH / BSParser::MAX_NESTING_DEPTH (1024). Kept local: the parser
+// constant is private and godot-cpp's Variant does not expose the enumerator.
+static constexpr int TYPE_WALK_MAX_DEPTH = 1024;
+
+// Foundry _destination_has_erased_type_parameter @ c9d5e35: a method-scope parameter is chosen per
+// call and erased before the callee runs, so no frame has anything to check against. Nested under
+// unions / signatures the bound is never checked either. Free method-`T` cases stay M5 residual
+// until method generics are fully live; the walk matches Foundry for shapes Barista models.
+bool _destination_has_erased_type_parameter(const BSParser::DataType &p_type, int p_depth = 0,
+		bool p_final_bound_is_representable = true, bool p_wrappers_are_expressible = true) {
+	if (unlikely(p_depth > TYPE_WALK_MAX_DEPTH)) {
+		return false;
+	}
+
+	const bool representable = p_final_bound_is_representable && !(p_type.is_nullable && !p_wrappers_are_expressible);
+
+	if (p_type.kind == BSParser::DataType::TYPE_PARAMETER) {
+		if (!_is_erased_type_parameter(p_type)) {
+			return false;
+		}
+		BSParser::DataType resolved;
+		if (!BSTypeCompatibility::resolve_final_class_bound(p_type, resolved)) {
+			return true;
+		}
+		if (!BSTypeCompatibility::final_class_bound_survives_lowering(resolved, p_wrappers_are_expressible)) {
+			return true;
+		}
+		return !representable;
+	}
+
+	if (p_type.kind == BSParser::DataType::TUPLE) {
+		for (const BSParser::DataType &element : p_type.container_element_types) {
+			if (element.kind != BSParser::DataType::TYPE_PARAMETER && element.kind != BSParser::DataType::TUPLE) {
+				continue;
+			}
+			if (_destination_has_erased_type_parameter(element, p_depth + 1, representable, p_wrappers_are_expressible)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	const Vector<BSParser::DataType> *reified_slots[] = {
+		&p_type.container_element_types,
+		&p_type.type_arguments,
+	};
+	for (const Vector<BSParser::DataType> *slots : reified_slots) {
+		for (const BSParser::DataType &slot : *slots) {
+			const bool slot_representable = representable && slot.kind != BSParser::DataType::TUPLE;
+			if (_destination_has_erased_type_parameter(slot, p_depth + 1, slot_representable, false)) {
+				return true;
+			}
+		}
+	}
+
+	const Vector<BSParser::DataType> *erasing_slots[] = {
+		&p_type.method_parameter_types,
+		&p_type.method_return_type,
+		&p_type.method_rest_parameter_type,
+		&p_type.union_members,
+	};
+	for (const Vector<BSParser::DataType> *slots : erasing_slots) {
+		for (const BSParser::DataType &slot : *slots) {
+			if (_destination_has_erased_type_parameter(slot, p_depth + 1, false, false)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// Foundry _depends_on_receiver_type_parameter @ c9d5e35: class-scope non-`@Self` parameters in
+// positions a store would validate against a receiver. Callable/signature/union slots stay out —
+// erasure walks them separately.
+bool _depends_on_receiver_type_parameter(
+		const BSParser::DataType &p_type, bool p_nullable_is_expressible, int p_depth, bool p_exempt_final_bound = false) {
+	if (unlikely(p_depth > TYPE_WALK_MAX_DEPTH)) {
+		return false;
+	}
+	if (p_depth == 0 && p_type.is_meta_type && !p_type.is_type_handle_annotation) {
+		return false;
+	}
+	if (p_type.is_nullable && !p_nullable_is_expressible) {
+		return false;
+	}
+	if (p_type.kind == BSParser::DataType::TYPE_PARAMETER) {
+		const bool wrappers_are_expressible = p_depth == 0 || p_nullable_is_expressible;
+		BSParser::DataType resolved_bound;
+		if (p_exempt_final_bound && BSTypeCompatibility::resolve_final_class_bound(p_type, resolved_bound) &&
+				BSTypeCompatibility::final_class_bound_survives_lowering(resolved_bound, wrappers_are_expressible)) {
+			return false;
+		}
+		return p_type.type_parameter_scope == BSParser::DataType::TYPE_PARAMETER_CLASS &&
+				p_type.type_parameter_name != SNAME("@Self");
+	}
+	const bool child_expressible = p_nullable_is_expressible && p_type.kind == BSParser::DataType::TUPLE;
+	const bool crossing_into_container = p_type.kind != BSParser::DataType::TUPLE;
+	for (const BSParser::DataType &element_type : p_type.container_element_types) {
+		const bool child_exempt = p_exempt_final_bound &&
+				!(crossing_into_container && element_type.kind == BSParser::DataType::TUPLE);
+		if (_depends_on_receiver_type_parameter(element_type, child_expressible, p_depth + 1, child_exempt)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &type_argument : p_type.type_arguments) {
+		const bool child_exempt = p_exempt_final_bound && type_argument.kind != BSParser::DataType::TUPLE;
+		if (_depends_on_receiver_type_parameter(type_argument, false, p_depth + 1, child_exempt)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool _nullable_is_expressible_at_root(const BSParser::DataType &p_type) {
+	return p_type.kind == BSParser::DataType::TUPLE;
+}
+
+} // namespace
+
+bool BSTypeCompatibility::destination_is_undecidable_type_parameter(const BSParser::DataType &p_type, const Options &p_options) {
+	// Foundry destination_is_undecidable_type_parameter @ c9d5e35.
+	if (_destination_has_erased_type_parameter(p_type)) {
+		return true;
+	}
+	return !p_options.receiver_is_available &&
+			_depends_on_receiver_type_parameter(p_type, _nullable_is_expressible_at_root(p_type), 0, true);
 }
 
 BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const Options &p_options) {
