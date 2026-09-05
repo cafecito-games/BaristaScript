@@ -6,7 +6,8 @@
 /*  + find_witness_location / find_hidden_witness_declaration            */
 /*  (method-name keys) + RecordedTypeArgument / ClassTraitBinding        */
 /*  chain coherence against uses bindings + p_loaded_files load-graph    */
-/*  licensing. Runtime Function* witnesses remain residual under #60.    */
+/*  licensing + declaration-side recorded trait-argument queries.        */
+/*  Runtime Function* witnesses remain residual under #60.               */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -513,12 +514,79 @@ bool BSConformanceRegistry::has_conformance(const String &p_target_key, const St
 		return false;
 	}
 	std::lock_guard<std::mutex> lock(mutex);
+	return _has_visible_conformance(p_target_key, p_trait_name);
+}
+
+bool BSConformanceRegistry::_has_visible_conformance(const String &p_target_key, const StringName &p_trait_name) const {
 	const HashMap<StringName, String> *traits = index.getptr(p_target_key);
 	if (traits == nullptr) {
 		return false;
 	}
 	const String *source_file = traits->getptr(p_trait_name);
 	return source_file != nullptr && _is_visible(*source_file);
+}
+
+bool BSConformanceRegistry::_recorded_trait_arguments_for_key(const String &p_target_key,
+		const StringName &p_trait_name, Vector<RecordedTypeArgument> &r_arguments) const {
+	r_arguments.clear();
+	if (!_has_visible_conformance(p_target_key, p_trait_name)) {
+		return false;
+	}
+	const HashMap<StringName, String> *traits = index.getptr(p_target_key);
+	const Vector<Conformance> *entries = conformances_by_file.getptr(*traits->getptr(p_trait_name));
+	if (entries == nullptr) {
+		return false;
+	}
+	for (const Conformance &conformance : *entries) {
+		if (conformance.trait_name != p_trait_name || !conformance.target_keys.has(p_target_key)) {
+			continue;
+		}
+		if (conformance.trait_type_arguments.is_empty()) {
+			return false;
+		}
+		r_arguments = conformance.trait_type_arguments;
+		return true;
+	}
+	return false;
+}
+
+bool BSConformanceRegistry::get_recorded_trait_arguments(const String &p_target_key,
+		const StringName &p_trait_name, Vector<RecordedTypeArgument> &r_arguments) const {
+	r_arguments.clear();
+	if (p_target_key.is_empty() || p_trait_name == StringName()) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(mutex);
+	return _recorded_trait_arguments_for_key(p_target_key, p_trait_name, r_arguments);
+}
+
+bool BSConformanceRegistry::get_native_recorded_trait_arguments(const StringName &p_native_class,
+		const StringName &p_trait_name, Vector<RecordedTypeArgument> &r_arguments) const {
+	r_arguments.clear();
+	if (p_native_class == StringName() || p_trait_name == StringName()) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(mutex);
+	// The nearest conforming ancestor wins, matching how membership itself is answered. A hidden
+	// conformance does not shadow a visible one further up, for the same reason.
+	for (StringName cursor = p_native_class; cursor != StringName(); cursor = ClassDB::get_parent_class(cursor)) {
+		const String key = String(cursor);
+		if (_has_visible_conformance(key, p_trait_name)) {
+			return _recorded_trait_arguments_for_key(key, p_trait_name, r_arguments);
+		}
+	}
+	return false;
+}
+
+bool BSConformanceRegistry::get_builtin_recorded_trait_arguments(Variant::Type p_type,
+		const StringName &p_trait_name, Vector<RecordedTypeArgument> &r_arguments) const {
+	r_arguments.clear();
+	if (p_type == Variant::NIL || p_type == Variant::OBJECT || p_trait_name == StringName()) {
+		return false;
+	}
+	// Lock here rather than calling get_recorded_trait_arguments: std::mutex is not recursive.
+	std::lock_guard<std::mutex> lock(mutex);
+	return _recorded_trait_arguments_for_key(Variant::get_type_name(p_type), p_trait_name, r_arguments);
 }
 
 String BSConformanceRegistry::get_conformance_source(const String &p_target_key, const StringName &p_trait_name) const {

@@ -7,9 +7,10 @@
 /*  witness method-name keys / find_witness_location /                   */
 /*  find_hidden_witness_declaration + RecordedTypeArgument /             */
 /*  ClassTraitBinding chain-coherence against uses bindings +            */
-/*  p_loaded_files load-graph licensing. Runtime Function* witnesses and */
-/*  native/builtin recorded-argument query APIs remain residual under    */
-/*  #60.                                                                  */
+/*  p_loaded_files load-graph licensing + declaration-side               */
+/*  get_recorded_trait_arguments / get_native_recorded_trait_arguments / */
+/*  get_builtin_recorded_trait_arguments. Runtime Function* witnesses    */
+/*  and assignability call-site wiring remain residual under #60.        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -205,6 +206,11 @@ private:
 	void _rebuild_index();
 
 	/** Callers must hold `mutex`. */
+	bool _has_visible_conformance(const String &p_target_key, const StringName &p_trait_name) const;
+	bool _recorded_trait_arguments_for_key(const String &p_target_key, const StringName &p_trait_name,
+			Vector<RecordedTypeArgument> &r_arguments) const;
+
+	/** Callers must hold `mutex`. */
 	bool _candidate_conflicts(const Conformance &p_candidate, const String &p_source_file,
 			const Vector<const Conformance *> &p_view, RegistrationConflict &r_conflict) const;
 
@@ -246,6 +252,29 @@ public:
 	 * `p_trait_name`. Empty store → false (fail closed).
 	 */
 	bool has_conformance(const String &p_target_key, const StringName &p_trait_name) const;
+
+	/**
+	 * The type arguments a *visible declaration-side* conformance of `p_target_key` to
+	 * `p_trait_name` recorded. False when no visible conformance exists or it recorded none —
+	 * both an absence of evidence, never a wildcard. Deliberately not the runtime store.
+	 * Foundry `get_recorded_trait_arguments` @ c9d5e35.
+	 */
+	bool get_recorded_trait_arguments(const String &p_target_key, const StringName &p_trait_name,
+			Vector<RecordedTypeArgument> &r_arguments) const;
+
+	/**
+	 * The same, for an engine class. Walks `ClassDB::get_parent_class`; the nearest conforming
+	 * ancestor wins, matching Foundry `native_class_conforms` / membership reach.
+	 */
+	bool get_native_recorded_trait_arguments(const StringName &p_native_class,
+			const StringName &p_trait_name, Vector<RecordedTypeArgument> &r_arguments) const;
+
+	/**
+	 * The same, for a builtin value type. Builtins have no inheritance chain, so this is an
+	 * exact-key lookup keyed by `Variant::get_type_name`.
+	 */
+	bool get_builtin_recorded_trait_arguments(Variant::Type p_type, const StringName &p_trait_name,
+			Vector<RecordedTypeArgument> &r_arguments) const;
 
 	String get_conformance_source(const String &p_target_key, const StringName &p_trait_name) const;
 	Vector<Conformance> get_file_conformances(const String &p_source_file) const;
