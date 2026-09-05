@@ -114,14 +114,28 @@ public:
 			const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_other);
 
 	/**
+	 * Foundry `_recorded_arguments_conflict(recorded, Vector<DataType>)` @ c9d5e35:
+	 * reduces each destination argument and compares against the recorded vector.
+	 * Used by trait-target assignability when a retroactive conformance's record
+	 * contradicts the destination's live type arguments.
+	 */
+	static bool recorded_arguments_conflict(
+			const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_recorded,
+			const Vector<BSParser::DataType> &p_expected);
+
+	/**
+	 * Foundry project_class_trait_arguments @ c9d5e35: how `p_source`'s CLASS
+	 * chain binds `p_trait`'s type parameters through declared `uses`. False when
+	 * no class on the chain binds the trait (no-evidence / registry fallback).
+	 */
+	static bool project_class_trait_arguments(const BSParser::DataType &p_source,
+			const BSParser::ClassNode *p_trait, Vector<BSParser::DataType> &r_arguments);
+
+	/**
 	 * Foundry project_registry_trait_arguments @ c9d5e35: the trait arguments a
 	 * retroactive conformance on `p_source`'s CLASS chain recorded for
 	 * `p_trait_name`. Nearest conforming level wins (including empty nearer
 	 * shadowing a farther record). False when no level recorded any.
-	 *
-	 * Residual (#60): BSTypeCompatibility::check does not yet consult this for
-	 * trait-target assignability (Foundry fs_type.cpp ~1352–1447). Probe-tested
-	 * until that call site lands.
 	 */
 	static bool project_registry_trait_arguments(const BSParser::DataType &p_source,
 			const StringName &p_trait_name,

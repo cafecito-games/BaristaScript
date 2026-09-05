@@ -9,8 +9,9 @@
 /*  ClassTraitBinding chain-coherence against uses bindings +            */
 /*  p_loaded_files load-graph licensing + declaration-side               */
 /*  get_recorded_trait_arguments / get_native_recorded_trait_arguments / */
-/*  get_builtin_recorded_trait_arguments. Runtime Function* witnesses    */
-/*  and assignability call-site wiring remain residual under #60.        */
+/*  get_builtin_recorded_trait_arguments + native_class_conforms /       */
+/*  builtin_type_conforms. Runtime Function* witnesses remain residual   */
+/*  under #60.                                                           */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -275,6 +276,19 @@ public:
 	 */
 	bool get_builtin_recorded_trait_arguments(Variant::Type p_type, const StringName &p_trait_name,
 			Vector<RecordedTypeArgument> &r_arguments) const;
+
+	/**
+	 * Declaration-side native membership: walks `ClassDB::get_parent_class` so a conformance
+	 * declared on a base class is honored for any subclass (Foundry `native_class_conforms`
+	 * @ c9d5e35, runtime store omitted).
+	 */
+	bool native_class_conforms(const StringName &p_native_class, const StringName &p_trait_name) const;
+
+	/**
+	 * Declaration-side builtin membership: exact-key lookup by `Variant::get_type_name`
+	 * (Foundry `builtin_type_conforms` @ c9d5e35, runtime store omitted).
+	 */
+	bool builtin_type_conforms(Variant::Type p_type, const StringName &p_trait_name) const;
 
 	String get_conformance_source(const String &p_target_key, const StringName &p_trait_name) const;
 	Vector<Conformance> get_file_conformances(const String &p_source_file) const;
