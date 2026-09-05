@@ -46,6 +46,7 @@ func _init() -> void:
 	_test_union_union_assignability(failures)
 	_test_union_store_carrier_select(failures)
 	_test_enum_case_match_and_case_binds(failures)
+	_test_contextual_case_shorthand(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1767,3 +1768,75 @@ func _test_enum_case_match_and_case_binds(failures: PackedStringArray) -> void:
 		"ENUM_CASE match remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for ENUM_CASE match")
+
+
+func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
+	# Foundry resolve_contextual_case_pattern_type / resolve_contextual_case_value_pattern
+	# + reduce_type_test contextual `.Case` @ c9d5e35 (#60 residual).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var match_payload := _src_class("CtxMatchPayload extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\t.Move(dx, dy):\n\t\t\treturn dx + dy\n\t\t_:\n\t\t\treturn 0\n")
+	var match_payload_report: Dictionary = probe.analyze_source(match_payload, "res://tests/ctx_match_payload.barista")
+	_expect(failures, match_payload_report.get("valid", false) == true, ".Move(dx, dy) contextual match is valid")
+
+	var match_value := _src_class("CtxMatchValue extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\t.Quit:\n\t\t\treturn 1\n\t\t_:\n\t\t\treturn 0\n")
+	var match_value_report: Dictionary = probe.analyze_source(match_value, "res://tests/ctx_match_value.barista")
+	_expect(failures, match_value_report.get("valid", false) == true, ".Quit contextual match is valid")
+
+	var match_arity := _src_class("CtxMatchArity extends Node\nenum Message:\n\tMove(x: int, y: int)\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\t.Move(dx):\n\t\t\tpass\n")
+	var match_arity_report: Dictionary = probe.analyze_source(match_arity, "res://tests/ctx_match_arity.barista")
+	_expect(failures, match_arity_report.get("valid", true) == false, ".Move arity mismatch is invalid")
+	var saw_match_arity := false
+	for message in match_arity_report.get("errors", PackedStringArray()):
+		if "carries 2 payload value(s), but 1 pattern(s) were given" in message:
+			saw_match_arity = true
+	_expect(failures, saw_match_arity, "contextual ENUM_CASE payload arity diagnostic")
+
+	var match_unknown := _src_class("CtxMatchUnknown extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\t.Nope:\n\t\t\tpass\n")
+	var match_unknown_report: Dictionary = probe.analyze_source(match_unknown, "res://tests/ctx_match_unknown.barista")
+	_expect(failures, match_unknown_report.get("valid", true) == false, "unknown contextual case is invalid")
+	var saw_unknown := false
+	for message in match_unknown_report.get("errors", PackedStringArray()):
+		if 'Tagged union "Message" has no case "Nope"' in message:
+			saw_unknown = true
+	_expect(failures, saw_unknown, "unknown contextual case diagnostic")
+
+	var match_bad_subject := _src_class("CtxMatchBadSubject extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(n: int) -> void:\n\tmatch n:\n\t\t.Quit:\n\t\t\tpass\n")
+	var match_bad_subject_report: Dictionary = probe.analyze_source(match_bad_subject, "res://tests/ctx_match_bad_subject.barista")
+	_expect(failures, match_bad_subject_report.get("valid", true) == false, "contextual case on non-union subject is invalid")
+	var saw_bad_subject := false
+	for message in match_bad_subject_report.get("errors", PackedStringArray()):
+		if "needs a tagged-union match subject" in message and 'type "int"' in message:
+			saw_bad_subject = true
+	_expect(failures, saw_bad_subject, "non-union subject contextual shorthand diagnostic")
+
+	var is_ok := _src_class("CtxIsOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tif msg is .Move(dx, dy):\n\t\treturn dx + dy\n\treturn 0\n")
+	var is_ok_report: Dictionary = probe.analyze_source(is_ok, "res://tests/ctx_is_ok.barista")
+	_expect(failures, is_ok_report.get("valid", false) == true, "is .Move(dx, dy) contextual case binds are valid")
+
+	var is_arity := _src_class("CtxIsArity extends Node\nenum Message:\n\tMove(x: int, y: int)\nfunc handle(msg: Message) -> void:\n\tif msg is .Move(dx):\n\t\tpass\n")
+	var is_arity_report: Dictionary = probe.analyze_source(is_arity, "res://tests/ctx_is_arity.barista")
+	_expect(failures, is_arity_report.get("valid", true) == false, "contextual is-case arity mismatch is invalid")
+	var saw_is_arity := false
+	for message in is_arity_report.get("errors", PackedStringArray()):
+		if "carries 2 payload value(s), but 1 bind(s) were given" in message:
+			saw_is_arity = true
+	_expect(failures, saw_is_arity, "contextual is-case payload arity diagnostic")
+
+	var is_bad_operand := _src_class("CtxIsBadOperand extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(n: int) -> void:\n\tif n is .Quit:\n\t\tpass\n")
+	var is_bad_operand_report: Dictionary = probe.analyze_source(is_bad_operand, "res://tests/ctx_is_bad_operand.barista")
+	_expect(failures, is_bad_operand_report.get("valid", true) == false, "is .Quit on non-union operand is invalid")
+	var saw_bad_operand := false
+	for message in is_bad_operand_report.get("errors", PackedStringArray()):
+		if 'needs a tagged-union "is" operand' in message and 'type "int"' in message:
+			saw_bad_operand = true
+	_expect(failures, saw_bad_operand, "non-union is-operand contextual shorthand diagnostic")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(match_payload, "res://tests/ctx_match_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "contextual match remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(match_payload, "res://tests/ctx_match_is_valid.barista"),
+		"contextual match remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for contextual case")
