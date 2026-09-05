@@ -60,22 +60,6 @@ func _kw_class_name() -> String:
 func _src_class(body_after_keyword_space: String) -> String:
 	return _kw_class_name() + " " + body_after_keyword_space
 
-func _heal_class_name(source: String) -> String:
-	# If a poisoned constant flipped class_name→class_nane, rebuild from parts.
-	if source.find("class_nane") != -1:
-		source = source.replace("class_nane", "class_" + "name")
-	if source.find("class_name") == -1:
-		return source
-	var parts := source.split("class_name")
-	var out := ""
-	for i in range(parts.size()):
-		if i > 0:
-			out += _kw_class_name()
-		out += parts[i]
-	return out
-
-
-
 
 func _test_parser_lifecycle(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()

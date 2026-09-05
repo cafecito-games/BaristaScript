@@ -71,37 +71,51 @@ godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::Strin
 
 	const String path = "res://tests/fold_probe.barista";
 	const String source = vformat("var probe_expression = %s\n", p_expression_source);
-	BSCache::set_source_override(path, source);
-	BSParser parser;
-	BSAnalyzer analyzer(&parser);
-	Error err = parser.parse(source, path, false);
-	if (err == OK) {
-		err = analyzer.analyze();
+	Error err = ERR_BUG;
+	bool has_unary_sign = false;
+	bool is_constant = false;
+	Variant reduced_value;
+	bool found_expression = false;
+	{
+		BSCache::set_source_override(path, source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		err = parser.parse(source, path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			errors.push_back(pe.message);
+		}
+		if (err == OK && errors.is_empty()) {
+			const BSParser::ExpressionNode *expression = _find_fold_expression(parser.get_tree());
+			if (expression != nullptr) {
+				found_expression = true;
+				has_unary_sign = _expression_has_unary_sign(expression);
+				is_constant = expression->is_constant;
+				reduced_value = expression->reduced_value;
+			}
+		}
 	}
 	BSCache::clear_source_override(path);
-	for (const BSParser::ParserError &pe : parser.get_errors()) {
-		errors.push_back(pe.message);
-	}
 	result["errors"] = errors;
 	if (err != OK || !errors.is_empty()) {
 		return result;
 	}
-
-	const BSParser::ExpressionNode *expression = _find_fold_expression(parser.get_tree());
-	if (expression == nullptr) {
+	if (!found_expression) {
 		errors.push_back("No return expression found.");
 		result["errors"] = errors;
 		return result;
 	}
-	result["has_unary_sign"] = _expression_has_unary_sign(expression);
-	if (!expression->is_constant) {
+	result["has_unary_sign"] = has_unary_sign;
+	if (!is_constant) {
 		errors.push_back("Expression did not constant-fold.");
 		result["errors"] = errors;
 		return result;
 	}
 	result["ok"] = true;
-	result["value"] = expression->reduced_value;
-	result["value_type"] = (int)expression->reduced_value.get_type();
+	result["value"] = reduced_value;
+	result["value_type"] = (int)reduced_value.get_type();
 	return result;
 }
 
