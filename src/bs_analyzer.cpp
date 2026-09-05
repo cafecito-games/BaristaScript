@@ -374,15 +374,8 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		return;
 	}
 
-	// Nested classes first so same-file `extends Sibling` can see already-resolved peers, and so
-	// on-demand resolve from a later sibling still finds an unset base to fill.
-	for (int i = 0; i < p_class->members.size(); i++) {
-		const BSParser::ClassNode::Member &member = p_class->members[i];
-		if (member.type == BSParser::ClassNode::Member::CLASS) {
-			resolve_class_inheritance(member.m_class);
-		}
-	}
-
+	// Foundry resolves the class itself before nested members (`resolve_class_inheritance(..., true)`),
+	// so an outer is already set when a nested `extends Sibling` walks scope via `outer`.
 	if (p_class->base_type.is_resolving()) {
 		push_error(vformat(R"(Could not resolve class "%s": Cyclic reference.)",
 						   p_class->identifier != nullptr ? String(p_class->identifier->name) : String("<main>")),
@@ -597,6 +590,14 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 	p_class->base_type = result;
 	class_meta.native_type = result.native_type;
 	p_class->set_datatype(class_meta);
+
+	// Nested classes after the outer is solved (Foundry recursive inheritance pass).
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::CLASS) {
+			resolve_class_inheritance(member.m_class);
+		}
+	}
 }
 
 Error BSAnalyzer::run_phase_inheritance_resolution() {
