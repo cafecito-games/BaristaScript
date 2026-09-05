@@ -1538,7 +1538,7 @@ func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:
 	var signal_report: Dictionary = probe.analyze_source(signal_ok, "res://tests/builtin_signal_annot.barista")
 	_expect(failures, signal_report.get("valid", false) == true, "bare Signal annotation resolves as builtin")
 
-	var number_ok := "class_name BuiltinNumberAnnot extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = n\n"
+	var number_ok := "class_name BuiltinNumberAnnot extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = 1\n"
 	var number_report: Dictionary = probe.analyze_source(number_ok, "res://tests/builtin_number_annot.barista")
 	_expect(failures, number_report.get("valid", false) == true, "Number annotation resolves as int|float union")
 
