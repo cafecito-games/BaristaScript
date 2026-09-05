@@ -10,6 +10,7 @@
 /*  connect-callable (#60 call TU),                                       */
 /*  unused private/signal + built-in annotation resolve (#60 surface),    */
 /*  user-facing builtin type annotations via get_builtin_type (#60),      */
+/*  ENUM_CASE / case-bind / container match pattern depth (#60),           */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -93,8 +94,9 @@ public:
 	 * `fs_analyzer_flow_finality.cpp`). LOCAL + INSTANCE + STATIC `final var`
 	 * definite assignment / illegal writes, trait-member flattening into
 	 * implementers, plus if/while/assert null-check and `is` type-test flow
-	 * narrowing for locals/parameters. Match-branch narrowing, lambda capture
-	 * clearing, and compound-assignment narrowed reads remain follow-up under #60.
+	 * narrowing for locals/parameters (including ENUM_CASE arms once
+	 * `case_datatype` is published). Lambda capture clearing and
+	 * compound-assignment narrowed reads remain follow-up under #60.
 	 */
 	class FlowFinalityContext {
 		BSAnalyzer *analyzer = nullptr;
@@ -237,6 +239,8 @@ public:
 	void commit_or_remove_declaration(bool p_success);
 
 	static BSParser::DataType type_from_variant(const Variant &p_value);
+	/** Foundry type_from_metatype @ c9d5e35: meta → value (ENUM → INT / tagged ARRAY). */
+	static BSParser::DataType type_from_metatype(const BSParser::DataType &p_meta_type);
 	/** D1-trimmed PropertyInfo → DataType decode for MethodInfo call validation (@ c9d5e35). */
 	BSParser::DataType type_from_property(const PropertyInfo &p_property, bool p_is_arg = false, bool p_is_readonly = false) const;
 
@@ -279,6 +283,17 @@ private:
 	/** Counts emit_signal/connect/disconnect/is_connected as signal uses (Foundry @ c9d5e35). */
 	void mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_is_self);
 
+	/**
+	 * Foundry resolve_enum_values @ c9d5e35 (`fs_analyzer_surface.cpp`): publish
+	 * named enum / tagged-union identity + case tags/payload field types.
+	 * Generic union parameters remain M5 / #60 follow-up.
+	 */
+	BSParser::DataType resolve_enum_values(BSParser::EnumNode *p_enum, const BSParser::DataType &p_enum_type, BSParser::ClassNode *p_owner);
+	/** Foundry make_class_enum_type shell used before resolve_enum_values. */
+	static BSParser::DataType make_class_enum_type(const StringName &p_enum_name, BSParser::ClassNode *p_class, const String &p_script_path, bool p_meta = true);
+	/** Look up a same-file / enclosing-class named enum member (lazy-resolves values). */
+	BSParser::DataType lookup_local_enum_meta_type(const StringName &p_name, BSParser::Node *p_source);
+
 	void reduce_literal(BSParser::LiteralNode *p_literal);
 	void reduce_unary_op(BSParser::UnaryOpNode *p_unary_op);
 	void reduce_binary_op(BSParser::BinaryOpNode *p_binary_op);
@@ -288,18 +303,22 @@ private:
 	void reduce_array(BSParser::ArrayNode *p_array);
 	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);
 	void reduce_ternary(BSParser::TernaryOpNode *p_ternary);
-	/** Foundry reduce_type_test starter (@ c9d5e35): resolve `is T` test type for flow narrowing. */
+	/** Foundry reduce_type_test (@ c9d5e35): resolve `is T` + case-bind payload typing. */
 	void reduce_type_test(BSParser::TypeTestNode *p_type_test);
+	/** Foundry resolve_type_test_case_binds @ c9d5e35: type `is Message.Move(x, y)` binds. */
+	void resolve_type_test_case_binds(BSParser::TypeTestNode *p_type_test, const BSParser::DataType &p_test_type);
 	void analyze_if(BSParser::IfNode *p_if);
 	/** Foundry resolve_match @ c9d5e35 (match-branch narrowing slice): patterns + per-arm narrowing. */
 	void resolve_match(BSParser::MatchNode *p_match);
 	void resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test);
 	/**
-	 * Foundry resolve_match_pattern starter (@ c9d5e35): LITERAL / EXPRESSION / WILDCARD / BIND
-	 * depth for subject `is T` classification and native meta-type patterns. ENUM_CASE /
-	 * container patterns remain follow-up under #60.
+	 * Foundry resolve_match_pattern @ c9d5e35: LITERAL / EXPRESSION / WILDCARD / BIND /
+	 * ENUM_CASE / ARRAY / DICTIONARY / TUPLE / REST. Contextual `.Case` shorthand and
+	 * tagged-union exhaustiveness remain follow-up under #60.
 	 */
-	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test);
+	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type = nullptr);
+	/** Foundry resolve_match_case_pattern @ c9d5e35: `Message.Move(x, _)` payload typing. */
+	void resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type);
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);

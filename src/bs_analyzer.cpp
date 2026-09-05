@@ -8,7 +8,8 @@
 /*  connect-callable (#60 call TU),                                       */
 /*  resolved_traits + trait-member lookup for flattening finality,        */
 /*  unused private/signal surface, trait requirement / conformance        */
-/*  witness starter (#60 conformance TU).                                 */
+/*  witness starter (#60 conformance TU), ENUM_CASE / case-bind /         */
+/*  container match pattern depth (#60).                                  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -604,6 +605,16 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			return result;
 		}
 
+		// Same-file / enclosing-class named enum before ClassDB / declaration-index lookup.
+		{
+			BSParser::DataType local_enum = lookup_local_enum_meta_type(name, p_type_node);
+			if (local_enum.is_set() && local_enum.kind == BSParser::DataType::ENUM) {
+				result = type_from_metatype(local_enum);
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
+		}
+
 		if (name == SNAME("Self") && current_class != nullptr) {
 			// Foundry datatype_from_type_node @ c9d5e35: Self lowers to @Self bound by the
 			// declaring class so trait signature matching can reify it to the implementer.
@@ -676,6 +687,35 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		}
 		qualified += String(p_type_node->type_chain[i]->name);
 	}
+
+	// `Message.Move` (or longer chains ending in a case) when the parser asked for an enum case.
+	if (p_type_node->type_chain.size() >= 2) {
+		const StringName head_name = p_type_node->type_chain[0]->name;
+		BSParser::DataType local_enum = lookup_local_enum_meta_type(head_name, p_type_node);
+		if (local_enum.is_set() && local_enum.kind == BSParser::DataType::ENUM) {
+			if (p_type_node->allows_enum_case && local_enum.is_tagged_union) {
+				if (p_type_node->type_chain.size() > 2) {
+					push_error(R"(Enum cases cannot contain nested types.)", p_type_node->type_chain[2]);
+					result.kind = BSParser::DataType::VARIANT;
+					return result;
+				}
+				const StringName case_name = p_type_node->type_chain[1]->name;
+				if (!local_enum.enum_values.has(case_name)) {
+					push_error(vformat(R"(Enum "%s" has no case named "%s".)", local_enum.to_string(), case_name), p_type_node->type_chain[1]);
+					result.kind = BSParser::DataType::VARIANT;
+					return result;
+				}
+				result = type_from_metatype(local_enum);
+				result.enum_case_name = case_name;
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
+			push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", p_type_node->type_chain[1]->name, local_enum.to_string()), p_type_node->type_chain[1]);
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+	}
+
 	BSParser::DataType indexed = resolve_named_type(qualified, p_type_node);
 	if (indexed.kind != BSParser::DataType::VARIANT) {
 		return indexed;
@@ -750,6 +790,13 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 					signal_type.method_info = mi;
 					member.signal->method_info = mi;
 					member.signal->set_datatype(signal_type);
+				}
+				break;
+			case BSParser::ClassNode::Member::ENUM:
+				if (member.m_enum != nullptr && member.m_enum->identifier != nullptr) {
+					const String script_path = parser != nullptr ? parser->script_path : String();
+					BSParser::DataType enum_shell = make_class_enum_type(member.m_enum->identifier->name, p_class, script_path, true);
+					resolve_enum_values(member.m_enum, enum_shell, p_class);
 				}
 				break;
 			default:
@@ -1317,9 +1364,8 @@ void BSAnalyzer::reduce_ternary(BSParser::TernaryOpNode *p_ternary) {
 }
 
 void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
-	// Foundry reduce_type_test starter (@ c9d5e35): resolve the tested type so flow narrowing can
-	// overlay it on locals/parameters. Contextual enum-case shorthand, case-bind payload typing,
-	// constant folding, and exhausting-alternative diagnostics remain follow-up under #60.
+	// Foundry reduce_type_test @ c9d5e35: resolve the tested type (including enum cases) and
+	// type case-bind payload identifiers. Contextual shorthand / constant folding remain #60.
 	if (p_type_test == nullptr) {
 		return;
 	}
@@ -1341,16 +1387,45 @@ void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
 		test_type = BSParser::DataType();
 	}
 	p_type_test->test_datatype = test_type;
+	resolve_type_test_case_binds(p_type_test, test_type);
+}
 
-	if (!test_type.is_set()) {
-		for (BSParser::IdentifierNode *bind : p_type_test->case_binds) {
-			if (bind != nullptr) {
-				BSParser::DataType bind_type;
-				bind_type.kind = BSParser::DataType::VARIANT;
-				bind_type.type_source = BSParser::DataType::INFERRED;
-				bind->set_datatype(bind_type);
-			}
+void BSAnalyzer::resolve_type_test_case_binds(BSParser::TypeTestNode *p_type_test, const BSParser::DataType &p_test_type) {
+	if (p_type_test == nullptr || p_type_test->case_binds.is_empty()) {
+		return;
+	}
+
+	const BSParser::DataType::EnumCasePayload *payload = nullptr;
+	const bool is_enum_case_test = p_test_type.is_tagged_union_type() && p_test_type.enum_case_name != StringName();
+
+	if (!is_enum_case_test) {
+		push_error(R"*(Only a tagged-union case can bind payload values, e.g. "value is Message.Move(x, y)".)*", p_type_test);
+	} else {
+		if (!p_type_test->binds_allowed) {
+			push_error(R"(Case payload binds are only allowed in the condition of "if", "elif", "while" or "assert", directly or as an "and" operand.)", p_type_test);
 		}
+		payload = p_test_type.get_enum_case_payload(p_test_type.enum_case_name);
+		if (payload == nullptr) {
+			push_error(vformat(R"(Case "%s" carries no payload, so it cannot bind values.)", p_test_type.enum_case_name), p_type_test);
+		} else if (payload->field_types.size() != p_type_test->case_binds.size()) {
+			push_error(vformat(R"(Case "%s" carries %d payload value(s), but %d bind(s) were given.)", p_test_type.enum_case_name, payload->field_types.size(), p_type_test->case_binds.size()), p_type_test);
+			payload = nullptr;
+		}
+	}
+
+	for (int i = 0; i < p_type_test->case_binds.size(); i++) {
+		BSParser::IdentifierNode *bind = p_type_test->case_binds[i];
+		if (bind == nullptr) {
+			continue;
+		}
+		BSParser::DataType bind_type;
+		if (payload != nullptr && i < payload->field_types.size()) {
+			bind_type = payload->field_types[i];
+		} else {
+			bind_type.kind = BSParser::DataType::VARIANT;
+			bind_type.type_source = BSParser::DataType::INFERRED;
+		}
+		bind->set_datatype(bind_type);
 	}
 }
 
@@ -1416,9 +1491,19 @@ void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch,
 	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
 }
 
-void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test) {
+void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type) {
 	if (p_match_pattern == nullptr) {
 		return;
+	}
+
+	BSParser::DataType match_test_type;
+	bool has_match_test_type = false;
+	if (p_match_test != nullptr) {
+		match_test_type = p_match_test->get_datatype();
+		has_match_test_type = match_test_type.is_set();
+	} else if (p_match_test_type != nullptr) {
+		match_test_type = *p_match_test_type;
+		has_match_test_type = match_test_type.is_set();
 	}
 
 	BSParser::DataType result;
@@ -1472,8 +1557,8 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 			result.kind = BSParser::DataType::VARIANT;
 			break;
 		case BSParser::PatternNode::PT_BIND:
-			if (p_match_test != nullptr && p_match_test->get_datatype().is_set()) {
-				result = p_match_test->get_datatype();
+			if (has_match_test_type) {
+				result = match_test_type;
 			} else {
 				result.kind = BSParser::DataType::VARIANT;
 			}
@@ -1482,17 +1567,127 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 				p_match_pattern->bind->set_datatype(result);
 			}
 			break;
-		case BSParser::PatternNode::PT_ENUM_CASE:
 		case BSParser::PatternNode::PT_ARRAY:
+			for (int i = 0; i < p_match_pattern->array.size(); i++) {
+				BSParser::DataType element_type;
+				const BSParser::DataType *element_type_ptr = nullptr;
+				if (has_match_test_type && match_test_type.kind == BSParser::DataType::BUILTIN &&
+						match_test_type.builtin_type == Variant::ARRAY && match_test_type.has_container_element_type(0)) {
+					element_type = match_test_type.get_container_element_type(0);
+					element_type_ptr = &element_type;
+				}
+				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr);
+			}
+			result = p_match_pattern->get_datatype();
+			break;
 		case BSParser::PatternNode::PT_DICTIONARY:
-		case BSParser::PatternNode::PT_TUPLE:
+			for (int i = 0; i < p_match_pattern->dictionary.size(); i++) {
+				if (p_match_pattern->dictionary[i].key != nullptr) {
+					reduce_expression(p_match_pattern->dictionary[i].key);
+					if (!p_match_pattern->dictionary[i].key->is_constant) {
+						push_error(R"(Expression in dictionary pattern key must be a constant.)", p_match_pattern->dictionary[i].key);
+					}
+				}
+				if (p_match_pattern->dictionary[i].value_pattern != nullptr) {
+					BSParser::DataType value_type;
+					const BSParser::DataType *value_type_ptr = nullptr;
+					if (has_match_test_type && match_test_type.kind == BSParser::DataType::BUILTIN &&
+							match_test_type.builtin_type == Variant::DICTIONARY && match_test_type.has_container_element_type(1)) {
+						value_type = match_test_type.get_container_element_type(1);
+						value_type_ptr = &value_type;
+					}
+					resolve_match_pattern(p_match_pattern->dictionary[i].value_pattern, nullptr, value_type_ptr);
+				}
+			}
+			result = p_match_pattern->get_datatype();
+			break;
+		case BSParser::PatternNode::PT_TUPLE: {
+			const bool subject_is_tuple = has_match_test_type && match_test_type.is_tuple();
+			if (subject_is_tuple && match_test_type.get_container_element_type_count() != p_match_pattern->array.size()) {
+				push_error(vformat(R"(Tuple pattern has %d element(s), but "%s" has %d.)", p_match_pattern->array.size(), match_test_type.to_string(), match_test_type.get_container_element_type_count()), p_match_pattern);
+			}
+
+			bool all_irrefutable = true;
+			for (int i = 0; i < p_match_pattern->array.size(); i++) {
+				BSParser::DataType element_type;
+				const BSParser::DataType *element_type_ptr = nullptr;
+				if (subject_is_tuple && match_test_type.has_container_element_type(i)) {
+					element_type = match_test_type.get_container_element_type(i);
+					element_type_ptr = &element_type;
+				}
+				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr);
+				all_irrefutable = all_irrefutable && p_match_pattern->array[i] != nullptr && p_match_pattern->array[i]->is_irrefutable;
+			}
+			p_match_pattern->is_irrefutable = all_irrefutable && subject_is_tuple && !match_test_type.is_nullable &&
+					match_test_type.get_container_element_type_count() == p_match_pattern->array.size();
+			result = p_match_pattern->get_datatype();
+		} break;
+		case BSParser::PatternNode::PT_ENUM_CASE:
+			resolve_match_case_pattern(p_match_pattern, has_match_test_type ? &match_test_type : nullptr);
+			result = p_match_pattern->case_datatype;
+			break;
 		case BSParser::PatternNode::PT_REST:
-			// Container / ENUM_CASE / rest pattern depth remain follow-up under #60.
 			result.kind = BSParser::DataType::VARIANT;
 			break;
 	}
 
 	p_match_pattern->set_datatype(result);
+}
+
+void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type) {
+	if (p_match_pattern == nullptr) {
+		return;
+	}
+
+	BSParser::DataType case_type;
+	bool case_type_failed = false;
+	if (p_match_pattern->is_contextual_enum_case) {
+		// Contextual `.Move(x)` shorthand needs subject-supplied union qualification; leave for #60.
+		push_error(R"*(Contextual shorthand case patterns need a tagged-union match subject; spell the case with its union, e.g. "Message.Move(x)".)*", p_match_pattern);
+		case_type_failed = true;
+	} else {
+		const int errors_before_case_type = parser != nullptr ? parser->get_errors().size() : 0;
+		case_type = datatype_from_type_node(p_match_pattern->case_type);
+		case_type_failed = parser != nullptr && parser->get_errors().size() > errors_before_case_type;
+	}
+	p_match_pattern->case_datatype = case_type;
+
+	const BSParser::DataType::EnumCasePayload *payload = nullptr;
+	if (case_type.is_set() && !case_type_failed) {
+		if (!case_type.is_tagged_union_type() || case_type.enum_case_name == StringName()) {
+			push_error(R"*(Only a tagged-union case can match payload values, e.g. "Message.Move(x, y)".)*", p_match_pattern);
+		} else {
+			BSParser::DataType union_type = case_type;
+			union_type.enum_case_name = StringName();
+			if (p_match_test_type != nullptr && p_match_test_type->is_hard_type() &&
+					!BSTypeCompatibility::is_compatible(union_type, *p_match_test_type) &&
+					!BSTypeCompatibility::is_compatible(*p_match_test_type, union_type)) {
+				push_error(vformat(R"(Pattern matches a case of "%s", but the "match" subject is of type "%s".)", union_type.to_string(), p_match_test_type->to_string()), p_match_pattern);
+			}
+
+			payload = case_type.get_enum_case_payload(case_type.enum_case_name);
+			if (payload == nullptr) {
+				push_error(vformat(R"(Case "%s" carries no payload, so it cannot match payload values.)", case_type.enum_case_name), p_match_pattern);
+			} else if (payload->field_types.size() != p_match_pattern->array.size()) {
+				push_error(vformat(R"(Case "%s" carries %d payload value(s), but %d pattern(s) were given.)", case_type.enum_case_name, payload->field_types.size(), p_match_pattern->array.size()), p_match_pattern);
+				payload = nullptr;
+			}
+		}
+	}
+
+	bool all_irrefutable = true;
+	for (int i = 0; i < p_match_pattern->array.size(); i++) {
+		BSParser::DataType field_type;
+		const BSParser::DataType *field_type_ptr = nullptr;
+		if (payload != nullptr && i < payload->field_types.size()) {
+			field_type = payload->field_types[i];
+			field_type_ptr = &field_type;
+		}
+		resolve_match_pattern(p_match_pattern->array[i], nullptr, field_type_ptr);
+		all_irrefutable = all_irrefutable && p_match_pattern->array[i] != nullptr && p_match_pattern->array[i]->is_irrefutable;
+	}
+	p_match_pattern->is_irrefutable = false;
+	p_match_pattern->case_payload_is_irrefutable = payload != nullptr && all_irrefutable;
 }
 
 void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root) {

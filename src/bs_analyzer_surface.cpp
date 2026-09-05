@@ -1,13 +1,12 @@
 /**************************************************************************/
 /*  bs_analyzer_surface.cpp                                               */
 /*                                                                        */
-/*  #60 class-body surface diagnostics starter. Ports unused-private /    */
-/*  unused-signal post-pass and built-in resolve_annotation from Foundry  */
-/*  fs_analyzer.cpp resolve_class_body / resolve_annotation @ c9d5e35     */
-/*  (Foundry keeps these in the main analyzer TU; BaristaScript stages    */
-/*  them here under the #60 surface residual while fs_analyzer_surface    */
-/*  inheritance/interface depth remains follow-up). FS* -> BS*; engine    */
-/*  contact through bs_platform.h.                                        */
+/*  #60 class-body surface diagnostics. Ports unused-private /            */
+/*  unused-signal post-pass, built-in resolve_annotation, and             */
+/*  resolve_enum_values from Foundry @ c9d5e35 (fs_analyzer.cpp /         */
+/*  fs_analyzer_surface.cpp). Remaining surface inheritance/cross-file    */
+/*  member depth remains follow-up under #60. FS* -> BS*; engine contact  */
+/*  through bs_platform.h.                                                */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -149,6 +148,130 @@ void BSAnalyzer::warn_unused_class_members(BSParser::ClassNode *p_class) {
 #else
 	(void)p_class;
 #endif
+}
+
+#define ENUM_SEPARATOR "."
+
+BSParser::DataType BSAnalyzer::make_class_enum_type(const StringName &p_enum_name, BSParser::ClassNode *p_class, const String &p_script_path, bool p_meta) {
+	BSParser::DataType type;
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	type.kind = BSParser::DataType::ENUM;
+	type.builtin_type = p_meta ? Variant::DICTIONARY : Variant::INT;
+	type.enum_type = p_enum_name;
+	type.is_constant = true;
+	type.is_meta_type = p_meta;
+	if (p_class != nullptr && !p_class->fqcn.is_empty()) {
+		type.native_type = StringName(p_class->fqcn + ENUM_SEPARATOR + String(p_enum_name));
+	} else {
+		type.native_type = p_enum_name;
+	}
+	type.class_type = p_class;
+	type.script_path = p_script_path;
+	return type;
+}
+
+BSParser::DataType BSAnalyzer::type_from_metatype(const BSParser::DataType &p_meta_type) {
+	BSParser::DataType result = p_meta_type;
+	result.is_meta_type = false;
+	result.is_pseudo_type = false;
+	if (p_meta_type.kind == BSParser::DataType::ENUM) {
+		// Tagged unions erase to read-only [tag, payload...] Arrays; plain enums stay INT-backed.
+		result.builtin_type = p_meta_type.is_tagged_union ? Variant::ARRAY : Variant::INT;
+	} else {
+		result.is_constant = false;
+	}
+	return result;
+}
+
+BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, const BSParser::DataType &p_enum_type, BSParser::ClassNode *p_owner) {
+	if (p_enum == nullptr || p_owner == nullptr) {
+		return p_enum_type;
+	}
+	if (p_enum->get_datatype().is_set()) {
+		return p_enum->get_datatype();
+	}
+
+	BSParser::ClassNode *previous_class = current_class;
+	current_class = p_owner;
+
+	BSParser::DataType enum_type = p_enum_type;
+	enum_type.is_tagged_union = p_enum->is_tagged_union;
+
+	if (!p_enum->type_parameters.is_empty()) {
+		// Generic tagged unions remain M5; still publish a shell so later references fail closed.
+		push_error("Generic tagged-union specialization is not available until M5.", p_enum);
+		enum_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		enum_type.kind = BSParser::DataType::ENUM;
+		p_enum->set_datatype(enum_type);
+		current_class = previous_class;
+		return enum_type;
+	}
+
+	// Publish identity before payload field types so a payload naming this union does not re-enter.
+	if (enum_type.is_tagged_union) {
+		p_enum->set_datatype(enum_type);
+	}
+
+	Dictionary dictionary;
+	for (int i = 0; i < p_enum->values.size(); i++) {
+		BSParser::EnumNode::Value &element = p_enum->values.write[i];
+		if (element.identifier == nullptr) {
+			continue;
+		}
+
+		if (enum_type.is_tagged_union) {
+			element.value = i;
+			element.resolved = true;
+			if (element.has_payload()) {
+				BSParser::DataType::EnumCasePayload payload;
+				for (const BSParser::EnumNode::PayloadField &field : element.payload_fields) {
+					payload.field_names.push_back(field.identifier != nullptr ? field.identifier->name : StringName());
+					payload.field_types.push_back(type_from_metatype(datatype_from_type_node(field.type)));
+				}
+				enum_type.enum_case_payloads[element.identifier->name] = payload;
+			}
+		} else if (element.custom_value != nullptr) {
+			reduce_expression(element.custom_value);
+			if (!element.custom_value->is_constant) {
+				push_error(R"(Enum values must be constant.)", element.custom_value);
+			} else if (element.custom_value->reduced_value.get_type() != Variant::INT) {
+				push_error(R"(Enum values must be integers.)", element.custom_value);
+			} else {
+				element.value = element.custom_value->reduced_value;
+				element.resolved = true;
+			}
+		} else {
+			push_error(R"(Enum values must have an explicit integer value.)", element.identifier);
+		}
+
+		enum_type.enum_values[element.identifier->name] = element.value;
+		dictionary[String(element.identifier->name)] = element.value;
+	}
+
+	p_enum->set_datatype(enum_type);
+	p_enum->dictionary = dictionary;
+	current_class = previous_class;
+	return enum_type;
+}
+
+BSParser::DataType BSAnalyzer::lookup_local_enum_meta_type(const StringName &p_name, BSParser::Node *p_source) {
+	(void)p_source;
+	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+		if (!scope->has_member(p_name)) {
+			continue;
+		}
+		const BSParser::ClassNode::Member &member = scope->get_member(p_name);
+		if (member.type != BSParser::ClassNode::Member::ENUM || member.m_enum == nullptr) {
+			continue;
+		}
+		BSParser::DataType enum_meta = member.m_enum->get_datatype();
+		if (!enum_meta.is_set()) {
+			const String script_path = parser != nullptr ? parser->script_path : String();
+			enum_meta = resolve_enum_values(member.m_enum, make_class_enum_type(p_name, scope, script_path, true), scope);
+		}
+		return enum_meta;
+	}
+	return BSParser::DataType();
 }
 
 void BSAnalyzer::mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_is_self) {

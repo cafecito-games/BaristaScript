@@ -45,6 +45,7 @@ func _init() -> void:
 	_test_builtin_annotation_resolve(failures)
 	_test_union_union_assignability(failures)
 	_test_union_store_carrier_select(failures)
+	_test_enum_case_match_and_case_binds(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1680,3 +1681,89 @@ func _test_union_store_carrier_select(failures: PackedStringArray) -> void:
 		"int→int|float remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for union store-carrier")
+
+
+func _test_enum_case_match_and_case_binds(failures: PackedStringArray) -> void:
+	# Foundry resolve_enum_values + resolve_match_case_pattern / resolve_type_test_case_binds
+	# + container match patterns @ c9d5e35 (#60 ENUM_CASE / case-bind / container residual).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var match_ok := _src_class("EnumMatchOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\treturn dx + dy\n\t\t_:\n\t\t\treturn 0\n")
+	var match_ok_report: Dictionary = probe.analyze_source(match_ok, "res://tests/enum_match_ok.barista")
+	_expect(failures, match_ok_report.get("valid", false) == true, "Message.Move(dx, dy) match pattern is valid")
+
+	var match_arity := _src_class("EnumMatchArity extends Node\nenum Message:\n\tMove(x: int, y: int)\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\tMessage.Move(dx):\n\t\t\tpass\n")
+	var match_arity_report: Dictionary = probe.analyze_source(match_arity, "res://tests/enum_match_arity.barista")
+	_expect(failures, match_arity_report.get("valid", true) == false, "Message.Move arity mismatch is invalid")
+	var saw_match_arity := false
+	for message in match_arity_report.get("errors", PackedStringArray()):
+		if "carries 2 payload value(s), but 1 pattern(s) were given" in message:
+			saw_match_arity = true
+	_expect(failures, saw_match_arity, "ENUM_CASE payload arity diagnostic")
+
+	var wrong_subject := _src_class("EnumMatchWrongSubject extends Node\nenum Message:\n\tMove(x: int, y: int)\nenum Other:\n\tGo(n: int)\nfunc handle(msg: Other) -> void:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\tpass\n")
+	var wrong_subject_report: Dictionary = probe.analyze_source(wrong_subject, "res://tests/enum_match_wrong_subject.barista")
+	_expect(failures, wrong_subject_report.get("valid", true) == false, "ENUM_CASE against unrelated subject is invalid")
+	var saw_wrong_subject := false
+	for message in wrong_subject_report.get("errors", PackedStringArray()):
+		if "Pattern matches a case of" in message and "subject is of type" in message:
+			saw_wrong_subject = true
+	_expect(failures, saw_wrong_subject, "ENUM_CASE subject-type mismatch diagnostic")
+
+	var case_bind_ok := _src_class("EnumCaseBindOk extends Node\nenum Message:\n\tMove(x: int, y: int)\nfunc handle(msg: Message) -> int:\n\tif msg is Message.Move(dx, dy):\n\t\treturn dx + dy\n\treturn 0\n")
+	var case_bind_ok_report: Dictionary = probe.analyze_source(case_bind_ok, "res://tests/enum_case_bind_ok.barista")
+	_expect(failures, case_bind_ok_report.get("valid", false) == true, "is Message.Move(dx, dy) case binds are valid")
+
+	var case_bind_arity := _src_class("EnumCaseBindArity extends Node\nenum Message:\n\tMove(x: int, y: int)\nfunc handle(msg: Message) -> void:\n\tif msg is Message.Move(dx):\n\t\tpass\n")
+	var case_bind_arity_report: Dictionary = probe.analyze_source(case_bind_arity, "res://tests/enum_case_bind_arity.barista")
+	_expect(failures, case_bind_arity_report.get("valid", true) == false, "case-bind arity mismatch is invalid")
+	var saw_bind_arity := false
+	for message in case_bind_arity_report.get("errors", PackedStringArray()):
+		if "carries 2 payload value(s), but 1 bind(s) were given" in message:
+			saw_bind_arity = true
+	_expect(failures, saw_bind_arity, "case-bind payload arity diagnostic")
+
+	var not_case_bind := _src_class("NotEnumCaseBind extends Node\nfunc handle(v: Variant) -> void:\n\tif v is Node(n):\n\t\tpass\n")
+	var not_case_bind_report: Dictionary = probe.analyze_source(not_case_bind, "res://tests/not_enum_case_bind.barista")
+	_expect(failures, not_case_bind_report.get("valid", true) == false, "non-enum case binds are invalid")
+	var saw_not_case := false
+	for message in not_case_bind_report.get("errors", PackedStringArray()):
+		if "Only a tagged-union case can bind payload values" in message:
+			saw_not_case = true
+	_expect(failures, saw_not_case, "non-enum case-bind diagnostic")
+
+	var array_ok := _src_class("ArrayPatOk extends Node\nfunc handle(xs: Array[int]) -> int:\n\tmatch xs:\n\t\t[a, b]:\n\t\t\treturn a + b\n\t\t_:\n\t\t\treturn 0\n")
+	var array_ok_report: Dictionary = probe.analyze_source(array_ok, "res://tests/array_pat_ok.barista")
+	_expect(failures, array_ok_report.get("valid", false) == true, "Array[int] pattern binds are valid")
+
+	var dict_ok := _src_class("DictPatOk extends Node\nfunc handle(d: Dictionary[String, int]) -> int:\n\tmatch d:\n\t\t{\"a\": n}:\n\t\t\treturn n\n\t\t_:\n\t\t\treturn 0\n")
+	var dict_ok_report: Dictionary = probe.analyze_source(dict_ok, "res://tests/dict_pat_ok.barista")
+	_expect(failures, dict_ok_report.get("valid", false) == true, "Dictionary[String, int] pattern binds are valid")
+
+	var dict_key_bad := _src_class("DictPatKeyBad extends Node\nfunc handle(d: Dictionary) -> void:\n\tvar k := \"a\"\n\tmatch d:\n\t\t{k: v}:\n\t\t\tpass\n")
+	var dict_key_bad_report: Dictionary = probe.analyze_source(dict_key_bad, "res://tests/dict_pat_key_bad.barista")
+	_expect(failures, dict_key_bad_report.get("valid", true) == false, "non-constant dictionary pattern key is invalid")
+	var saw_dict_key := false
+	for message in dict_key_bad_report.get("errors", PackedStringArray()):
+		if "dictionary pattern key must be a constant" in message:
+			saw_dict_key = true
+	_expect(failures, saw_dict_key, "dictionary pattern key constant diagnostic")
+
+	var tuple_arity := _src_class("TuplePatArity extends Node\nfunc handle(t: (int, String)) -> void:\n\tmatch t:\n\t\t(a, b, c):\n\t\t\tpass\n")
+	var tuple_arity_report: Dictionary = probe.analyze_source(tuple_arity, "res://tests/tuple_pat_arity.barista")
+	_expect(failures, tuple_arity_report.get("valid", true) == false, "tuple pattern arity mismatch is invalid")
+	var saw_tuple_arity := false
+	for message in tuple_arity_report.get("errors", PackedStringArray()):
+		if "Tuple pattern has 3 element(s)" in message and "has 2" in message:
+			saw_tuple_arity = true
+	_expect(failures, saw_tuple_arity, "tuple pattern arity diagnostic")
+
+	# Opt-in declaration-index mutation unchanged.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(match_ok, "res://tests/enum_match_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "ENUM_CASE match remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(match_ok, "res://tests/enum_match_is_valid.barista"),
+		"ENUM_CASE match remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for ENUM_CASE match")
