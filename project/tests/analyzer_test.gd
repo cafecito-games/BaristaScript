@@ -55,6 +55,7 @@ func _init() -> void:
 	_test_async_callable_coroutine_wrap(failures)
 	_test_await_reduction_and_missing_await(failures)
 	_test_coroutine_annotation_decode(failures)
+	_test_direct_async_call_wrap(failures)
 	_test_surface_inheritance_member_depth(failures)
 	_test_resolve_class_member_depth(failures)
 	_test_foreign_member_failure_replay(failures)
@@ -2581,6 +2582,86 @@ func _test_coroutine_annotation_decode(failures: PackedStringArray) -> void:
 		"coroutine annotation suite remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for coroutine annotation")
+
+
+func _test_direct_async_call_wrap(failures: PackedStringArray) -> void:
+	# Foundry direct async-call wrap @ c9d5e35 (#60): bare async_fn() / obj.async_method()
+	# type as Coroutine[T] via make_coroutine_type (not bare T). Enables MISSING_AWAIT.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Bare async call is not assignable to T.
+	var bare_to_int := _src_class("DirectAsyncToInt extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch()\n")
+	var bare_to_int_report: Dictionary = probe.analyze_source(bare_to_int, "res://tests/direct_async_to_int.barista")
+	_expect(failures, bare_to_int_report.get("valid", true) == false, "bare async fetch() is not assignable to int")
+	var saw_bare_coro := false
+	for message in bare_to_int_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable of type "int"' in message:
+			saw_bare_coro = true
+	_expect(failures, saw_bare_coro, "bare async fetch() diagnoses Coroutine[int] assign to int")
+
+	# Bare async call is assignable to Coroutine[T].
+	var bare_to_coro := _src_class("DirectAsyncToCoro extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[int] = fetch()\n")
+	var bare_to_coro_report: Dictionary = probe.analyze_source(bare_to_coro, "res://tests/direct_async_to_coro.barista")
+	_expect(failures, bare_to_coro_report.get("valid", false) == true, "bare async fetch() is assignable to Coroutine[int]")
+
+	# await of bare async call yields T.
+	var await_bare := _src_class("DirectAsyncAwait extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = await fetch()\n")
+	var await_bare_report: Dictionary = probe.analyze_source(await_bare, "res://tests/direct_async_await.barista")
+	_expect(failures, await_bare_report.get("valid", false) == true, "await bare async fetch() yields int")
+
+	# Attribute form: self.async_method() also wraps.
+	var attr_to_int := _src_class("DirectAsyncAttrToInt extends Node\nasync func fetch() -> String:\n\treturn \"ok\"\nfunc test() -> void:\n\tvar result: String = self.fetch()\n")
+	var attr_to_int_report: Dictionary = probe.analyze_source(attr_to_int, "res://tests/direct_async_attr_to_int.barista")
+	_expect(failures, attr_to_int_report.get("valid", true) == false, "self.fetch() async is not assignable to String")
+	var saw_attr_coro := false
+	for message in attr_to_int_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[String]" in message and 'variable of type "String"' in message:
+			saw_attr_coro = true
+	_expect(failures, saw_attr_coro, "self.fetch() diagnoses Coroutine[String] assign to String")
+
+	# Root discarded non-void async call surfaces MISSING_AWAIT.
+	var missing_await := _src_class("DirectAsyncMissingAwait extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch()\n")
+	var missing_await_report: Dictionary = probe.validate_source(missing_await, "res://tests/direct_async_missing_await.barista", true)
+	_expect(failures, missing_await_report.get("valid", false) == true, "MISSING_AWAIT at warn level stays valid for bare async")
+	var saw_missing_await := false
+	for warn in missing_await_report.get("warnings", []):
+		if "MISSING_AWAIT" in str(warn.get("string_code", "")) or ("discarded" in str(warn.get("message", "")).to_lower() and "await" in str(warn.get("message", "")).to_lower()):
+			saw_missing_await = true
+	_expect(failures, saw_missing_await, "root discarded bare async call emits MISSING_AWAIT")
+
+	# Coroutine[void] fire-and-forget exempt from MISSING_AWAIT.
+	var void_fire := _src_class("DirectAsyncVoidFire extends Node\nasync func fire() -> void:\n\tpass\nfunc test() -> void:\n\tfire()\n")
+	var void_fire_report: Dictionary = probe.validate_source(void_fire, "res://tests/direct_async_void_fire.barista", true)
+	_expect(failures, void_fire_report.get("valid", false) == true, "void async fire-and-forget stays valid")
+	var saw_void_missing := false
+	for warn in void_fire_report.get("warnings", []):
+		if "MISSING_AWAIT" in str(warn.get("string_code", "")):
+			saw_void_missing = true
+	_expect(failures, not saw_void_missing, "Coroutine[void] bare root discard does not emit MISSING_AWAIT")
+
+	# Held Coroutine[T] handle (no MISSING_AWAIT — non-root capture into hard Coroutine slot).
+	var hold_no_missing := _src_class("DirectAsyncHoldNoMissing extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[int] = fetch()\n")
+	var hold_no_missing_report: Dictionary = probe.validate_source(hold_no_missing, "res://tests/direct_async_hold_no_missing.barista", true)
+	_expect(failures, hold_no_missing_report.get("valid", false) == true, "held Coroutine[int] from bare async stays valid")
+	var saw_hold_missing := false
+	for warn in hold_no_missing_report.get("warnings", []):
+		if "MISSING_AWAIT" in str(warn.get("string_code", "")):
+			saw_hold_missing = true
+	_expect(failures, not saw_hold_missing, "capture into Coroutine[int] does not emit MISSING_AWAIT")
+
+	# Sync local call unchanged: still returns T.
+	var sync_ok := _src_class("DirectSyncStillOk extends Node\nfunc fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch()\n")
+	var sync_ok_report: Dictionary = probe.analyze_source(sync_ok, "res://tests/direct_sync_still_ok.barista")
+	_expect(failures, sync_ok_report.get("valid", false) == true, "sync local call still returns bare int")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(bare_to_coro, "res://tests/direct_async_wrap_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "direct async-call wrap suite remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(bare_to_coro, "res://tests/direct_async_wrap_is_valid.barista"),
+		"direct async-call wrap suite remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for direct async-call wrap")
 
 
 func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void:

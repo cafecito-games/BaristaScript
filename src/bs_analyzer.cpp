@@ -11,7 +11,8 @@
 /*  resolve_class_member same-parser depth, reduce_await + MISSING_AWAIT / */
 /*  REDUNDANT_AWAIT (#60), class-phase INTERFACE/BODY foreign failure     */
 /*  recording and dependent replay (#60 residual after #118), Coroutine[T]*/
-/*  annotation decode in datatype_from_type_node (#60 residual).          */
+/*  annotation decode in datatype_from_type_node (#60 residual), direct   */
+/*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -233,6 +234,42 @@ BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type) 
 	result_type.is_meta_type = false;
 	type.set_container_element_type(0, result_type);
 	return type;
+}
+
+namespace {
+
+// Foundry mark_coroutine_handle_capture @ c9d5e35 (~1680): a coroutine call whose live
+// BSFunctionState handle is captured into a hard Coroutine[T] slot is meant to be held and
+// awaited later, not a forgotten await. Mark such a call so the compiler can emit
+// OPCODE_CALL_ASYNC. Recurse through cast / ternary wrappers; do not follow await (unwraps to T).
+void mark_coroutine_handle_capture_impl(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_target_type) {
+	if (p_expression == nullptr || !p_target_type.is_coroutine || !p_target_type.is_hard_type()) {
+		return;
+	}
+	switch (p_expression->type) {
+		case BSParser::Node::CALL: {
+			BSParser::CallNode *call = static_cast<BSParser::CallNode *>(p_expression);
+			if (call->get_datatype().is_coroutine) {
+				call->is_coroutine_handle_capture = true;
+			}
+		} break;
+		case BSParser::Node::CAST: {
+			mark_coroutine_handle_capture_impl(static_cast<BSParser::CastNode *>(p_expression)->operand, p_target_type);
+		} break;
+		case BSParser::Node::TERNARY_OPERATOR: {
+			BSParser::TernaryOpNode *ternary = static_cast<BSParser::TernaryOpNode *>(p_expression);
+			mark_coroutine_handle_capture_impl(ternary->true_expr, p_target_type);
+			mark_coroutine_handle_capture_impl(ternary->false_expr, p_target_type);
+		} break;
+		default:
+			break;
+	}
+}
+
+} // namespace
+
+void BSAnalyzer::mark_coroutine_handle_capture(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_target_type) {
+	mark_coroutine_handle_capture_impl(p_expression, p_target_type);
 }
 
 String &BSAnalyzer::bootstrap_root_storage() {
@@ -1682,10 +1719,21 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	if (p_call == nullptr || p_callee == nullptr) {
 		return;
 	}
+	// Foundry get_function_signature @ c9d5e35: bare async script/local calls type as
+	// Coroutine[T] (NATIVE BSFunctionState skin), not bare T — enables MISSING_AWAIT and
+	// honest Coroutine[T] assignment for `async_fn()` / `obj.async_method()`.
+	auto set_local_call_return_type = [&]() {
+		BSParser::DataType return_type = p_callee->get_datatype();
+		return_type.is_meta_type = false;
+		if (p_callee->is_coroutine) {
+			return_type = make_coroutine_type(return_type);
+		}
+		p_call->set_datatype(return_type);
+	};
 	// Named arguments rewrite into canonical positional order before arity/type checks
 	// (Foundry CallSiteValidationContext::canonicalize_named_call_arguments @ c9d5e35).
 	if (!call_site_validation.canonicalize_named_call_arguments(p_call, p_callee)) {
-		p_call->set_datatype(p_callee->get_datatype());
+		set_local_call_return_type();
 		return;
 	}
 	List<BSParser::DataType> par_types;
@@ -1717,7 +1765,7 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 		rest_type = &rest_storage;
 	}
 	call_site_validation.validate_call_arg(par_types, default_arg_count, p_callee->is_vararg(), p_call, Vector<int>(), 0, rest_type);
-	p_call->set_datatype(p_callee->get_datatype());
+	set_local_call_return_type();
 }
 
 void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p_is_root) {
@@ -2821,6 +2869,7 @@ void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array,
 		// An element stands where the container's element type says it stands.
 		resolve_contextual_enum_case(element_node, p_element_type);
 		update_container_literal_element_types(element_node, p_element_type);
+		mark_coroutine_handle_capture(element_node, p_element_type);
 	}
 }
 
@@ -2833,11 +2882,13 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 		if (key_element_node != nullptr) {
 			resolve_contextual_enum_case(key_element_node, p_key_type);
 			update_container_literal_element_types(key_element_node, p_key_type);
+			mark_coroutine_handle_capture(key_element_node, p_key_type);
 		}
 		BSParser::ExpressionNode *value_element_node = p_dictionary->elements[i].value;
 		if (value_element_node != nullptr) {
 			resolve_contextual_enum_case(value_element_node, p_value_type);
 			update_container_literal_element_types(value_element_node, p_value_type);
+			mark_coroutine_handle_capture(value_element_node, p_value_type);
 		}
 	}
 }
@@ -3168,6 +3219,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			if (assignment->assignee != nullptr && assignment->assigned_value != nullptr) {
 				// Contextual `.Case` on the RHS takes its union from the assignee (@ c9d5e35).
 				qualify_contextual_enum_case_consumer(assignment->assigned_value, assignment->assignee->get_datatype());
+				mark_coroutine_handle_capture(assignment->assigned_value, assignment->assignee->get_datatype());
 			}
 			if (assignment->assigned_value != nullptr) {
 				BSParser::DataType assignee_type;
@@ -3236,6 +3288,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			if (variable->initializer != nullptr) {
 				// Foundry assignable path: contextual `.Case` takes its union from the declared type.
 				qualify_contextual_enum_case_consumer(variable->initializer, declared);
+				mark_coroutine_handle_capture(variable->initializer, declared);
 			}
 			if (declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
 				BSTypeCompatibility::Options options;
@@ -3264,6 +3317,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			}
 			if (constant->initializer != nullptr) {
 				qualify_contextual_enum_case_consumer(constant->initializer, declared);
+				mark_coroutine_handle_capture(constant->initializer, declared);
 				if ((!declared.is_set() || declared.is_variant()) && constant->initializer->is_constant &&
 						!constant->initializer->get_datatype().is_set()) {
 					constant->initializer->set_datatype(type_from_variant(constant->initializer->reduced_value));
@@ -3297,6 +3351,9 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					expected_return = current_function->get_datatype();
 				}
 				qualify_contextual_enum_case_consumer(ret->return_value, expected_return);
+				if (expected_return.is_set()) {
+					mark_coroutine_handle_capture(ret->return_value, expected_return);
+				}
 			}
 		} break;
 		case BSParser::Node::IF: {

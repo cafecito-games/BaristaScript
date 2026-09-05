@@ -1,6 +1,14 @@
 /**************************************************************************/
 /*  bs_analyzer.h                                                         */
 /*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
+/**************************************************************************/
+/*  bs_analyzer.h                                                         */
+/*                                                                        */
 /*  M3 analyzer port seam (issue #43/#57/#60) @ Foundry c9d5e35. Staged    */
 /*  resolve_*; inheritance/interface/body fold (#49); declaration commit  */
 /*  (#52/#58); call/match/flow (#61); final DA + null/`is` narrowing;     */
@@ -14,7 +22,8 @@
 /*  member + class-phase INTERFACE/BODY failure replay;                   */
 /*  ConformanceVisibility can_see BFS; reduce_await + MISSING_AWAIT /     */
 /*  REDUNDANT_AWAIT for AsyncCallable→coroutine wrap; Coroutine[T]        */
-/*  annotation decode via datatype_from_type_node + make_coroutine_type.  */
+/*  annotation decode via datatype_from_type_node + make_coroutine_type;  */
+/*  direct async-call wrap + mark_coroutine_handle_capture (#60 residual).*/
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -530,10 +539,16 @@ private:
 	void maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier);
 	/**
 	 * Foundry reduce_call @ c9d5e35: `p_is_await` / `p_is_root` gate MISSING_AWAIT on discarded
-	 * non-void coroutine results. Direct async-call wrap (bare `async_fn()` → Coroutine[T]) remains
-	 * residual under #60; AsyncCallable.call/callv wrapping is already landed.
+	 * non-void coroutine results. Direct async-call wrap (bare `async_fn()` → Coroutine[T]) is
+	 * applied in validate_local_call; AsyncCallable.call/callv wrapping is already landed.
 	 */
 	void reduce_call(BSParser::CallNode *p_call, bool p_is_await = false, bool p_is_root = false);
+	/**
+	 * Foundry mark_coroutine_handle_capture @ c9d5e35 (~1680 / member ~19211): when a coroutine
+	 * call's live BSFunctionState handle is captured into a hard Coroutine[T] slot, mark
+	 * CallNode::is_coroutine_handle_capture so the compiler can emit OPCODE_CALL_ASYNC.
+	 */
+	void mark_coroutine_handle_capture(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_target_type);
 	/**
 	 * Foundry reduce_await @ c9d5e35: single-level Coroutine[T]→T unwrap, signal→Variant,
 	 * constant non-coroutine passthrough, nullable coroutine nullability propagation, and
@@ -686,7 +701,8 @@ bool bs_source_analyzes(const String &p_source, const String &p_path);
 /**
  * Foundry make_coroutine_type @ c9d5e35 (~1646): wrap result T as Coroutine[T]. Principal identity
  * is the native BSFunctionState skin; is_coroutine discriminates await / missing-await; the phantom
- * result type lives in container_element_types[0]. Shared by annotation decode and AsyncCallable wrap.
+ * result type lives in container_element_types[0]. Shared by annotation decode, AsyncCallable wrap,
+ * and direct async-call wrap in validate_local_call.
  */
 BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type);
 
