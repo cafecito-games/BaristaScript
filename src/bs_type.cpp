@@ -4,6 +4,7 @@
 /*  Hard fork of Foundry fs_type.cpp @ c9d5e35 (D1-trimmed).              */
 /*  Union sources require every alternative to satisfy the target.        */
 /*  Target-UNION uses two-pass select + numeric store-carrier gate.       */
+/*  Coroutine[T] assignability matches phantom results invariantly.       */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -190,6 +191,28 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 			if (result.compatible && p_target.has_container_element_types() && !p_source.has_container_element_types()) {
 				result.requires_runtime_check = true;
 			}
+		}
+		return result;
+	}
+
+	// Foundry FSTypeCompatibility::check @ c9d5e35 (~1331): Coroutine[T] is its own family — a
+	// coroutine target requires a coroutine source (and vice versa), and the phantom result type is
+	// matched invariantly like a typed Array element. Generic NATIVE inheritance (BSFunctionState)
+	// must not decide this, so the branch runs before the native compatibility logic below.
+	if (p_target.is_coroutine || p_source.is_coroutine) {
+		Result result(false, false, false);
+		if (!p_target.is_coroutine || !p_source.is_coroutine) {
+			return result;
+		}
+		result.compatible = true;
+		if (p_target.has_container_element_type(0) && p_source.has_container_element_type(0)) {
+			Options element_options = p_options;
+			element_options.allow_implicit_conversion = false;
+			element_options.constant_source_value = nullptr;
+			const Result element_result = check(p_target.get_container_element_type(0), p_source.get_container_element_type(0), element_options);
+			result.compatible = element_result.compatible;
+			result.requires_runtime_check = element_result.requires_runtime_check;
+			result.uses_implicit_conversion = element_result.uses_implicit_conversion;
 		}
 		return result;
 	}
