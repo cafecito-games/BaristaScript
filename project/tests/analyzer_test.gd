@@ -64,6 +64,7 @@ func _init() -> void:
 	_test_conformance_registry_registration(failures)
 	_test_conformance_witness_lookup(failures)
 	_test_conformance_hidden_witness(failures)
+	_test_self_type_parameter_compat(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -3179,4 +3180,39 @@ func _test_conformance_hidden_witness(failures: PackedStringArray) -> void:
 		_src_class("HidIndexGuard extends Node\n"), "res://tests/hid_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"hidden-witness probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_self_type_parameter_compat(failures: PackedStringArray) -> void:
+	# Foundry FSTypeCompatibility TYPE_PARAMETER / @Self arms @ c9d5e35 (#60 residual).
+	# Free method/class type parameters remain M5-deferred; undecidable free-`T` laundering
+	# refusal is ported in `BSTypeCompatibility::check` but cannot be exercised until M5.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Same-class Self↔Self identity (parameter + return + local assign).
+	var self_echo := _src_class("SelfEchoOk extends Node\nfunc echo(value: Self) -> Self:\n\tvar tmp: Self = value\n\treturn tmp\n")
+	var self_echo_report: Dictionary = probe.analyze_source(self_echo, "res://tests/self_echo_ok.barista")
+	_expect(failures, self_echo_report.get("valid", false) == true, "same-class Self↔Self parameter/return/local is valid")
+
+	# Self widens to Self? (nullability excluded from TYPE_PARAMETER identity).
+	var self_widen := _src_class("SelfWidenOk extends Node\nfunc widen(value: Self) -> Self?:\n\treturn value\n")
+	var self_widen_report: Dictionary = probe.analyze_source(self_widen, "res://tests/self_widen_ok.barista")
+	_expect(failures, self_widen_report.get("valid", false) == true, "Self widens to Self? via TYPE_PARAMETER identity")
+
+	# Existing trait Self reify still matches implementer / rejects String.
+	var self_ok := _src_class("CompatTraitSelfOk extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> Self:\n\treturn CompatTraitSelfOk.new()\n")
+	var self_ok_report: Dictionary = probe.analyze_source(self_ok, "res://tests/compat_trait_self_ok.barista")
+	_expect(failures, self_ok_report.get("valid", false) == true, "trait Self return matching implementer still valid")
+
+	var self_bad := _src_class("CompatTraitSelfBad extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> String:\n\treturn \"x\"\n")
+	var self_bad_report: Dictionary = probe.analyze_source(self_bad, "res://tests/compat_trait_self_bad.barista")
+	_expect(failures, self_bad_report.get("valid", true) == false, "trait Self return mismatched to String still invalid")
+
+	# Declaration-index stays opt-in under analyze probes.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("SelfCompatIndexGuard extends Node\n"), "res://tests/self_compat_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"Self TYPE_PARAMETER compat probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()

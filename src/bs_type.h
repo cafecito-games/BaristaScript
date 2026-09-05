@@ -39,6 +39,7 @@ public:
  * then apply D1 numeric classify so float→int stays explicit unless constant-proven.
  * Union sources require every alternative to satisfy the target (Number→Number / set-wise assign).
  * Target-UNION selection prefers exact alternatives, then numeric store-carrier conversions only.
+ * TYPE_PARAMETER / `@Self` use Foundry identity / undecidable-target / erased-source arms.
  */
 class BSTypeCompatibility {
 public:
@@ -73,6 +74,12 @@ public:
 	static bool is_compatible(const BSParser::DataType &p_target, const BSParser::DataType &p_source, bool p_allow_implicit_conversion = false);
 	static bool is_invariant_equal(const BSParser::DataType &p_a, const BSParser::DataType &p_b);
 	static bool allows_runtime_narrowing(const BSParser::DataType &p_narrow, const BSParser::DataType &p_wide);
+
+	/**
+	 * Foundry resolve_final_class_bound @ c9d5e35: a type parameter bounded only by a `final`
+	 * class denotes exactly that class. `@Self` is never resolved through a declared bound.
+	 */
+	static bool resolve_final_class_bound(const BSParser::DataType &p_type, BSParser::DataType &r_resolved);
 
 	/** Foundry FSTypeCompatibility rest-tail helpers @ c9d5e35 (trait signature matching). */
 	static bool rest_parameter_type_is_narrowing(const BSParser::DataType &p_rest_parameter_type);
