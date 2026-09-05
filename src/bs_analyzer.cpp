@@ -1,6 +1,14 @@
 /**************************************************************************/
 /*  bs_analyzer.cpp                                                       */
 /*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
+/**************************************************************************/
+/*  bs_analyzer.cpp                                                       */
+/*                                                                        */
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
 /*  flow (#61), final DA, CallSiteValidationContext / connect-callable,   */
@@ -14,6 +22,7 @@
 /*  annotation decode in datatype_from_type_node (#60 residual), direct   */
 /*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
 /*  Non-generic SelfFieldLeg + Self-contract RETURN assign/return (#60). */
+/*  Gradual Self-union admission + self_free union members (#60 residual). */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
