@@ -123,11 +123,26 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	if (p_function == nullptr) {
 		return;
 	}
+	const StringName function_name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
+	if (p_function->get_datatype().is_resolving()) {
+		push_error(vformat(R"(Could not resolve function "%s": Cyclic reference.)", function_name), p_function);
+		return;
+	}
+	if (p_function->resolved_signature) {
+		return;
+	}
+	p_function->resolved_signature = true;
+
 	BSParser::ClassNode *previous_class = current_class;
 	current_class = p_class;
+
+	BSParser::DataType resolving_datatype;
+	resolving_datatype.kind = BSParser::DataType::RESOLVING;
+	p_function->set_datatype(resolving_datatype);
+
 	if (p_function->return_type != nullptr) {
 		p_function->set_datatype(datatype_from_type_node(p_function->return_type));
-	} else if (!p_function->get_datatype().is_set()) {
+	} else {
 		BSParser::DataType return_type;
 		return_type.type_source = BSParser::DataType::INFERRED;
 		return_type.kind = BSParser::DataType::VARIANT;
@@ -135,7 +150,7 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	}
 
 	MethodInfo method_info;
-	method_info.name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
+	method_info.name = function_name;
 	if (p_function->is_static) {
 		method_info.flags |= METHOD_FLAG_STATIC;
 	}

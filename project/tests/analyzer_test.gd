@@ -53,6 +53,7 @@ func _init() -> void:
 	_test_callable_bind_unbind(failures)
 	_test_callable_callv_rpc(failures)
 	_test_surface_inheritance_member_depth(failures)
+	_test_resolve_class_member_depth(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -2407,3 +2408,81 @@ func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void
 		"same-file inheritance remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for inheritance member depth")
+
+
+func _test_resolve_class_member_depth(failures: PackedStringArray) -> void:
+	# Foundry resolve_class_member @ c9d5e35: lazy member datatype resolution with cyclic fail-stop
+	# before identifier / attribute / call binds read types (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Later-declared typed const must be resolved when an earlier function body reads it.
+	var later_const_ok := _src_class("ResolveMemberLaterConstOk extends Node\nfunc use() -> int:\n\treturn later_const\nconst later_const: int = 7\n")
+	var later_const_ok_report: Dictionary = probe.analyze_source(later_const_ok, "res://tests/resolve_member_later_const_ok.barista")
+	_expect(failures, later_const_ok_report.get("valid", false) == true, "later-declared typed const is resolved for earlier use")
+
+	var later_const_bad := _src_class("ResolveMemberLaterConstBad extends Node\nfunc use() -> void:\n\tvar s: String = later_const\nconst later_const: int = 7\n")
+	var later_const_bad_report: Dictionary = probe.analyze_source(later_const_bad, "res://tests/resolve_member_later_const_bad.barista")
+	_expect(failures, later_const_bad_report.get("valid", true) == false, "later-declared int const rejects String destination")
+	var saw_later_const_type := false
+	for message in later_const_bad_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "int" in message and "String" in message:
+			saw_later_const_type = true
+	_expect(failures, saw_later_const_type, "later-declared const type mismatch diagnostic")
+
+	# Later-declared function return type must be available for call typing.
+	var later_fn_ok := _src_class("ResolveMemberLaterFnOk extends Node\nfunc use() -> String:\n\treturn later_fn()\nfunc later_fn() -> String:\n\treturn \"ok\"\n")
+	var later_fn_ok_report: Dictionary = probe.analyze_source(later_fn_ok, "res://tests/resolve_member_later_fn_ok.barista")
+	_expect(failures, later_fn_ok_report.get("valid", false) == true, "later-declared function return type resolves for earlier call")
+
+	var later_fn_bad := _src_class("ResolveMemberLaterFnBad extends Node\nfunc use() -> void:\n\tvar i: int = later_fn()\nfunc later_fn() -> String:\n\treturn \"ok\"\n")
+	var later_fn_bad_report: Dictionary = probe.analyze_source(later_fn_bad, "res://tests/resolve_member_later_fn_bad.barista")
+	_expect(failures, later_fn_bad_report.get("valid", true) == false, "later-declared String return rejects int destination")
+
+	# Cyclic const members fail-stop (Foundry cyclic_ref_const).
+	var cyclic_const := _src_class("ResolveMemberCyclicConst extends Node\nfunc use() -> void:\n\tprint(c1)\nconst c1 = c2\nconst c2 = c1\n")
+	var cyclic_const_report: Dictionary = probe.analyze_source(cyclic_const, "res://tests/resolve_member_cyclic_const.barista")
+	_expect(failures, cyclic_const_report.get("valid", true) == false, "cyclic const members are invalid")
+	var saw_cyclic_member := false
+	for message in cyclic_const_report.get("errors", PackedStringArray()):
+		if "Could not resolve member" in message and "Cyclic reference" in message:
+			saw_cyclic_member = true
+	_expect(failures, saw_cyclic_member, "cyclic const member diagnostic")
+
+	# Cyclic inferred vars fail-stop (Foundry cyclic_ref_var).
+	var cyclic_var := _src_class("ResolveMemberCyclicVar extends Node\nfunc use() -> void:\n\tprint(v1)\nvar v1 := v2\nvar v2 := v1\n")
+	var cyclic_var_report: Dictionary = probe.analyze_source(cyclic_var, "res://tests/resolve_member_cyclic_var.barista")
+	_expect(failures, cyclic_var_report.get("valid", true) == false, "cyclic var members are invalid")
+	var saw_cyclic_var := false
+	for message in cyclic_var_report.get("errors", PackedStringArray()):
+		if "Could not resolve member" in message and "Cyclic reference" in message:
+			saw_cyclic_var = true
+	_expect(failures, saw_cyclic_var, "cyclic var member diagnostic")
+
+	# self.later_const attribute bind also resolves.
+	var self_attr := _src_class("ResolveMemberSelfAttr extends Node\nfunc use() -> int:\n\treturn self.later_const\nconst later_const: int = 3\n")
+	var self_attr_report: Dictionary = probe.analyze_source(self_attr, "res://tests/resolve_member_self_attr.barista")
+	_expect(failures, self_attr_report.get("valid", false) == true, "self.later_const attribute resolves later-declared const")
+
+	# Cross-file SCRIPT member types beyond mere inheritance (raise+delegate via BSCache).
+	var base_source := _src_class("ResolveMemberCrossBase extends Node\nconst BASE_CONST: int = 42\nfunc typed_return() -> String:\n\treturn \"ok\"\n")
+	BaristaScriptParseCache.set_source_override("res://tests/resolve_member_cross_base.barista", base_source)
+	var derived_ok := _src_class("ResolveMemberCrossDerivedOk extends \"res://tests/resolve_member_cross_base.barista\"\nfunc use() -> void:\n\tvar s: String = typed_return()\n\tvar i: int = BASE_CONST\n")
+	var derived_ok_report: Dictionary = probe.analyze_source(derived_ok, "res://tests/resolve_member_cross_derived_ok.barista")
+	_expect(failures, derived_ok_report.get("valid", false) == true, "cross-file SCRIPT member types resolve beyond inheritance")
+
+	var derived_bad := _src_class("ResolveMemberCrossDerivedBad extends \"res://tests/resolve_member_cross_base.barista\"\nfunc use() -> void:\n\tvar s: String = BASE_CONST\n")
+	var derived_bad_report: Dictionary = probe.analyze_source(derived_bad, "res://tests/resolve_member_cross_derived_bad.barista")
+	_expect(failures, derived_bad_report.get("valid", true) == false, "cross-file const type mismatch is validated")
+	var saw_cross_type := false
+	for message in derived_bad_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message:
+			saw_cross_type = true
+	_expect(failures, saw_cross_type, "cross-file SCRIPT member type mismatch diagnostic")
+	BaristaScriptParseCache.clear_source_override("res://tests/resolve_member_cross_base.barista")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(later_const_ok, "res://tests/resolve_member_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "resolve_class_member fixtures remain valid under validate()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate must not mutate declaration index for resolve_class_member depth")
