@@ -25,6 +25,8 @@
 			"fs_analyzer_flow_finality.cpp",
 			"fs_analyzer_call_validation.cpp",
 			"fs_analyzer_conformance.cpp",
+			"fs_conformance_registry.h",
+			"fs_conformance_registry.cpp",
 			"fs_trait_utils.h"
 		],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
@@ -204,7 +206,8 @@
 				"fs_type.cpp:37",
 				"fs_analyzer.cpp:51",
 				"fs_analyzer_call_validation.cpp:36",
-				"fs_analyzer_conformance.cpp:41"
+				"fs_analyzer_conformance.cpp:41",
+				"fs_conformance_registry.cpp:37"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -267,6 +270,15 @@
 			]
 		},
 		{
+			"core_header": "core/os/mutex.h",
+			"sites": [
+				"fs_conformance_registry.h:36"
+			],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "Engine Mutex/MutexLock are not available as a GDExtension-registerable binary-mutex TLS type. The conformance registry starter locks a plain std::mutex over the same critical sections (mirroring the fs_cache SafeBinaryMutex decision), so no symbol of this header is referenced and nothing is mapped."
+		},
+		{
 			"core_header": "core/os/safe_binary_mutex.h",
 			"sites": [
 				"fs_cache.h:36"
@@ -302,7 +314,8 @@
 		{
 			"core_header": "core/string/string_name.h",
 			"sites": [
-				"fs_parser.h:45"
+				"fs_parser.h:45",
+				"fs_conformance_registry.h:37"
 			],
 			"resolution": "shimmed",
 			"godot_cpp_headers": [
@@ -319,7 +332,8 @@
 			"sites": [
 				"fs_parser.h:46",
 				"fs_warning.h:36",
-				"fs_builtin_sources.h:33"
+				"fs_builtin_sources.h:33",
+				"fs_conformance_registry.h:38"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -338,7 +352,8 @@
 				"fs_parser.h:47",
 				"fs_cache.h:37",
 				"fs_builtin_sources.h:34",
-				"fs_analyzer.cpp:53"
+				"fs_analyzer.cpp:53",
+				"fs_conformance_registry.h:39"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -349,7 +364,8 @@
 			"core_header": "core/templates/hash_set.h",
 			"sites": [
 				"fs_cache.h:38",
-				"fs_analyzer.cpp:54"
+				"fs_analyzer.cpp:54",
+				"fs_conformance_registry.h:40"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -375,12 +391,22 @@
 				"fs_parser.h:49",
 				"fs_warning.h:37",
 				"fs_cache.h:39",
-				"fs_cache.cpp:44"
+				"fs_cache.cpp:44",
+				"fs_conformance_registry.h:41"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
 				"godot_cpp/templates/vector.hpp"
 			]
+		},
+		{
+			"core_header": "core/templates/local_vector.h",
+			"sites": [
+				"fs_conformance_registry.cpp:38"
+			],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "Foundry's full registry uses LocalVector when grouping candidates by conformance_index inside try_replace_file_conformances. This starter omits try_replace / witness arbitration, so the include is dropped; godot-cpp's local_vector.hpp remains available via seam_support_headers when registration lands under #60."
 		},
 		{
 			"core_header": "core/variant/numeric_type.h",

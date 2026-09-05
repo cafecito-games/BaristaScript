@@ -39,6 +39,19 @@ public:
 
 	/** Language `_validate` dictionary for warning / error flag exercises. */
 	godot::Dictionary validate_source(const godot::String &p_source, const godot::String &p_path, bool p_warnings = true) const;
+
+	/**
+	 * After parse (no full analyze), report ConformanceVisibility::can_see for each path.
+	 * Returns Dictionary: ok, can_see (Dictionary path→bool), errors.
+	 */
+	godot::Dictionary conformance_visibility_can_see(const godot::String &p_source, const godot::String &p_path,
+			const godot::PackedStringArray &p_candidates) const;
+
+	/**
+	 * Exercise ScopedVisibility nest/restore and ScopedInFlightReplacement against
+	 * BSConformanceRegistry::debug_is_visible. Returns Dictionary of bool checks.
+	 */
+	godot::Dictionary scoped_visibility_nest_restore() const;
 };
 
 } // namespace barista_script

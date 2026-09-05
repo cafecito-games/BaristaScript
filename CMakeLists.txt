@@ -86,6 +86,8 @@ target_sources(${LIBNAME}
     src/barista_script_resource_loader.h
     src/bs_cache.cpp
     src/bs_cache.h
+    src/bs_conformance_registry.cpp
+    src/bs_conformance_registry.h
     src/bs_analyzer.cpp
     src/bs_analyzer.h
     src/bs_analyzer_call_validation.cpp

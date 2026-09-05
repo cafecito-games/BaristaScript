@@ -216,6 +216,25 @@
 41:#include "core/object/class_db.h"
 42:#include "core/object/script_language.h"
 
+=== modules/foundry_script/fs_conformance_registry.h ===
+31:#pragma once
+33:#include "fs_function.h"
+34:#include "fs_parser.h"
+36:#include "core/os/mutex.h"
+37:#include "core/string/string_name.h"
+38:#include "core/string/ustring.h"
+39:#include "core/templates/hash_map.h"
+40:#include "core/templates/hash_set.h"
+41:#include "core/templates/vector.h"
+
+=== modules/foundry_script/fs_conformance_registry.cpp ===
+31:#include "fs_conformance_registry.h"
+33:#include "foundry_script.h"
+34:#include "fs_function.h"
+35:#include "fs_type.h"
+37:#include "core/object/class_db.h"
+38:#include "core/templates/local_vector.h"
+
 === modules/foundry_script/fs_trait_utils.h ===
 31:#pragma once
 33:#include "fs_diagnostic_names.h"

@@ -10,9 +10,10 @@
 /*  conformance witness; get_operation_type for binary/unary/compound;    */
 /*  resolve_class_member same-parser depth; OwnerResolutionFailures /     */
 /*  DependentResolutionFailureReplays / ForeignAnalyzerVisibilityScope    */
-/*  for external SCRIPT member + class-phase INTERFACE/BODY failure       */
-/*  replay; reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for            */
-/*  AsyncCallable→coroutine wrap.                                         */
+/*  (real BSConformanceRegistry::ScopedVisibility) for external SCRIPT    */
+/*  member + class-phase INTERFACE/BODY failure replay;                   */
+/*  ConformanceVisibility can_see BFS; reduce_await + MISSING_AWAIT /     */
+/*  REDUNDANT_AWAIT for AsyncCallable→coroutine wrap.                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -20,6 +21,7 @@
 
 #pragma once
 
+#include "bs_conformance_registry.h"
 #include "bs_parser.h"
 #include "bs_type.h"
 
@@ -321,22 +323,34 @@ public:
 	DependentResolutionFailureReplays dependent_resolution_failure_replays;
 
 	/**
+	 * Hard fork of Foundry `FSAnalyzer::ConformanceVisibility` (@ c9d5e35,
+	 * `fs_analyzer.h` ~175–190 / `fs_analyzer_conformance.cpp` ~691–734). Decides which
+	 * files' retroactive conformances this analysis may honor: its own path and whatever
+	 * it transitively depends on (declared preload/extends + resolved depended_parsers).
+	 */
+	class ConformanceVisibility : public BSConformanceRegistry::Visibility {
+		BSAnalyzer *analyzer = nullptr;
+		mutable HashSet<String> visible_files;
+
+	public:
+		explicit ConformanceVisibility(BSAnalyzer *p_analyzer);
+		bool can_see(const String &p_source_file) const override;
+	};
+
+	ConformanceVisibility conformance_visibility;
+
+	/**
 	 * Hard fork of Foundry `FSAnalyzer::ForeignAnalyzerVisibilityScope` (@ c9d5e35,
 	 * `fs_analyzer.h` ~298+). A foreign node's memoized result must be defined by its
-	 * owning file; Foundry routes the owner's `ConformanceVisibility` via
-	 * `FSConformanceRegistry::ScopedVisibility`. Barista has not yet ported
-	 * FSConformanceRegistry (residual under #60); this RAII preserves call-site shape on
-	 * delegated member / INTERFACE / BODY resolve sites so registry wiring can land
-	 * without reshaping those paths.
+	 * owning file; routes the owner's `ConformanceVisibility` via
+	 * `BSConformanceRegistry::ScopedVisibility` exactly like Foundry.
 	 */
 	class ForeignAnalyzerVisibilityScope {
-		BSAnalyzer *owner = nullptr;
+		BSConformanceRegistry::ScopedVisibility visibility_scope;
 
 	public:
 		explicit ForeignAnalyzerVisibilityScope(BSAnalyzer *p_owner) :
-				owner(p_owner) {
-			(void)owner;
-		}
+				visibility_scope(&p_owner->conformance_visibility) {}
 	};
 
 	/**
