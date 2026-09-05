@@ -9,7 +9,8 @@
 /*  resolved_traits + trait-member lookup for flattening finality,        */
 /*  unused private/signal surface, trait requirement / conformance        */
 /*  witness starter (#60 conformance TU), ENUM_CASE / case-bind /         */
-/*  container match pattern depth (#60).                                  */
+/*  container match pattern depth (#60), contextual `.Case` match / `is`  */
+/*  qualification (#60).                                                  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -30,6 +31,15 @@
 namespace barista_script {
 
 namespace {
+
+// Foundry fs_tagged_union_case_singleton @ c9d5e35: payload-less cases erase to a read-only
+// `[tag]` Array singleton. Full bs_tagged_union.h port remains available for later TUs.
+Variant _tagged_union_case_singleton(int64_t p_tag) {
+	Array value;
+	value.push_back(p_tag);
+	value.make_read_only();
+	return value;
+}
 
 String _operator_name(Variant::Operator p_op) {
 	switch (p_op) {
@@ -1364,8 +1374,9 @@ void BSAnalyzer::reduce_ternary(BSParser::TernaryOpNode *p_ternary) {
 }
 
 void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
-	// Foundry reduce_type_test @ c9d5e35: resolve the tested type (including enum cases) and
-	// type case-bind payload identifiers. Contextual shorthand / constant folding remain #60.
+	// Foundry reduce_type_test @ c9d5e35: resolve the tested type (including contextual
+	// `.Case` shorthand against the operand) and type case-bind payload identifiers.
+	// Constant folding of non-enum type tests remains #60.
 	if (p_type_test == nullptr) {
 		return;
 	}
@@ -1378,15 +1389,50 @@ void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
 	if (p_type_test->operand == nullptr || p_type_test->test_type == nullptr) {
 		return;
 	}
-	reduce_expression(p_type_test->operand);
 
-	BSParser::DataType test_type = datatype_from_type_node(p_type_test->test_type);
-	test_type.is_meta_type = false;
+	const int errors_before_operand = parser != nullptr ? parser->get_errors().size() : 0;
+	reduce_expression(p_type_test->operand);
+	const bool operand_errored = parser != nullptr && parser->get_errors().size() > errors_before_operand;
+	BSParser::DataType operand_type = p_type_test->operand->get_datatype();
+
+	BSParser::DataType test_type;
+	if (p_type_test->test_type->is_contextual_enum_case) {
+		// `x is .Ok(value)`: qualify against the operand's own union.
+		const StringName case_name = p_type_test->test_type->type_chain.is_empty()
+				? StringName()
+				: p_type_test->test_type->type_chain[0]->name;
+		BSParser::DataType case_meta_type;
+		if (case_name == StringName()) {
+			// Parser already reported a missing case name.
+		} else if (operand_type.is_set() &&
+				resolve_contextual_case_pattern_type(case_name, &operand_type, R"("is" operand)", p_type_test->test_type, case_meta_type, operand_errored)) {
+			p_type_test->test_type->set_datatype(case_meta_type);
+			test_type = type_from_metatype(case_meta_type);
+		}
+	} else {
+		test_type = datatype_from_type_node(p_type_test->test_type);
+		test_type.is_meta_type = false;
+	}
+	p_type_test->test_datatype = test_type;
+
 	if (test_type.is_union()) {
 		push_error(vformat(R"(Cannot test against the type union "%s", because it has no runtime type. Test one of its alternatives instead.)", test_type.to_string()), p_type_test->test_type);
 		test_type = BSParser::DataType();
+		p_type_test->test_datatype = test_type;
 	}
-	p_type_test->test_datatype = test_type;
+
+	if (!operand_type.is_set() || !test_type.is_set()) {
+		for (BSParser::IdentifierNode *bind : p_type_test->case_binds) {
+			if (bind != nullptr) {
+				BSParser::DataType bind_type;
+				bind_type.kind = BSParser::DataType::VARIANT;
+				bind_type.type_source = BSParser::DataType::INFERRED;
+				bind->set_datatype(bind_type);
+			}
+		}
+		return;
+	}
+
 	resolve_type_test_case_binds(p_type_test, test_type);
 }
 
@@ -1517,6 +1563,12 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 		case BSParser::PatternNode::PT_EXPRESSION:
 			if (p_match_pattern->expression != nullptr) {
 				BSParser::ExpressionNode *expr = p_match_pattern->expression;
+				// `.Quit`: a payload-less contextual case arrives as an expression pattern and
+				// takes its union from the match subject (Foundry @ c9d5e35).
+				if (resolve_contextual_case_value_pattern(expr, has_match_test_type ? &match_test_type : nullptr)) {
+					result = expr->get_datatype();
+					break;
+				}
 				reduce_expression(expr);
 				result = expr->get_datatype();
 
@@ -1642,9 +1694,17 @@ void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_patte
 	BSParser::DataType case_type;
 	bool case_type_failed = false;
 	if (p_match_pattern->is_contextual_enum_case) {
-		// Contextual `.Move(x)` shorthand needs subject-supplied union qualification; leave for #60.
-		push_error(R"*(Contextual shorthand case patterns need a tagged-union match subject; spell the case with its union, e.g. "Message.Move(x)".)*", p_match_pattern);
-		case_type_failed = true;
+		const StringName case_name = p_match_pattern->case_type != nullptr && !p_match_pattern->case_type->type_chain.is_empty()
+				? p_match_pattern->case_type->type_chain[0]->name
+				: StringName();
+		BSParser::DataType case_meta_type;
+		case_type_failed = case_name == StringName() ||
+				!resolve_contextual_case_pattern_type(case_name, p_match_test_type, "match subject", p_match_pattern, case_meta_type);
+		if (!case_type_failed) {
+			// Publish the subject-supplied union on the head, as the qualified spelling does.
+			p_match_pattern->case_type->set_datatype(case_meta_type);
+			case_type = type_from_metatype(case_meta_type);
+		}
 	} else {
 		const int errors_before_case_type = parser != nullptr ? parser->get_errors().size() : 0;
 		case_type = datatype_from_type_node(p_match_pattern->case_type);
@@ -1688,6 +1748,102 @@ void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_patte
 	}
 	p_match_pattern->is_irrefutable = false;
 	p_match_pattern->case_payload_is_irrefutable = payload != nullptr && all_irrefutable;
+}
+
+bool BSAnalyzer::tagged_union_metatype_from_expected_type(const BSParser::DataType &p_expected_type,
+		const BSParser::Node *p_source, BSParser::DataType &r_enum_meta_type) {
+	(void)p_source;
+	if (!p_expected_type.is_set() || p_expected_type.has_no_type() || p_expected_type.is_meta_type ||
+			p_expected_type.kind != BSParser::DataType::ENUM || !p_expected_type.is_tagged_union) {
+		return false;
+	}
+
+	// Inverse of type_from_metatype() for a tagged union: publish the same case/payload schema
+	// as the union meta type the construction / pattern head expects.
+	BSParser::DataType enum_meta_type = p_expected_type;
+	enum_meta_type.is_meta_type = true;
+	enum_meta_type.is_pseudo_type = false;
+	enum_meta_type.is_constant = false;
+	enum_meta_type.is_read_only = false;
+	enum_meta_type.is_nullable = false;
+	enum_meta_type.enum_case_name = StringName();
+	enum_meta_type.builtin_type = Variant::DICTIONARY;
+
+	// Generic unions remain M5; an unbound specialization cannot type a payload.
+	if (enum_meta_type.has_type_arguments()) {
+		return false;
+	}
+
+	r_enum_meta_type = enum_meta_type;
+	return true;
+}
+
+bool BSAnalyzer::resolve_contextual_case_pattern_type(const StringName &p_case_name, const BSParser::DataType *p_subject_type,
+		const char *p_subject_description, const BSParser::Node *p_source, BSParser::DataType &r_case_meta_type,
+		bool p_subject_errored) {
+	BSParser::DataType enum_meta_type;
+	if (p_subject_type == nullptr || !tagged_union_metatype_from_expected_type(*p_subject_type, p_source, enum_meta_type)) {
+		if (p_subject_errored) {
+			return false;
+		}
+		const String subject_type_name = p_subject_type != nullptr && p_subject_type->is_set()
+				? p_subject_type->to_string()
+				: String("Variant");
+		push_error(vformat(R"*(Contextual shorthand ".%s" needs a tagged-union %s, but it is of type "%s".)*",
+						   p_case_name, p_subject_description, subject_type_name),
+				p_source);
+		return false;
+	}
+
+	if (!enum_meta_type.enum_values.has(p_case_name)) {
+		push_error(vformat(R"(Tagged union "%s" has no case "%s".)", enum_meta_type.enum_type, p_case_name), p_source);
+		return false;
+	}
+
+	enum_meta_type.enum_case_name = p_case_name;
+	r_case_meta_type = enum_meta_type;
+	return true;
+}
+
+bool BSAnalyzer::resolve_contextual_case_value_pattern(BSParser::ExpressionNode *p_expression, const BSParser::DataType *p_match_test_type, bool p_subject_errored) {
+	if (p_expression == nullptr || p_expression->type != BSParser::Node::SUBSCRIPT) {
+		return false;
+	}
+	BSParser::SubscriptNode *reference = static_cast<BSParser::SubscriptNode *>(p_expression);
+	if (!reference->is_contextual_enum_case) {
+		return false;
+	}
+
+	BSParser::DataType unqualified_type;
+	unqualified_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	unqualified_type.kind = BSParser::DataType::VARIANT;
+
+	if (reference->attribute == nullptr) {
+		p_expression->set_datatype(unqualified_type);
+		return true;
+	}
+	const StringName case_name = reference->attribute->name;
+
+	BSParser::DataType case_meta_type;
+	if (!resolve_contextual_case_pattern_type(case_name, p_match_test_type, "match subject", p_expression, case_meta_type, p_subject_errored)) {
+		p_expression->set_datatype(unqualified_type);
+		return true;
+	}
+
+	const BSParser::DataType case_value_type = type_from_metatype(case_meta_type);
+	if (case_meta_type.get_enum_case_payload(case_name) != nullptr) {
+		push_error(vformat(R"*(Case "%s" carries a payload, so it is matched with payload patterns, e.g. ".%s(...)".)*",
+						   case_name, case_name),
+				p_expression);
+		p_expression->set_datatype(case_value_type);
+		return true;
+	}
+
+	reference->attribute->set_datatype(case_value_type);
+	reference->set_datatype(case_value_type);
+	reference->is_constant = true;
+	reference->reduced_value = _tagged_union_case_singleton(case_meta_type.enum_values[case_name]);
+	return true;
 }
 
 void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root) {

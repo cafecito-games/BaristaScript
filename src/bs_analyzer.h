@@ -11,6 +11,7 @@
 /*  unused private/signal + built-in annotation resolve (#60 surface),    */
 /*  user-facing builtin type annotations via get_builtin_type (#60),      */
 /*  ENUM_CASE / case-bind / container match pattern depth (#60),           */
+/*  contextual `.Case` match / `is` qualification (#60),                  */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -313,12 +314,31 @@ private:
 	void resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test);
 	/**
 	 * Foundry resolve_match_pattern @ c9d5e35: LITERAL / EXPRESSION / WILDCARD / BIND /
-	 * ENUM_CASE / ARRAY / DICTIONARY / TUPLE / REST. Contextual `.Case` shorthand and
-	 * tagged-union exhaustiveness remain follow-up under #60.
+	 * ENUM_CASE / ARRAY / DICTIONARY / TUPLE / REST, including contextual `.Case` match /
+	 * `is` qualification. Tagged-union exhaustiveness and expression-position construction
+	 * remain follow-up under #60.
 	 */
 	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type = nullptr);
-	/** Foundry resolve_match_case_pattern @ c9d5e35: `Message.Move(x, _)` payload typing. */
+	/** Foundry resolve_match_case_pattern @ c9d5e35: `Message.Move(x, _)` / `.Move(x, _)` payload typing. */
 	void resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type);
+	/**
+	 * Foundry tagged_union_metatype_from_expected_type @ c9d5e35: invert type_from_metatype
+	 * for a tagged-union value type so a contextual shorthand can publish the subject's union.
+	 */
+	bool tagged_union_metatype_from_expected_type(const BSParser::DataType &p_expected_type,
+			const BSParser::Node *p_source, BSParser::DataType &r_enum_meta_type);
+	/**
+	 * Foundry resolve_contextual_case_pattern_type @ c9d5e35: qualify `.Case` against a
+	 * tagged-union match subject or `is` operand.
+	 */
+	bool resolve_contextual_case_pattern_type(const StringName &p_case_name, const BSParser::DataType *p_subject_type,
+			const char *p_subject_description, const BSParser::Node *p_source, BSParser::DataType &r_case_meta_type,
+			bool p_subject_errored = false);
+	/**
+	 * Foundry resolve_contextual_case_value_pattern @ c9d5e35: payload-less `.Quit` as a
+	 * match expression pattern. Assignment/return expression construction remains #60.
+	 */
+	bool resolve_contextual_case_value_pattern(BSParser::ExpressionNode *p_expression, const BSParser::DataType *p_match_test_type, bool p_subject_errored = false);
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);
