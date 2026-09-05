@@ -122,6 +122,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 		return;
 	}
 	const BSParser::DataType par_type = p_expected_type;
+	analyzer->mark_coroutine_handle_capture(p_argument, par_type);
 	const BSParser::DataType arg_type = p_argument->get_datatype();
 
 	if (!par_type.is_set() || par_type.is_variant()) {

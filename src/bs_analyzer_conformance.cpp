@@ -176,6 +176,7 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			// Foundry assignable path: parameter defaults qualify contextual `.Case` against the
 			// parameter's declared type (during signature resolve, before the body sweep).
 			qualify_contextual_enum_case_consumer(parameter->initializer, parameter->get_datatype());
+			mark_coroutine_handle_capture(parameter->initializer, parameter->get_datatype());
 			if (parameter->initializer->is_constant) {
 				p_function->default_arg_values.push_back(parameter->initializer->reduced_value);
 			} else {

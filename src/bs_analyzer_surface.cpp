@@ -468,6 +468,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			if (member.variable->initializer != nullptr) {
 				reduce_expression(member.variable->initializer);
 				qualify_contextual_enum_case_consumer(member.variable->initializer, type);
+				mark_coroutine_handle_capture(member.variable->initializer, type);
 				const BSParser::DataType initializer_type = member.variable->initializer->get_datatype();
 
 				if (member.variable->infer_datatype) {
@@ -538,6 +539,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			if (member.constant->initializer != nullptr) {
 				reduce_expression(member.constant->initializer);
 				qualify_contextual_enum_case_consumer(member.constant->initializer, type);
+				mark_coroutine_handle_capture(member.constant->initializer, type);
 				if (!member.constant->initializer->is_constant) {
 					push_error(vformat(R"(Assigned value for constant "%s" isn't a constant expression.)", member.constant->identifier != nullptr ? member.constant->identifier->name : StringName()),
 							member.constant->initializer);
