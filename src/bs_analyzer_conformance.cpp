@@ -897,17 +897,26 @@ bool BSAnalyzer::ConformanceVisibility::can_see(const String &p_source_file) con
 	// Every file reached on the way is a dependency too, so the whole visited set is
 	// memoized. Only positive answers are kept: the graph grows during an analysis, so a
 	// "no" can become a "yes".
-	List<BSParser *> pending;
+	Vector<BSParser *> pending;
 	HashSet<const BSParser *> seen;
 	pending.push_back(analyzer->parser);
 	seen.insert(analyzer->parser);
-	while (!pending.is_empty()) {
-		BSParser *current = pending.front()->get();
-		pending.pop_front();
-		for (const String &declared : current->get_dependencies()) {
-			visible_files.insert(declared);
+	// Hard cap: a corrupted or unexpectedly huge dependency fan-out must not hang the editor.
+	const int max_visits = 4096;
+	int visits = 0;
+	while (!pending.is_empty() && visits < max_visits) {
+		visits++;
+		BSParser *current = pending[pending.size() - 1];
+		pending.resize(pending.size() - 1);
+		if (current == nullptr) {
+			continue;
 		}
-		for (const KeyValue<String, Ref<BSParserRef>> &dependency : current->get_depended_parsers()) {
+		const List<String> declared_dependencies = current->get_dependencies();
+		for (const List<String>::Element *E = declared_dependencies.front(); E; E = E->next()) {
+			visible_files.insert(E->get());
+		}
+		const HashMap<String, Ref<BSParserRef>> &depended = current->get_depended_parsers();
+		for (const KeyValue<String, Ref<BSParserRef>> &dependency : depended) {
 			visible_files.insert(dependency.key);
 			BSParser *dependency_parser = dependency.value.is_valid() ? dependency.value->get_parser() : nullptr;
 			if (dependency_parser != nullptr && !seen.has(dependency_parser)) {

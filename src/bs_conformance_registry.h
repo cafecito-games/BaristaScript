@@ -79,7 +79,10 @@ public:
 private:
 	static BSConformanceRegistry *singleton;
 	static thread_local const Visibility *active_visibility;
-	static thread_local String in_flight_source_file;
+	// Prefer a POD TLS slot over `thread_local String`: godot-cpp String goes through the
+	// GDExtension allocator and is not safe as a thread_local object (teardown / first-touch).
+	static thread_local bool has_in_flight_source_file;
+	static thread_local char in_flight_source_file[1024];
 
 	static bool _is_visible(const String &p_source_file);
 

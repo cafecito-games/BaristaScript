@@ -11,11 +11,14 @@
 
 #include "bs_conformance_registry.h"
 
+#include <cstring>
+
 namespace barista_script {
 
 BSConformanceRegistry *BSConformanceRegistry::singleton = nullptr;
 thread_local const BSConformanceRegistry::Visibility *BSConformanceRegistry::active_visibility = nullptr;
-thread_local String BSConformanceRegistry::in_flight_source_file;
+thread_local bool BSConformanceRegistry::has_in_flight_source_file = false;
+thread_local char BSConformanceRegistry::in_flight_source_file[1024] = {};
 
 BSConformanceRegistry::ScopedVisibility::ScopedVisibility(const Visibility *p_visibility) {
 	previous = active_visibility;
@@ -27,16 +30,35 @@ BSConformanceRegistry::ScopedVisibility::~ScopedVisibility() {
 }
 
 BSConformanceRegistry::ScopedInFlightReplacement::ScopedInFlightReplacement(const String &p_source_file) {
-	previous = in_flight_source_file;
-	in_flight_source_file = p_source_file;
+	previous = has_in_flight_source_file ? String(in_flight_source_file) : String();
+	const CharString utf8 = p_source_file.utf8();
+	if (utf8.length() + 1 > (int)sizeof(in_flight_source_file)) {
+		in_flight_source_file[0] = '\0';
+		has_in_flight_source_file = false;
+		return;
+	}
+	memcpy(in_flight_source_file, utf8.get_data(), utf8.length() + 1);
+	has_in_flight_source_file = !p_source_file.is_empty();
 }
 
 BSConformanceRegistry::ScopedInFlightReplacement::~ScopedInFlightReplacement() {
-	in_flight_source_file = previous;
+	if (previous.is_empty()) {
+		in_flight_source_file[0] = '\0';
+		has_in_flight_source_file = false;
+		return;
+	}
+	const CharString utf8 = previous.utf8();
+	if (utf8.length() + 1 > (int)sizeof(in_flight_source_file)) {
+		in_flight_source_file[0] = '\0';
+		has_in_flight_source_file = false;
+		return;
+	}
+	memcpy(in_flight_source_file, utf8.get_data(), utf8.length() + 1);
+	has_in_flight_source_file = true;
 }
 
 bool BSConformanceRegistry::_is_visible(const String &p_source_file) {
-	if (!in_flight_source_file.is_empty() && p_source_file == in_flight_source_file) {
+	if (has_in_flight_source_file && p_source_file == String(in_flight_source_file)) {
 		return false;
 	}
 	return active_visibility == nullptr || active_visibility->can_see(p_source_file);
