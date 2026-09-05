@@ -13,6 +13,7 @@
 /*  recording and dependent replay (#60 residual after #118), Coroutine[T]*/
 /*  annotation decode in datatype_from_type_node (#60 residual), direct   */
 /*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
+/*  Non-generic SelfFieldLeg for enum Self payload fields (#60 residual). */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -1710,6 +1711,53 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			}
 		}
 	}
+	// Own class_name / identifier as a CLASS meta handle (`Receiver.Message.…` EXACT_HANDLE).
+	if (current_class != nullptr) {
+		const StringName class_name = current_class->identifier != nullptr ? current_class->identifier->name : StringName();
+		const StringName global_name = current_class->get_global_name();
+		if ((class_name != StringName() && p_identifier->name == class_name) ||
+				(global_name != StringName() && p_identifier->name == global_name)) {
+			BSParser::DataType class_meta = current_class->get_datatype();
+			if (!class_meta.is_set() || class_meta.is_variant()) {
+				class_meta.kind = BSParser::DataType::CLASS;
+				class_meta.class_type = current_class;
+				class_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+				class_meta.builtin_type = Variant::OBJECT;
+				class_meta.native_type = current_class->base_type.native_type;
+			}
+			class_meta.is_meta_type = true;
+			p_identifier->set_datatype(class_meta);
+			return;
+		}
+	}
+	// Foundry reduce_identifier Self class-handle @ c9d5e35: expression-position `Self` is the
+	// receiver-relative `@Self` meta handle (needed for `Self.Message.…` SelfFieldLeg selection).
+	if (p_identifier->name == SNAME("Self") && current_class != nullptr && current_function != nullptr) {
+		BSParser::DataType self_handle;
+		self_handle.kind = BSParser::DataType::TYPE_PARAMETER;
+		self_handle.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		self_handle.type_parameter_name = SNAME("@Self");
+		self_handle.type_parameter_scope = BSParser::DataType::TYPE_PARAMETER_CLASS;
+		self_handle.type_parameter_index = -1;
+		self_handle.is_meta_type = true;
+		self_handle.is_type_handle_annotation = true;
+		BSParser::DataType bound = current_class->get_datatype();
+		bound.is_meta_type = false;
+		bound.type_arguments.clear();
+		if (!bound.is_set() || bound.is_variant()) {
+			bound.kind = BSParser::DataType::CLASS;
+			bound.class_type = current_class;
+			bound.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			bound.builtin_type = Variant::OBJECT;
+			bound.native_type = current_class->base_type.native_type;
+		}
+		if (bound.is_set() && !bound.is_variant()) {
+			self_handle.type_parameter_bound.push_back(bound);
+		}
+		p_identifier->source = BSParser::IdentifierNode::STATIC_SELF_CLASS;
+		p_identifier->set_datatype(self_handle);
+		return;
+	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_identifier->set_datatype(type);
@@ -1825,6 +1873,17 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			const bool is_self = subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF;
 			if (p_call->function_name == StringName()) {
 				p_call->function_name = subscript->attribute->name;
+			}
+
+			// Foundry reduce_call @ c9d5e35: payload-carrying tagged-union case construction
+			// (`Message.Attach(...)`, `self.Message.Attach(...)`, …).
+			if (subscript->base != nullptr && p_call->function_name != StringName()) {
+				const BSParser::DataType enum_base_type = subscript->base->get_datatype();
+				if (enum_base_type.is_set() && enum_base_type.kind == BSParser::DataType::ENUM && enum_base_type.is_meta_type &&
+						enum_base_type.is_tagged_union && enum_base_type.get_enum_case_payload(p_call->function_name) != nullptr) {
+					reduce_call_enum_case_construction(p_call, enum_base_type);
+					return;
+				}
 			}
 
 			if (subscript->base != nullptr && p_call->function_name == SNAME("emit")) {
@@ -2242,8 +2301,51 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						p_subscript->set_datatype(signal_type);
 						return;
 					}
+					if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
+						BSParser::DataType enum_meta = member.m_enum->get_datatype();
+						if (!enum_meta.is_set()) {
+							const String script_path = parser != nullptr ? parser->script_path : String();
+							enum_meta = resolve_enum_values(member.m_enum, make_class_enum_type(p_subscript->attribute->name, lookup, script_path, true), lookup);
+						}
+						if (enum_meta.is_set()) {
+							p_subscript->attribute->set_datatype(enum_meta);
+							p_subscript->set_datatype(enum_meta);
+							p_subscript->is_constant = true;
+							return;
+						}
+					}
 					// Ordinary declaration claims the name even when this access form cannot use it.
 					break;
+				}
+			}
+		}
+		// Instance / class-handle / Self-handle `.Enum` for SelfFieldLeg spellings
+		// (`receiver.Message`, `Self.Message`) when the receiver is not the frame's own class_name.
+		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr) {
+			BSParser::DataType base_type = p_subscript->base->get_datatype();
+			BSParser::ClassNode *owner = nullptr;
+			if (base_type.kind == BSParser::DataType::CLASS && base_type.class_type != nullptr) {
+				owner = base_type.class_type;
+			} else if (base_type.kind == BSParser::DataType::TYPE_PARAMETER &&
+					base_type.type_parameter_name == SNAME("@Self") && !base_type.type_parameter_bound.is_empty() &&
+					base_type.type_parameter_bound[0].kind == BSParser::DataType::CLASS) {
+				owner = base_type.type_parameter_bound[0].class_type;
+			}
+			if (owner != nullptr && owner->has_member(p_subscript->attribute->name)) {
+				resolve_class_member(owner, p_subscript->attribute->name, p_subscript->attribute);
+				const BSParser::ClassNode::Member member = owner->get_member(p_subscript->attribute->name);
+				if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
+					BSParser::DataType enum_meta = member.m_enum->get_datatype();
+					if (!enum_meta.is_set()) {
+						const String script_path = parser != nullptr ? parser->script_path : String();
+						enum_meta = resolve_enum_values(member.m_enum, make_class_enum_type(p_subscript->attribute->name, owner, script_path, true), owner);
+					}
+					if (enum_meta.is_set()) {
+						p_subscript->attribute->set_datatype(enum_meta);
+						p_subscript->set_datatype(enum_meta);
+						p_subscript->is_constant = true;
+						return;
+					}
 				}
 			}
 		}
@@ -2953,9 +3055,380 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 	}
 }
 
+namespace {
+
+// Foundry Self / SelfFieldLeg helpers @ c9d5e35 (non-generic enum-payload slice).
+
+bool _enum_self_is_self_type_parameter(const BSParser::DataType &p_type) {
+	return p_type.kind == BSParser::DataType::TYPE_PARAMETER && p_type.type_parameter_name == SNAME("@Self");
+}
+
+bool _enum_self_is_bare_self_value_parameter(const BSParser::DataType &p_type) {
+	return _enum_self_is_self_type_parameter(p_type) && !p_type.is_type_handle_annotation;
+}
+
+BSParser::DataType _enum_self_type_for_class(BSParser::ClassNode *p_class) {
+	BSParser::DataType self_type;
+	if (p_class == nullptr) {
+		return self_type;
+	}
+	self_type = p_class->get_datatype();
+	self_type.is_meta_type = false;
+	self_type.type_arguments.clear();
+	if (!self_type.is_set() || self_type.is_variant()) {
+		self_type.kind = BSParser::DataType::CLASS;
+		self_type.class_type = p_class;
+		self_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		self_type.builtin_type = Variant::OBJECT;
+		self_type.native_type = p_class->base_type.native_type;
+		self_type.script_path = p_class->fqcn.begins_with("res://") ? p_class->fqcn : String();
+	}
+	return self_type;
+}
+
+BSParser::DataType _enum_self_type_parameter_from_bound(const BSParser::DataType &p_bound) {
+	BSParser::DataType self_type;
+	self_type.kind = BSParser::DataType::TYPE_PARAMETER;
+	self_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	self_type.type_parameter_name = SNAME("@Self");
+	self_type.type_parameter_scope = BSParser::DataType::TYPE_PARAMETER_CLASS;
+	self_type.type_parameter_index = -1;
+	if (_enum_self_is_bare_self_value_parameter(p_bound)) {
+		if (!p_bound.type_parameter_bound.is_empty()) {
+			self_type.type_parameter_bound.push_back(p_bound.type_parameter_bound[0]);
+		}
+		return self_type;
+	}
+	if (p_bound.is_set() && !p_bound.is_variant()) {
+		self_type.type_parameter_bound.push_back(p_bound);
+	}
+	return self_type;
+}
+
+BSParser::DataType _enum_self_type_parameter_for_class(BSParser::ClassNode *p_class) {
+	return _enum_self_type_parameter_from_bound(_enum_self_type_for_class(p_class));
+}
+
+bool _enum_datatype_contains_self_type_parameter(const BSParser::DataType &p_type) {
+	if (_enum_self_is_self_type_parameter(p_type)) {
+		return true;
+	}
+	for (const BSParser::DataType &element : p_type.container_element_types) {
+		if (_enum_datatype_contains_self_type_parameter(element)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &argument : p_type.type_arguments) {
+		if (_enum_datatype_contains_self_type_parameter(argument)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &parameter_type : p_type.method_parameter_types) {
+		if (_enum_datatype_contains_self_type_parameter(parameter_type)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &return_type : p_type.method_return_type) {
+		if (_enum_datatype_contains_self_type_parameter(return_type)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &rest_parameter_type : p_type.method_rest_parameter_type) {
+		if (_enum_datatype_contains_self_type_parameter(rest_parameter_type)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &member : p_type.union_members) {
+		if (_enum_datatype_contains_self_type_parameter(member)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+BSParser::DataType _enum_substitute_self_type_parameter(const BSParser::DataType &p_type, const BSParser::DataType &p_self_type) {
+	if (!p_self_type.is_set()) {
+		return p_type;
+	}
+	HashMap<StringName, BSParser::DataType> bindings;
+	bindings.insert(SNAME("@Self"), p_self_type);
+	return BSParser::DataType::substitute(p_type, bindings);
+}
+
+BSParser::DataType _enum_substitute_self_type_parameter_with_bounds(const BSParser::DataType &p_type) {
+	if (_enum_self_is_self_type_parameter(p_type)) {
+		if (p_type.type_parameter_bound.is_empty()) {
+			return p_type;
+		}
+		BSParser::DataType result = p_type.type_parameter_bound[0];
+		if (p_type.is_type_handle_annotation) {
+			result.is_meta_type = true;
+			result.is_type_handle_annotation = true;
+			result.is_pseudo_type = false;
+			result.is_constant = p_type.is_constant;
+		}
+		result.is_nullable = result.is_nullable || p_type.is_nullable;
+		return result;
+	}
+	BSParser::DataType result = p_type;
+	for (int i = 0; i < result.container_element_types.size(); i++) {
+		result.container_element_types.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.container_element_types[i]);
+	}
+	for (int i = 0; i < result.type_arguments.size(); i++) {
+		result.set_type_argument(i, _enum_substitute_self_type_parameter_with_bounds(result.type_arguments[i]));
+	}
+	for (int i = 0; i < result.method_parameter_types.size(); i++) {
+		result.method_parameter_types.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.method_parameter_types[i]);
+	}
+	for (int i = 0; i < result.method_return_type.size(); i++) {
+		result.method_return_type.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.method_return_type[i]);
+	}
+	for (int i = 0; i < result.method_rest_parameter_type.size(); i++) {
+		result.method_rest_parameter_type.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.method_rest_parameter_type[i]);
+	}
+	if (result.kind == BSParser::DataType::UNION) {
+		Vector<BSParser::DataType> substituted_members;
+		for (const BSParser::DataType &member : result.union_members) {
+			substituted_members.push_back(_enum_substitute_self_type_parameter_with_bounds(member));
+		}
+		result.union_members = substituted_members;
+	}
+	return result;
+}
+
+BSParser::DataType _enum_type_handle_represented_type(const BSParser::DataType &p_type) {
+	BSParser::DataType represented_type = p_type;
+	represented_type.is_type_handle_annotation = false;
+	represented_type.is_meta_type = false;
+	represented_type.is_pseudo_type = false;
+	represented_type.is_constant = false;
+	represented_type.is_nullable = false;
+	return represented_type;
+}
+
+bool _enum_type_handle_source_is_handle(const BSParser::DataType &p_type) {
+	return p_type.is_meta_type || p_type.is_type_handle_annotation;
+}
+
+bool _enum_datatype_represents_final_class(const BSParser::DataType &p_type) {
+	return p_type.kind == BSParser::DataType::CLASS && p_type.class_type != nullptr && p_type.class_type->is_final;
+}
+
+bool _enum_datatype_self_bindings_are_final(const BSParser::DataType &p_type) {
+	if (_enum_self_is_self_type_parameter(p_type)) {
+		return !p_type.type_parameter_bound.is_empty() && _enum_datatype_represents_final_class(p_type.type_parameter_bound[0]);
+	}
+	for (const BSParser::DataType &element : p_type.container_element_types) {
+		if (!_enum_datatype_self_bindings_are_final(element)) {
+			return false;
+		}
+	}
+	for (const BSParser::DataType &argument : p_type.type_arguments) {
+		if (!_enum_datatype_self_bindings_are_final(argument)) {
+			return false;
+		}
+	}
+	for (const BSParser::DataType &member : p_type.union_members) {
+		if (!_enum_datatype_self_bindings_are_final(member)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool _enum_expression_is_same_reference(const BSParser::ExpressionNode *p_left, const BSParser::ExpressionNode *p_right) {
+	if (p_left == nullptr || p_right == nullptr || p_left->type != p_right->type) {
+		return false;
+	}
+	if (p_left->type == BSParser::Node::SELF) {
+		return true;
+	}
+	if (p_left->type == BSParser::Node::IDENTIFIER) {
+		const BSParser::IdentifierNode *left = static_cast<const BSParser::IdentifierNode *>(p_left);
+		const BSParser::IdentifierNode *right = static_cast<const BSParser::IdentifierNode *>(p_right);
+		return left->name == right->name;
+	}
+	return false;
+}
+
+bool _enum_call_argument_is_same_receiver(const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) {
+	if (p_call == nullptr || p_argument == nullptr) {
+		return false;
+	}
+	if (p_call->receiver_is_current_self) {
+		return p_argument->type == BSParser::Node::SELF;
+	}
+	if (p_call->get_callee_type() == BSParser::Node::IDENTIFIER) {
+		return p_argument->type == BSParser::Node::SELF;
+	}
+	if (p_call->get_callee_type() != BSParser::Node::SUBSCRIPT) {
+		return false;
+	}
+	const BSParser::SubscriptNode *subscript = static_cast<const BSParser::SubscriptNode *>(p_call->callee);
+	if (!subscript->is_attribute) {
+		if (subscript->base == nullptr) {
+			return false;
+		}
+		if (subscript->base->type == BSParser::Node::IDENTIFIER) {
+			return p_argument->type == BSParser::Node::SELF;
+		}
+		if (subscript->base->type != BSParser::Node::SUBSCRIPT) {
+			return false;
+		}
+		subscript = static_cast<const BSParser::SubscriptNode *>(subscript->base);
+	}
+	if (!subscript->is_attribute || subscript->base == nullptr) {
+		return false;
+	}
+	if (p_call->is_enum_case_construction) {
+		const BSParser::ExpressionNode *union_spelling = subscript->base;
+		if (union_spelling->type == BSParser::Node::SUBSCRIPT) {
+			const BSParser::SubscriptNode *union_application = static_cast<const BSParser::SubscriptNode *>(union_spelling);
+			if (!union_application->is_attribute && union_application->base != nullptr) {
+				union_spelling = union_application->base;
+			}
+		}
+		if (union_spelling->type != BSParser::Node::SUBSCRIPT) {
+			return false;
+		}
+		const BSParser::SubscriptNode *union_subscript = static_cast<const BSParser::SubscriptNode *>(union_spelling);
+		if (!union_subscript->is_attribute || union_subscript->base == nullptr) {
+			return false;
+		}
+		return _enum_expression_is_same_reference(union_subscript->base, p_argument);
+	}
+	return _enum_expression_is_same_reference(subscript->base, p_argument);
+}
+
+bool _enum_datatype_matches_self_parameter_contract_exact(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type) {
+	if (p_expected_type == p_argument_type) {
+		return true;
+	}
+	if (p_expected_type.is_nullable) {
+		BSParser::DataType non_nullable_expected = p_expected_type;
+		non_nullable_expected.is_nullable = false;
+		if (non_nullable_expected == p_argument_type) {
+			return true;
+		}
+	}
+	const BSParser::DataType expected_type = _enum_substitute_self_type_parameter_with_bounds(p_expected_type);
+	if (expected_type.is_nullable &&
+			p_argument_type.kind == BSParser::DataType::BUILTIN &&
+			p_argument_type.builtin_type == Variant::NIL) {
+		return true;
+	}
+	if (!_enum_datatype_self_bindings_are_final(p_expected_type)) {
+		return false;
+	}
+	if (expected_type == p_argument_type) {
+		return true;
+	}
+	if (expected_type.is_nullable) {
+		BSParser::DataType non_nullable_expected = expected_type;
+		non_nullable_expected.is_nullable = false;
+		return non_nullable_expected == p_argument_type;
+	}
+	return false;
+}
+
+bool _enum_self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call);
+
+bool _enum_self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) {
+	if (p_expected_type.kind == BSParser::DataType::UNION) {
+		for (const BSParser::DataType &member : p_expected_type.union_members) {
+			if (!_enum_datatype_contains_self_type_parameter(member)) {
+				continue;
+			}
+			BSParser::DataType alternative = member;
+			alternative.is_nullable = p_expected_type.is_nullable;
+			if (_enum_self_parameter_contract_admits_argument_type(alternative, p_argument_type, p_call, p_argument) ||
+					_enum_self_parameter_satisfied_by_receiver_identity(alternative, p_argument, p_call)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (!_enum_datatype_matches_self_parameter_contract_exact(p_expected_type, p_argument_type)) {
+		return false;
+	}
+	// A Self-typed argument into a receiver contract still needs the call to run on the frame's
+	// own receiver (or identity, asked separately). Concrete / final-bound admissions need no
+	// further gate once exact match succeeded.
+	if (_enum_self_is_bare_self_value_parameter(p_argument_type) || p_argument_type.is_substituted_self) {
+		if (p_expected_type.is_receiver_self_contract) {
+			return p_call == nullptr || p_call->receiver_is_current_self;
+		}
+	}
+	return true;
+}
+
+bool _enum_self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) {
+	if (p_call == nullptr || p_argument == nullptr) {
+		return false;
+	}
+	if (p_expected_type.kind == BSParser::DataType::UNION) {
+		for (const BSParser::DataType &member : p_expected_type.union_members) {
+			if (!_enum_datatype_contains_self_type_parameter(member)) {
+				continue;
+			}
+			BSParser::DataType alternative = member;
+			alternative.is_nullable = p_expected_type.is_nullable;
+			if (_enum_self_parameter_satisfied_by_receiver_identity(alternative, p_argument, p_call)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (_enum_self_is_bare_self_value_parameter(p_expected_type)) {
+		return p_expected_type.is_receiver_self_contract && _enum_call_argument_is_same_receiver(p_call, p_argument);
+	}
+	if (p_expected_type.kind != BSParser::DataType::TUPLE || p_expected_type.tuple_name != StringName() ||
+			p_argument->type != BSParser::Node::TUPLE_LITERAL) {
+		return false;
+	}
+	const BSParser::TupleLiteralNode *literal = static_cast<const BSParser::TupleLiteralNode *>(p_argument);
+	if (literal->elements.size() != p_expected_type.container_element_types.size()) {
+		return false;
+	}
+	for (int i = 0; i < literal->elements.size(); i++) {
+		const BSParser::DataType &expected_element = p_expected_type.container_element_types[i];
+		BSParser::ExpressionNode *element = literal->elements[i];
+		if (element == nullptr) {
+			return false;
+		}
+		const BSParser::DataType element_type = element->get_datatype();
+		if (_enum_datatype_contains_self_type_parameter(expected_element)) {
+			if (_enum_self_parameter_contract_admits_argument_type(expected_element, element_type, p_call, element)) {
+				continue;
+			}
+			if (!_enum_self_parameter_satisfied_by_receiver_identity(expected_element, element, p_call)) {
+				return false;
+			}
+			continue;
+		}
+		if (expected_element.is_hard_type() && expected_element.is_variant()) {
+			continue;
+		}
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = true;
+		if (!element_type.is_hard_type() || !BSTypeCompatibility::check(expected_element, element_type, options).compatible) {
+			return false;
+		}
+		if (expected_element.kind == BSParser::DataType::BUILTIN &&
+				element_type.kind == BSParser::DataType::BUILTIN &&
+				expected_element.builtin_type != element_type.builtin_type) {
+			return false;
+		}
+	}
+	return true;
+}
+
+} // namespace
+
 void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type) {
-	// Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic slice): arity, payload
-	// field compatibility, nested contextual shorthand qualification, and constant bake.
+	// Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic SelfFieldLeg slice):
+	// spelling-aware `@Self` payload admission. Generic open-schema / type-argument bindings /
+	// complete_self_referential_enum_type / union-member collapse remain #60 residuals.
 	if (p_call == nullptr) {
 		return;
 	}
@@ -2975,7 +3448,126 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	p_call->enum_case_tag = tag != nullptr ? *tag : 0;
 	p_call->function_name = case_name;
 
-	const BSParser::DataType case_value_type = type_from_metatype(p_enum_meta_type);
+	BSParser::ClassNode *declaring_class = p_enum_meta_type.class_type;
+	const BSParser::ExpressionNode *union_expression = nullptr;
+	if (p_call->callee != nullptr && p_call->callee->type == BSParser::Node::SUBSCRIPT) {
+		const BSParser::SubscriptNode *callee_subscript = static_cast<const BSParser::SubscriptNode *>(p_call->callee);
+		if (callee_subscript->is_attribute) {
+			union_expression = callee_subscript->base;
+		}
+	}
+	if (union_expression != nullptr && union_expression->type == BSParser::Node::SUBSCRIPT) {
+		const BSParser::SubscriptNode *union_application = static_cast<const BSParser::SubscriptNode *>(union_expression);
+		if (!union_application->is_attribute && union_application->base != nullptr) {
+			union_expression = union_application->base;
+		}
+	}
+	const BSParser::ExpressionNode *union_base_expression = nullptr;
+	if (union_expression != nullptr && union_expression->type == BSParser::Node::SUBSCRIPT) {
+		const BSParser::SubscriptNode *union_subscript = static_cast<const BSParser::SubscriptNode *>(union_expression);
+		if (union_subscript->is_attribute) {
+			union_base_expression = union_subscript->base;
+		}
+	}
+
+	const bool static_context = current_function != nullptr && current_function->is_static;
+	bool frame_self_is_declaring_instance = false;
+	if (!static_context && declaring_class != nullptr) {
+		for (const BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->base_type.class_type) {
+			if (scope == declaring_class || scope->resolved_traits.has(declaring_class)) {
+				frame_self_is_declaring_instance = true;
+				break;
+			}
+		}
+	}
+
+	enum class SelfFieldLeg {
+		FRAME_RECEIVER,
+		BASE_RECEIVER,
+		EXACT_HANDLE,
+		EXACT_DECLARING,
+		LITERAL_SELF,
+	};
+	SelfFieldLeg self_field_leg = SelfFieldLeg::EXACT_DECLARING;
+	BSParser::DataType union_base_type;
+	if (union_base_expression != nullptr && union_base_expression->type == BSParser::Node::SELF) {
+		self_field_leg = SelfFieldLeg::FRAME_RECEIVER;
+	} else if (union_base_expression != nullptr) {
+		union_base_type = union_base_expression->get_datatype();
+		if (union_base_type.is_set() && (union_base_type.is_meta_type || union_base_type.is_type_handle_annotation) &&
+				_enum_self_is_self_type_parameter(union_base_type)) {
+			self_field_leg = !static_context && current_class != nullptr
+					? SelfFieldLeg::FRAME_RECEIVER
+					: SelfFieldLeg::LITERAL_SELF;
+		} else if (union_base_type.is_set() && (union_base_type.is_meta_type || union_base_type.is_type_handle_annotation)) {
+			self_field_leg = SelfFieldLeg::EXACT_HANDLE;
+		} else if (union_base_type.is_set() &&
+				(union_base_type.kind == BSParser::DataType::CLASS ||
+						union_base_type.kind == BSParser::DataType::TYPE_PARAMETER)) {
+			bool names_a_handle = false;
+			const BSParser::DataType *bound_step = &union_base_type;
+			while (bound_step->kind == BSParser::DataType::TYPE_PARAMETER && !bound_step->type_parameter_bound.is_empty()) {
+				const BSParser::DataType &bound = bound_step->type_parameter_bound[0];
+				if (_enum_type_handle_source_is_handle(bound)) {
+					names_a_handle = true;
+					break;
+				}
+				if (bound.kind != BSParser::DataType::TYPE_PARAMETER) {
+					break;
+				}
+				bound_step = &bound;
+			}
+			if (!names_a_handle) {
+				self_field_leg = SelfFieldLeg::BASE_RECEIVER;
+			}
+		}
+	} else if (frame_self_is_declaring_instance) {
+		self_field_leg = SelfFieldLeg::FRAME_RECEIVER;
+	}
+	if (self_field_leg == SelfFieldLeg::FRAME_RECEIVER) {
+		p_call->receiver_is_current_self = true;
+	}
+
+	const auto payload_field_type_for_spelling = [&](const BSParser::DataType &p_field_type) -> BSParser::DataType {
+		if (!_enum_datatype_contains_self_type_parameter(p_field_type)) {
+			return p_field_type;
+		}
+		switch (self_field_leg) {
+			case SelfFieldLeg::FRAME_RECEIVER: {
+				BSParser::DataType receiver_self = _enum_self_type_parameter_from_bound(_enum_self_type_for_class(current_class));
+				receiver_self.is_receiver_self_contract = true;
+				return _enum_substitute_self_type_parameter(p_field_type, receiver_self);
+			}
+			case SelfFieldLeg::BASE_RECEIVER: {
+				BSParser::DataType receiver_self = _enum_self_type_parameter_from_bound(union_base_type);
+				receiver_self.is_receiver_self_contract = true;
+				return _enum_substitute_self_type_parameter(p_field_type, receiver_self);
+			}
+			case SelfFieldLeg::EXACT_HANDLE: {
+				BSParser::DataType represented_type = _enum_type_handle_represented_type(union_base_type);
+				if (!represented_type.is_set()) {
+					return p_field_type;
+				}
+				return _enum_substitute_self_type_parameter(p_field_type, represented_type);
+			}
+			case SelfFieldLeg::LITERAL_SELF: {
+				if (current_class == nullptr) {
+					return p_field_type;
+				}
+				BSParser::DataType frame_self = _enum_self_type_parameter_for_class(current_class);
+				return _enum_substitute_self_type_parameter(p_field_type, frame_self);
+			}
+			case SelfFieldLeg::EXACT_DECLARING:
+				break;
+		}
+		if (declaring_class == nullptr) {
+			return _enum_substitute_self_type_parameter_with_bounds(p_field_type);
+		}
+		BSParser::DataType declaring_self = _enum_self_type_for_class(declaring_class);
+		return _enum_substitute_self_type_parameter(p_field_type, declaring_self);
+	};
+
+	BSParser::DataType case_value_type = type_from_metatype(p_enum_meta_type);
 	const int expected_count = payload->field_types.size();
 	if (p_call->arguments.size() != expected_count) {
 		push_error(vformat(R"*(Enum case "%s.%s" expects %d argument(s), but %d were given.)*",
@@ -2987,7 +3579,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 
 	bool payload_is_bakeable = true;
 	for (int i = 0; i < expected_count; i++) {
-		const BSParser::DataType &field_type = payload->field_types[i];
+		const BSParser::DataType field_type = payload_field_type_for_spelling(payload->field_types[i]);
 		BSParser::ExpressionNode *argument = p_call->arguments[i];
 		if (argument == nullptr) {
 			payload_is_bakeable = false;
@@ -3001,19 +3593,34 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 			payload_is_bakeable = false;
 			continue;
 		}
-		BSTypeCompatibility::Options options;
-		options.allow_implicit_conversion = true;
-		options.strict_dynamic = strict_dynamic_checks;
-		options.strict_null = strict_null_checks;
-		if (argument->is_constant) {
-			options.constant_source_value = &argument->reduced_value;
-		}
-		if (!BSTypeCompatibility::check(field_type, argument_type, options).compatible) {
-			push_error(vformat(R"*(Invalid argument %d for enum case "%s.%s": should be "%s" but is "%s".)*",
-							   i + 1, p_enum_meta_type.enum_type, case_name, field_type.to_string(), argument_type.to_string()),
-					argument);
-			payload_is_bakeable = false;
-			continue;
+		if (_enum_datatype_contains_self_type_parameter(field_type)) {
+			if (!_enum_self_parameter_contract_admits_argument_type(field_type, argument_type, p_call, argument) &&
+					!_enum_self_parameter_satisfied_by_receiver_identity(field_type, argument, p_call)) {
+				push_error(vformat(R"*(Invalid argument %d for enum case "%s.%s": should be "%s" but is "%s".)*",
+								   i + 1, p_enum_meta_type.enum_type, case_name, field_type.to_string(), argument_type.to_string()) +
+								BSParser::DataType::same_rendered_name_clause(field_type, "payload field's type", argument_type, "argument"),
+						argument);
+				payload_is_bakeable = false;
+				continue;
+			}
+			if (!field_type.is_variant() && (argument_type.is_variant() || !argument_type.is_hard_type())) {
+				mark_node_unsafe(p_call);
+			}
+		} else {
+			BSTypeCompatibility::Options options;
+			options.allow_implicit_conversion = true;
+			options.strict_dynamic = strict_dynamic_checks;
+			options.strict_null = strict_null_checks;
+			if (argument->is_constant) {
+				options.constant_source_value = &argument->reduced_value;
+			}
+			if (!BSTypeCompatibility::check(field_type, argument_type, options).compatible) {
+				push_error(vformat(R"*(Invalid argument %d for enum case "%s.%s": should be "%s" but is "%s".)*",
+								   i + 1, p_enum_meta_type.enum_type, case_name, field_type.to_string(), argument_type.to_string()),
+						argument);
+				payload_is_bakeable = false;
+				continue;
+			}
 		}
 		if (!argument->is_constant) {
 			payload_is_bakeable = false;
