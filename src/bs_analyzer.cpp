@@ -9,7 +9,8 @@
 /*  + CLASS inheritance member walk, cycle-safe walks (#110), lambda      */
 /*  capture + compound-assign restore, get_operation_type,                */
 /*  resolve_class_member same-parser depth, reduce_await + MISSING_AWAIT / */
-/*  REDUNDANT_AWAIT (#60).                                                */
+/*  REDUNDANT_AWAIT (#60), class-phase INTERFACE/BODY foreign failure     */
+/*  recording and dependent replay (#60 residual after #118).             */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -23,14 +24,58 @@
 #include "bs_builtin_sources.h"
 #include "bs_cache.h"
 #include "bs_declaration_index.h"
+#include "bs_diagnostic_names.h"
 #include "bs_global_class.h"
 #include "bs_native_db.h"
 #include "bs_script_server.h"
+#include "bs_trait_utils.h"
 #include "bs_warning.h"
 
 namespace barista_script {
 
 namespace {
+
+static String _class_script_path_for_foreign_resolve(const BSParser::ClassNode *p_class) {
+	if (p_class == nullptr) {
+		return String();
+	}
+	const BSParser::DataType class_type = p_class->get_datatype();
+	if (!class_type.script_path.is_empty()) {
+		return class_type.script_path;
+	}
+	if (!p_class->fqcn.is_empty()) {
+		return p_class->fqcn.get_slice("::", 0);
+	}
+	return String();
+}
+
+// Foundry `_dependency_error_suffix` @ c9d5e35 (`fs_analyzer.cpp` ~1499): body/trait foreign
+// failure messages name the declaring file and first owner-local error when available.
+static String _dependency_error_suffix(const char *p_noun, const String &p_path, BSParser *p_dependency_parser, int p_first_error_index) {
+	String first_error;
+	if (p_dependency_parser != nullptr) {
+		int index = 0;
+		for (const BSParser::ParserError &error : p_dependency_parser->get_errors()) {
+			if (index++ < p_first_error_index) {
+				continue;
+			}
+			first_error = vformat("line %d: %s", error.line, error.message);
+			break;
+		}
+	}
+
+	const String script_path = bs_diagnostic_file_reference(p_path);
+	if (script_path.is_empty()) {
+		if (first_error.is_empty()) {
+			return String();
+		}
+		return vformat("The %s has errors, the first at %s", p_noun, first_error);
+	}
+	if (first_error.is_empty()) {
+		return vformat(R"(The %s is declared in "%s".)", p_noun, script_path);
+	}
+	return vformat(R"(The %s is declared in "%s", which has errors, the first at %s)", p_noun, script_path, first_error);
+}
 
 // Foundry coroutine_result_is_void @ c9d5e35 (~1664): True when a coroutine's phantom result is
 // hard `void` (BUILTIN NIL in container_element_types[0]). Root-position discards of
@@ -946,14 +991,107 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 	return result;
 }
 
-void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
-	if (p_class == nullptr || p_class->resolved_interface) {
+void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSParser::Node *p_source) {
+	// Foundry resolve_class_interface @ c9d5e35 (`fs_analyzer_surface.cpp` ~2030): owner INTERFACE
+	// failure memoization, foreign SCRIPT raise under ForeignAnalyzerVisibilityScope, and
+	// dependent "Could not resolve class" replay with DependentResolutionFailureReplays dedupe.
+	if (p_class == nullptr) {
 		return;
 	}
+	ERR_FAIL_NULL(parser);
+
+	const bool owns_class = parser->has_class(p_class) || p_class->is_native_conformance_shim || p_class->is_builtin_conformance_shim;
+	if (p_source == nullptr && owns_class) {
+		p_source = p_class;
+	}
+
+	Ref<BSParserRef> parser_ref;
+	if (!owns_class) {
+		const String path = _class_script_path_for_foreign_resolve(p_class);
+		if (!path.is_empty()) {
+			Error err = OK;
+			parser_ref = BSCache::get_parser(path, BSParserRef::PARSED, err, parser->script_path);
+			if (err != OK) {
+				parser_ref = Ref<BSParserRef>();
+			}
+		}
+	}
+
+	const int interface_error_count = parser->get_errors().size();
+	Finally record_interface_failure([&]() {
+		if (owns_class && parser->get_errors().size() > interface_error_count) {
+			owner_resolution_failures.record_class(
+					p_class, OwnerResolutionFailures::INTERFACE, interface_error_count);
+		}
+	});
+	auto push_external_interface_failure = [&]() {
+		if (dependent_resolution_failure_replays.record_class(
+					p_class, OwnerResolutionFailures::INTERFACE)) {
+			push_error(vformat(R"(Could not resolve class "%s".)", bs_class_or_trait_diagnostic_name(p_class)), p_source);
+		}
+	};
+
+	if (p_class->resolved_interface) {
+		if (!owns_class && parser_ref.is_valid() && parser_ref->get_analyzer() != nullptr &&
+				parser_ref->get_analyzer()->owner_resolution_failures.has_class(
+						p_class, OwnerResolutionFailures::INTERFACE)) {
+			push_external_interface_failure();
+		}
+		return;
+	}
+
+	if (!owns_class) {
+		if (parser_ref.is_null() || parser_ref->get_parser() == nullptr) {
+			push_error(vformat(R"(Could not resolve class "%s".)", bs_class_or_trait_diagnostic_name(p_class)), p_source);
+			return;
+		}
+
+		Error err = parser_ref->raise_status(BSParserRef::PARSED);
+		if (err != OK) {
+			const String path = _class_script_path_for_foreign_resolve(p_class);
+			push_error(vformat(R"(Could not parse script "%s" (While resolving class interface).)",
+							   bs_diagnostic_file_reference(path.is_empty() ? p_class->get_datatype().script_path : path)),
+					p_source);
+			return;
+		}
+
+		BSAnalyzer *other_analyzer = parser_ref->get_analyzer();
+		BSParser *other_parser = parser_ref->get_parser();
+		if (other_analyzer == nullptr || other_parser == nullptr) {
+			push_error(vformat(R"(Could not resolve class "%s".)", bs_class_or_trait_diagnostic_name(p_class)), p_source);
+			return;
+		}
+
+		const int error_count = other_parser->get_errors().size();
+		ForeignAnalyzerVisibilityScope visibility_scope(other_analyzer);
+		other_analyzer->analyze_class_interface(p_class);
+		if (other_parser->get_errors().size() > error_count ||
+				other_analyzer->owner_resolution_failures.has_class(
+						p_class, OwnerResolutionFailures::INTERFACE)) {
+			push_external_interface_failure();
+		}
+		return;
+	}
+
 	p_class->resolved_interface = true;
 
 	BSParser::ClassNode *previous_class = current_class;
 	current_class = p_class;
+
+	if (!p_class->base_type.is_resolving()) {
+		resolve_class_inheritance(p_class);
+	}
+
+	// Foundry: resolve base CLASS interface before members; propagate INTERFACE failures.
+	if (p_class->base_type.kind == BSParser::DataType::CLASS && p_class->base_type.class_type != nullptr) {
+		BSParser::ClassNode *base_class = p_class->base_type.class_type;
+		analyze_class_interface(base_class, p_class);
+		if (owner_resolution_failures.has_class(base_class, OwnerResolutionFailures::INTERFACE)) {
+			owner_resolution_failures.record_class(p_class, OwnerResolutionFailures::INTERFACE,
+					owner_resolution_failures.first_error_index(
+							base_class, OwnerResolutionFailures::INTERFACE));
+		}
+	}
 
 	HashSet<StringName> seen;
 	for (int i = 0; i < p_class->members.size(); i++) {
@@ -971,11 +1109,15 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 			if (member.m_class != nullptr && !member.m_class->base_type.is_resolving()) {
 				resolve_class_inheritance(member.m_class);
 			}
-			analyze_class_interface(member.m_class);
+			analyze_class_interface(member.m_class, p_source);
 			continue;
 		}
 		// Foundry resolve_class_interface @ c9d5e35: each member via resolve_class_member.
 		resolve_class_member(p_class, i);
+		if (owner_resolution_failures.has_member(p_class, i)) {
+			owner_resolution_failures.record_class(p_class, OwnerResolutionFailures::INTERFACE,
+					owner_resolution_failures.member_first_error_index(p_class, i));
+		}
 	}
 	if (!p_class->type_parameters.is_empty()) {
 		push_error("Generic class specialization is not available until M5.", p_class);
@@ -3264,18 +3406,142 @@ void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
 #endif
 }
 
-void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
-	if (p_class == nullptr || p_class->resolved_body) {
+void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser::Node *p_source) {
+	// Foundry resolve_class_body @ c9d5e35 (`fs_analyzer.cpp` ~3545): owner BODY failure
+	// memoization, foreign SCRIPT raise under ForeignAnalyzerVisibilityScope, and dependent
+	// "Could not resolve class" replay with path/first-error suffix when available.
+	if (p_class == nullptr) {
 		return;
 	}
+	ERR_FAIL_NULL(parser);
+
+	const bool owns_class = parser->has_class(p_class) || p_class->is_native_conformance_shim || p_class->is_builtin_conformance_shim;
+	if (p_source == nullptr && owns_class) {
+		p_source = p_class;
+	}
+
+	Ref<BSParserRef> parser_ref;
+	if (!owns_class) {
+		const String path = _class_script_path_for_foreign_resolve(p_class);
+		if (!path.is_empty()) {
+			Error err = OK;
+			parser_ref = BSCache::get_parser(path, BSParserRef::PARSED, err, parser->script_path);
+			if (err != OK) {
+				parser_ref = Ref<BSParserRef>();
+			}
+		}
+	}
+
+	const int body_error_count = parser->get_errors().size();
+	Finally record_body_failure([&]() {
+		if (owns_class && parser->get_errors().size() > body_error_count) {
+			owner_resolution_failures.record_class(p_class, OwnerResolutionFailures::BODY, body_error_count);
+		}
+	});
+
+	auto push_external_body_failure = [&](int p_first_error_index) {
+		if (!dependent_resolution_failure_replays.record_class(
+					p_class, OwnerResolutionFailures::BODY)) {
+			return;
+		}
+		String message = vformat(R"(Could not resolve class "%s".)", bs_class_or_trait_diagnostic_name(p_class));
+		String class_path;
+		if (parser_ref.is_valid()) {
+			class_path = parser_ref->get_path();
+		}
+		if (class_path.is_empty()) {
+			class_path = p_class->get_datatype().script_path;
+		}
+		// The path adds nothing when it is the same file the class name already came from.
+		if (bs_diagnostic_file_reference(class_path) == bs_diagnostic_file_reference(p_class->fqcn)) {
+			class_path = String();
+		}
+		BSParser *dependency_parser = parser_ref.is_valid() ? parser_ref->get_parser() : nullptr;
+		const String suffix = _dependency_error_suffix(
+				"class", class_path, dependency_parser, p_first_error_index);
+		if (!suffix.is_empty()) {
+			message += " " + suffix;
+		}
+		push_error(message, p_source);
+	};
+
+	if (p_class->resolved_body) {
+		if (!owns_class && parser_ref.is_valid() && parser_ref->get_analyzer() != nullptr) {
+			BSAnalyzer *other_analyzer = parser_ref->get_analyzer();
+			if (other_analyzer->owner_resolution_failures.has_class(p_class, OwnerResolutionFailures::BODY)) {
+				push_external_body_failure(
+						other_analyzer->owner_resolution_failures.first_error_index(
+								p_class, OwnerResolutionFailures::BODY));
+			}
+		}
+		return;
+	}
+
+	if (!owns_class) {
+		if (parser_ref.is_null() || parser_ref->get_parser() == nullptr) {
+			push_error(vformat(R"(Could not resolve class "%s".)", bs_class_or_trait_diagnostic_name(p_class)), p_source);
+			return;
+		}
+
+		Error err = parser_ref->raise_status(BSParserRef::PARSED);
+		if (err != OK) {
+			const String path = _class_script_path_for_foreign_resolve(p_class);
+			push_error(vformat(R"(Could not parse script "%s" (While resolving class body).)",
+							   bs_diagnostic_file_reference(path.is_empty() ? p_class->get_datatype().script_path : path)),
+					p_source);
+			return;
+		}
+
+		BSAnalyzer *other_analyzer = parser_ref->get_analyzer();
+		BSParser *other_parser = parser_ref->get_parser();
+		if (other_analyzer == nullptr || other_parser == nullptr) {
+			push_error(vformat(R"(Could not resolve class "%s".)", bs_class_or_trait_diagnostic_name(p_class)), p_source);
+			return;
+		}
+
+		const int error_count = other_parser->get_errors().size();
+		// Raising a dependency class-by-class bypasses the end-of-phase contextual-shorthand sweep;
+		// those shorthands are swept when the dependency is analyzed as its own file (Foundry).
+		ForeignAnalyzerVisibilityScope visibility_scope(other_analyzer);
+		other_analyzer->analyze_class_body(p_class);
+		if (other_parser->get_errors().size() > error_count ||
+				other_analyzer->owner_resolution_failures.has_class(p_class, OwnerResolutionFailures::BODY)) {
+			int first_error_index = error_count;
+			if (other_analyzer->owner_resolution_failures.has_class(
+						p_class, OwnerResolutionFailures::BODY)) {
+				first_error_index = other_analyzer->owner_resolution_failures.first_error_index(
+						p_class, OwnerResolutionFailures::BODY);
+			}
+			push_external_body_failure(first_error_index);
+		}
+		return;
+	}
+
 	p_class->resolved_body = true;
 	BSParser::ClassNode *previous = current_class;
 	current_class = p_class;
+
+	analyze_class_interface(p_class, p_source);
+	if (owner_resolution_failures.has_class(p_class, OwnerResolutionFailures::INTERFACE)) {
+		owner_resolution_failures.record_class(p_class, OwnerResolutionFailures::BODY,
+				owner_resolution_failures.first_error_index(p_class, OwnerResolutionFailures::INTERFACE));
+	}
+
+	if (p_class->base_type.kind == BSParser::DataType::CLASS && p_class->base_type.class_type != nullptr) {
+		BSParser::ClassNode *base_class = p_class->base_type.class_type;
+		analyze_class_body(base_class, p_class);
+		if (owner_resolution_failures.has_class(base_class, OwnerResolutionFailures::BODY)) {
+			owner_resolution_failures.record_class(p_class, OwnerResolutionFailures::BODY,
+					owner_resolution_failures.first_error_index(
+							base_class, OwnerResolutionFailures::BODY));
+		}
+	}
+
 	for (int i = 0; i < p_class->members.size(); i++) {
 		const BSParser::ClassNode::Member &member = p_class->members[i];
 		switch (member.type) {
 			case BSParser::ClassNode::Member::CLASS:
-				analyze_class_body(member.m_class);
+				analyze_class_body(member.m_class, p_source);
 				break;
 			case BSParser::ClassNode::Member::FUNCTION:
 				analyze_function_body(member.function);

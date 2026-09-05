@@ -7,7 +7,9 @@
 /*  inheritance member bind, and resolve_class_member with external       */
 /*  OwnerResolutionFailures / DependentResolutionFailureReplays /         */
 /*  ForeignAnalyzerVisibilityScope (@ c9d5e35). Class-phase INTERFACE/BODY*/
-/*  foreign recording sites remain follow-up under #60.                   */
+/*  foreign recording/replay lives in analyze_class_interface/body        */
+/*  (`bs_analyzer.cpp`); FSConformanceRegistry::ScopedVisibility remains  */
+/*  residual under #60.                                                   */
 /*  FS* -> BS*; engine contact through bs_platform.h.                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -357,7 +359,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 	// resolution with cyclic RESOLVING fail-stop. Hard fork FS*→BS*; external path uses
 	// BSCache::get_parser raise+delegate with ForeignAnalyzerVisibilityScope, owner member
 	// failure recording, and dependent_resolution_failure_replays dedupe. Class-phase
-	// INTERFACE/BODY foreign recording remains #60 residual.
+	// INTERFACE/BODY foreign recording/replay is in analyze_class_interface / analyze_class_body.
 	ERR_FAIL_NULL(p_class);
 	ERR_FAIL_INDEX(p_index, p_class->members.size());
 	ERR_FAIL_NULL(parser);
