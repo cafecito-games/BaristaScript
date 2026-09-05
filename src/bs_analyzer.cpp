@@ -994,7 +994,29 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				result.type_parameter_bound.push_back(bound);
 			}
 			return result;
-		} else if (ClassDB::class_exists(name)) {
+		} else if (current_class != nullptr) {
+			// Same-file class_name / identifier as a CLASS type (needed for SelfFieldLeg fixtures
+			// that annotate parameters as the declaring class rather than `Self`).
+			const StringName class_name = current_class->identifier != nullptr ? current_class->identifier->name : StringName();
+			const StringName global_name = current_class->get_global_name();
+			if ((class_name != StringName() && name == class_name) ||
+					(global_name != StringName() && name == global_name)) {
+				result = current_class->get_datatype();
+				result.is_meta_type = false;
+				result.type_arguments.clear();
+				if (!result.is_set() || result.is_variant()) {
+					result.kind = BSParser::DataType::CLASS;
+					result.class_type = current_class;
+					result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+					result.builtin_type = Variant::OBJECT;
+					result.native_type = current_class->base_type.native_type;
+				}
+				result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
+		}
+		if (ClassDB::class_exists(name)) {
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = name;
 			result.builtin_type = Variant::OBJECT;
