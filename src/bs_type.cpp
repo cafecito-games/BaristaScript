@@ -9,7 +9,9 @@
 /*  target, erased-source runtime check). destination_is_undecidable     */
 /*  type-parameter walk for gradual Self-union admission. Free-T         */
 /*  undecidable laundering remains M5 residual until method/class type   */
-/*  parameters are live.                                                 */
+/*  parameters are live. project_registry_trait_arguments walks CLASS    */
+/*  chains for declaration-side recorded trait args (#60); trait-target  */
+/*  assignability call-site wiring remains residual.                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -715,6 +717,75 @@ bool BSTypeCompatibility::recorded_arguments_conflict(
 		}
 	}
 	return false;
+}
+
+namespace {
+
+// Foundry _path_identifies_script @ c9d5e35: a resource path identifies the one class that owns
+// the file. Foundry checks `is_root_script()` so an inner class does not inherit a sibling's
+// path-keyed conformance. BaristaScript has no `is_root_script` flag yet — every compiled
+// `.barista` Script resource is a file owner — so path always identifies. Residual under #60
+// if/when inner-class Script wraps land.
+bool _path_identifies_script(const Ref<Script> &p_script) {
+	(void)p_script;
+	return true;
+}
+
+// Foundry _project_registry_trait_arguments @ c9d5e35.
+bool _project_registry_trait_arguments(const BSParser::DataType &p_source,
+		const StringName &p_trait_name, Vector<BSConformanceRegistry::RecordedTypeArgument> &r_arguments) {
+	r_arguments.clear();
+	if (p_trait_name == StringName()) {
+		return false;
+	}
+
+	const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	if (registry == nullptr) {
+		return false;
+	}
+
+	const BSParser::ClassNode *current = p_source.class_type;
+	int depth = 0;
+	while (current != nullptr) {
+		if (unlikely(depth++ > TYPE_WALK_MAX_DEPTH)) {
+			return false;
+		}
+
+		if (registry->get_recorded_trait_arguments(current->fqcn, p_trait_name, r_arguments) ||
+				registry->get_recorded_trait_arguments(String(current->get_global_name()), p_trait_name, r_arguments)) {
+			return true;
+		}
+		if (registry->has_conformance(current->fqcn, p_trait_name) ||
+				registry->has_conformance(current->get_global_name(), p_trait_name)) {
+			// This level conforms but recorded nothing, and a nearer conformance shadows any further
+			// one, so the chain proves nothing rather than answering from a more distant record.
+			return false;
+		}
+
+		if (current->base_type.kind == BSParser::DataType::CLASS) {
+			current = current->base_type.class_type;
+		} else if (current->base_type.kind == BSParser::DataType::SCRIPT && current->base_type.script_type.is_valid()) {
+			return (_path_identifies_script(current->base_type.script_type) &&
+						   registry->get_recorded_trait_arguments(current->base_type.script_path, p_trait_name, r_arguments)) ||
+					registry->get_recorded_trait_arguments(
+							String(current->base_type.script_type->get_global_name()), p_trait_name, r_arguments) ||
+					registry->get_native_recorded_trait_arguments(
+							current->base_type.script_type->get_instance_base_type(), p_trait_name, r_arguments);
+		} else if (current->base_type.kind == BSParser::DataType::NATIVE) {
+			return registry->get_native_recorded_trait_arguments(current->base_type.native_type, p_trait_name, r_arguments);
+		} else {
+			break;
+		}
+	}
+
+	return false;
+}
+
+} // namespace
+
+bool BSTypeCompatibility::project_registry_trait_arguments(const BSParser::DataType &p_source,
+		const StringName &p_trait_name, Vector<BSConformanceRegistry::RecordedTypeArgument> &r_arguments) {
+	return _project_registry_trait_arguments(p_source, p_trait_name, r_arguments);
 }
 
 } // namespace barista_script

@@ -65,6 +65,7 @@ func _init() -> void:
 	_test_conformance_witness_lookup(failures)
 	_test_conformance_hidden_witness(failures)
 	_test_class_trait_binding_chain_coherence(failures)
+	_test_recorded_trait_arguments_query(failures)
 	_test_self_type_parameter_compat(failures)
 	_test_enum_self_payload_field_leg(failures)
 	_test_self_contract_assign_return(failures)
@@ -3228,6 +3229,47 @@ func _test_class_trait_binding_chain_coherence(failures: PackedStringArray) -> v
 		_src_class("CtbIndexGuard extends Node\n"), "res://tests/ctb_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"class-trait-binding probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_recorded_trait_arguments_query(failures: PackedStringArray) -> void:
+	# Foundry get_recorded_trait_arguments / project_registry_trait_arguments @ c9d5e35 (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.recorded_trait_arguments_query()
+
+	_expect(failures, report.get("script_publish_ok", false) == true, "script conformance with recorded args publishes")
+	_expect(failures, report.get("script_query_ok", false) == true,
+		"visible get_recorded_trait_arguments returns published INT args")
+
+	_expect(failures, report.get("hidden_script_query_false", false) == true,
+		"hidden Visibility makes get_recorded_trait_arguments return false")
+	_expect(failures, report.get("hidden_native_query_false", false) == true,
+		"hidden Visibility makes get_native_recorded_trait_arguments return false")
+	_expect(failures, report.get("hidden_builtin_query_false", false) == true,
+		"hidden Visibility makes get_builtin_recorded_trait_arguments return false")
+
+	_expect(failures, report.get("builtin_publish_ok", false) == true, "builtin-keyed conformance publishes")
+	_expect(failures, report.get("builtin_query_ok", false) == true,
+		"get_builtin_recorded_trait_arguments returns exact-key recorded args")
+
+	_expect(failures, report.get("native_publish_ok", false) == true, "native Object conformance publishes")
+	_expect(failures, report.get("native_parent_walk_ok", false) == true,
+		"get_native_recorded_trait_arguments walks ClassDB parents to Object")
+
+	_expect(failures, report.get("farther_direct_ok", false) == true, "farther recorded args remain queryable directly")
+	_expect(failures, report.get("nearer_empty_shadows", false) == true,
+		"nearer empty conformance shadows farther recorded args in project_registry_trait_arguments")
+	_expect(failures, report.get("farther_project_ok", false) == true,
+		"project_registry_trait_arguments returns farther record when nearer is absent")
+	_expect(failures, report.get("class_to_native_project_ok", false) == true,
+		"CLASS chain bottoms out at NATIVE and finds parent-walk recorded args")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("RtaIndexGuard extends Node\n"), "res://tests/rta_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"recorded-trait-args probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
 
 

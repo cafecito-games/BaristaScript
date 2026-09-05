@@ -17,6 +17,7 @@
 #include "bs_conformance_registry.h"
 #include "bs_diagnostic_names.h"
 #include "bs_parser.h"
+#include "bs_type.h"
 
 namespace barista_script {
 
@@ -72,6 +73,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::conformance_hidden_witness);
 	ClassDB::bind_method(D_METHOD("class_trait_binding_chain_coherence"),
 			&BaristaScriptAnalyzerProbe::class_trait_binding_chain_coherence);
+	ClassDB::bind_method(D_METHOD("recorded_trait_arguments_query"),
+			&BaristaScriptAnalyzerProbe::recorded_trait_arguments_query);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -1153,6 +1156,194 @@ godot::Dictionary BaristaScriptAnalyzerProbe::class_trait_binding_chain_coherenc
 
 	registry->clear_file(loader_file);
 	registry->clear_file(loaded_file);
+
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::recorded_trait_arguments_query() const {
+	godot::Dictionary result;
+
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	ERR_FAIL_COND_V(registry == nullptr, result);
+
+	const String script_file = "res://tests/rta_script.barista";
+	const String farther_file = "res://tests/rta_farther.barista";
+	const String nearer_file = "res://tests/rta_nearer.barista";
+	const String native_file = "res://tests/rta_native.barista";
+	const String builtin_file = "res://tests/rta_builtin.barista";
+	const String empty_near_file = "res://tests/rta_empty_near.barista";
+
+	registry->clear_file(script_file);
+	registry->clear_file(farther_file);
+	registry->clear_file(nearer_file);
+	registry->clear_file(native_file);
+	registry->clear_file(builtin_file);
+	registry->clear_file(empty_near_file);
+
+	auto builtin_args = [](Variant::Type p_type) -> Vector<BSConformanceRegistry::RecordedTypeArgument> {
+		BSConformanceRegistry::RecordedTypeArgument argument;
+		argument.kind = BSConformanceRegistry::RecordedTypeArgument::BUILTIN;
+		argument.builtin_type = p_type;
+		Vector<BSConformanceRegistry::RecordedTypeArgument> arguments;
+		arguments.push_back(argument);
+		return arguments;
+	};
+
+	auto make_conformance = [](const String &p_target_key, const StringName &p_trait,
+									const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_args,
+									const String &p_source, int p_index) -> BSConformanceRegistry::Conformance {
+		BSConformanceRegistry::Conformance entry;
+		entry.target_keys.push_back(p_target_key);
+		entry.target_fqcn = p_target_key;
+		entry.target_script_path = p_target_key.begins_with("res://") ? p_target_key : String();
+		entry.target_is_root_class = true;
+		entry.trait_name = p_trait;
+		entry.trait_type_arguments = p_args;
+		entry.target_label = p_target_key;
+		entry.source_file = p_source;
+		entry.conformance_index = p_index;
+		return entry;
+	};
+
+	// Visible script-key recorded args.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(make_conformance("res://tests/rta_target.barista", SNAME("RtaKeeper"),
+				builtin_args(Variant::INT), script_file, 0));
+		const BSConformanceRegistry::RegistrationResult publish =
+				registry->try_replace_file_conformances(script_file, candidates);
+		result["script_publish_ok"] = publish.registered_count == 1 && publish.conflicts.is_empty();
+
+		Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+		const bool found = registry->get_recorded_trait_arguments(
+				"res://tests/rta_target.barista", SNAME("RtaKeeper"), recorded);
+		result["script_query_ok"] = found && recorded.size() == 1 &&
+				recorded[0].kind == BSConformanceRegistry::RecordedTypeArgument::BUILTIN &&
+				recorded[0].builtin_type == Variant::INT;
+	}
+
+	// Hidden Visibility filters recorded args the same way as membership.
+	{
+		class HideEverythingVisibility : public BSConformanceRegistry::Visibility {
+		public:
+			bool can_see(const String &p_source_file) const override {
+				(void)p_source_file;
+				return false;
+			}
+		};
+		HideEverythingVisibility hidden;
+		const BSConformanceRegistry::ScopedVisibility scoped(&hidden);
+		Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+		result["hidden_script_query_false"] = !registry->get_recorded_trait_arguments(
+				"res://tests/rta_target.barista", SNAME("RtaKeeper"), recorded);
+		result["hidden_native_query_false"] = !registry->get_native_recorded_trait_arguments(
+				SNAME("Node"), SNAME("RtaKeeper"), recorded);
+		result["hidden_builtin_query_false"] = !registry->get_builtin_recorded_trait_arguments(
+				Variant::INT, SNAME("RtaKeeper"), recorded);
+	}
+
+	// Builtin exact-key lookup.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		BSConformanceRegistry::Conformance entry = make_conformance(
+				String(Variant::get_type_name(Variant::INT)), SNAME("RtaKeeper"),
+				builtin_args(Variant::STRING), builtin_file, 0);
+		entry.target_script_path = String();
+		candidates.push_back(entry);
+		const BSConformanceRegistry::RegistrationResult publish =
+				registry->try_replace_file_conformances(builtin_file, candidates);
+		result["builtin_publish_ok"] = publish.registered_count == 1;
+
+		Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+		const bool found = registry->get_builtin_recorded_trait_arguments(
+				Variant::INT, SNAME("RtaKeeper"), recorded);
+		result["builtin_query_ok"] = found && recorded.size() == 1 &&
+				recorded[0].kind == BSConformanceRegistry::RecordedTypeArgument::BUILTIN &&
+				recorded[0].builtin_type == Variant::STRING;
+	}
+
+	// Native ClassDB parent walk: Object record reachable from Node.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		BSConformanceRegistry::Conformance entry = make_conformance(
+				"Object", SNAME("RtaKeeper"), builtin_args(Variant::FLOAT), native_file, 0);
+		entry.target_script_path = String();
+		entry.target_native_base = SNAME("Object");
+		candidates.push_back(entry);
+		const BSConformanceRegistry::RegistrationResult publish =
+				registry->try_replace_file_conformances(native_file, candidates);
+		result["native_publish_ok"] = publish.registered_count == 1;
+
+		Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+		const bool found = registry->get_native_recorded_trait_arguments(
+				SNAME("Node"), SNAME("RtaKeeper"), recorded);
+		result["native_parent_walk_ok"] = found && recorded.size() == 1 &&
+				recorded[0].kind == BSConformanceRegistry::RecordedTypeArgument::BUILTIN &&
+				recorded[0].builtin_type == Variant::FLOAT;
+	}
+
+	// Nearer empty conformance shadows a farther recorded one (CLASS chain).
+	{
+		Vector<BSConformanceRegistry::Conformance> farther_candidates;
+		farther_candidates.push_back(make_conformance("res://tests/rta_farther.barista", SNAME("RtaKeeper"),
+				builtin_args(Variant::INT), farther_file, 0));
+		registry->try_replace_file_conformances(farther_file, farther_candidates);
+
+		Vector<BSConformanceRegistry::Conformance> nearer_candidates;
+		BSConformanceRegistry::Conformance empty_near = make_conformance(
+				"res://tests/rta_nearer.barista", SNAME("RtaKeeper"),
+				Vector<BSConformanceRegistry::RecordedTypeArgument>(), nearer_file, 0);
+		nearer_candidates.push_back(empty_near);
+		registry->try_replace_file_conformances(nearer_file, nearer_candidates);
+
+		BSParser::ClassNode farther_class;
+		farther_class.fqcn = "res://tests/rta_farther.barista";
+		BSParser::ClassNode nearer_class;
+		nearer_class.fqcn = "res://tests/rta_nearer.barista";
+		nearer_class.base_type.kind = BSParser::DataType::CLASS;
+		nearer_class.base_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		nearer_class.base_type.class_type = &farther_class;
+
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &nearer_class;
+
+		Vector<BSConformanceRegistry::RecordedTypeArgument> recorded;
+		// Direct farther query still returns args.
+		result["farther_direct_ok"] = registry->get_recorded_trait_arguments(
+											  "res://tests/rta_farther.barista", SNAME("RtaKeeper"), recorded) &&
+				recorded.size() == 1;
+		// Chain from nearer: empty nearer shadows farther.
+		result["nearer_empty_shadows"] = !BSTypeCompatibility::project_registry_trait_arguments(
+				source, SNAME("RtaKeeper"), recorded);
+
+		// Without the empty nearer, walking from farther returns the record.
+		source.class_type = &farther_class;
+		result["farther_project_ok"] = BSTypeCompatibility::project_registry_trait_arguments(
+											   source, SNAME("RtaKeeper"), recorded) &&
+				recorded.size() == 1 &&
+				recorded[0].builtin_type == Variant::INT;
+
+		// CLASS chain bottoms out at NATIVE: recorded Object args reachable via Node base.
+		farther_class.base_type.kind = BSParser::DataType::NATIVE;
+		farther_class.base_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		farther_class.base_type.native_type = SNAME("Node");
+		registry->clear_file(farther_file);
+		registry->clear_file(nearer_file);
+		source.class_type = &farther_class;
+		result["class_to_native_project_ok"] = BSTypeCompatibility::project_registry_trait_arguments(
+													   source, SNAME("RtaKeeper"), recorded) &&
+				recorded.size() == 1 &&
+				recorded[0].builtin_type == Variant::FLOAT;
+	}
+
+	registry->clear_file(script_file);
+	registry->clear_file(farther_file);
+	registry->clear_file(nearer_file);
+	registry->clear_file(native_file);
+	registry->clear_file(builtin_file);
+	registry->clear_file(empty_near_file);
 
 	return result;
 }

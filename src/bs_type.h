@@ -112,6 +112,20 @@ public:
 	static bool recorded_arguments_conflict(
 			const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_recorded,
 			const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_other);
+
+	/**
+	 * Foundry project_registry_trait_arguments @ c9d5e35: the trait arguments a
+	 * retroactive conformance on `p_source`'s CLASS chain recorded for
+	 * `p_trait_name`. Nearest conforming level wins (including empty nearer
+	 * shadowing a farther record). False when no level recorded any.
+	 *
+	 * Residual (#60): BSTypeCompatibility::check does not yet consult this for
+	 * trait-target assignability (Foundry fs_type.cpp ~1352–1447). Probe-tested
+	 * until that call site lands.
+	 */
+	static bool project_registry_trait_arguments(const BSParser::DataType &p_source,
+			const StringName &p_trait_name,
+			Vector<BSConformanceRegistry::RecordedTypeArgument> &r_arguments);
 };
 
 } // namespace barista_script

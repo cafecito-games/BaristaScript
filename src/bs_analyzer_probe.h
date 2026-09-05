@@ -79,6 +79,15 @@ public:
 	 * native_chain_coherence / p_loaded_files @ c9d5e35).
 	 */
 	godot::Dictionary class_trait_binding_chain_coherence() const;
+
+	/**
+	 * Drive declaration-side recorded trait-argument queries:
+	 * get_recorded_trait_arguments / get_native_recorded_trait_arguments /
+	 * get_builtin_recorded_trait_arguments + project_registry_trait_arguments
+	 * (visibility, nearer-empty shadowing, ClassDB parent walk). Foundry
+	 * recorded_trait_arguments @ c9d5e35.
+	 */
+	godot::Dictionary recorded_trait_arguments_query() const;
 };
 
 } // namespace barista_script
