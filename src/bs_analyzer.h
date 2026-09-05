@@ -652,6 +652,8 @@ private:
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
 	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
 	bool errors_are_only_m5_deferred() const;
+	/** True when every error at/after `p_from_index` is an M5 deferred diagnostic (or none exist). */
+	bool errors_from_index_are_only_m5_deferred(int p_from_index) const;
 
 	void push_error(const String &p_message, const BSParser::Node *p_origin = nullptr);
 #ifdef DEBUG_ENABLED

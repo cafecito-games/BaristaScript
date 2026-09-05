@@ -281,12 +281,23 @@ bool BSAnalyzer::errors_are_only_m5_deferred() const {
 	if (parser->get_errors().is_empty()) {
 		return false;
 	}
+	return errors_from_index_are_only_m5_deferred(0);
+}
+
+bool BSAnalyzer::errors_from_index_are_only_m5_deferred(int p_from_index) const {
+	ERR_FAIL_COND_V(parser == nullptr, false);
+	int index = 0;
+	bool saw_any = false;
 	for (const BSParser::ParserError &error : parser->get_errors()) {
+		if (index++ < p_from_index) {
+			continue;
+		}
+		saw_any = true;
 		if (!error.message.contains("not available until M5")) {
 			return false;
 		}
 	}
-	return true;
+	return saw_any;
 }
 
 BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const {
@@ -1019,7 +1030,10 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 
 	const int interface_error_count = parser->get_errors().size();
 	Finally record_interface_failure([&]() {
-		if (owns_class && parser->get_errors().size() > interface_error_count) {
+		// M5-only deferred diagnostics (e.g. GENERIC_CLASS heads) must not memoize INTERFACE
+		// failure — dependents would replay "Could not resolve class" and break can_instantiate.
+		if (owns_class && parser->get_errors().size() > interface_error_count &&
+				!errors_from_index_are_only_m5_deferred(interface_error_count)) {
 			owner_resolution_failures.record_class(
 					p_class, OwnerResolutionFailures::INTERFACE, interface_error_count);
 		}
@@ -1065,7 +1079,9 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 		const int error_count = other_parser->get_errors().size();
 		ForeignAnalyzerVisibilityScope visibility_scope(other_analyzer);
 		other_analyzer->analyze_class_interface(p_class);
-		if (other_parser->get_errors().size() > error_count ||
+		const bool owner_grew_hard_errors = other_parser->get_errors().size() > error_count &&
+				!other_analyzer->errors_from_index_are_only_m5_deferred(error_count);
+		if (owner_grew_hard_errors ||
 				other_analyzer->owner_resolution_failures.has_class(
 						p_class, OwnerResolutionFailures::INTERFACE)) {
 			push_external_interface_failure();
@@ -3434,7 +3450,8 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 
 	const int body_error_count = parser->get_errors().size();
 	Finally record_body_failure([&]() {
-		if (owns_class && parser->get_errors().size() > body_error_count) {
+		if (owns_class && parser->get_errors().size() > body_error_count &&
+				!errors_from_index_are_only_m5_deferred(body_error_count)) {
 			owner_resolution_failures.record_class(p_class, OwnerResolutionFailures::BODY, body_error_count);
 		}
 	});
@@ -3504,7 +3521,9 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 		// those shorthands are swept when the dependency is analyzed as its own file (Foundry).
 		ForeignAnalyzerVisibilityScope visibility_scope(other_analyzer);
 		other_analyzer->analyze_class_body(p_class);
-		if (other_parser->get_errors().size() > error_count ||
+		const bool owner_grew_hard_errors = other_parser->get_errors().size() > error_count &&
+				!other_analyzer->errors_from_index_are_only_m5_deferred(error_count);
+		if (owner_grew_hard_errors ||
 				other_analyzer->owner_resolution_failures.has_class(p_class, OwnerResolutionFailures::BODY)) {
 			int first_error_index = error_count;
 			if (other_analyzer->owner_resolution_failures.has_class(
