@@ -2,9 +2,10 @@
 /*  bs_conformance_registry.h                                             */
 /*                                                                        */
 /*  Hard fork of Foundry fs_conformance_registry.h @ c9d5e35. Starter:   */
-/*  Visibility / ScopedVisibility / ScopedInFlightReplacement + empty    */
-/*  declaration store. Full registration / witness / runtime coherence   */
-/*  remains residual under #60.                                           */
+/*  Visibility / ScopedVisibility / ScopedInFlightReplacement +          */
+/*  declaration store with atomic try_replace_file_conformances.         */
+/*  ClassTraitBinding / RecordedTypeArgument coherence / runtime         */
+/*  witnesses remain residual under #60.                                  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -21,16 +22,17 @@ namespace barista_script {
 /**
  * Process-global registry of retroactive trait conformances.
  *
- * This slice ports Foundry's visibility stack and an empty declaration store so
- * analyzer filtering can install a thread-local `Visibility` and later queries
- * fail closed ("not found" / invisible) until registration lands under #60.
+ * Visibility stack + declaration store. Analyzer `resolve_conformances`
+ * publishes validated entries through `try_replace_file_conformances` under
+ * `ScopedInFlightReplacement` so reanalysis never leaves a visibility gap and
+ * never reads its own previous declarations mid-pass.
  */
 class BSConformanceRegistry {
 public:
 	/**
 	 * One declaration-side conformance entry. Witness maps, RecordedTypeArgument
 	 * coherence, and runtime witnesses are deferred; the fields here are enough
-	 * for visibility-filtered membership lookups against an empty or seeded store.
+	 * for visibility-filtered membership lookups and atomic per-file replace.
 	 */
 	struct Conformance {
 		Vector<String> target_keys;
@@ -76,6 +78,35 @@ public:
 		~ScopedInFlightReplacement();
 	};
 
+	/**
+	 * One candidate declaration the registry refused. Value-only so diagnostics
+	 * can be produced after the registry lock is released.
+	 */
+	struct RegistrationConflict {
+		enum Kind : uint8_t {
+			DUPLICATE_MEMBERSHIP,
+			// Reserved for follow-up witness / chain ports under #60.
+			WITNESS_COLLISION,
+			CHAIN_COHERENCE,
+		};
+		Kind kind = DUPLICATE_MEMBERSHIP;
+		int conformance_index = -1;
+		String target_label;
+		StringName trait_name;
+		StringName method_name;
+		String conflicting_target_label;
+		String conflicting_source_file;
+	};
+
+	/**
+	 * Outcome of one atomic validate-and-replace. `registered_count` is the
+	 * candidate set minus every entry belonging to a rejected declaration.
+	 */
+	struct RegistrationResult {
+		Vector<RegistrationConflict> conflicts;
+		int registered_count = 0;
+	};
+
 private:
 	static BSConformanceRegistry *singleton;
 	static thread_local const Visibility *active_visibility;
@@ -93,11 +124,27 @@ private:
 
 	void _rebuild_index();
 
+	/** Callers must hold `mutex`. */
+	bool _candidate_conflicts(const Conformance &p_candidate, const Vector<const Conformance *> &p_view,
+			RegistrationConflict &r_conflict) const;
+
 public:
 	static BSConformanceRegistry *get_singleton();
 
 	/** Replaces every conformance previously registered by `p_source_file`. */
 	void register_file_conformances(const String &p_source_file, const Vector<Conformance> &p_conformances);
+
+	/**
+	 * Validates `p_candidates` against the rest of the registry and replaces
+	 * `p_source_file`'s entries with the ones that survive, under one lock.
+	 *
+	 * Previous entries stay visible to other readers until this commits. An empty
+	 * candidate list clears the file. ClassTraitBinding / chain-coherence /
+	 * witness-collision arbitration remain residual under #60; this slice
+	 * rejects duplicate (target FQCN, trait) membership only.
+	 */
+	RegistrationResult try_replace_file_conformances(const String &p_source_file,
+			const Vector<Conformance> &p_candidates);
 
 	void clear_file(const String &p_source_file);
 	void clear();
