@@ -77,15 +77,29 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 		Result result(false, false, false);
 		if (p_target.builtin_type == p_source.builtin_type) {
 			result.compatible = true;
-		} else {
-			const BSNumericConversion::Conversion conversion = BSNumericConversion::classify(p_target, p_source, p_options.constant_source_value);
-			if (conversion == BSNumericConversion::Conversion::IDENTITY) {
-				result.compatible = true;
-			} else if (p_options.allow_implicit_conversion && conversion == BSNumericConversion::Conversion::IMPLICIT_WIDEN) {
-				result.compatible = true;
-				result.uses_implicit_conversion = true;
-			} else if (conversion == BSNumericConversion::Conversion::CONSTANT_CHECKED) {
-				result.compatible = true;
+		}
+		// Foundry FSTypeCompatibility::check @ c9d5e35: at conversion sites, Variant::can_convert_strict
+		// bridges engine-accepted pairs such as String→StringName (Object.connect signal names) and
+		// String→NodePath. D1 still gates numerics through classify afterward so float→int needs a
+		// proven constant (or an explicit `as`), matching GRAMMAR.md conversions.
+		if (!result.compatible && p_options.allow_implicit_conversion) {
+			result.compatible = Variant::can_convert_strict(p_source.builtin_type, p_target.builtin_type);
+			result.uses_implicit_conversion = result.compatible;
+		}
+
+		const bool both_numeric = BSNumericConversion::is_numeric_builtin(p_target) &&
+				BSNumericConversion::is_numeric_builtin(p_source);
+		if (result.compatible && both_numeric) {
+			const BSNumericConversion::Conversion conversion =
+					BSNumericConversion::classify(p_target, p_source, p_options.constant_source_value);
+			const bool conversion_allowed = conversion == BSNumericConversion::Conversion::IDENTITY ||
+					(p_options.allow_implicit_conversion &&
+							(conversion == BSNumericConversion::Conversion::IMPLICIT_WIDEN ||
+									conversion == BSNumericConversion::Conversion::CONSTANT_CHECKED));
+			if (!conversion_allowed) {
+				result.compatible = false;
+				result.uses_implicit_conversion = false;
+			} else if (conversion != BSNumericConversion::Conversion::IDENTITY) {
 				result.uses_implicit_conversion = true;
 			}
 		}
