@@ -1436,11 +1436,13 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 				result = expr->get_datatype();
 
 				// Bare native class names in match patterns are type patterns (`match v: Node:`).
-				// Foundry reduce_identifier publishes NATIVE meta types; apply the same here so
-				// match-branch type narrowing can read them without the full global-id surface.
+				// Foundry reduce_identifier publishes NATIVE meta types only after locals/params/
+				// members fail to bind; gate ClassDB promotion the same way so a shadowed name
+				// stays a value pattern.
 				if (expr->type == BSParser::Node::IDENTIFIER && !result.is_meta_type) {
 					BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(expr);
-					if (ClassDB::class_exists(identifier->name)) {
+					if (identifier->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+							ClassDB::class_exists(identifier->name)) {
 						BSParser::DataType meta;
 						meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 						meta.kind = BSParser::DataType::NATIVE;

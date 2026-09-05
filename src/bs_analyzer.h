@@ -295,9 +295,9 @@ private:
 	void resolve_match(BSParser::MatchNode *p_match);
 	void resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test);
 	/**
-	 * Foundry resolve_match_pattern starter (@ c9d5e35): LITERAL / EXPRESSION / WILDCARD depth for
-	 * subject `is T` classification and native meta-type patterns. ENUM_CASE / bind / container
-	 * patterns remain follow-up under #60.
+	 * Foundry resolve_match_pattern starter (@ c9d5e35): LITERAL / EXPRESSION / WILDCARD / BIND
+	 * depth for subject `is T` classification and native meta-type patterns. ENUM_CASE /
+	 * container patterns remain follow-up under #60.
 	 */
 	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test);
 
