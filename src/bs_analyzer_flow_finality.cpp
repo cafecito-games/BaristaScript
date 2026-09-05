@@ -1214,8 +1214,8 @@ void BSAnalyzer::FlowFinalityContext::analyze_final_definite_assignment_suite(co
 }
 
 // --- Flow narrowing (@ c9d5e35 fs_analyzer_flow_finality.cpp). Match-branch
-// narrowing lands here; D1 numeric width subsumption and ENUM_CASE / case-bind
-// payload typing remain follow-up under #60.
+// narrowing (null / is-type / ENUM_CASE) lands here; D1 numeric width
+// subsumption and lambda capture / compound-assign restore remain #60.
 
 static bool _is_null_literal(const BSParser::ExpressionNode *p_expression) {
 	if (p_expression == nullptr || p_expression->type != BSParser::Node::LITERAL) {
