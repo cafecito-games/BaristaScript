@@ -1506,6 +1506,24 @@ func _test_flow_narrowing(failures: PackedStringArray) -> void:
 	var and_narrow_report: Dictionary = probe.analyze_source(and_narrow, "res://tests/and_narrowing_assign.barista")
 	_expect(failures, and_narrow_report.get("valid", false) == true, "`and` condition applies left-side null-check narrowing")
 
+	# Foundry match-branch flow narrowing (@ c9d5e35): non-null patterns strip nullability;
+	# subject `is T` / bare native type patterns overlay the matched type.
+	var match_null_stripped := "class_name MatchNullStrippedAssign extends Node\nfunc take(n: Node?) -> void:\n\tmatch n:\n\t\tnull:\n\t\t\tpass\n\t\t1:\n\t\t\tvar x: Node = n\n\t\t_:\n\t\t\tpass\n"
+	var match_null_stripped_report: Dictionary = probe.analyze_source(match_null_stripped, "res://tests/match_null_stripped_assign.barista")
+	_expect(failures, match_null_stripped_report.get("valid", false) == true, "match non-null literal arm strips Node? → Node")
+
+	var match_wildcard_keeps_null := "class_name MatchWildcardKeepsNull extends Node\nfunc take(n: Node?) -> void:\n\tmatch n:\n\t\t_:\n\t\t\tvar x: Node = n\n"
+	var match_wildcard_keeps_null_report: Dictionary = probe.analyze_source(match_wildcard_keeps_null, "res://tests/match_wildcard_keeps_null.barista")
+	_expect(failures, match_wildcard_keeps_null_report.get("valid", true) == false, "match wildcard arm does not strip nullability")
+
+	var match_is_type := "class_name MatchIsTypeAssign extends Node\nfunc take(v: int | String) -> void:\n\tmatch v:\n\t\tv is String:\n\t\t\tvar s: String = v\n\t\t_:\n\t\t\tpass\n"
+	var match_is_type_report: Dictionary = probe.analyze_source(match_is_type, "res://tests/match_is_type_assign.barista")
+	_expect(failures, match_is_type_report.get("valid", false) == true, "match `v is String` arm allows int|String → String")
+
+	var match_native_type := "class_name MatchNativeTypeAssign extends Node\nfunc take(v: Object?) -> void:\n\tmatch v:\n\t\tnull:\n\t\t\tpass\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n"
+	var match_native_type_report: Dictionary = probe.analyze_source(match_native_type, "res://tests/match_native_type_assign.barista")
+	_expect(failures, match_native_type_report.get("valid", false) == true, "match bare Node type pattern narrows Object? → Node")
+
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
 

@@ -142,6 +142,8 @@ public:
 		const BSParser::Node *flow_narrowing_key_from_identifier(const BSParser::IdentifierNode *p_identifier) const;
 		void apply_flow_narrowing(const BSParser::IdentifierNode *p_identifier);
 		void apply_flow_narrowing(const BSParser::IdentifierNode *p_identifier, const BSParser::DataType &p_type);
+		/** Foundry apply_match_branch_flow_narrowing @ c9d5e35: type / null overlays per match arm. */
+		void apply_match_branch_flow_narrowing(BSParser::ExpressionNode *p_match_test, BSParser::MatchBranchNode *p_match_branch);
 		void clear_flow_narrowing(const BSParser::ExpressionNode *p_expression);
 		void mark_flow_narrowing_capture(const BSParser::IdentifierNode *p_identifier);
 		void clear_captured_flow_narrowing();
@@ -289,6 +291,15 @@ private:
 	/** Foundry reduce_type_test starter (@ c9d5e35): resolve `is T` test type for flow narrowing. */
 	void reduce_type_test(BSParser::TypeTestNode *p_type_test);
 	void analyze_if(BSParser::IfNode *p_if);
+	/** Foundry resolve_match @ c9d5e35 (match-branch narrowing slice): patterns + per-arm narrowing. */
+	void resolve_match(BSParser::MatchNode *p_match);
+	void resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test);
+	/**
+	 * Foundry resolve_match_pattern starter (@ c9d5e35): LITERAL / EXPRESSION / WILDCARD depth for
+	 * subject `is T` classification and native meta-type patterns. ENUM_CASE / bind / container
+	 * patterns remain follow-up under #60.
+	 */
+	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test);
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);

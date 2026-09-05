@@ -1378,6 +1378,122 @@ void BSAnalyzer::analyze_if(BSParser::IfNode *p_if) {
 	}
 }
 
+void BSAnalyzer::resolve_match(BSParser::MatchNode *p_match) {
+	if (p_match == nullptr) {
+		return;
+	}
+	// Foundry resolve_match @ c9d5e35 (match-branch narrowing slice).
+	reduce_expression(p_match->test);
+	for (int i = 0; i < p_match->branches.size(); i++) {
+		resolve_match_branch(p_match->branches[i], p_match->test);
+	}
+	check_match_exhaustiveness(p_match);
+}
+
+void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test) {
+	if (p_match_branch == nullptr) {
+		return;
+	}
+	for (int i = 0; i < p_match_branch->annotations.size(); i++) {
+		BSParser::AnnotationNode *annotation = p_match_branch->annotations[i];
+		if (annotation != nullptr) {
+			// Match-branch annotations have no dedicated TargetKind in the v1 set; resolve args then apply.
+			resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_NONE);
+			annotation->apply(parser, p_match_branch, current_class);
+		}
+	}
+
+	for (int i = 0; i < p_match_branch->patterns.size(); i++) {
+		resolve_match_pattern(p_match_branch->patterns[i], p_match_test);
+	}
+
+	HashMap<const BSParser::Node *, BSParser::DataType> previous_flow_narrowed_types(flow_finality.get_flow_narrowed_types());
+	flow_finality.apply_match_branch_flow_narrowing(p_match_test, p_match_branch);
+
+	if (p_match_branch->guard_body != nullptr) {
+		analyze_suite(p_match_branch->guard_body);
+	}
+	analyze_suite(p_match_branch->block);
+	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
+}
+
+void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test) {
+	if (p_match_pattern == nullptr) {
+		return;
+	}
+
+	BSParser::DataType result;
+	switch (p_match_pattern->pattern_type) {
+		case BSParser::PatternNode::PT_LITERAL:
+			if (p_match_pattern->literal != nullptr) {
+				reduce_literal(p_match_pattern->literal);
+				result = p_match_pattern->literal->get_datatype();
+			}
+			break;
+		case BSParser::PatternNode::PT_EXPRESSION:
+			if (p_match_pattern->expression != nullptr) {
+				BSParser::ExpressionNode *expr = p_match_pattern->expression;
+				reduce_expression(expr);
+				result = expr->get_datatype();
+
+				// Bare native class names in match patterns are type patterns (`match v: Node:`).
+				// Foundry reduce_identifier publishes NATIVE meta types; apply the same here so
+				// match-branch type narrowing can read them without the full global-id surface.
+				if (expr->type == BSParser::Node::IDENTIFIER && !result.is_meta_type) {
+					BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(expr);
+					if (ClassDB::class_exists(identifier->name)) {
+						BSParser::DataType meta;
+						meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+						meta.kind = BSParser::DataType::NATIVE;
+						meta.builtin_type = Variant::OBJECT;
+						meta.native_type = identifier->name;
+						meta.is_constant = true;
+						meta.is_meta_type = true;
+						identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
+						identifier->set_datatype(meta);
+						result = meta;
+					}
+				}
+
+				// `value is T` where the operand names the same identifier as the match subject.
+				if (expr->type == BSParser::Node::TYPE_TEST && p_match_test != nullptr && p_match_test->type == BSParser::Node::IDENTIFIER) {
+					const BSParser::TypeTestNode *type_test = static_cast<const BSParser::TypeTestNode *>(expr);
+					if (type_test->operand != nullptr && type_test->operand->type == BSParser::Node::IDENTIFIER) {
+						const BSParser::IdentifierNode *pattern_operand = static_cast<const BSParser::IdentifierNode *>(type_test->operand);
+						const BSParser::IdentifierNode *match_identifier = static_cast<const BSParser::IdentifierNode *>(p_match_test);
+						p_match_pattern->is_subject_type_test = pattern_operand->name == match_identifier->name;
+					}
+				}
+			}
+			break;
+		case BSParser::PatternNode::PT_WILDCARD:
+			p_match_pattern->is_irrefutable = true;
+			result.kind = BSParser::DataType::VARIANT;
+			break;
+		case BSParser::PatternNode::PT_BIND:
+			if (p_match_test != nullptr && p_match_test->get_datatype().is_set()) {
+				result = p_match_test->get_datatype();
+			} else {
+				result.kind = BSParser::DataType::VARIANT;
+			}
+			p_match_pattern->is_irrefutable = true;
+			if (p_match_pattern->bind != nullptr) {
+				p_match_pattern->bind->set_datatype(result);
+			}
+			break;
+		case BSParser::PatternNode::PT_ENUM_CASE:
+		case BSParser::PatternNode::PT_ARRAY:
+		case BSParser::PatternNode::PT_DICTIONARY:
+		case BSParser::PatternNode::PT_TUPLE:
+		case BSParser::PatternNode::PT_REST:
+			// Container / ENUM_CASE / rest pattern depth remain follow-up under #60.
+			result.kind = BSParser::DataType::VARIANT;
+			break;
+	}
+
+	p_match_pattern->set_datatype(result);
+}
+
 void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root) {
 	(void)p_is_root;
 	if (p_expression == nullptr || p_expression->reduced) {
@@ -1500,14 +1616,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			analyze_suite(for_node->loop);
 		} break;
 		case BSParser::Node::MATCH: {
-			BSParser::MatchNode *match_node = static_cast<BSParser::MatchNode *>(p_node);
-			reduce_expression(match_node->test);
-			for (int i = 0; i < match_node->branches.size(); i++) {
-				if (match_node->branches[i] != nullptr) {
-					analyze_suite(match_node->branches[i]->block);
-				}
-			}
-			check_match_exhaustiveness(match_node);
+			resolve_match(static_cast<BSParser::MatchNode *>(p_node));
 		} break;
 		case BSParser::Node::ASSERT: {
 			BSParser::AssertNode *assert_node = static_cast<BSParser::AssertNode *>(p_node);
