@@ -1,6 +1,14 @@
 /**************************************************************************/
 /*  bs_analyzer.cpp                                                       */
 /*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
+/**************************************************************************/
+/*  bs_analyzer.cpp                                                       */
+/*                                                                        */
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
 /*  flow (#61), local/member/static final definite assignment (#60 TU),   */
@@ -14,7 +22,8 @@
 /*  array/dict/cast/ternary consumer `.Case` finalization (#60),          */
 /*  tagged-union match exhaustiveness (#60), Callable.bind/unbind/call    */
 /*  signature transforms (#60), pending-warning finalize on flow-finality */
-/*  early exit (#60).                                                     */
+/*  early exit (#60), same-file extends + CLASS inheritance member walk   */
+/*  (#60 surface).                                                        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -190,14 +199,19 @@ BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_c
 	if (p_class == nullptr || p_name == StringName()) {
 		return nullptr;
 	}
-	if (!p_class->has_member(p_name)) {
+	for (BSParser::ClassNode *lookup = p_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
+		if (!lookup->has_member(p_name)) {
+			continue;
+		}
+		const BSParser::ClassNode::Member member = lookup->get_member(p_name);
+		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+			return member.function;
+		}
+		// An ordinary non-function declaration claims the name; do not resurrect a same-named
+		// function further up the chain (Foundry ordinary_member_name_found @ c9d5e35).
 		return nullptr;
 	}
-	const BSParser::ClassNode::Member member = p_class->get_member(p_name);
-	if (member.type != BSParser::ClassNode::Member::FUNCTION) {
-		return nullptr;
-	}
-	return member.function;
+	return nullptr;
 }
 
 bool BSAnalyzer::is_bootstrap_path_allowed(const String &p_path) {
@@ -360,6 +374,8 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		return;
 	}
 
+	// Nested classes first so same-file `extends Sibling` can see already-resolved peers, and so
+	// on-demand resolve from a later sibling still finds an unset base to fill.
 	for (int i = 0; i < p_class->members.size(); i++) {
 		const BSParser::ClassNode::Member &member = p_class->members[i];
 		if (member.type == BSParser::ClassNode::Member::CLASS) {
@@ -367,97 +383,220 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		}
 	}
 
-	if (!p_class->extends_used) {
-		BSParser::DataType base;
-		base.kind = BSParser::DataType::NATIVE;
-		base.native_type = SNAME("RefCounted");
-		base.builtin_type = Variant::OBJECT;
-		base.type_source = BSParser::DataType::ANNOTATED_INFERRED;
-		p_class->base_type = base;
+	if (p_class->base_type.is_resolving()) {
+		push_error(vformat(R"(Could not resolve class "%s": Cyclic reference.)",
+						   p_class->identifier != nullptr ? String(p_class->identifier->name) : String("<main>")),
+				p_class);
+		return;
+	}
+	if (p_class->base_type.is_set()) {
 		return;
 	}
 
-	if (!p_class->extends_path.is_empty()) {
+	BSParser::DataType resolving_datatype;
+	resolving_datatype.kind = BSParser::DataType::RESOLVING;
+	p_class->base_type = resolving_datatype;
+
+	BSParser::DataType class_meta;
+	class_meta.is_constant = true;
+	class_meta.is_meta_type = true;
+	class_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	class_meta.kind = BSParser::DataType::CLASS;
+	class_meta.class_type = p_class;
+	class_meta.script_path = parser != nullptr ? parser->script_path : String();
+	class_meta.builtin_type = Variant::OBJECT;
+	p_class->set_datatype(class_meta);
+
+	BSParser::DataType result;
+	if (!p_class->extends_used) {
+		result.kind = BSParser::DataType::NATIVE;
+		result.native_type = SNAME("RefCounted");
+		result.builtin_type = Variant::OBJECT;
+		result.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+	} else if (!p_class->extends_path.is_empty()) {
 		String path = p_class->extends_path.strip_edges();
-		if (path.is_relative_path() && !parser->script_path.is_empty()) {
+		if (path.is_relative_path() && parser != nullptr && !parser->script_path.is_empty()) {
 			path = parser->script_path.get_base_dir().path_join(path).simplify_path();
 		}
 		path = BaristaScript::canonicalize_path(path);
 		if (!is_bootstrap_path_allowed(path) && path.begins_with("res://")) {
-			// Explicit out-of-root import diagnostic (#52): only when the path is outside the bootstrap root.
 			push_error(vformat(R"(Cannot depend on "%s": path is outside the bootstrap allowed dependency root.)", path), p_class);
 		}
 		Error err = OK;
-		// raise_mutex is recursive so A→B→A re-enters the still-raising path without deadlocking.
-		Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser->script_path);
+		Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser != nullptr ? parser->script_path : String());
 		if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr || base_ref->get_parser()->get_tree() == nullptr) {
 			push_error(vformat(R"(Could not resolve base script "%s".)", path), p_class);
+			p_class->base_type = BSParser::DataType();
 			return;
 		}
 		BSParser::ClassNode *base_class = base_ref->get_parser()->get_tree();
-		BSParser::DataType base;
-		base.kind = BSParser::DataType::CLASS;
-		base.class_type = base_class;
-		base.script_path = path;
-		base.native_type = base_class->base_type.native_type;
-		base.builtin_type = Variant::OBJECT;
-		base.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		p_class->base_type = base;
-		return;
-	}
-
-	if (p_class->extends.is_empty()) {
+		result.kind = BSParser::DataType::CLASS;
+		result.class_type = base_class;
+		result.script_path = path;
+		result.native_type = base_class->base_type.native_type;
+		result.builtin_type = Variant::OBJECT;
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	} else if (p_class->extends.is_empty()) {
 		push_error("Extends used without a base type.", p_class);
+		p_class->base_type = BSParser::DataType();
 		return;
-	}
+	} else {
+		BSParser::IdentifierNode *first_id = p_class->extends[0];
+		const StringName first = first_id->name;
+		int extends_index = 1;
+		bool found = false;
 
-	// D7: native and GDScript names remain flat — only the first identifier is consulted for natives.
-	const StringName first = p_class->extends[0]->name;
-	if (p_class->extends.size() == 1 && ClassDB::class_exists(first)) {
-		BSParser::DataType base;
-		base.kind = BSParser::DataType::NATIVE;
-		base.native_type = first;
-		base.builtin_type = Variant::OBJECT;
-		base.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		p_class->base_type = base;
-		return;
-	}
-
-	String qualified;
-	for (int i = 0; i < p_class->extends.size(); i++) {
-		if (i > 0) {
-			qualified += ".";
+		// D7: native names remain flat — only a single-identifier extends can be a native class.
+		if (p_class->extends.size() == 1 && ClassDB::class_exists(first)) {
+			result.kind = BSParser::DataType::NATIVE;
+			result.native_type = first;
+			result.builtin_type = Variant::OBJECT;
+			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			found = true;
 		}
-		qualified += String(p_class->extends[i]->name);
-	}
 
-	if (ScriptServer::is_global_class(StringName(qualified))) {
-		const String path = ScriptServer::get_global_class_path(StringName(qualified));
-		if (!is_bootstrap_path_allowed(path)) {
-			push_error(vformat(R"(Cannot depend on global class "%s" at "%s": path is outside the bootstrap allowed dependency root.)", qualified, path), p_class);
+		if (!found) {
+			String qualified;
+			for (int i = 0; i < p_class->extends.size(); i++) {
+				if (i > 0) {
+					qualified += ".";
+				}
+				qualified += String(p_class->extends[i]->name);
+			}
+			if (ScriptServer::is_global_class(StringName(qualified))) {
+				const String path = ScriptServer::get_global_class_path(StringName(qualified));
+				if (!is_bootstrap_path_allowed(path)) {
+					push_error(vformat(R"(Cannot depend on global class "%s" at "%s": path is outside the bootstrap allowed dependency root.)", qualified, path), p_class);
+				}
+				Error err = OK;
+				Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser != nullptr ? parser->script_path : String());
+				if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr) {
+					push_error(vformat(R"(Could not resolve global class base "%s".)", qualified), p_class);
+					p_class->base_type = BSParser::DataType();
+					return;
+				}
+				BSParser::ClassNode *base_class = base_ref->get_parser()->get_tree();
+				result.kind = BSParser::DataType::CLASS;
+				result.class_type = base_class;
+				result.script_path = path;
+				result.native_type = ScriptServer::get_global_class_native_base(StringName(qualified));
+				if (result.native_type == StringName() && base_class != nullptr) {
+					result.native_type = base_class->base_type.native_type;
+				}
+				result.builtin_type = Variant::OBJECT;
+				result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+				found = true;
+				extends_index = p_class->extends.size(); // Fully consumed by the qualified global name.
+			}
 		}
-		Error err = OK;
-		Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser->script_path);
-		if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr) {
-			push_error(vformat(R"(Could not resolve global class base "%s".)", qualified), p_class);
+
+		if (!found) {
+			// Foundry same-file / scope class lookup @ c9d5e35 (`fs_analyzer_surface.cpp`).
+			List<BSParser::ClassNode *> script_classes;
+			get_class_node_current_scope_classes(p_class, &script_classes, first_id);
+			for (BSParser::ClassNode *look_class : script_classes) {
+				if (look_class->identifier != nullptr && look_class->identifier->name == first) {
+					if (!look_class->base_type.is_set()) {
+						resolve_class_inheritance(look_class);
+					}
+					result.kind = BSParser::DataType::CLASS;
+					result.class_type = look_class;
+					result.script_path = parser != nullptr ? parser->script_path : String();
+					result.native_type = look_class->base_type.native_type;
+					result.builtin_type = Variant::OBJECT;
+					result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+					found = true;
+					break;
+				}
+				if (look_class->has_member(first)) {
+					const BSParser::ClassNode::Member member = look_class->get_member(first);
+					if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
+						if (!member.m_class->base_type.is_set()) {
+							resolve_class_inheritance(member.m_class);
+						}
+						result.kind = BSParser::DataType::CLASS;
+						result.class_type = member.m_class;
+						result.script_path = parser != nullptr ? parser->script_path : String();
+						result.native_type = member.m_class->base_type.native_type;
+						result.builtin_type = Variant::OBJECT;
+						result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+						found = true;
+						break;
+					}
+					push_error(vformat(R"(Cannot use %s "%s" in extends chain.)", member.get_type_name(), first), first_id);
+					p_class->base_type = BSParser::DataType();
+					return;
+				}
+			}
+		}
+
+		if (!found) {
+			push_error(vformat(R"(Could not find base class "%s".)", first), first_id);
+			p_class->base_type = BSParser::DataType();
 			return;
 		}
-		BSParser::ClassNode *base_class = base_ref->get_parser()->get_tree();
-		BSParser::DataType base;
-		base.kind = BSParser::DataType::CLASS;
-		base.class_type = base_class;
-		base.script_path = path;
-		base.native_type = ScriptServer::get_global_class_native_base(StringName(qualified));
-		if (base.native_type == StringName() && base_class != nullptr) {
-			base.native_type = base_class->base_type.native_type;
+
+		// Nested extends chain: `extends Outer.Inner` after the first identifier resolved to CLASS.
+		for (int index = extends_index; index < p_class->extends.size(); index++) {
+			BSParser::IdentifierNode *id = p_class->extends[index];
+			if (result.kind != BSParser::DataType::CLASS || result.class_type == nullptr) {
+				push_error(vformat(R"(Cannot get nested types for extension from non-BaristaScript type "%s".)", result.to_string()), id);
+				p_class->base_type = BSParser::DataType();
+				return;
+			}
+			if (!result.class_type->has_member(id->name)) {
+				push_error(vformat(R"(Could not find nested type "%s".)", id->name), id);
+				p_class->base_type = BSParser::DataType();
+				return;
+			}
+			const BSParser::ClassNode::Member member = result.class_type->get_member(id->name);
+			if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr) {
+				push_error(vformat(R"(Identifier "%s" is not a preloaded script or class.)", id->name), id);
+				p_class->base_type = BSParser::DataType();
+				return;
+			}
+			if (!member.m_class->base_type.is_set()) {
+				resolve_class_inheritance(member.m_class);
+			}
+			result.class_type = member.m_class;
+			result.native_type = member.m_class->base_type.native_type;
+			result.script_path = parser != nullptr ? parser->script_path : String();
 		}
-		base.builtin_type = Variant::OBJECT;
-		base.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		p_class->base_type = base;
+	}
+
+	if (result.kind == BSParser::DataType::CLASS && result.class_type != nullptr && result.class_type->is_trait) {
+		const String class_name = p_class->identifier != nullptr ? String(p_class->identifier->name) : String("<main>");
+		const String trait_name = result.class_type->identifier != nullptr ? String(result.class_type->identifier->name) : String("<trait>");
+		const BSParser::Node *source = p_class->extends.is_empty() ? static_cast<const BSParser::Node *>(p_class) : p_class->extends[0];
+		push_error(vformat(R"(Class "%s" cannot extend trait "%s"; use "uses %s" instead.)", class_name, trait_name, trait_name), source);
+		p_class->base_type = BSParser::DataType();
 		return;
 	}
 
-	push_error(vformat(R"(Could not find base class "%s".)", qualified), p_class->extends[0]);
+	if (result.kind == BSParser::DataType::CLASS && result.class_type != nullptr && result.class_type->is_final) {
+		const BSParser::Node *source = p_class->extends.is_empty() ? static_cast<const BSParser::Node *>(p_class) : p_class->extends[0];
+		push_error(vformat(R"(Cannot extend final class "%s".)", result.to_string()), source);
+		p_class->base_type = BSParser::DataType();
+		return;
+	}
+
+	// Cyclic inheritance through CLASS bases.
+	for (const BSParser::ClassNode *base_class = result.class_type; base_class != nullptr; base_class = base_class->base_type.class_type) {
+		if (base_class == p_class) {
+			push_error("Cyclic inheritance.", p_class);
+			p_class->base_type = BSParser::DataType();
+			return;
+		}
+	}
+
+	// M5: generic extends arguments stay deferred (do not silently erase).
+	if (!p_class->extends_type_arguments.is_empty()) {
+		push_error("Generic type specialization is not available until M5.", p_class->extends_type_arguments[0]);
+	}
+
+	p_class->base_type = result;
+	class_meta.native_type = result.native_type;
+	p_class->set_datatype(class_meta);
 }
 
 Error BSAnalyzer::run_phase_inheritance_resolution() {
@@ -1015,76 +1154,14 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			}
 		}
 	}
-	if (current_class != nullptr && current_class->has_member(p_identifier->name)) {
-		const BSParser::ClassNode::Member member = current_class->get_member(p_identifier->name);
-		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
-			p_identifier->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
-			p_identifier->variable_source = member.variable;
-			member.variable->usages++;
-			p_identifier->set_datatype(member.variable->get_datatype());
-			return;
-		}
-		if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
-			p_identifier->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
-			p_identifier->constant_source = member.constant;
-			member.constant->usages++;
-			p_identifier->set_datatype(member.constant->get_datatype());
-			return;
-		}
-		if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr) {
-			p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
-			p_identifier->signal_source = member.signal;
-			member.signal->usages++;
-			p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), current_class));
-			return;
-		}
-		if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
-			// Bare function references form Callables so signal.connect(handler) can check signatures
-			// (Foundry reduce_identifier_from_base MEMBER_FUNCTION @ c9d5e35).
-			p_identifier->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
-			p_identifier->function_source = member.function;
-			p_identifier->function_source_is_static = member.function->is_static;
-			p_identifier->set_datatype(call_site_validation.callable_type_from_function(member.function));
-			return;
-		}
-		if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
-			// Foundry reduce_identifier ENUM meta @ c9d5e35: bare enum name is the meta type so
-			// `Message.Quit` can fold through reduce_subscript for match exhaustiveness.
-			const BSParser::DataType enum_meta = lookup_local_enum_meta_type(p_identifier->name, p_identifier);
-			if (enum_meta.is_set()) {
-				p_identifier->set_datatype(enum_meta);
-				p_identifier->is_constant = true;
-				return;
-			}
-		}
+	if (current_class != nullptr && try_bind_identifier_member_in_inheritance(p_identifier, current_class)) {
+		return;
 	}
 	// Foundry surface: flattened trait members are visible on the implementer (#60).
 	if (current_class != nullptr) {
 		for (int t = 0; t < current_class->resolved_traits.size(); t++) {
 			BSParser::ClassNode *trait = current_class->resolved_traits[t];
-			if (trait == nullptr || !trait->has_member(p_identifier->name)) {
-				continue;
-			}
-			const BSParser::ClassNode::Member member = trait->get_member(p_identifier->name);
-			if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
-				p_identifier->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
-				p_identifier->variable_source = member.variable;
-				member.variable->usages++;
-				p_identifier->set_datatype(member.variable->get_datatype());
-				return;
-			}
-			if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
-				p_identifier->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
-				p_identifier->constant_source = member.constant;
-				member.constant->usages++;
-				p_identifier->set_datatype(member.constant->get_datatype());
-				return;
-			}
-			if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr) {
-				p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
-				p_identifier->signal_source = member.signal;
-				member.signal->usages++;
-				p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), current_class));
+			if (try_bind_identifier_member(p_identifier, trait, false)) {
 				return;
 			}
 		}
@@ -1225,6 +1302,22 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 				} else if (is_self && current_class != nullptr && current_class->base_type.native_type != StringName()) {
 					native_type = current_class->base_type.native_type;
 				}
+				// CLASS inheritance member methods before native fallback (Foundry @ c9d5e35).
+				if (base_type.kind == BSParser::DataType::CLASS && base_type.class_type != nullptr) {
+					BSParser::FunctionNode *callee = find_class_function(base_type.class_type, p_call->function_name);
+					if (callee != nullptr) {
+						validate_local_call(p_call, callee);
+						p_call->is_noreturn = callee->is_noreturn;
+						return;
+					}
+				} else if (is_self && current_class != nullptr) {
+					BSParser::FunctionNode *callee = find_class_function(current_class, p_call->function_name);
+					if (callee != nullptr) {
+						validate_local_call(p_call, callee);
+						p_call->is_noreturn = callee->is_noreturn;
+						return;
+					}
+				}
 				if (native_type != StringName()) {
 					MethodInfo method_info;
 					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
@@ -1343,9 +1436,9 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 			}
 		}
 		// Bind `self.<member>` and same-class `ClassName.<static>` so flow finality can see
-		// MEMBER_VARIABLE / STATIC_VARIABLE on the attribute (Foundry resolve_subscript @ c9d5e35).
-		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr && current_class != nullptr &&
-				current_class->has_member(p_subscript->attribute->name)) {
+		// MEMBER_VARIABLE / STATIC_VARIABLE / INHERITED_VARIABLE on the attribute
+		// (Foundry resolve_subscript @ c9d5e35), including CLASS inheritance chain members.
+		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr && current_class != nullptr) {
 			const bool self_receiver = p_subscript->base->type == BSParser::Node::SELF;
 			bool class_name_receiver = false;
 			if (p_subscript->base->type == BSParser::Node::IDENTIFIER) {
@@ -1355,27 +1448,40 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				class_name_receiver = base_id->name == class_name || (global_name != StringName() && base_id->name == global_name);
 			}
 			if (self_receiver || class_name_receiver) {
-				const BSParser::ClassNode::Member member = current_class->get_member(p_subscript->attribute->name);
-				if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
-					if (class_name_receiver && !member.variable->is_static) {
-						// ClassName.instance_member is not a legal static access; leave unbound.
-					} else {
-						p_subscript->attribute->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
-						p_subscript->attribute->variable_source = member.variable;
-						member.variable->usages++;
-						p_subscript->attribute->set_datatype(member.variable->get_datatype());
-						p_subscript->set_datatype(member.variable->get_datatype());
+				bool first = true;
+				for (BSParser::ClassNode *lookup = current_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
+					if (!lookup->has_member(p_subscript->attribute->name)) {
+						first = false;
+						continue;
+					}
+					const BSParser::ClassNode::Member member = lookup->get_member(p_subscript->attribute->name);
+					if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+						if (class_name_receiver && !member.variable->is_static) {
+							// ClassName.instance_member is not a legal static access; leave unbound.
+						} else {
+							if (!first && !member.variable->is_static) {
+								p_subscript->attribute->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+							} else {
+								p_subscript->attribute->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
+							}
+							p_subscript->attribute->variable_source = member.variable;
+							member.variable->usages++;
+							p_subscript->attribute->set_datatype(member.variable->get_datatype());
+							p_subscript->set_datatype(member.variable->get_datatype());
+							return;
+						}
+					}
+					if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr && !class_name_receiver) {
+						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
+						p_subscript->attribute->signal_source = member.signal;
+						member.signal->usages++;
+						const BSParser::DataType signal_type = call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), lookup);
+						p_subscript->attribute->set_datatype(signal_type);
+						p_subscript->set_datatype(signal_type);
 						return;
 					}
-				}
-				if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr && !class_name_receiver) {
-					p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
-					p_subscript->attribute->signal_source = member.signal;
-					member.signal->usages++;
-					const BSParser::DataType signal_type = call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), current_class);
-					p_subscript->attribute->set_datatype(signal_type);
-					p_subscript->set_datatype(signal_type);
-					return;
+					// Ordinary declaration claims the name even when this access form cannot use it.
+					break;
 				}
 			}
 		}

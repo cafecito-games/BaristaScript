@@ -276,6 +276,15 @@ private:
 	Error run_phase_finalize();
 
 	void resolve_class_inheritance(BSParser::ClassNode *p_class);
+	/**
+	 * Foundry get_class_node_current_scope_classes @ c9d5e35 (`fs_analyzer_surface.cpp`):
+	 * walk base CLASS chain then outer for same-file extends / member lookup.
+	 */
+	void get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source);
+	/** Bind an identifier to a VARIABLE/CONSTANT/SIGNAL/FUNCTION/ENUM member of `p_class` when present. */
+	bool try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited);
+	/** Walk `p_class` then `base_type.class_type` for a named member bind. */
+	bool try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class);
 	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
 	void analyze_class_interface(BSParser::ClassNode *p_class);
@@ -432,6 +441,7 @@ private:
 	bool validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target, BSParser::ClassNode *p_trait);
 	/** Foundry resolve_conformance_bodies: analyze witness methods against the target. */
 	void resolve_conformance_bodies(BSParser::ClassNode *p_class);
+	/** Own members then `base_type.class_type` chain (Foundry inherited method surface @ c9d5e35). */
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
 	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
 	bool errors_are_only_m5_deferred() const;
