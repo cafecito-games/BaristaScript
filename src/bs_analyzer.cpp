@@ -1787,6 +1787,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 
 // Forward decls for Self-contract helpers defined later in this TU (Foundry @ c9d5e35).
 namespace {
+bool _is_self_type_parameter(const BSParser::DataType &p_type);
 BSParser::DataType _self_type_for_class(BSParser::ClassNode *p_class);
 BSParser::DataType _self_type_parameter_from_bound(const BSParser::DataType &p_bound);
 BSParser::DataType _self_type_parameter_for_class(BSParser::ClassNode *p_class);
@@ -2040,7 +2041,13 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				// Instance witnesses need a receiver (reject on meta-type / class handles).
 				{
 					BSParser::DataType witness_base = base_type;
-					if (is_self && current_class != nullptr &&
+					// Expression `self` is `@Self`; witness lookup keys on the bound CLASS/NATIVE.
+					if (witness_base.kind == BSParser::DataType::TYPE_PARAMETER &&
+							witness_base.type_parameter_name == SNAME("@Self") &&
+							!witness_base.type_parameter_bound.is_empty()) {
+						witness_base = witness_base.type_parameter_bound[0];
+						witness_base.is_meta_type = false;
+					} else if (is_self && current_class != nullptr &&
 							(witness_base.kind == BSParser::DataType::UNRESOLVED ||
 									witness_base.kind == BSParser::DataType::VARIANT ||
 									!witness_base.is_set())) {
@@ -4331,8 +4338,11 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					mark_coroutine_handle_capture(ret->return_value, expected_return);
 				}
 				// Foundry resolve_return Self-contract RETURN gate @ c9d5e35.
+				// Static frames substitute Self to the declaring class (concrete), matching
+				// get_function_signature's static substitution; instance frames keep the contract.
 				const bool preserve_self_contract = current_class != nullptr && current_function != nullptr &&
-						!current_function->is_abstract && expected_return.is_set() && !expected_return.is_variant() &&
+						!current_function->is_abstract && !current_function->is_static &&
+						expected_return.is_set() && !expected_return.is_variant() &&
 						_datatype_contains_self_type_parameter(expected_return);
 				if (preserve_self_contract) {
 					const BSParser::DataType result = ret->return_value->get_datatype();
@@ -4347,6 +4357,23 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 								ret);
 					} else if (value_is_gradual || result.is_variant()) {
 						mark_node_unsafe(ret);
+					}
+				} else if (expected_return.is_set() && !expected_return.is_variant() &&
+						_datatype_contains_self_type_parameter(expected_return) &&
+						current_function != nullptr && current_function->is_static) {
+					const BSParser::DataType compatibility_expected =
+							_substitute_self_type_parameter(expected_return, _self_type_for_class(current_class));
+					const BSParser::DataType result = ret->return_value->get_datatype();
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = true;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					if (!BSTypeCompatibility::check(compatibility_expected, result, options).compatible) {
+						push_error(vformat(R"(Cannot return value of type "%s" because the function return type is "%s".)",
+										   result.to_string(),
+										   expected_return.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(result, "returned value", expected_return, "return type"),
+								ret);
 					}
 				}
 			}
