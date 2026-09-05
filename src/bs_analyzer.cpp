@@ -4,7 +4,8 @@
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
 /*  flow (#61), local/member/static final definite assignment (#60 TU),   */
-/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
+/*  CallSiteValidationContext MethodInfo / signal emit / named-arg /      */
+/*  connect-callable (#60 call TU),                                       */
 /*  resolved_traits + trait-member lookup for flattening finality,        */
 /*  unused private/signal surface, trait requirement / conformance        */
 /*  witness starter (#60 conformance TU).                                 */
@@ -909,6 +910,15 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_node(member.signal, current_class->get_datatype(), current_class));
 			return;
 		}
+		if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
+			// Bare function references form Callables so signal.connect(handler) can check signatures
+			// (Foundry reduce_identifier_from_base MEMBER_FUNCTION @ c9d5e35).
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
+			p_identifier->function_source = member.function;
+			p_identifier->function_source_is_static = member.function->is_static;
+			p_identifier->set_datatype(call_site_validation.callable_type_from_function(member.function));
+			return;
+		}
 	}
 	// Foundry surface: flattened trait members are visible on the implementer (#60).
 	if (current_class != nullptr) {
@@ -950,6 +960,12 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	if (p_call == nullptr || p_callee == nullptr) {
 		return;
 	}
+	// Named arguments rewrite into canonical positional order before arity/type checks
+	// (Foundry CallSiteValidationContext::canonicalize_named_call_arguments @ c9d5e35).
+	if (!call_site_validation.canonicalize_named_call_arguments(p_call, p_callee)) {
+		p_call->set_datatype(p_callee->get_datatype());
+		return;
+	}
 	List<BSParser::DataType> par_types;
 	int default_arg_count = 0;
 	for (int i = 0; i < p_callee->parameters.size(); i++) {
@@ -972,7 +988,13 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	for (const BSParser::DataType &par_type : par_types) {
 		p_call->resolved_parameter_types.push_back(par_type);
 	}
-	call_site_validation.validate_call_arg(par_types, default_arg_count, false, p_call);
+	const BSParser::DataType *rest_type = nullptr;
+	BSParser::DataType rest_storage;
+	if (p_callee->is_vararg() && p_callee->rest_parameter != nullptr) {
+		rest_storage = p_callee->rest_parameter->get_datatype();
+		rest_type = &rest_storage;
+	}
+	call_site_validation.validate_call_arg(par_types, default_arg_count, p_callee->is_vararg(), p_call, Vector<int>(), 0, rest_type);
 	p_call->set_datatype(p_callee->get_datatype());
 }
 
@@ -1008,6 +1030,27 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 				}
 			}
 
+			// Signal-value connect/disconnect/is_connected: `registered.connect(handler)`.
+			if (subscript->base != nullptr &&
+					(p_call->function_name == SNAME("connect") || p_call->function_name == SNAME("disconnect") ||
+							p_call->function_name == SNAME("is_connected"))) {
+				const BSParser::DataType base_type = subscript->base->get_datatype();
+				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
+						base_type.has_method_signature) {
+					call_site_validation.reject_named_call_arguments(p_call);
+					call_site_validation.validate_signal_connect_arg(base_type, p_call, 0);
+					BSParser::DataType void_type;
+					void_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+					void_type.kind = BSParser::DataType::BUILTIN;
+					void_type.builtin_type = Variant::NIL;
+					if (p_call->function_name == SNAME("is_connected")) {
+						void_type.builtin_type = Variant::BOOL;
+					}
+					p_call->set_datatype(void_type);
+					return;
+				}
+			}
+
 			// Native MethodInfo path on a typed native / class receiver (Foundry validate_call_arg(MethodInfo)).
 			if (subscript->base != nullptr && p_call->function_name != StringName()) {
 				const BSParser::DataType base_type = subscript->base->get_datatype();
@@ -1022,11 +1065,15 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 				if (native_type != StringName()) {
 					MethodInfo method_info;
 					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
+						call_site_validation.reject_named_call_arguments(p_call);
 						call_site_validation.validate_call_arg(method_info, p_call);
-						// Foundry @ c9d5e35: after MethodInfo on self.emit_signal, still run typed
-						// payload checks against the named local signal (vararg MethodInfo alone is not enough).
+						// Foundry @ c9d5e35: after MethodInfo on self.emit_signal / connect, still run typed
+						// payload / callable checks against the named local signal.
 						if (is_self && p_call->function_name == SNAME("emit_signal")) {
 							call_site_validation.validate_local_object_emit_signal_args(p_call, true);
+						}
+						if (is_self) {
+							call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
 						}
 						mark_implicit_signal_usage(p_call, is_self);
 						p_call->set_datatype(type_from_property(method_info.return_val));
@@ -1046,6 +1093,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 		const bool local_shape = p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER;
 		if (local_shape && fname != StringName()) {
 			if (fname == SNAME("emit_signal")) {
+				call_site_validation.reject_named_call_arguments(p_call);
 				call_site_validation.validate_local_object_emit_signal_args(p_call, true);
 				mark_implicit_signal_usage(p_call, true);
 				BSParser::DataType void_type;
@@ -1065,7 +1113,9 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 			if (current_class->base_type.native_type != StringName()) {
 				MethodInfo method_info;
 				if (BSNativeDB::get_method_info(current_class->base_type.native_type, fname, &method_info)) {
+					call_site_validation.reject_named_call_arguments(p_call);
 					call_site_validation.validate_call_arg(method_info, p_call);
+					call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
 					// Foundry treats bare identifier callees as self for unused-signal accounting.
 					mark_implicit_signal_usage(p_call, true);
 					p_call->set_datatype(type_from_property(method_info.return_val));

@@ -127,16 +127,52 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	current_class = p_class;
 	if (p_function->return_type != nullptr) {
 		p_function->set_datatype(datatype_from_type_node(p_function->return_type));
+	} else if (!p_function->get_datatype().is_set()) {
+		BSParser::DataType return_type;
+		return_type.type_source = BSParser::DataType::INFERRED;
+		return_type.kind = BSParser::DataType::VARIANT;
+		p_function->set_datatype(return_type);
 	}
+
+	MethodInfo method_info;
+	method_info.name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
+	if (p_function->is_static) {
+		method_info.flags |= METHOD_FLAG_STATIC;
+	}
+	// Stock Godot MethodInfo has no METHOD_FLAG_ASYNC; async-ness lives on FunctionNode / DataType.
+	if (p_function->is_vararg()) {
+		method_info.flags |= METHOD_FLAG_VARARG;
+	}
+
+	p_function->default_arg_values.clear();
 	for (int p = 0; p < p_function->parameters.size(); p++) {
 		BSParser::ParameterNode *parameter = p_function->parameters[p];
-		if (parameter != nullptr && parameter->datatype_specifier != nullptr) {
+		if (parameter == nullptr) {
+			continue;
+		}
+		if (parameter->datatype_specifier != nullptr) {
 			parameter->set_datatype(datatype_from_type_node(parameter->datatype_specifier));
+		}
+		const StringName parameter_name = parameter->identifier != nullptr ? parameter->identifier->name : StringName();
+		method_info.arguments.push_back(parameter->get_datatype().to_property_info(parameter_name));
+		if (parameter->initializer != nullptr) {
+			reduce_expression(parameter->initializer);
+			if (parameter->initializer->is_constant) {
+				p_function->default_arg_values.push_back(parameter->initializer->reduced_value);
+			} else {
+				p_function->default_arg_values.push_back(Variant());
+			}
 		}
 	}
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->datatype_specifier != nullptr) {
 		p_function->rest_parameter->set_datatype(datatype_from_type_node(p_function->rest_parameter->datatype_specifier));
 	}
+	method_info.default_arguments.clear();
+	for (int i = 0; i < p_function->default_arg_values.size(); i++) {
+		method_info.default_arguments.push_back(p_function->default_arg_values[i]);
+	}
+	method_info.return_val = p_function->get_datatype().to_property_info("");
+	p_function->info = method_info;
 	current_class = previous_class;
 }
 

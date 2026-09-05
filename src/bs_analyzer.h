@@ -6,7 +6,8 @@
 /*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
 /*  local + member/static final definite assignment (#60 flow TU),        */
 /*  if/while/assert null-check + `is` type-test flow narrowing starter,   */
-/*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
+/*  CallSiteValidationContext MethodInfo / signal emit / named-arg /      */
+/*  connect-callable (#60 call TU),                                       */
 /*  unused private/signal + built-in annotation resolve (#60 surface),    */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
@@ -40,9 +41,9 @@ public:
 	/**
 	 * Hard fork of Foundry `FSAnalyzer::CallSiteValidationContext` (@ c9d5e35,
 	 * `fs_analyzer_call_validation.cpp`). Ports MethodInfo / typed-parameter
-	 * call arity+type checks and signal emit / emit_signal payload validation.
-	 * Generic inference, named-arg canonicalization, and connect/callable
-	 * richness remain follow-up under #60.
+	 * call arity+type checks, signal emit / emit_signal payload validation,
+	 * named-arg canonicalization, and signal connect/callable signature checks.
+	 * Generic inference and Callable bind/unbind richness remain follow-up under #60.
 	 */
 	class CallSiteValidationContext {
 	public:
@@ -61,6 +62,13 @@ public:
 				bool p_strict_nullable_mismatch,
 				const BSParser::Node *p_actual_node = nullptr) const;
 
+		static bool call_has_named_arguments(const BSParser::CallNode *p_call);
+		void reject_named_call_arguments(const BSParser::CallNode *p_call);
+		bool canonicalize_named_call_arguments(BSParser::CallNode *p_call, const BSParser::FunctionNode *p_function);
+
+		bool callable_signature_from_type(const BSParser::DataType &p_callable_type, Vector<BSParser::DataType> &r_par_types, int &r_default_arg_count, bool &r_is_vararg) const;
+		BSParser::DataType callable_type_from_function(const BSParser::FunctionNode *p_function) const;
+
 		BSParser::DataType explicit_signal_type_from_info(const MethodInfo &p_info) const;
 		BSParser::DataType explicit_signal_type_from_node(const BSParser::SignalNode *p_signal, const BSParser::DataType &p_receiver_type, const BSParser::ClassNode *p_declaring_class) const;
 		bool signal_name_from_constant_arg(const BSParser::CallNode *p_call, int p_signal_arg_index, StringName &r_signal_name) const;
@@ -71,7 +79,9 @@ public:
 		bool call_argument_can_be_string_name(const BSParser::CallNode *p_call, int p_argument_index);
 
 		void validate_signal_emit_args(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_first_emit_arg_index);
+		void validate_signal_connect_arg(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_callable_arg_index = 0);
 		void validate_local_object_emit_signal_args(const BSParser::CallNode *p_call, bool p_is_self);
+		void validate_local_object_signal_callable_arg(const BSParser::CallNode *p_call, bool p_is_self);
 
 	private:
 		BSAnalyzer *analyzer = nullptr;

@@ -4,7 +4,8 @@
 /*  Hard fork of Foundry `modules/foundry_script/fs_analyzer_call_        */
 /*  validation.cpp` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6. FS* ->    */
 /*  BS*; engine contact through bs_platform.h. MethodInfo / typed call    */
-/*  arity+types and signal emit / emit_signal validation for #60.         */
+/*  arity+types, signal emit / emit_signal, named-arg canonicalization,   */
+/*  and signal connect/callable signature validation for #60.             */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -379,6 +380,419 @@ void BSAnalyzer::CallSiteValidationContext::validate_local_object_emit_signal_ar
 	}
 
 	validate_signal_emit_args(signal_type, p_call, 1);
+}
+
+static BSParser::DataType make_void_type() {
+	BSParser::DataType void_type;
+	void_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	void_type.kind = BSParser::DataType::BUILTIN;
+	void_type.builtin_type = Variant::NIL;
+	return void_type;
+}
+
+static String callable_type_string_with_signature(
+		const BSParser::DataType &p_callable_type,
+		const Vector<BSParser::DataType> &p_callable_parameter_types) {
+	if (p_callable_type.has_explicit_method_signature || p_callable_parameter_types.is_empty()) {
+		return p_callable_type.to_string();
+	}
+
+	BSParser::DataType callable_type = p_callable_type;
+	callable_type.has_method_signature = true;
+	callable_type.has_explicit_method_signature = true;
+	callable_type.method_parameter_types = p_callable_parameter_types;
+	callable_type.method_return_type.push_back(make_void_type());
+	return callable_type.to_string();
+}
+
+// A locally declared signal carries its per-parameter signature without the explicit-annotation flag,
+// so `to_string()` would render it as a bare "Signal". Rendering it from the parameters it does carry
+// keeps the diagnostics for `mysignal.connect(handler)` identical to `connect("mysignal", handler)`.
+static String signal_type_string_with_signature(const BSParser::DataType &p_signal_type) {
+	if (p_signal_type.has_explicit_method_signature || p_signal_type.method_parameter_types.is_empty()) {
+		return p_signal_type.to_string();
+	}
+
+	BSParser::DataType signal_type = p_signal_type;
+	signal_type.has_explicit_method_signature = true;
+	return signal_type.to_string();
+}
+
+bool BSAnalyzer::CallSiteValidationContext::call_has_named_arguments(const BSParser::CallNode *p_call) {
+	if (p_call == nullptr) {
+		return false;
+	}
+	for (int i = 0; i < p_call->argument_names.size(); i++) {
+		if (p_call->argument_names[i] != StringName()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void BSAnalyzer::CallSiteValidationContext::reject_named_call_arguments(const BSParser::CallNode *p_call) {
+	// Named arguments are resolved entirely at compile time against a statically known
+	// BaristaScript signature. For any other callee (builtin constructors, engine utility
+	// functions, native methods, or dynamic/`Callable` targets) the parameter names are
+	// unavailable, so reject them instead of silently dropping the names.
+	if (p_call == nullptr) {
+		return;
+	}
+	for (int i = 0; i < p_call->argument_names.size(); i++) {
+		if (p_call->argument_names[i] != StringName()) {
+			analyzer->push_error("Named arguments require a statically known BaristaScript function.", p_call->arguments[i]);
+			return;
+		}
+	}
+}
+
+bool BSAnalyzer::CallSiteValidationContext::canonicalize_named_call_arguments(BSParser::CallNode *p_call, const BSParser::FunctionNode *p_function) {
+	// The parser keeps `argument_names` parallel to `arguments`, with an empty name for each
+	// positional argument. Map every `name = value` argument to its parameter position, rewrite
+	// the call into canonical positional order, and clear the names so the rest of the analyzer,
+	// codegen, and the VM see an ordinary positional call.
+	if (p_call == nullptr || p_function == nullptr) {
+		return true;
+	}
+	if (p_call->argument_names.size() != p_call->arguments.size() || !call_has_named_arguments(p_call)) {
+		// Nothing to canonicalize; drop any (all-empty) name metadata for a clean positional call.
+		p_call->argument_names.clear();
+		return true;
+	}
+
+	const int parameter_count = p_function->parameters.size();
+	const StringName function_name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
+
+	// Rule: once a named argument appears, every following argument must be named.
+	int positional_count = 0;
+	bool seen_named = false;
+	for (int i = 0; i < p_call->arguments.size(); i++) {
+		const bool is_named = p_call->argument_names[i] != StringName();
+		if (is_named) {
+			seen_named = true;
+		} else if (seen_named) {
+			analyzer->push_error("Positional argument cannot follow a named argument.", p_call->arguments[i]);
+			p_call->argument_names.clear();
+			return false;
+		} else {
+			positional_count++;
+		}
+	}
+
+	Vector<BSParser::ExpressionNode *> slots;
+	slots.resize(parameter_count);
+	for (int i = 0; i < parameter_count; i++) {
+		slots.write[i] = nullptr;
+	}
+
+	// Track the source (written) position of the argument occupying each slot so the canonical call
+	// can carry a source-order evaluation list for codegen. A slot left at -1 holds either nothing or
+	// a synthesized constant gap-fill, neither of which has an observable evaluation position.
+	Vector<int> slot_source_index;
+	slot_source_index.resize(parameter_count);
+	for (int i = 0; i < parameter_count; i++) {
+		slot_source_index.write[i] = -1;
+	}
+
+	// Positional arguments fill the leading parameter slots in order. Arguments beyond the fixed
+	// parameter count belong to a rest parameter and keep their order after the fixed slots.
+	Vector<BSParser::ExpressionNode *> rest_arguments;
+	Vector<int> rest_source_index;
+	for (int i = 0; i < positional_count; i++) {
+		if (i < parameter_count) {
+			slots.write[i] = p_call->arguments[i];
+			slot_source_index.write[i] = i;
+		} else {
+			rest_arguments.push_back(p_call->arguments[i]);
+			rest_source_index.push_back(i);
+		}
+	}
+
+	for (int i = positional_count; i < p_call->arguments.size(); i++) {
+		const StringName &argument_name = p_call->argument_names[i];
+		if (p_function->rest_parameter != nullptr && p_function->rest_parameter->identifier != nullptr && p_function->rest_parameter->identifier->name == argument_name) {
+			analyzer->push_error(vformat(R"(The rest parameter "%s" cannot be passed by name.)", argument_name), p_call->arguments[i]);
+			p_call->argument_names.clear();
+			return false;
+		}
+		const int *parameter_index = p_function->parameters_indices.getptr(argument_name);
+		if (parameter_index == nullptr) {
+			analyzer->push_error(vformat(R"*(Function "%s()" has no parameter named "%s".)*", function_name, argument_name), p_call->arguments[i]);
+			p_call->argument_names.clear();
+			return false;
+		}
+		if (slots[*parameter_index] != nullptr) {
+			analyzer->push_error(vformat(R"(Parameter "%s" was specified more than once.)", argument_name), p_call->arguments[i]);
+			p_call->argument_names.clear();
+			return false;
+		}
+		slots.write[*parameter_index] = p_call->arguments[i];
+		slot_source_index.write[*parameter_index] = i;
+	}
+
+	int max_filled_index = -1;
+	for (int i = 0; i < parameter_count; i++) {
+		if (slots[i] != nullptr) {
+			max_filled_index = i;
+		}
+	}
+
+	p_call->synthesized_argument_indices.clear();
+	for (int i = 0; i < parameter_count; i++) {
+		if (slots[i] != nullptr) {
+			continue;
+		}
+
+		const BSParser::ParameterNode *parameter = p_function->parameters[i];
+		const StringName parameter_name = parameter != nullptr && parameter->identifier != nullptr ? parameter->identifier->name : StringName();
+
+		if (parameter == nullptr || parameter->initializer == nullptr) {
+			analyzer->push_error(vformat(R"(Missing value for required parameter "%s".)", parameter_name), p_call);
+			p_call->argument_names.clear();
+			return false;
+		}
+
+		if (i >= max_filled_index) {
+			// Trailing optional parameter: leave it out so the callee supplies its own default.
+			continue;
+		}
+
+		if (!parameter->initializer->is_constant) {
+			analyzer->push_error(vformat(R"(Cannot skip parameter "%s": its default value is not a constant expression. Pass it explicitly.)", parameter_name), p_call);
+			p_call->argument_names.clear();
+			return false;
+		}
+
+		if (analyzer->parser == nullptr) {
+			p_call->argument_names.clear();
+			return false;
+		}
+		BSParser::LiteralNode *constant_argument = analyzer->parser->alloc_node<BSParser::LiteralNode>();
+		constant_argument->value = parameter->initializer->reduced_value;
+		constant_argument->reduced = true;
+		constant_argument->is_constant = true;
+		constant_argument->reduced_value = parameter->initializer->reduced_value;
+		constant_argument->set_datatype(parameter->initializer->get_datatype());
+		slots.write[i] = constant_argument;
+		p_call->synthesized_argument_indices.insert(i);
+	}
+
+	Vector<BSParser::ExpressionNode *> canonical_arguments;
+	Vector<int> canonical_source_index;
+	for (int i = 0; i <= max_filled_index; i++) {
+		canonical_arguments.push_back(slots[i]);
+		canonical_source_index.push_back(slot_source_index[i]);
+	}
+	for (int i = 0; i < rest_arguments.size(); i++) {
+		canonical_arguments.push_back(rest_arguments[i]);
+		canonical_source_index.push_back(rest_source_index[i]);
+	}
+
+	Vector<int> evaluation_order;
+	bool reordered = false;
+	for (int source = 0; source < p_call->arguments.size(); source++) {
+		for (int canonical = 0; canonical < canonical_source_index.size(); canonical++) {
+			if (canonical_source_index[canonical] == source) {
+				if (canonical != evaluation_order.size()) {
+					reordered = true;
+				}
+				evaluation_order.push_back(canonical);
+				break;
+			}
+		}
+	}
+	for (int canonical = 0; canonical < canonical_source_index.size(); canonical++) {
+		if (canonical_source_index[canonical] == -1) {
+			if (canonical != evaluation_order.size()) {
+				reordered = true;
+			}
+			evaluation_order.push_back(canonical);
+		}
+	}
+
+	p_call->arguments = canonical_arguments;
+	p_call->argument_names.clear();
+	if (reordered) {
+		p_call->argument_evaluation_order = evaluation_order;
+	}
+	return true;
+}
+
+bool BSAnalyzer::CallSiteValidationContext::callable_signature_from_type(const BSParser::DataType &p_callable_type, Vector<BSParser::DataType> &r_par_types, int &r_default_arg_count, bool &r_is_vararg) const {
+	if (p_callable_type.kind != BSParser::DataType::BUILTIN || p_callable_type.builtin_type != Variant::CALLABLE || !p_callable_type.has_method_signature) {
+		return false;
+	}
+
+	r_par_types.clear();
+	r_default_arg_count = 0;
+	r_is_vararg = false;
+
+	if (p_callable_type.has_explicit_method_signature) {
+		r_par_types = p_callable_type.method_parameter_types;
+		r_default_arg_count = p_callable_type.method_info.default_arguments.size();
+		r_is_vararg = (p_callable_type.method_info.flags & METHOD_FLAG_VARARG) != 0;
+		return true;
+	}
+
+	if (p_callable_type.method_parameter_types.size() == p_callable_type.method_info.arguments.size()) {
+		r_par_types = p_callable_type.method_parameter_types;
+		r_default_arg_count = p_callable_type.method_info.default_arguments.size();
+		r_is_vararg = (p_callable_type.method_info.flags & METHOD_FLAG_VARARG) != 0;
+		return true;
+	}
+
+	for (const PropertyInfo &E : p_callable_type.method_info.arguments) {
+		r_par_types.push_back(analyzer->type_from_property(E, true));
+	}
+	r_default_arg_count = p_callable_type.method_info.default_arguments.size();
+	r_is_vararg = (p_callable_type.method_info.flags & METHOD_FLAG_VARARG) != 0;
+	return true;
+}
+
+BSParser::DataType BSAnalyzer::CallSiteValidationContext::callable_type_from_function(const BSParser::FunctionNode *p_function) const {
+	BSParser::DataType type;
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	type.kind = BSParser::DataType::BUILTIN;
+	type.builtin_type = Variant::CALLABLE;
+	type.is_constant = true;
+	type.has_method_signature = true;
+	if (p_function == nullptr) {
+		return type;
+	}
+
+	type.method_info = p_function->info;
+	type.signature_is_async = p_function->is_coroutine;
+	for (BSParser::ParameterNode *parameter : p_function->parameters) {
+		if (parameter != nullptr) {
+			type.method_parameter_types.push_back(parameter->get_datatype());
+		}
+	}
+	if (p_function->is_vararg() && p_function->rest_parameter != nullptr) {
+		const BSParser::DataType rest_type = p_function->rest_parameter->get_datatype();
+		if (rest_type.kind == BSParser::DataType::BUILTIN && rest_type.builtin_type == Variant::ARRAY &&
+				rest_type.has_container_element_type(0) && !rest_type.get_container_element_type(0).is_variant()) {
+			type.set_method_rest_parameter_type(rest_type);
+		}
+	}
+	type.method_return_type.push_back(p_function->get_datatype());
+	return type;
+}
+
+void BSAnalyzer::CallSiteValidationContext::validate_signal_connect_arg(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_callable_arg_index) {
+	if (p_call == nullptr || (p_call->function_name != SNAME("connect") && p_call->function_name != SNAME("disconnect") && p_call->function_name != SNAME("is_connected")) || p_callable_arg_index < 0 || p_callable_arg_index >= p_call->arguments.size()) {
+		return;
+	}
+	if (p_signal_type.kind != BSParser::DataType::BUILTIN || p_signal_type.builtin_type != Variant::SIGNAL || !p_signal_type.has_method_signature) {
+		return;
+	}
+	if (p_signal_type.method_parameter_types.size() != p_signal_type.method_info.arguments.size()) {
+		// The rich per-parameter signature was dropped in favor of the MethodInfo form because its slots
+		// could not be compared reliably across the script-API boundary. Its (empty) parameter list would
+		// make every handler look like an arity mismatch, so leave such a signal unvalidated.
+		return;
+	}
+
+	const BSParser::DataType callable_type = p_call->arguments[p_callable_arg_index]->get_datatype();
+	Vector<BSParser::DataType> callable_parameter_types;
+	int callable_default_arg_count = 0;
+	bool callable_is_vararg = false;
+	if (!callable_signature_from_type(callable_type, callable_parameter_types, callable_default_arg_count, callable_is_vararg)) {
+		return;
+	}
+
+	const int signal_argument_count = p_signal_type.method_parameter_types.size();
+	const int callable_argument_count = callable_parameter_types.size();
+	const int callable_min_argument_count = callable_argument_count - callable_default_arg_count;
+	const StringName action_name = p_call->function_name == SNAME("disconnect") ? SNAME("disconnect") : (p_call->function_name == SNAME("is_connected") ? StringName("check connection for") : SNAME("connect"));
+	const String callable_type_string = callable_type_string_with_signature(callable_type, callable_parameter_types);
+	const String signal_type_string = signal_type_string_with_signature(p_signal_type);
+	if (!_method_signature_accepts_argument_count(signal_argument_count, callable_argument_count, callable_default_arg_count, callable_is_vararg, callable_type.method_extra_allowed_argument_counts)) {
+		analyzer->push_error(vformat(R"*(Cannot %s signal "%s" to callable "%s": signal emits %d arguments but callable expects %s%d.)*",
+									 action_name,
+									 signal_type_string,
+									 callable_type_string,
+									 signal_argument_count,
+									 callable_default_arg_count > 0 ? "at least " : "",
+									 callable_default_arg_count > 0 ? callable_min_argument_count : callable_argument_count),
+				p_call->arguments[p_callable_arg_index]);
+		return;
+	}
+
+	BSTypeCompatibility::Options options;
+	options.allow_implicit_conversion = true;
+	options.strict_dynamic = true;
+	options.strict_null = analyzer->strict_null_checks;
+
+	const int checked_signal_argument_count = MAX(signal_argument_count - callable_type.method_unbound_argument_count, 0);
+	for (int i = 0; i < checked_signal_argument_count && i < callable_argument_count; i++) {
+		const BSParser::DataType &callable_parameter_type = callable_parameter_types[i];
+		const BSParser::DataType &signal_parameter_type = p_signal_type.method_parameter_types[i];
+		const bool nullable_mismatch = analyzer->strict_null_checks && signal_parameter_type.is_nullable && !callable_parameter_type.is_nullable && !callable_parameter_type.is_variant();
+		if (nullable_mismatch || !BSTypeCompatibility::check(callable_parameter_type, signal_parameter_type, options).compatible) {
+			if (nullable_mismatch) {
+				analyzer->push_error(vformat("Cannot %s signal \"%s\" to callable \"%s\": signal argument %d is nullable "
+											 "type \"%s\", but callable parameter expects non-nullable \"%s\".",
+											 action_name,
+											 signal_type_string,
+											 callable_type_string,
+											 i + 1,
+											 signal_parameter_type.to_string(),
+											 callable_parameter_type.to_string()),
+						p_call->arguments[p_callable_arg_index]);
+			} else {
+				analyzer->push_error(vformat(R"*(Cannot %s signal "%s" to callable "%s": signal argument %d of type "%s" cannot be passed to callable parameter of type "%s".)*",
+											 action_name,
+											 signal_type_string,
+											 callable_type_string,
+											 i + 1,
+											 signal_parameter_type.to_string(),
+											 callable_parameter_type.to_string()),
+						p_call->arguments[p_callable_arg_index]);
+			}
+			return;
+		}
+	}
+
+	// A signal never becomes variadic, but a variadic handler receives every signal argument past its
+	// fixed prefix through its rest tail, so each of those must fit the tail's element type.
+	if (callable_is_vararg && callable_type.has_method_rest_parameter_type()) {
+		const BSParser::DataType &rest_array = callable_type.get_method_rest_parameter_type();
+		if (rest_array.has_container_element_type(0)) {
+			const BSParser::DataType rest_element = rest_array.get_container_element_type(0);
+			const int callable_fixed_argument_count =
+					MAX(callable_argument_count - callable_type.method_unbound_argument_count, 0);
+			for (int i = callable_fixed_argument_count; i < checked_signal_argument_count; i++) {
+				const BSParser::DataType &signal_parameter_type = p_signal_type.method_parameter_types[i];
+				if (!BSTypeCompatibility::check(rest_element, signal_parameter_type, options).compatible) {
+					analyzer->push_error(vformat(R"*(Cannot %s signal "%s" to callable "%s": signal argument %d of type "%s" cannot be passed to callable rest parameter of type "%s".)*",
+												 action_name,
+												 signal_type_string,
+												 callable_type_string,
+												 i + 1,
+												 signal_parameter_type.to_string(),
+												 rest_array.to_string()),
+							p_call->arguments[p_callable_arg_index]);
+					return;
+				}
+			}
+		}
+	}
+}
+
+void BSAnalyzer::CallSiteValidationContext::validate_local_object_signal_callable_arg(const BSParser::CallNode *p_call, bool p_is_self) {
+	if (!p_is_self || p_call == nullptr || (p_call->function_name != SNAME("connect") && p_call->function_name != SNAME("disconnect") && p_call->function_name != SNAME("is_connected")) || p_call->arguments.size() < 2) {
+		return;
+	}
+
+	BSParser::DataType signal_type;
+	if (!local_signal_type_from_constant_arg(p_call, 0, signal_type)) {
+		if (analyzer->parser != nullptr && analyzer->parser->current_class != nullptr) {
+			validate_strict_signal_name_fallback(p_call, analyzer->parser->current_class->get_datatype(), 0);
+		}
+		return;
+	}
+
+	validate_signal_connect_arg(signal_type, p_call, 1);
 }
 
 } // namespace barista_script

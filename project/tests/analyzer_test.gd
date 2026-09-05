@@ -31,6 +31,7 @@ func _init() -> void:
 	_test_explicit_out_of_root_import(failures)
 	_test_call_arity_and_types(failures)
 	_test_call_validation_methodinfo_and_signals(failures)
+	_test_named_arg_and_connect_callable(failures)
 	_test_match_and_flow(failures)
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
@@ -709,6 +710,83 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 		if "Invalid argument" in message and "emit" in message:
 			saw_self_emit = true
 	_expect(failures, saw_self_emit, "self.changed.emit wrong-type diagnostic")
+
+
+func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
+	# Foundry named-arg canonicalization + signal connect/callable checks (#60 call TU).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var positional_after := "class_name NamedPosAfter extends Node\nfunc greet(name: String, greeting: String) -> void:\n\tpass\nfunc _ready() -> void:\n\tgreet(name = \"Bob\", \"Hi\")\n"
+	var positional_report: Dictionary = probe.analyze_source(positional_after, "res://tests/named_pos_after.barista")
+	_expect(failures, positional_report.get("valid", true) == false, "positional after named is invalid")
+	var saw_positional := false
+	for message in positional_report.get("errors", PackedStringArray()):
+		if "Positional argument cannot follow a named argument" in message:
+			saw_positional = true
+	_expect(failures, saw_positional, "positional-after-named diagnostic")
+
+	var unknown_name := "class_name NamedUnknown extends Node\nfunc greet(name: String, greeting: String) -> void:\n\tpass\nfunc _ready() -> void:\n\tgreet(name = \"Bob\", salutation = \"Hi\")\n"
+	var unknown_report: Dictionary = probe.analyze_source(unknown_name, "res://tests/named_unknown.barista")
+	_expect(failures, unknown_report.get("valid", true) == false, "unknown named parameter is invalid")
+	var saw_unknown := false
+	for message in unknown_report.get("errors", PackedStringArray()):
+		if "no parameter named" in message and "salutation" in message:
+			saw_unknown = true
+	_expect(failures, saw_unknown, "unknown named parameter diagnostic")
+
+	var named_reorder := "class_name NamedReorder extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tvar x: int = add(b = 2, a = 1)\n"
+	var reorder_report: Dictionary = probe.analyze_source(named_reorder, "res://tests/named_reorder.barista")
+	_expect(failures, reorder_report.get("valid", false) == true, "named-arg reorder call is valid")
+
+	var named_gap := "class_name NamedGap extends Node\nfunc combine(a: int, b: int = 10, c: int = 20) -> int:\n\treturn a + b + c\nfunc _ready() -> void:\n\tvar x: int = combine(1, c = 5)\n"
+	var gap_report: Dictionary = probe.analyze_source(named_gap, "res://tests/named_gap.barista")
+	_expect(failures, gap_report.get("valid", false) == true, "named-arg constant default gap fill is valid")
+
+	var named_type := "class_name NamedType extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(a = 1, b = 1.5)\n"
+	var named_type_report: Dictionary = probe.analyze_source(named_type, "res://tests/named_type.barista")
+	_expect(failures, named_type_report.get("valid", true) == false, "named-arg wrong type is invalid")
+
+	var native_named := "class_name NativeNamed extends Node\nfunc _ready() -> void:\n\tget_node(path = \".\")\n"
+	var native_named_report: Dictionary = probe.analyze_source(native_named, "res://tests/native_named.barista")
+	_expect(failures, native_named_report.get("valid", true) == false, "named args on native MethodInfo are invalid")
+	var saw_native_named := false
+	for message in native_named_report.get("errors", PackedStringArray()):
+		if "Named arguments require a statically known BaristaScript function" in message:
+			saw_native_named = true
+	_expect(failures, saw_native_named, "native named-arg rejection diagnostic")
+
+	# Signal-value connect arity / type mismatch (Foundry signal_value_connect_*).
+	var connect_arity := "class_name ConnectArity extends Node\nsignal registered(node: Node, index: int)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n"
+	var connect_arity_report: Dictionary = probe.analyze_source(connect_arity, "res://tests/connect_arity.barista")
+	_expect(failures, connect_arity_report.get("valid", true) == false, "signal.connect arity mismatch invalid")
+	var saw_connect_arity := false
+	for message in connect_arity_report.get("errors", PackedStringArray()):
+		if "Cannot connect signal" in message and "emits 2 arguments" in message:
+			saw_connect_arity = true
+	_expect(failures, saw_connect_arity, "signal.connect arity diagnostic")
+
+	var connect_type := "class_name ConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n"
+	var connect_type_report: Dictionary = probe.analyze_source(connect_type, "res://tests/connect_type.barista")
+	_expect(failures, connect_type_report.get("valid", true) == false, "signal.connect type mismatch invalid")
+	var saw_connect_type := false
+	for message in connect_type_report.get("errors", PackedStringArray()):
+		if "Cannot connect signal" in message and "cannot be passed" in message:
+			saw_connect_type = true
+	_expect(failures, saw_connect_type, "signal.connect type diagnostic")
+
+	# Object.connect("name", handler) spelling must match Signal-value diagnostics.
+	var object_connect_type := "class_name ObjectConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tconnect(\"registered\", on_registered)\n"
+	var object_connect_report: Dictionary = probe.analyze_source(object_connect_type, "res://tests/object_connect_type.barista")
+	_expect(failures, object_connect_report.get("valid", true) == false, "Object.connect type mismatch invalid")
+	var saw_object_connect := false
+	for message in object_connect_report.get("errors", PackedStringArray()):
+		if "Cannot connect signal" in message and "cannot be passed" in message:
+			saw_object_connect = true
+	_expect(failures, saw_object_connect, "Object.connect type diagnostic")
+
+	var connect_ok := "class_name ConnectOk extends Node\nsignal registered(node: Node)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n\tconnect(\"registered\", on_registered)\n"
+	var connect_ok_report: Dictionary = probe.analyze_source(connect_ok, "res://tests/connect_ok.barista")
+	_expect(failures, connect_ok_report.get("valid", false) == true, "matching connect callables are valid")
 
 
 func _test_match_and_flow(failures: PackedStringArray) -> void:
