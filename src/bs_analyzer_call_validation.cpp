@@ -7,7 +7,7 @@
 /*  arity+types, signal emit / emit_signal, named-arg canonicalization,   */
 /*  signal connect/callable signature validation, and Callable            */
 /*  bind/bindv/unbind/call/callv/call_deferred/rpc/rpc_id transforms      */
-/*  for #60.                                                              */
+/*  for #60; clear_receiver_self_contract on Callable capture (#60).      */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -19,6 +19,32 @@
 #include "bs_native_db.h"
 
 namespace barista_script {
+
+static void clear_receiver_self_contract(BSParser::DataType &r_type) {
+	// Foundry clear_receiver_self_contract @ c9d5e35: strip receiver-contract provenance when a
+	// signature is captured into a Callable (no call site can decide identity).
+	r_type.is_receiver_self_contract = false;
+	for (int i = 0; i < r_type.container_element_types.size(); i++) {
+		clear_receiver_self_contract(r_type.container_element_types.write[i]);
+	}
+	for (int i = 0; i < r_type.type_arguments.size(); i++) {
+		BSParser::DataType type_argument = r_type.type_arguments[i];
+		clear_receiver_self_contract(type_argument);
+		r_type.set_type_argument(i, type_argument);
+	}
+	for (int i = 0; i < r_type.method_parameter_types.size(); i++) {
+		clear_receiver_self_contract(r_type.method_parameter_types.write[i]);
+	}
+	for (int i = 0; i < r_type.method_return_type.size(); i++) {
+		clear_receiver_self_contract(r_type.method_return_type.write[i]);
+	}
+	for (int i = 0; i < r_type.method_rest_parameter_type.size(); i++) {
+		clear_receiver_self_contract(r_type.method_rest_parameter_type.write[i]);
+	}
+	for (int i = 0; i < r_type.union_members.size(); i++) {
+		clear_receiver_self_contract(r_type.union_members.write[i]);
+	}
+}
 
 static BSParser::DataType make_signal_type(const MethodInfo &p_info) {
 	BSParser::DataType type;
@@ -117,7 +143,6 @@ const BSParser::DataType *BSAnalyzer::CallSiteValidationContext::rest_element_ty
 }
 
 void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const BSParser::DataType &p_expected_type, BSParser::ExpressionNode *p_argument, int p_argument_number, const StringName &p_function, const BSParser::CallNode *p_call) {
-	(void)p_call;
 	if (p_argument == nullptr) {
 		return;
 	}
@@ -129,6 +154,21 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 		return;
 	}
 	if (!arg_type.is_set() || arg_type.has_no_type()) {
+		return;
+	}
+
+	// Foundry validate_argument_against_type Self PARAMETER contract @ c9d5e35.
+	if (analyzer->datatype_contains_self_type_parameter(par_type)) {
+		if (!analyzer->self_parameter_contract_admits_argument_type(par_type, arg_type, p_call, p_argument) &&
+				!analyzer->self_parameter_satisfied_by_receiver_identity(par_type, p_argument, p_call)) {
+			analyzer->push_error(make_invalid_argument_error(p_function, p_argument_number, par_type, arg_type, false, false, p_argument) +
+							BSParser::DataType::same_rendered_name_clause(par_type, "parameter", arg_type, "argument"),
+					p_argument);
+			return;
+		}
+		if (arg_type.is_variant() || !arg_type.is_hard_type()) {
+			analyzer->mark_node_unsafe(p_argument);
+		}
 		return;
 	}
 
@@ -675,17 +715,22 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::callable_type_from_fun
 	type.signature_is_async = p_function->is_coroutine;
 	for (BSParser::ParameterNode *parameter : p_function->parameters) {
 		if (parameter != nullptr) {
-			type.method_parameter_types.push_back(parameter->get_datatype());
+			BSParser::DataType parameter_type = parameter->get_datatype();
+			clear_receiver_self_contract(parameter_type);
+			type.method_parameter_types.push_back(parameter_type);
 		}
 	}
 	if (p_function->is_vararg() && p_function->rest_parameter != nullptr) {
-		const BSParser::DataType rest_type = p_function->rest_parameter->get_datatype();
+		BSParser::DataType rest_type = p_function->rest_parameter->get_datatype();
+		clear_receiver_self_contract(rest_type);
 		if (rest_type.kind == BSParser::DataType::BUILTIN && rest_type.builtin_type == Variant::ARRAY &&
 				rest_type.has_container_element_type(0) && !rest_type.get_container_element_type(0).is_variant()) {
 			type.set_method_rest_parameter_type(rest_type);
 		}
 	}
-	type.method_return_type.push_back(p_function->get_datatype());
+	BSParser::DataType return_type = p_function->get_datatype();
+	clear_receiver_self_contract(return_type);
+	type.method_return_type.push_back(return_type);
 	return type;
 }
 

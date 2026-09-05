@@ -26,7 +26,8 @@
 /*  reduce_call member-miss / hidden-witness fallback;                    */
 /*  reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→     */
 /*  coroutine wrap; Coroutine[T] annotation decode; direct async-call wrap*/
-/*  + mark_coroutine_handle_capture (#60 residual).                       */
+/*  + mark_coroutine_handle_capture (#60 residual); Self-contract RETURN  */
+/*  assign/return/assignment + receiver-contract stamp (#60 residual).    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -53,6 +54,12 @@ public:
 		FLOW_FINALITY_INVARIANTS = 6,
 		CONFORMANCE_WITNESS_BODY = 7,
 		FINAL_DIAGNOSTICS_AND_DEPENDENCIES = 8,
+	};
+
+	/** Foundry FSAnalyzer::SelfContractKind @ c9d5e35 — RETURN for assign/return/assignment. */
+	enum class SelfContractKind {
+		PARAMETER,
+		RETURN,
 	};
 
 	/**
@@ -644,6 +651,17 @@ private:
 	 * Generic open-schema / type-argument / union-collapse machinery remains #60.
 	 */
 	void reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type);
+	/** Foundry datatype_contains_self_type_parameter @ c9d5e35. */
+	bool datatype_contains_self_type_parameter(const BSParser::DataType &p_type) const;
+	/**
+	 * Foundry self_contract_admits_value_type @ c9d5e35 (RETURN kind for assign/return/assignment;
+	 * PARAMETER delegates to the receiver-contract helpers).
+	 */
+	bool self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source = nullptr) const;
+	/** Foundry self_contract_admits_gradual_value stub (UNION-only; undecidable residual). */
+	bool self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type) const;
+	bool self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) const;
+	bool self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) const;
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);
