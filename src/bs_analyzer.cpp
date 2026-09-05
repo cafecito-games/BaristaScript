@@ -1394,8 +1394,7 @@ void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch,
 	if (p_match_branch == nullptr) {
 		return;
 	}
-	for (int i = 0; i < p_match_branch->annotations.size(); i++) {
-		BSParser::AnnotationNode *annotation = p_match_branch->annotations[i];
+	for (BSParser::AnnotationNode *annotation : p_match_branch->annotations) {
 		if (annotation != nullptr) {
 			// Match-branch annotations have no dedicated TargetKind in the v1 set; resolve args then apply.
 			resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_NONE);
