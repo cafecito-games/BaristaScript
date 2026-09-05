@@ -11,8 +11,7 @@
 /*  undecidable laundering remains M5 residual until method/class type   */
 /*  parameters are live. Trait-target assignability consults declared    */
 /*  uses projection and registry recorded-arg conflict (#60). Runtime    */
-/*  Function* store / WITNESS_COLLISION / complete_self_referential_enum */
-/*  remain residual.                                                     */
+/*  Function* store / complete_self_referential_enum remain residual.    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */

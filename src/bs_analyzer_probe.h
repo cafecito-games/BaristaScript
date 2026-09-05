@@ -94,6 +94,13 @@ public:
 	 * projected type-argument conflict rejection (Foundry fs_type.cpp ~1352–1447).
 	 */
 	godot::Dictionary trait_target_assignability() const;
+
+	/**
+	 * Drive WITNESS_COLLISION: same-file seen_witnesses_by_target early diagnostic,
+	 * cross-file get_witness_source + try_replace arbitration, and non-colliding OK
+	 * (Foundry resolve_conformances / _declaration_witnesses_collide @ c9d5e35).
+	 */
+	godot::Dictionary witness_collision_arbitration() const;
 };
 
 } // namespace barista_script

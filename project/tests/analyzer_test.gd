@@ -67,6 +67,7 @@ func _init() -> void:
 	_test_class_trait_binding_chain_coherence(failures)
 	_test_recorded_trait_arguments_query(failures)
 	_test_trait_target_assignability(failures)
+	_test_witness_collision_arbitration(failures)
 	_test_self_type_parameter_compat(failures)
 	_test_enum_self_payload_field_leg(failures)
 	_test_self_contract_assign_return(failures)
@@ -3314,6 +3315,48 @@ func _test_trait_target_assignability(failures: PackedStringArray) -> void:
 		_src_class("TtaIndexGuard extends Node\n"), "res://tests/tta_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"trait-target-assignability probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_witness_collision_arbitration(failures: PackedStringArray) -> void:
+	# Foundry seen_witnesses_by_target / get_witness_source / WITNESS_COLLISION @ c9d5e35 (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.witness_collision_arbitration()
+
+	_expect(failures, report.get("same_file_collision_diagnostic", false) == true,
+		"same-file two conformances with shared witness method diagnose collision")
+	_expect(failures, report.get("same_file_first_registered", false) == true,
+		"same-file first conformance still registers after witness collision on second")
+	_expect(failures, report.get("same_file_second_rejected", false) == true,
+		"same-file colliding second conformance is not stored")
+
+	_expect(failures, report.get("cross_first_ok", false) == true,
+		"cross-file first witness conformance analyzes and registers")
+	_expect(failures, report.get("get_witness_source_first", false) == true,
+		"get_witness_source reports the first declaring file")
+	_expect(failures, report.get("cross_file_collision_diagnostic", false) == true,
+		"cross-file conflicting witness diagnoses collision")
+	_expect(failures, report.get("cross_second_store_empty", false) == true,
+		"cross-file colliding second conformance is not stored")
+
+	_expect(failures, report.get("distinct_ok_analyze", false) == true,
+		"non-colliding distinct witness methods analyze cleanly")
+	_expect(failures, report.get("distinct_ok_registered", false) == true,
+		"non-colliding distinct witness methods both register")
+
+	_expect(failures, report.get("registry_first_ok", false) == true,
+		"try_replace publishes first witness declaration")
+	_expect(failures, report.get("registry_witness_collision", false) == true,
+		"try_replace rejects WITNESS_COLLISION authoritatively")
+	_expect(failures, report.get("registry_second_rejected", false) == true,
+		"WITNESS_COLLISION leaves second file store empty")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("WcIndexGuard extends Node\n"), "res://tests/wc_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"witness-collision probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
 
 

@@ -3,10 +3,11 @@
 /*                                                                        */
 /*  Hard fork of Foundry fs_conformance_registry.cpp @ c9d5e35. Visibility*/
 /*  stack + declaration store with atomic try_replace_file_conformances  */
-/*  + find_witness_location / find_hidden_witness_declaration            */
-/*  (method-name keys) + RecordedTypeArgument / ClassTraitBinding        */
-/*  chain coherence against uses bindings + p_loaded_files load-graph    */
-/*  licensing + declaration-side recorded trait-argument queries.        */
+/*  + find_witness_location / find_hidden_witness_declaration /           */
+/*  get_witness_source (method-name keys) + WITNESS_COLLISION arbitration*/
+/*  + RecordedTypeArgument / ClassTraitBinding chain coherence against   */
+/*  uses bindings + p_loaded_files load-graph licensing +                */
+/*  declaration-side recorded trait-argument queries.                    */
 /*  Runtime Function* witnesses remain residual under #60.               */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -306,6 +307,36 @@ bool BSConformanceRegistry::_binding_conflicts_with_conformance(const ClassTrait
 	return false;
 }
 
+bool BSConformanceRegistry::_declaration_witnesses_collide(const Conformance &p_candidate,
+		const Vector<const Conformance *> &p_view, RegistrationConflict &r_conflict) const {
+	if (p_candidate.target_fqcn.is_empty() || p_candidate.witnesses.is_empty()) {
+		return false;
+	}
+	// A witness collision is a property of the program, not of what one file loads: two files
+	// supplying the same method name for one target contradict each other whether or not either
+	// can see the other.
+	for (const KeyValue<StringName, bool> &witness : p_candidate.witnesses) {
+		if (witness.key == StringName()) {
+			continue;
+		}
+		for (const Conformance *existing : p_view) {
+			if (!existing->target_keys.has(p_candidate.target_fqcn) || !existing->witnesses.has(witness.key)) {
+				continue;
+			}
+			r_conflict.kind = RegistrationConflict::WITNESS_COLLISION;
+			r_conflict.conformance_index = p_candidate.conformance_index;
+			r_conflict.target_label = p_candidate.target_label;
+			r_conflict.trait_name = p_candidate.trait_name;
+			r_conflict.method_name = witness.key;
+			r_conflict.conflicting_target_label =
+					existing->target_label.is_empty() ? existing->target_fqcn : existing->target_label;
+			r_conflict.conflicting_source_file = existing->source_file;
+			return true;
+		}
+	}
+	return false;
+}
+
 bool BSConformanceRegistry::_candidate_conflicts(const Conformance &p_candidate, const String &p_source_file,
 		const Vector<const Conformance *> &p_view, RegistrationConflict &r_conflict) const {
 	if (p_candidate.trait_name == StringName()) {
@@ -435,8 +466,15 @@ BSConformanceRegistry::RegistrationResult BSConformanceRegistry::try_replace_fil
 		const Vector<int> &declaration = declarations[d];
 		RegistrationConflict conflict;
 		bool conflicts = false;
+		// Membership and chain coherence are per identity; the witness map is shared by every entry
+		// the declaration emitted, so it is checked once, and last, so a contradiction is reported
+		// as the membership or chain contradiction it is rather than as the witness collision it
+		// also implies.
 		for (int position = 0; position < declaration.size() && !conflicts; position++) {
 			conflicts = _candidate_conflicts(normalized[declaration[position]], p_source_file, view, conflict);
+		}
+		if (!conflicts) {
+			conflicts = _declaration_witnesses_collide(normalized[declaration[0]], view, conflict);
 		}
 		if (conflicts) {
 			result.conflicts.push_back(conflict);
@@ -621,6 +659,27 @@ String BSConformanceRegistry::get_conformance_source(const String &p_target_key,
 	}
 	const String *source = traits->getptr(p_trait_name);
 	return source != nullptr ? *source : String();
+}
+
+String BSConformanceRegistry::get_witness_source(const String &p_target_key, const StringName &p_method,
+		StringName &r_trait_name) const {
+	r_trait_name = StringName();
+	if (p_target_key.is_empty() || p_method == StringName()) {
+		return String();
+	}
+	std::lock_guard<std::mutex> lock(mutex);
+	for (const KeyValue<String, Vector<Conformance>> &file_entry : conformances_by_file) {
+		for (const Conformance &conformance : file_entry.value) {
+			if (!conformance.target_keys.has(p_target_key)) {
+				continue;
+			}
+			if (conformance.witnesses.has(p_method)) {
+				r_trait_name = conformance.trait_name;
+				return conformance.source_file;
+			}
+		}
+	}
+	return String();
 }
 
 Vector<BSConformanceRegistry::Conformance> BSConformanceRegistry::get_file_conformances(const String &p_source_file) const {
