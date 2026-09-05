@@ -78,23 +78,6 @@ static String _dependency_error_suffix(const char *p_noun, const String &p_path,
 	return vformat(R"(The %s is declared in "%s", which has errors, the first at %s)", p_noun, script_path, first_error);
 }
 
-// Foundry make_coroutine_type @ c9d5e35 (~1646): wrap result T as Coroutine[T]. Principal identity
-// is the native BSFunctionState skin; is_coroutine discriminates await / missing-await; the phantom
-// result type lives in container_element_types[0].
-BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type) {
-	BSParser::DataType type;
-	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-	type.kind = BSParser::DataType::NATIVE;
-	type.builtin_type = Variant::OBJECT;
-	type.native_type = SNAME("BSFunctionState");
-	type.is_coroutine = true;
-	BSParser::DataType result_type = p_result_type;
-	result_type.is_constant = false;
-	result_type.is_meta_type = false;
-	type.set_container_element_type(0, result_type);
-	return type;
-}
-
 // Foundry coroutine_result_is_void @ c9d5e35 (~1664): True when a coroutine's phantom result is
 // hard `void` (BUILTIN NIL in container_element_types[0]). Root-position discards of
 // Coroutine[void] are intentional fire-and-forget launches — no result exists to lose — so
@@ -234,6 +217,23 @@ bool _checked_int_binary(Variant::Operator p_op, const Variant &p_left, const Va
 }
 
 } // namespace
+
+// Foundry make_coroutine_type @ c9d5e35 (~1646): wrap result T as Coroutine[T]. Principal identity
+// is the native BSFunctionState skin; is_coroutine discriminates await / missing-await; the phantom
+// result type lives in container_element_types[0]. Shared with call_validation via bs_analyzer.h.
+BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type) {
+	BSParser::DataType type;
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	type.kind = BSParser::DataType::NATIVE;
+	type.builtin_type = Variant::OBJECT;
+	type.native_type = SNAME("BSFunctionState");
+	type.is_coroutine = true;
+	BSParser::DataType result_type = p_result_type;
+	result_type.is_constant = false;
+	result_type.is_meta_type = false;
+	type.set_container_element_type(0, result_type);
+	return type;
+}
 
 String &BSAnalyzer::bootstrap_root_storage() {
 	static String *root = nullptr;
