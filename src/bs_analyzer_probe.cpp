@@ -14,6 +14,7 @@
 #include "barista_script_language.h"
 #include "bs_analyzer.h"
 #include "bs_cache.h"
+#include "bs_conformance_registry.h"
 #include "bs_parser.h"
 
 namespace barista_script {
@@ -59,6 +60,9 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
 	ClassDB::bind_method(D_METHOD("is_semantically_valid", "source", "path"), &BaristaScriptAnalyzerProbe::is_semantically_valid);
 	ClassDB::bind_method(D_METHOD("validate_source", "source", "path", "warnings"), &BaristaScriptAnalyzerProbe::validate_source, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("conformance_visibility_can_see", "source", "path", "candidates"),
+			&BaristaScriptAnalyzerProbe::conformance_visibility_can_see);
+	ClassDB::bind_method(D_METHOD("scoped_visibility_nest_restore"), &BaristaScriptAnalyzerProbe::scoped_visibility_nest_restore);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -161,6 +165,91 @@ godot::Dictionary BaristaScriptAnalyzerProbe::validate_source(const godot::Strin
 	ERR_FAIL_COND_V(language == nullptr, godot::Dictionary());
 	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
 	return language->_validate(p_source, path, true, true, p_warnings, false);
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::conformance_visibility_can_see(const godot::String &p_source,
+		const godot::String &p_path, const godot::PackedStringArray &p_candidates) const {
+	godot::Dictionary result;
+	result["ok"] = false;
+	godot::Dictionary can_see;
+	godot::PackedStringArray errors;
+	const String path = p_path.is_empty() ? String("res://tests/visibility_probe.barista") : p_path;
+	{
+		BSCache::set_source_override(path, p_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		const Error err = parser.parse(p_source, path, false);
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			errors.push_back(pe.message);
+		}
+		if (err == OK) {
+			// Install the analyzer's visibility the way resolve_*/analyze and foreign scopes do.
+			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
+			for (int i = 0; i < p_candidates.size(); i++) {
+				const String candidate = p_candidates[i];
+				can_see[candidate] = analyzer.conformance_visibility.can_see(candidate);
+			}
+			result["ok"] = true;
+		}
+	}
+	BSCache::clear_source_override(path);
+	result["can_see"] = can_see;
+	result["errors"] = errors;
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::scoped_visibility_nest_restore() const {
+	godot::Dictionary result;
+
+	class AllowOnlyA : public BSConformanceRegistry::Visibility {
+	public:
+		bool can_see(const String &p_source_file) const override {
+			return p_source_file == "res://a.barista";
+		}
+	};
+	class AllowOnlyB : public BSConformanceRegistry::Visibility {
+	public:
+		bool can_see(const String &p_source_file) const override {
+			return p_source_file == "res://b.barista";
+		}
+	};
+
+	AllowOnlyA allow_a;
+	AllowOnlyB allow_b;
+
+	// No visibility installed: everything visible (runtime/tooling default).
+	result["none_sees_a"] = BSConformanceRegistry::debug_is_visible("res://a.barista");
+	result["none_sees_b"] = BSConformanceRegistry::debug_is_visible("res://b.barista");
+	result["none_sees_c"] = BSConformanceRegistry::debug_is_visible("res://c.barista");
+
+	{
+		BSConformanceRegistry::ScopedVisibility outer(&allow_a);
+		result["outer_sees_a"] = BSConformanceRegistry::debug_is_visible("res://a.barista");
+		result["outer_hides_b"] = !BSConformanceRegistry::debug_is_visible("res://b.barista");
+		{
+			BSConformanceRegistry::ScopedVisibility nested(&allow_b);
+			result["nested_sees_b"] = BSConformanceRegistry::debug_is_visible("res://b.barista");
+			result["nested_hides_a"] = !BSConformanceRegistry::debug_is_visible("res://a.barista");
+		}
+		result["restored_sees_a"] = BSConformanceRegistry::debug_is_visible("res://a.barista");
+		result["restored_hides_b"] = !BSConformanceRegistry::debug_is_visible("res://b.barista");
+	}
+	result["cleared_sees_a"] = BSConformanceRegistry::debug_is_visible("res://a.barista");
+	result["cleared_sees_b"] = BSConformanceRegistry::debug_is_visible("res://b.barista");
+
+	{
+		BSConformanceRegistry::ScopedVisibility outer(&allow_a);
+		BSConformanceRegistry::ScopedInFlightReplacement in_flight("res://a.barista");
+		result["in_flight_hides_own"] = !BSConformanceRegistry::debug_is_visible("res://a.barista");
+	}
+	result["after_in_flight_sees_a"] = BSConformanceRegistry::debug_is_visible("res://a.barista");
+
+	// Empty store lookups fail closed.
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	result["empty_has_conformance"] = registry != nullptr &&
+			!registry->has_conformance("res://Widget", StringName("SomeTrait"));
+
+	return result;
 }
 
 } // namespace barista_script

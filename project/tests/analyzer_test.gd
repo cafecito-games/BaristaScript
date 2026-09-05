@@ -58,6 +58,7 @@ func _init() -> void:
 	_test_resolve_class_member_depth(failures)
 	_test_foreign_member_failure_replay(failures)
 	_test_foreign_class_phase_failure_replay(failures)
+	_test_conformance_scoped_visibility(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -2822,3 +2823,47 @@ func _test_foreign_class_phase_failure_replay(failures: PackedStringArray) -> vo
 	_expect(failures, validate_report.get("valid", false) == true, "foreign class-phase replay suite remains valid under validate()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate must not mutate declaration index for foreign class-phase replay")
+
+
+func _test_conformance_scoped_visibility(failures: PackedStringArray) -> void:
+	# Foundry ConformanceVisibility + BSConformanceRegistry::ScopedVisibility starter (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var nest: Dictionary = probe.scoped_visibility_nest_restore()
+	_expect(failures, nest.get("none_sees_a", false) == true, "no Visibility installed → a visible")
+	_expect(failures, nest.get("none_sees_b", false) == true, "no Visibility installed → b visible")
+	_expect(failures, nest.get("none_sees_c", false) == true, "no Visibility installed → c visible")
+	_expect(failures, nest.get("outer_sees_a", false) == true, "outer ScopedVisibility allows a")
+	_expect(failures, nest.get("outer_hides_b", false) == true, "outer ScopedVisibility hides b")
+	_expect(failures, nest.get("nested_sees_b", false) == true, "nested ScopedVisibility allows b")
+	_expect(failures, nest.get("nested_hides_a", false) == true, "nested ScopedVisibility hides a")
+	_expect(failures, nest.get("restored_sees_a", false) == true, "leaving nested restores outer a")
+	_expect(failures, nest.get("restored_hides_b", false) == true, "leaving nested restores outer hide b")
+	_expect(failures, nest.get("cleared_sees_a", false) == true, "leaving outer clears Visibility → a")
+	_expect(failures, nest.get("cleared_sees_b", false) == true, "leaving outer clears Visibility → b")
+	_expect(failures, nest.get("in_flight_hides_own", false) == true, "ScopedInFlightReplacement hides own file")
+	_expect(failures, nest.get("after_in_flight_sees_a", false) == true, "in-flight restore sees a again")
+	_expect(failures, nest.get("empty_has_conformance", false) == true, "empty registry store fail-closed")
+
+	var own_path := "res://tests/vis_viewer.barista"
+	var dep_path := "res://tests/vis_dep.barista"
+	var unrelated_path := "res://tests/vis_unrelated.barista"
+	BaristaScriptParseCache.clear_script_cache()
+	BaristaScriptParseCache.set_source_override(dep_path, _src_class("VisDep extends Node\n"))
+	BaristaScriptParseCache.set_source_override(unrelated_path, _src_class("VisUnrelated extends Node\n"))
+	var viewer_source := _src_class("VisViewer extends \"%s\"\n" % dep_path)
+	var candidates := PackedStringArray([own_path, dep_path, unrelated_path])
+	var report: Dictionary = probe.conformance_visibility_can_see(viewer_source, own_path, candidates)
+	_expect(failures, report.get("ok", false) == true, "conformance_visibility_can_see parse ok")
+	var can_see: Dictionary = report.get("can_see", {})
+	_expect(failures, can_see.get(own_path, false) == true, "ConformanceVisibility can_see own path")
+	_expect(failures, can_see.get(dep_path, false) == true, "ConformanceVisibility can_see declared extends dependency")
+	_expect(failures, can_see.get(unrelated_path, false) == false, "ConformanceVisibility cannot see unrelated file")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("VisIndexGuard extends Node\n"), "res://tests/vis_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"visibility probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
