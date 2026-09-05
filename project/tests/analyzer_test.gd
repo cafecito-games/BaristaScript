@@ -1866,7 +1866,7 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 	var var_ok_report: Dictionary = probe.analyze_source(var_ok, "res://tests/ctx_var_ok.barista")
 	_expect(failures, var_ok_report.get("valid", false) == true, "annotated var .Quit / .Move construction is valid")
 
-	var assign_ok := _src_class("CtxAssignOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nvar member: Message = Message.Quit\nfunc handle() -> void:\n\tvar local: Message = Message.Quit\n\tlocal = .Move(3, 4)\n\tmember = .Quit\n")
+	var assign_ok := _src_class("CtxAssignOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nvar member: Message = .Quit\nfunc handle() -> void:\n\tvar local: Message = .Quit\n\tlocal = .Move(3, 4)\n\tmember = .Quit\n")
 	var assign_ok_report: Dictionary = probe.analyze_source(assign_ok, "res://tests/ctx_assign_ok.barista")
 	_expect(failures, assign_ok_report.get("valid", false) == true, "assignment RHS .Case construction is valid")
 
@@ -1914,6 +1914,45 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 			saw_construct_arity = true
 	_expect(failures, saw_construct_arity, "contextual construction payload arity diagnostic")
 
+	# Foundry update_container_literal_element_types / reduce_cast @ c9d5e35:
+	# array / dictionary / cast / ternary consumers for contextual `.Case`.
+	var array_ok := _src_class("CtxArrayOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle() -> void:\n\tvar msgs: Array[Message] = [.Quit, .Move(1, 2)]\n")
+	var array_ok_report: Dictionary = probe.analyze_source(array_ok, "res://tests/ctx_array_ok.barista")
+	_expect(failures, array_ok_report.get("valid", false) == true, "Array[Message] element .Case construction is valid")
+
+	var array_nested := _src_class("CtxArrayNested extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle() -> void:\n\tvar nested: Array[Array[Message]] = [[.Quit, .Move(3)]]\n")
+	var array_nested_report: Dictionary = probe.analyze_source(array_nested, "res://tests/ctx_array_nested.barista")
+	_expect(failures, array_nested_report.get("valid", false) == true, "nested Array[Array[Message]] .Case construction is valid")
+
+	var dict_ok := _src_class("CtxDictOk extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle() -> void:\n\tvar by_id: Dictionary[int, Message] = {1: .Quit, 2: .Move(4)}\n\tvar labels: Dictionary[Message, String] = {.Quit: \"done\"}\n")
+	var dict_ok_report: Dictionary = probe.analyze_source(dict_ok, "res://tests/ctx_dict_ok.barista")
+	_expect(failures, dict_ok_report.get("valid", false) == true, "Dictionary key/value .Case construction is valid")
+
+	var cast_ok := _src_class("CtxCastOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle() -> void:\n\tvar labeled = .Quit as Message\n\tvar moved = .Move(5, 6) as Message\n")
+	var cast_ok_report: Dictionary = probe.analyze_source(cast_ok, "res://tests/ctx_cast_ok.barista")
+	_expect(failures, cast_ok_report.get("valid", false) == true, "cast operand .Case construction is valid")
+
+	var cast_array := _src_class("CtxCastArray extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle() -> void:\n\tvar labeled = [.Quit, .Move(7)] as Array[Message]\n")
+	var cast_array_report: Dictionary = probe.analyze_source(cast_array, "res://tests/ctx_cast_array.barista")
+	_expect(failures, cast_array_report.get("valid", false) == true, "cast Array[Message] element .Case construction is valid")
+
+	var ternary_ok := _src_class("CtxTernaryOk extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc choose(cond: bool) -> Message:\n\treturn .Quit if cond else .Move(8)\nfunc handle(cond: bool) -> void:\n\tvar chosen: Message = .Quit if cond else .Move(9)\n\tvar elements: Array[Message] = [.Quit if cond else .Move(10)]\n\tvar labeled = (.Quit if cond else .Move(11)) as Message\n")
+	var ternary_ok_report: Dictionary = probe.analyze_source(ternary_ok, "res://tests/ctx_ternary_ok.barista")
+	_expect(failures, ternary_ok_report.get("valid", false) == true, "ternary branch .Case construction is valid")
+
+	var call_arg_ok := _src_class("CtxCallArgOk extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc consume(msg: Message) -> void:\n\tpass\nfunc handle(cond: bool) -> void:\n\tconsume(.Quit)\n\tconsume(.Quit if cond else .Move(12))\n")
+	var call_arg_ok_report: Dictionary = probe.analyze_source(call_arg_ok, "res://tests/ctx_call_arg_ok.barista")
+	_expect(failures, call_arg_ok_report.get("valid", false) == true, "call-argument .Case construction is valid")
+
+	var array_untyped := _src_class("CtxArrayUntyped extends Node\nenum Message:\n\tQuit\nfunc handle() -> void:\n\tvar msgs = [.Quit]\n")
+	var array_untyped_report: Dictionary = probe.analyze_source(array_untyped, "res://tests/ctx_array_untyped.barista")
+	_expect(failures, array_untyped_report.get("valid", true) == false, "untyped array element .Quit is invalid")
+	var saw_array_annotate := false
+	for message in array_untyped_report.get("errors", PackedStringArray()):
+		if 'needs an expected tagged-union type; annotate the target' in message:
+			saw_array_annotate = true
+	_expect(failures, saw_array_annotate, "untyped array element contextual construction diagnostic")
+
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
 	var validate_report: Dictionary = probe.validate_source(match_payload, "res://tests/ctx_match_validate.barista", true)
@@ -1922,5 +1961,9 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 		"contextual match remains valid under is_semantically_valid()")
 	_expect(failures, probe.is_semantically_valid(var_ok, "res://tests/ctx_var_is_valid.barista"),
 		"contextual assign construction remains valid under is_semantically_valid()")
+	_expect(failures, probe.is_semantically_valid(array_ok, "res://tests/ctx_array_is_valid.barista"),
+		"contextual array construction remains valid under is_semantically_valid()")
+	_expect(failures, probe.is_semantically_valid(cast_ok, "res://tests/ctx_cast_is_valid.barista"),
+		"contextual cast construction remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for contextual case")
