@@ -6,7 +6,9 @@
 /*  flow (#61), final DA, CallSiteValidationContext / connect-callable,   */
 /*  unused surface, ENUM_CASE / `.Case` / exhaustiveness, Callable.bind,  */
 /*  pending-warning finalize, trait conformance (#60), same-file extends  */
-/*  + CLASS inheritance member walk, cycle-safe walks (#110).             */
+/*  + CLASS inheritance member walk, cycle-safe walks (#110), lambda      */
+/*  capture flow-narrowing mark/clear + compound-assign restore (#60).    */
+
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -1075,6 +1077,34 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 	p_binary_op->set_datatype(type_from_variant(p_binary_op->reduced_value));
 }
 
+void BSAnalyzer::maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier) {
+	// Foundry reduce_identifier capture walk @ c9d5e35: only capturable locals/params;
+	// members/globals/constants are skipped by the caller before invoking this.
+	if (p_identifier == nullptr || current_lambda == nullptr) {
+		return;
+	}
+	switch (p_identifier->source) {
+		case BSParser::IdentifierNode::FUNCTION_PARAMETER:
+		case BSParser::IdentifierNode::LOCAL_VARIABLE:
+		case BSParser::IdentifierNode::LOCAL_ITERATOR:
+		case BSParser::IdentifierNode::LOCAL_BIND:
+			break;
+		default:
+			return;
+	}
+
+	BSParser::FunctionNode *function_test = current_lambda->function;
+	// Capture across nested lambdas until the declaring function; skip same-lambda locals.
+	while (function_test != nullptr && function_test != p_identifier->source_function &&
+			function_test->source_lambda != nullptr &&
+			!function_test->source_lambda->captures_indices.has(p_identifier->name)) {
+		function_test->source_lambda->captures_indices[p_identifier->name] = function_test->source_lambda->captures.size();
+		function_test->source_lambda->captures.push_back(p_identifier);
+		flow_finality.mark_flow_narrowing_capture(p_identifier);
+		function_test = function_test->source_lambda->parent_function;
+	}
+}
+
 void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (p_identifier == nullptr) {
 		return;
@@ -1108,6 +1138,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
 					p_identifier->set_datatype(*narrowed);
 				}
+				maybe_capture_identifier_in_lambda(p_identifier);
 				return;
 			}
 			case BSParser::SuiteNode::Local::PARAMETER: {
@@ -1119,6 +1150,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
 					p_identifier->set_datatype(*narrowed);
 				}
+				maybe_capture_identifier_in_lambda(p_identifier);
 				return;
 			}
 			case BSParser::SuiteNode::Local::FOR_VARIABLE:
@@ -1132,6 +1164,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
 					p_identifier->set_datatype(*narrowed);
 				}
+				maybe_capture_identifier_in_lambda(p_identifier);
 				return;
 			}
 			default:
@@ -1149,6 +1182,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
 					p_identifier->set_datatype(*narrowed);
 				}
+				maybe_capture_identifier_in_lambda(p_identifier);
 				return;
 			}
 		}
@@ -1219,6 +1253,12 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 	for (int i = 0; i < p_call->arguments.size(); i++) {
 		reduce_expression(p_call->arguments[i]);
 	}
+
+	// Foundry @ c9d5e35: any call may observe / mutate captured locals, so drop narrowing
+	// that was only proven before a lambda captured those locals.
+	Finally clear_captured_flow_narrowing_after_call([&]() {
+		flow_finality.clear_captured_flow_narrowing();
+	});
 
 	// Attribute call: `receiver.method(...)` — signal.emit and member-method shapes.
 	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
@@ -1388,6 +1428,52 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_call->set_datatype(type);
+}
+
+void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
+	// Foundry reduce_lambda @ c9d5e35: Callable type + signature now; body after the statement
+	// via resolve_pending_lambda_bodies so capture marking runs under the outer suite's
+	// flow-narrowing scope without nesting body analysis inside the initializer reduce.
+	if (p_lambda == nullptr) {
+		return;
+	}
+	BSParser::DataType lambda_type;
+	lambda_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+	lambda_type.kind = BSParser::DataType::BUILTIN;
+	lambda_type.builtin_type = Variant::CALLABLE;
+	p_lambda->set_datatype(lambda_type);
+
+	if (p_lambda->function == nullptr) {
+		return;
+	}
+
+	BSParser::LambdaNode *previous_lambda = current_lambda;
+	current_lambda = p_lambda;
+	resolve_function_signature_in_class(p_lambda->function, current_class);
+	current_lambda = previous_lambda;
+
+	pending_lambda_bodies.push_back(p_lambda);
+}
+
+void BSAnalyzer::resolve_pending_lambda_bodies() {
+	if (pending_lambda_bodies.is_empty()) {
+		return;
+	}
+
+	BSParser::LambdaNode *previous_lambda = current_lambda;
+	Vector<BSParser::LambdaNode *> lambdas = pending_lambda_bodies;
+	pending_lambda_bodies.clear();
+
+	for (int i = 0; i < lambdas.size(); i++) {
+		BSParser::LambdaNode *lambda = lambdas[i];
+		if (lambda == nullptr || lambda->function == nullptr) {
+			continue;
+		}
+		current_lambda = lambda;
+		analyze_function_body(lambda->function, true);
+	}
+
+	current_lambda = previous_lambda;
 }
 
 void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
@@ -2418,6 +2504,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::CALL:
 			reduce_call(static_cast<BSParser::CallNode *>(p_expression));
 			break;
+		case BSParser::Node::LAMBDA:
+			reduce_lambda(static_cast<BSParser::LambdaNode *>(p_expression));
+			break;
 		case BSParser::Node::SUBSCRIPT:
 			reduce_subscript(static_cast<BSParser::SubscriptNode *>(p_expression));
 			break;
@@ -2446,21 +2535,99 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::ASSIGNMENT: {
 			BSParser::AssignmentNode *assignment = static_cast<BSParser::AssignmentNode *>(p_expression);
 			reduce_expression(assignment->assigned_value);
-			reduce_expression(assignment->assignee);
 			if (assignment->assignee != nullptr && assignment->assignee->type == BSParser::Node::IDENTIFIER) {
 				BSParser::IdentifierNode *assignee = static_cast<BSParser::IdentifierNode *>(assignment->assignee);
 				if (assignee->variable_source != nullptr) {
 					assignee->variable_source->assignments++;
 				}
 			}
-			// Foundry: assignment clears prior narrowing for the assignee (new value may not satisfy it).
+			// Foundry reduce_assignment @ c9d5e35: type assignee with narrowing still active so a
+			// compound read sees the narrowed width; then restore the declared type onto the node
+			// (write address / destination checks) and stash the narrowed type for the compound op.
+			reduce_expression(assignment->assignee);
+
+			BSParser::DataType compound_assignment_narrowed_read_type;
+			bool has_compound_assignment_narrowed_read_type = false;
+			if (assignment->assignee != nullptr && assignment->assignee->type == BSParser::Node::IDENTIFIER) {
+				BSParser::IdentifierNode *assignee_identifier = static_cast<BSParser::IdentifierNode *>(assignment->assignee);
+				const BSParser::Node *flow_key = flow_finality.flow_narrowing_key_from_identifier(assignee_identifier);
+				if (const BSParser::DataType *narrowed_type = flow_finality.lookup_flow_narrowed_type(flow_key)) {
+					BSParser::DataType declared_type;
+					bool found_declared_type = true;
+					switch (assignee_identifier->source) {
+						case BSParser::IdentifierNode::FUNCTION_PARAMETER:
+							if (assignee_identifier->parameter_source != nullptr) {
+								declared_type = assignee_identifier->parameter_source->get_datatype();
+							} else {
+								found_declared_type = false;
+							}
+							break;
+						case BSParser::IdentifierNode::LOCAL_VARIABLE:
+							if (assignee_identifier->variable_source != nullptr) {
+								declared_type = assignee_identifier->variable_source->get_datatype();
+							} else {
+								found_declared_type = false;
+							}
+							break;
+						case BSParser::IdentifierNode::LOCAL_ITERATOR:
+							if (assignee_identifier->bind_source != nullptr) {
+								declared_type = assignee_identifier->bind_source->get_datatype();
+							} else {
+								found_declared_type = false;
+							}
+							break;
+						case BSParser::IdentifierNode::LOCAL_BIND:
+							if (assignee_identifier->bind_source != nullptr) {
+								declared_type = assignee_identifier->bind_source->get_datatype();
+								declared_type.is_constant = true;
+							} else {
+								found_declared_type = false;
+							}
+							break;
+						default:
+							found_declared_type = false;
+							break;
+					}
+					if (found_declared_type) {
+						if (assignment->operation != BSParser::AssignmentNode::OP_NONE) {
+							compound_assignment_narrowed_read_type = *narrowed_type;
+							has_compound_assignment_narrowed_read_type = true;
+						}
+						assignee_identifier->set_datatype(declared_type);
+					}
+				}
+			}
+
 			flow_finality.clear_flow_narrowing(assignment->assignee);
 			if (assignment->assignee != nullptr && assignment->assigned_value != nullptr) {
 				// Contextual `.Case` on the RHS takes its union from the assignee (@ c9d5e35).
 				qualify_contextual_enum_case_consumer(assignment->assigned_value, assignment->assignee->get_datatype());
 			}
 			if (assignment->assigned_value != nullptr) {
-				assignment->set_datatype(assignment->assigned_value->get_datatype());
+				BSParser::DataType result_type = assignment->assigned_value->get_datatype();
+				// Thin compound left-operand use: when a narrowed read was stashed, prefer that
+				// width for the assignment expression type on matching hard builtins (full
+				// get_operation_type remains #60 follow-up).
+				if (has_compound_assignment_narrowed_read_type && assignment->operation != BSParser::AssignmentNode::OP_NONE &&
+						assignment->variant_op != Variant::OP_MAX) {
+					const BSParser::DataType &left = compound_assignment_narrowed_read_type;
+					const BSParser::DataType &right = assignment->assigned_value->get_datatype();
+					if (left.is_set() && right.is_set() && left.kind == BSParser::DataType::BUILTIN &&
+							right.kind == BSParser::DataType::BUILTIN) {
+						if (left.builtin_type == Variant::INT && right.builtin_type == Variant::INT) {
+							result_type = type_from_variant(0);
+							result_type.is_constant = false;
+						} else if (left.builtin_type == Variant::FLOAT || right.builtin_type == Variant::FLOAT) {
+							result_type = type_from_variant(0.0);
+							result_type.is_constant = false;
+						} else if (left.builtin_type == Variant::STRING && right.builtin_type == Variant::STRING &&
+								assignment->variant_op == Variant::OP_ADD) {
+							result_type = left;
+							result_type.is_constant = false;
+						}
+					}
+				}
+				assignment->set_datatype(result_type);
 			}
 		} break;
 		default:
@@ -2594,10 +2761,13 @@ void BSAnalyzer::analyze_suite(BSParser::SuiteNode *p_suite) {
 	}
 	for (int i = 0; i < p_suite->statements.size(); i++) {
 		analyze_statement(p_suite->statements[i]);
+		// Foundry resolve_suite @ c9d5e35: flush lambda bodies after each statement so capture
+		// marking sees the outer suite's live flow-narrowing map.
+		resolve_pending_lambda_bodies();
 	}
 }
 
-void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
+void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool p_is_lambda) {
 	if (p_function == nullptr || p_function->resolved_body) {
 		return;
 	}
@@ -2619,7 +2789,9 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
 		return;
 	}
 	{
-		FlowFinalityContext::FlowNarrowingScope flow_scope(flow_finality, true);
+		// Foundry resolve_function_body @ c9d5e35: lambda bodies must not clear the outer
+		// function's captured-source map (marks from reduce_identifier must survive).
+		FlowFinalityContext::FlowNarrowingScope flow_scope(flow_finality, !p_is_lambda);
 		analyze_suite(p_function->body);
 	}
 	warn_unused_parameters(p_function);
@@ -2777,6 +2949,11 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 		}
 	}
 	warn_unused_class_members(p_class);
+	if (!pending_lambda_bodies.is_empty()) {
+		// Foundry resolve_class_body @ c9d5e35: any leftover pending lambdas (e.g. class-level
+		// initializers) must still resolve before leaving the body phase.
+		resolve_pending_lambda_bodies();
+	}
 	current_class = previous;
 }
 
