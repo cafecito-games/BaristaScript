@@ -157,6 +157,9 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 		method_info.arguments.push_back(parameter->get_datatype().to_property_info(parameter_name));
 		if (parameter->initializer != nullptr) {
 			reduce_expression(parameter->initializer);
+			// Foundry assignable path: parameter defaults qualify contextual `.Case` against the
+			// parameter's declared type (during signature resolve, before the body sweep).
+			resolve_contextual_enum_case(parameter->initializer, parameter->get_datatype());
 			if (parameter->initializer->is_constant) {
 				p_function->default_arg_values.push_back(parameter->initializer->reduced_value);
 			} else {
