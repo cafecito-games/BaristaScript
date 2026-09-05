@@ -2156,6 +2156,37 @@ func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void
 			saw_final = true
 	_expect(failures, saw_final, "final class extends diagnostic")
 
+	# Trait-as-base rejection (Foundry trait_extends @ c9d5e35 / #110).
+	var trait_base := _src_class("InheritTraitHost extends Node\ntrait SomeTrait:\n\tpass\nclass Child extends SomeTrait:\n\tpass\n")
+	var trait_base_report: Dictionary = probe.analyze_source(trait_base, "res://tests/inherit_trait_base.barista")
+	_expect(failures, trait_base_report.get("valid", true) == false, "extending a trait is invalid")
+	var saw_trait := false
+	for message in trait_base_report.get("errors", PackedStringArray()):
+		if "cannot extend trait" in message and "use \"uses" in message:
+			saw_trait = true
+	_expect(failures, saw_trait, "trait-as-base Foundry diagnostic")
+
+	# Cyclic path-extends with member use must terminate (visited-set walks / #110).
+	var cycle_member_a := _src_class("InheritCycleMemberA extends \"res://tests/inherit_cycle_member_b.barista\"\nfunc use() -> int:\n\treturn base_add(1, 2) + base_value + self.base_value\n")
+	BaristaScriptParseCache.set_source_override("res://tests/inherit_cycle_member_a.barista", cycle_member_a)
+	BaristaScriptParseCache.set_source_override(
+		"res://tests/inherit_cycle_member_b.barista",
+		_src_class("InheritCycleMemberB extends \"res://tests/inherit_cycle_member_a.barista\"\nvar base_value: int = 1\nfunc base_add(a: int, b: int) -> int:\n\treturn a + b\n"))
+	var cycle_member_report: Dictionary = probe.analyze_source(cycle_member_a, "res://tests/inherit_cycle_member_a.barista")
+	_expect(failures, cycle_member_report.has("valid"), "cyclic path-extends with member use terminates")
+	BaristaScriptParseCache.clear_source_override("res://tests/inherit_cycle_member_a.barista")
+	BaristaScriptParseCache.clear_source_override("res://tests/inherit_cycle_member_b.barista")
+
+	# Same-file self-extends must not install a CLASS self-loop after the cyclic diagnostic.
+	var self_extends := _src_class("InheritSelfExtends extends Node\nclass Foo extends Foo:\n\tfunc use() -> void:\n\t\tuse()\n")
+	var self_extends_report: Dictionary = probe.analyze_source(self_extends, "res://tests/inherit_self_extends.barista")
+	_expect(failures, self_extends_report.get("valid", true) == false, "same-file self-extends is invalid")
+	var saw_self_cycle := false
+	for message in self_extends_report.get("errors", PackedStringArray()):
+		if "Cyclic reference" in message:
+			saw_self_cycle = true
+	_expect(failures, saw_self_cycle, "same-file self-extends cyclic diagnostic")
+
 	# Cross-file via extends path: base CLASS members are visible on the derived head.
 	var base_source := _src_class("InheritCrossBase extends Node\nvar base_value: int = 7\nfunc base_add(a: int, b: int) -> int:\n\treturn a + b\n")
 	BaristaScriptParseCache.set_source_override("res://tests/inherit_cross_base.barista", base_source)

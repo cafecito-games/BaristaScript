@@ -23,7 +23,7 @@
 /*  tagged-union match exhaustiveness (#60), Callable.bind/unbind/call    */
 /*  signature transforms (#60), pending-warning finalize on flow-finality */
 /*  early exit (#60), same-file extends + CLASS inheritance member walk   */
-/*  (#60 surface).                                                        */
+/*  (#60 surface), cycle-safe inheritance walks (#110).                   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -199,7 +199,13 @@ BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_c
 	if (p_class == nullptr || p_name == StringName()) {
 		return nullptr;
 	}
+	// Soft mutual path-extends may install CLASS loops for registration; stop identity revisits.
+	HashSet<const BSParser::ClassNode *> visited;
 	for (BSParser::ClassNode *lookup = p_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
+		if (visited.has(lookup)) {
+			break;
+		}
+		visited.insert(lookup);
 		if (!lookup->has_member(p_name)) {
 			continue;
 		}
@@ -492,6 +498,12 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 					if (!look_class->base_type.is_set()) {
 						resolve_class_inheritance(look_class);
 					}
+					// Foundry returns ERR when nested resolve fails; refuse a CLASS edge if the
+					// target is still unset / mid-flight RESOLVING (avoids `extends Foo` self-loop).
+					if (!look_class->base_type.is_set()) {
+						p_class->base_type = BSParser::DataType();
+						return;
+					}
 					result.kind = BSParser::DataType::CLASS;
 					result.class_type = look_class;
 					result.script_path = parser != nullptr ? parser->script_path : String();
@@ -506,6 +518,10 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 					if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
 						if (!member.m_class->base_type.is_set()) {
 							resolve_class_inheritance(member.m_class);
+						}
+						if (!member.m_class->base_type.is_set()) {
+							p_class->base_type = BSParser::DataType();
+							return;
 						}
 						result.kind = BSParser::DataType::CLASS;
 						result.class_type = member.m_class;
@@ -550,6 +566,10 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			}
 			if (!member.m_class->base_type.is_set()) {
 				resolve_class_inheritance(member.m_class);
+			}
+			if (!member.m_class->base_type.is_set()) {
+				p_class->base_type = BSParser::DataType();
+				return;
 			}
 			result.class_type = member.m_class;
 			result.native_type = member.m_class->base_type.native_type;
@@ -1445,7 +1465,12 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 			}
 			if (self_receiver || class_name_receiver) {
 				bool first = true;
+				HashSet<const BSParser::ClassNode *> visited;
 				for (BSParser::ClassNode *lookup = current_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
+					if (visited.has(lookup)) {
+						break;
+					}
+					visited.insert(lookup);
 					if (!lookup->has_member(p_subscript->attribute->name)) {
 						first = false;
 						continue;
