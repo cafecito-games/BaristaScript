@@ -56,6 +56,7 @@ func _init() -> void:
 	_test_await_reduction_and_missing_await(failures)
 	_test_surface_inheritance_member_depth(failures)
 	_test_resolve_class_member_depth(failures)
+	_test_foreign_member_failure_replay(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -2659,3 +2660,66 @@ func _test_resolve_class_member_depth(failures: PackedStringArray) -> void:
 	_expect(failures, validate_report.get("valid", false) == true, "resolve_class_member fixtures remain valid under validate()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate must not mutate declaration index for resolve_class_member depth")
+
+
+func _test_foreign_member_failure_replay(failures: PackedStringArray) -> void:
+	# Foundry OwnerResolutionFailures + DependentResolutionFailureReplays @ c9d5e35 (#60):
+	# owner-side member resolution failure surfaces once on the dependent, and re-visits /
+	# second dependents do not spam duplicate "Could not resolve external class member" lines.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Owner with cyclic consts — resolving either member fails on the owner analyzer.
+	var owner_cyclic := _src_class("ForeignFailOwner extends Node\nconst c1 = c2\nconst c2 = c1\n")
+	BaristaScriptParseCache.set_source_override("res://tests/foreign_fail_owner.barista", owner_cyclic)
+
+	# Dependent uses the failed member twice in one body; external failure is reported once.
+	var dependent_once := _src_class("ForeignFailDependent extends \"res://tests/foreign_fail_owner.barista\"\nfunc use() -> void:\n\tvar a = c1\n\tvar b = c1\n")
+	var dependent_once_report: Dictionary = probe.analyze_source(dependent_once, "res://tests/foreign_fail_dependent.barista")
+	_expect(failures, dependent_once_report.get("valid", true) == false, "cross-file owner member failure invalidates dependent")
+	var external_fail_count := 0
+	for message in dependent_once_report.get("errors", PackedStringArray()):
+		if "Could not resolve external class member" in message and "c1" in message:
+			external_fail_count += 1
+	_expect(failures, external_fail_count >= 1, "dependent surfaces external class member failure for c1")
+	_expect(failures, external_fail_count == 1, "single dependent does not spam duplicate external-member failures")
+
+	# Second dependent on the same owner failure still gets its own replay (separate analyzer).
+	var dependent_two := _src_class("ForeignFailDependentTwo extends \"res://tests/foreign_fail_owner.barista\"\nfunc use() -> void:\n\tvar x = c1\n\tvar y = c1\n")
+	var dependent_two_report: Dictionary = probe.analyze_source(dependent_two, "res://tests/foreign_fail_dependent_two.barista")
+	_expect(failures, dependent_two_report.get("valid", true) == false, "second dependent also sees owner member failure")
+	var external_fail_count_two := 0
+	for message in dependent_two_report.get("errors", PackedStringArray()):
+		if "Could not resolve external class member" in message and "c1" in message:
+			external_fail_count_two += 1
+	_expect(failures, external_fail_count_two == 1, "second dependent replays external failure once (no intra-file spam)")
+
+	# Re-analyze the first dependent: still one external failure, no hang / silent success.
+	var dependent_reanalyze: Dictionary = probe.analyze_source(dependent_once, "res://tests/foreign_fail_dependent_reanalyze.barista")
+	_expect(failures, dependent_reanalyze.get("valid", true) == false, "re-analyze still invalid after owner member failure")
+	var external_fail_reanalyze := 0
+	for message in dependent_reanalyze.get("errors", PackedStringArray()):
+		if "Could not resolve external class member" in message and "c1" in message:
+			external_fail_reanalyze += 1
+	_expect(failures, external_fail_reanalyze == 1, "re-analyze keeps single external-member failure diagnostic")
+
+	BaristaScriptParseCache.clear_source_override("res://tests/foreign_fail_owner.barista")
+
+	# Soft CycleA/CycleB registration path from #109/#111 remains unchanged.
+	BaristaScriptParseCache.clear_script_cache()
+	BaristaScriptParseCache.set_source_override("res://tests/cycle_a.barista", _src_class("CycleA extends Node\n"))
+	BaristaScriptParseCache.set_source_override("res://tests/cycle_b.barista", _src_class("CycleB extends Node\n"))
+	var a := BaristaScriptParseCache.get_parser("res://tests/cycle_a.barista", Status.EMPTY, "res://tests/cycle_b.barista")
+	var b := BaristaScriptParseCache.get_parser("res://tests/cycle_b.barista", Status.EMPTY, "res://tests/cycle_a.barista")
+	_expect(failures, a.valid and b.valid, "CycleA/CycleB edges still recordable at EMPTY after foreign failure replay")
+	var raised_a := BaristaScriptParseCache.get_parser("res://tests/cycle_a.barista", Status.FULLY_SOLVED, "")
+	var raised_b := BaristaScriptParseCache.get_parser("res://tests/cycle_b.barista", Status.FULLY_SOLVED, "")
+	_expect(failures, raised_a.valid and raised_b.valid, "CycleA/CycleB raise still completes without deadlock")
+	BaristaScriptParseCache.clear_source_overrides()
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var ok_source := _src_class("ForeignFailReplayValid extends Node\nconst ok: int = 1\nfunc use() -> int:\n\treturn ok\n")
+	var validate_report: Dictionary = probe.validate_source(ok_source, "res://tests/foreign_fail_replay_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "foreign failure replay suite remains valid under validate()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate must not mutate declaration index for foreign failure replay")
