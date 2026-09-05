@@ -1,29 +1,12 @@
 /**************************************************************************/
 /*  bs_analyzer.cpp                                                       */
 /*                                                                        */
-/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
-/*  This file is part of BaristaScript, a Godot GDExtension.              */
-/*  SPDX-License-Identifier: MIT                                          */
-/**************************************************************************/
-
-/**************************************************************************/
-/*  bs_analyzer.cpp                                                       */
-/*                                                                        */
 /*  M3 analyzer port (issue #43/#57/#60) @ Foundry c9d5e35. Inheritance,  */
 /*  interface, body fold (#49), declaration commit (#52/#58), call/match/ */
-/*  flow (#61), local/member/static final definite assignment (#60 TU),   */
-/*  CallSiteValidationContext MethodInfo / signal emit / named-arg /      */
-/*  connect-callable (#60 call TU),                                       */
-/*  resolved_traits + trait-member lookup for flattening finality,        */
-/*  unused private/signal surface, trait requirement / conformance        */
-/*  witness starter (#60 conformance TU), ENUM_CASE / case-bind /         */
-/*  container match pattern depth (#60), contextual `.Case` match / `is`  */
-/*  qualification (#60), expression-position `.Case` assign/return (#60), */
-/*  array/dict/cast/ternary consumer `.Case` finalization (#60),          */
-/*  tagged-union match exhaustiveness (#60), Callable.bind/unbind/call    */
-/*  signature transforms (#60), pending-warning finalize on flow-finality */
-/*  early exit (#60), same-file extends + CLASS inheritance member walk   */
-/*  (#60 surface), cycle-safe inheritance walks (#110).                   */
+/*  flow (#61), final DA, CallSiteValidationContext / connect-callable,   */
+/*  unused surface, ENUM_CASE / `.Case` / exhaustiveness, Callable.bind,  */
+/*  pending-warning finalize, trait conformance (#60), same-file extends  */
+/*  + CLASS inheritance member walk, cycle-safe walks (#110).             */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
