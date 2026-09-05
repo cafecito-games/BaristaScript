@@ -7,8 +7,8 @@
 /*  CallSiteValidationContext / connect-callable; unused surface; ENUM_CASE*/
 /*  / `.Case` / exhaustiveness; Callable.bind/unbind/call/callv/rpc;      */
 /*  pending-warning finalize on flow-finality early exit; trait           */
-/*  conformance witness; get_operation_type for binary/unary/compound     */
-/*  (#60).                                                                */
+/*  conformance witness; get_operation_type for binary/unary/compound;    */
+/*  resolve_class_member same-parser depth (#60).                         */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -309,6 +309,15 @@ private:
 	bool try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited);
 	/** Walk `p_class` then `base_type.class_type` for a named member bind. */
 	bool try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class);
+	/**
+	 * Foundry resolve_class_member @ c9d5e35 (`fs_analyzer_surface.cpp`): lazily resolve a class
+	 * member's datatype with cyclic `RESOLVING` fail-stop before identifier/member binds read it.
+	 * Same-parser path is complete for VARIABLE/CONSTANT/FUNCTION/SIGNAL/ENUM/CLASS. External /
+	 * SCRIPT members raise the owning parser via `BSCache::get_parser` and delegate; full
+	 * ForeignAnalyzerVisibilityScope / dependent_resolution_failure_replays remain #60 residual.
+	 */
+	void resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source = nullptr);
+	void resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);
 	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
 	void analyze_class_interface(BSParser::ClassNode *p_class);

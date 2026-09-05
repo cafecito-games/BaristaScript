@@ -3,11 +3,11 @@
 /*                                                                        */
 /*  #60 class-body surface diagnostics. Ports unused-private /            */
 /*  unused-signal post-pass, built-in resolve_annotation,                 */
-/*  resolve_enum_values, same-file scope inheritance helpers, and CLASS   */
-/*  inheritance member bind (@ c9d5e35 fs_analyzer_surface.cpp). Remaining */
-/*  surface cross-file SCRIPT richness / resolve_class_member depth       */
-/*  remains follow-up under #60. FS* -> BS*; engine contact through       */
-/*  bs_platform.h.                                                        */
+/*  resolve_enum_values, same-file scope inheritance helpers, CLASS       */
+/*  inheritance member bind, and resolve_class_member same-parser depth   */
+/*  (@ c9d5e35 fs_analyzer_surface.cpp). External SCRIPT richness beyond  */
+/*  BSCache::get_parser raise+delegate remains follow-up under #60.       */
+/*  FS* -> BS*; engine contact through bs_platform.h.                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -16,7 +16,9 @@
 #include "bs_analyzer.h"
 
 #include "barista_script.h"
+#include "bs_cache.h"
 #include "bs_platform.h"
+#include "bs_type.h"
 
 namespace barista_script {
 
@@ -256,7 +258,6 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 }
 
 BSParser::DataType BSAnalyzer::lookup_local_enum_meta_type(const StringName &p_name, BSParser::Node *p_source) {
-	(void)p_source;
 	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
 		if (!scope->has_member(p_name)) {
 			continue;
@@ -265,12 +266,11 @@ BSParser::DataType BSAnalyzer::lookup_local_enum_meta_type(const StringName &p_n
 		if (member.type != BSParser::ClassNode::Member::ENUM || member.m_enum == nullptr) {
 			continue;
 		}
+		resolve_class_member(scope, p_name, p_source);
 		BSParser::DataType enum_meta = member.m_enum->get_datatype();
-		if (!enum_meta.is_set()) {
-			const String script_path = parser != nullptr ? parser->script_path : String();
-			enum_meta = resolve_enum_values(member.m_enum, make_class_enum_type(p_name, scope, script_path, true), scope);
+		if (enum_meta.is_set()) {
+			return enum_meta;
 		}
-		return enum_meta;
 	}
 	return BSParser::DataType();
 }
@@ -332,10 +332,313 @@ void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_nod
 	}
 }
 
+static String _resolve_class_member_script_path(const BSParser::ClassNode *p_class) {
+	if (p_class == nullptr) {
+		return String();
+	}
+	const BSParser::DataType class_type = p_class->get_datatype();
+	if (!class_type.script_path.is_empty()) {
+		return class_type.script_path;
+	}
+	if (!p_class->fqcn.is_empty()) {
+		return p_class->fqcn.get_slice("::", 0);
+	}
+	return String();
+}
+
+void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source) {
+	ERR_FAIL_COND(p_class == nullptr || !p_class->has_member(p_name));
+	resolve_class_member(p_class, p_class->members_indices[p_name], p_source);
+}
+
+void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source) {
+	// Foundry resolve_class_member @ c9d5e35 (`fs_analyzer_surface.cpp` ~1665): lazy member datatype
+	// resolution with cyclic RESOLVING fail-stop. Hard fork FS*→BS*; external path uses
+	// BSCache::get_parser raise+delegate without ForeignAnalyzerVisibilityScope /
+	// dependent_resolution_failure_replays (those remain #60 residual).
+	ERR_FAIL_NULL(p_class);
+	ERR_FAIL_INDEX(p_index, p_class->members.size());
+	ERR_FAIL_NULL(parser);
+
+	BSParser::ClassNode::Member &member = p_class->members.write[p_index];
+	if (p_source == nullptr && parser->has_class(p_class)) {
+		p_source = member.get_source_node();
+	}
+
+	if (member.get_datatype().is_resolving()) {
+		push_error(vformat(R"(Could not resolve member "%s": Cyclic reference.)", member.get_name()), p_source);
+		return;
+	}
+
+	if (member.get_datatype().is_set()) {
+		return;
+	}
+
+	// If it's already resolving, that's ok.
+	if (!p_class->base_type.is_resolving()) {
+		resolve_class_inheritance(p_class);
+	}
+
+	const bool owns_class = parser->has_class(p_class) || p_class->is_native_conformance_shim || p_class->is_builtin_conformance_shim;
+	if (!owns_class) {
+		const String path = _resolve_class_member_script_path(p_class);
+		if (path.is_empty()) {
+			push_error(vformat(R"(Could not resolve external class member "%s".)", member.get_name()), p_source);
+			return;
+		}
+		Error err = OK;
+		Ref<BSParserRef> parser_ref = BSCache::get_parser(path, BSParserRef::PARSED, err, parser->script_path);
+		if (parser_ref.is_null() || err != OK || parser_ref->get_parser() == nullptr) {
+			push_error(vformat(R"(Could not parse script "%s" (While resolving external class member "%s").)", path, member.get_name()), p_source);
+			return;
+		}
+		err = parser_ref->raise_status(BSParserRef::PARSED);
+		if (err != OK) {
+			push_error(vformat(R"(Could not parse script "%s" (While resolving external class member "%s").)", path, member.get_name()), p_source);
+			return;
+		}
+		BSAnalyzer *other_analyzer = parser_ref->get_analyzer();
+		BSParser *other_parser = parser_ref->get_parser();
+		if (other_analyzer == nullptr || other_parser == nullptr) {
+			push_error(vformat(R"(Could not resolve external class member "%s".)", member.get_name()), p_source);
+			return;
+		}
+		const int error_count = other_parser->get_errors().size();
+		other_analyzer->resolve_class_member(p_class, p_index);
+		if (other_parser->get_errors().size() > error_count) {
+			push_error(vformat(R"(Could not resolve external class member "%s".)", member.get_name()), p_source);
+		}
+		return;
+	}
+
+	BSParser::ClassNode *previous_class = current_class;
+	current_class = p_class;
+
+	BSParser::DataType resolving_datatype;
+	resolving_datatype.kind = BSParser::DataType::RESOLVING;
+
+	switch (member.type) {
+		case BSParser::ClassNode::Member::VARIABLE: {
+			if (member.variable == nullptr) {
+				break;
+			}
+			member.variable->set_datatype(resolving_datatype);
+
+			for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
+				if (annotation != nullptr && annotation->name != SNAME("@warning_ignore")) {
+					resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_VARIABLE);
+					annotation->apply(parser, member.variable, p_class);
+				}
+			}
+
+			BSParser::DataType type;
+			const bool has_specified_type = member.variable->datatype_specifier != nullptr;
+			if (has_specified_type) {
+				type = datatype_from_type_node(member.variable->datatype_specifier);
+			}
+
+			if (member.variable->initializer != nullptr) {
+				reduce_expression(member.variable->initializer);
+				qualify_contextual_enum_case_consumer(member.variable->initializer, type);
+				const BSParser::DataType initializer_type = member.variable->initializer->get_datatype();
+
+				if (member.variable->infer_datatype) {
+					if (!initializer_type.is_set() || initializer_type.has_no_type() || !initializer_type.is_hard_type()) {
+						push_error(vformat(R"(Cannot infer the type of "%s" variable because the value doesn't have a set type.)", member.variable->identifier != nullptr ? member.variable->identifier->name : StringName()),
+								member.variable->initializer);
+					} else if (initializer_type.kind == BSParser::DataType::BUILTIN && initializer_type.builtin_type == Variant::NIL) {
+						push_error(vformat(R"(Cannot infer the type of "%s" variable because the value is "null".)", member.variable->identifier != nullptr ? member.variable->identifier->name : StringName()),
+								member.variable->initializer);
+					}
+				} else if (!has_specified_type && !initializer_type.is_set()) {
+					push_error(vformat(R"(Could not resolve type for variable "%s".)", member.variable->identifier != nullptr ? member.variable->identifier->name : StringName()),
+							member.variable->initializer);
+				}
+
+				if (!has_specified_type) {
+					type = initializer_type;
+					if (!type.is_set() || (type.is_hard_type() && type.kind == BSParser::DataType::BUILTIN && type.builtin_type == Variant::NIL)) {
+						type = BSParser::DataType();
+						type.kind = BSParser::DataType::VARIANT;
+					}
+					if (member.variable->infer_datatype) {
+						type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+					} else {
+						type.type_source = BSParser::DataType::INFERRED;
+					}
+				} else if (type.is_set() && !type.is_variant() && initializer_type.is_set()) {
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = true;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					if (member.variable->initializer->is_constant) {
+						options.constant_source_value = &member.variable->initializer->reduced_value;
+					}
+					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
+						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
+										   initializer_type.to_string(), type.to_string()),
+								member.variable);
+					}
+				}
+			}
+
+			if (!type.is_set()) {
+				type.kind = BSParser::DataType::VARIANT;
+				type.type_source = BSParser::DataType::UNDETECTED;
+			}
+			member.variable->set_datatype(type);
+		} break;
+		case BSParser::ClassNode::Member::CONSTANT: {
+			if (member.constant == nullptr) {
+				break;
+			}
+			member.constant->set_datatype(resolving_datatype);
+
+			for (BSParser::AnnotationNode *annotation : member.constant->annotations) {
+				if (annotation != nullptr) {
+					resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_CONSTANT);
+					annotation->apply(parser, member.constant, p_class);
+				}
+			}
+
+			BSParser::DataType type;
+			const bool has_specified_type = member.constant->datatype_specifier != nullptr;
+			if (has_specified_type) {
+				type = datatype_from_type_node(member.constant->datatype_specifier);
+			}
+
+			if (member.constant->initializer != nullptr) {
+				reduce_expression(member.constant->initializer);
+				qualify_contextual_enum_case_consumer(member.constant->initializer, type);
+				if (!member.constant->initializer->is_constant) {
+					push_error(vformat(R"(Assigned value for constant "%s" isn't a constant expression.)", member.constant->identifier != nullptr ? member.constant->identifier->name : StringName()),
+							member.constant->initializer);
+				}
+				const BSParser::DataType initializer_type = member.constant->initializer->get_datatype();
+
+				if (!has_specified_type) {
+					if (!initializer_type.is_set()) {
+						push_error(vformat(R"(Could not resolve type for constant "%s".)", member.constant->identifier != nullptr ? member.constant->identifier->name : StringName()),
+								member.constant->initializer);
+						type.kind = BSParser::DataType::VARIANT;
+						type.type_source = BSParser::DataType::UNDETECTED;
+					} else {
+						type = initializer_type;
+						type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+						type.is_constant = true;
+					}
+				} else if (type.is_set() && !type.is_variant() && initializer_type.is_set()) {
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = true;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					if (member.constant->initializer->is_constant) {
+						options.constant_source_value = &member.constant->initializer->reduced_value;
+					}
+					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
+						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+										   initializer_type.to_string(), type.to_string()),
+								member.constant);
+					}
+				}
+			}
+
+			if (!type.is_set()) {
+				type.kind = BSParser::DataType::VARIANT;
+				type.type_source = BSParser::DataType::UNDETECTED;
+			}
+			type.is_constant = true;
+			member.constant->set_datatype(type);
+		} break;
+		case BSParser::ClassNode::Member::SIGNAL: {
+			if (member.signal == nullptr) {
+				break;
+			}
+			member.signal->set_datatype(resolving_datatype);
+
+			MethodInfo mi = MethodInfo(member.signal->identifier != nullptr ? member.signal->identifier->name : StringName());
+			BSParser::DataType signal_type;
+			signal_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			signal_type.kind = BSParser::DataType::BUILTIN;
+			signal_type.builtin_type = Variant::SIGNAL;
+			signal_type.is_constant = true;
+			signal_type.has_method_signature = true;
+			signal_type.has_explicit_method_signature = true;
+			for (int j = 0; j < member.signal->parameters.size(); j++) {
+				BSParser::ParameterNode *param = member.signal->parameters[j];
+				if (param == nullptr) {
+					continue;
+				}
+				if (param->datatype_specifier != nullptr) {
+					param->set_datatype(datatype_from_type_node(param->datatype_specifier));
+				}
+				const BSParser::DataType param_type = param->get_datatype();
+				signal_type.method_parameter_types.push_back(param_type);
+				if (param->identifier != nullptr) {
+					mi.arguments.push_back(param_type.to_property_info(param->identifier->name));
+				}
+			}
+			signal_type.method_info = mi;
+			member.signal->method_info = mi;
+			member.signal->set_datatype(signal_type);
+
+			for (BSParser::AnnotationNode *annotation : member.signal->annotations) {
+				if (annotation != nullptr) {
+					resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_SIGNAL);
+					annotation->apply(parser, member.signal, p_class);
+				}
+			}
+		} break;
+		case BSParser::ClassNode::Member::ENUM: {
+			if (member.m_enum == nullptr || member.m_enum->identifier == nullptr) {
+				break;
+			}
+			member.m_enum->set_datatype(resolving_datatype);
+			const String script_path = parser->script_path;
+			BSParser::DataType enum_shell = make_class_enum_type(member.m_enum->identifier->name, p_class, script_path, true);
+			resolve_enum_values(member.m_enum, enum_shell, p_class);
+		} break;
+		case BSParser::ClassNode::Member::FUNCTION: {
+			if (member.function == nullptr) {
+				break;
+			}
+			for (BSParser::AnnotationNode *annotation : member.function->annotations) {
+				if (annotation != nullptr) {
+					resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
+					annotation->apply(parser, member.function, p_class);
+				}
+			}
+			resolve_function_signature_in_class(member.function, p_class);
+			if (!member.function->type_parameters.is_empty()) {
+				push_error("Generic function specialization is not available until M5.", member.function);
+			}
+		} break;
+		case BSParser::ClassNode::Member::CLASS: {
+			if (member.m_class == nullptr) {
+				break;
+			}
+			if (!member.m_class->base_type.is_resolving()) {
+				resolve_class_inheritance(member.m_class);
+			}
+		} break;
+		case BSParser::ClassNode::Member::ENUM_VALUE:
+		case BSParser::ClassNode::Member::GROUP:
+		case BSParser::ClassNode::Member::TUPLE:
+		case BSParser::ClassNode::Member::TYPE_ALIAS:
+		case BSParser::ClassNode::Member::UNDEFINED:
+			break;
+	}
+
+	current_class = previous_class;
+}
+
 bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited) {
 	if (p_identifier == nullptr || p_class == nullptr || !p_class->has_member(p_identifier->name)) {
 		return false;
 	}
+	// Foundry @ c9d5e35: resolve before reading member datatypes so later-declared consts /
+	// inferred vars / cyclic refs are not silently Variant.
+	resolve_class_member(p_class, p_identifier->name, p_identifier);
 	const BSParser::ClassNode::Member member = p_class->get_member(p_identifier->name);
 	if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
 		if (p_mark_inherited && !member.variable->is_static) {
@@ -353,6 +656,10 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		p_identifier->constant_source = member.constant;
 		member.constant->usages++;
 		p_identifier->set_datatype(member.constant->get_datatype());
+		if (member.constant->initializer != nullptr && member.constant->initializer->is_constant) {
+			p_identifier->is_constant = true;
+			p_identifier->reduced_value = member.constant->initializer->reduced_value;
+		}
 		return true;
 	}
 	if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr) {
@@ -371,17 +678,13 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		return true;
 	}
 	if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
-		const BSParser::DataType enum_meta = lookup_local_enum_meta_type(p_identifier->name, p_identifier);
+		BSParser::DataType enum_meta = member.m_enum->get_datatype();
+		if (!enum_meta.is_set()) {
+			const String script_path = parser != nullptr ? parser->script_path : String();
+			enum_meta = resolve_enum_values(member.m_enum, make_class_enum_type(p_identifier->name, p_class, script_path, true), p_class);
+		}
 		if (enum_meta.is_set()) {
 			p_identifier->set_datatype(enum_meta);
-			p_identifier->is_constant = true;
-			return true;
-		}
-		// Enum declared on an ancestor: publish via resolve_enum_values on that class.
-		const String script_path = parser != nullptr ? parser->script_path : String();
-		BSParser::DataType ancestor_enum = resolve_enum_values(member.m_enum, make_class_enum_type(p_identifier->name, p_class, script_path, true), p_class);
-		if (ancestor_enum.is_set()) {
-			p_identifier->set_datatype(ancestor_enum);
 			p_identifier->is_constant = true;
 			return true;
 		}

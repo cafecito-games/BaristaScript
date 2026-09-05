@@ -7,7 +7,8 @@
 /*  unused surface, ENUM_CASE / `.Case` / exhaustiveness, Callable.bind,  */
 /*  pending-warning finalize, trait conformance (#60), same-file extends  */
 /*  + CLASS inheritance member walk, cycle-safe walks (#110), lambda      */
-/*  capture + compound-assign restore, get_operation_type (#60).          */
+/*  capture + compound-assign restore, get_operation_type,                */
+/*  resolve_class_member same-parser depth (#60).                         */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -243,6 +244,9 @@ BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_c
 		if (!lookup->has_member(p_name)) {
 			continue;
 		}
+		// Foundry @ c9d5e35: resolve_class_member before reading the FUNCTION node / signature.
+		// const_cast: find sites always run during analysis on a live analyzer.
+		const_cast<BSAnalyzer *>(this)->resolve_class_member(lookup, p_name);
 		const BSParser::ClassNode::Member member = lookup->get_member(p_name);
 		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
 			return member.function;
@@ -947,64 +951,17 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class) {
 			}
 			seen.insert(name);
 		}
-		switch (member.type) {
-			case BSParser::ClassNode::Member::CLASS:
-				analyze_class_interface(member.m_class);
-				break;
-			case BSParser::ClassNode::Member::FUNCTION:
-				if (member.function != nullptr) {
-					resolve_function_signature_in_class(member.function, p_class);
-					if (!member.function->type_parameters.is_empty()) {
-						push_error("Generic function specialization is not available until M5.", member.function);
-					}
-				}
-				break;
-			case BSParser::ClassNode::Member::VARIABLE:
-				if (member.variable != nullptr && member.variable->datatype_specifier != nullptr) {
-					member.variable->set_datatype(datatype_from_type_node(member.variable->datatype_specifier));
-				}
-				break;
-			case BSParser::ClassNode::Member::SIGNAL:
-				if (member.signal != nullptr) {
-					// Foundry fs_analyzer_surface.cpp @ c9d5e35: build MethodInfo + rich parameter
-					// types so CallSiteValidationContext can validate emit / emit_signal.
-					MethodInfo mi = MethodInfo(member.signal->identifier != nullptr ? member.signal->identifier->name : StringName());
-					BSParser::DataType signal_type;
-					signal_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-					signal_type.kind = BSParser::DataType::BUILTIN;
-					signal_type.builtin_type = Variant::SIGNAL;
-					signal_type.is_constant = true;
-					signal_type.has_method_signature = true;
-					signal_type.has_explicit_method_signature = true;
-					for (int j = 0; j < member.signal->parameters.size(); j++) {
-						BSParser::ParameterNode *param = member.signal->parameters[j];
-						if (param == nullptr) {
-							continue;
-						}
-						if (param->datatype_specifier != nullptr) {
-							param->set_datatype(datatype_from_type_node(param->datatype_specifier));
-						}
-						const BSParser::DataType param_type = param->get_datatype();
-						signal_type.method_parameter_types.push_back(param_type);
-						if (param->identifier != nullptr) {
-							mi.arguments.push_back(param_type.to_property_info(param->identifier->name));
-						}
-					}
-					signal_type.method_info = mi;
-					member.signal->method_info = mi;
-					member.signal->set_datatype(signal_type);
-				}
-				break;
-			case BSParser::ClassNode::Member::ENUM:
-				if (member.m_enum != nullptr && member.m_enum->identifier != nullptr) {
-					const String script_path = parser != nullptr ? parser->script_path : String();
-					BSParser::DataType enum_shell = make_class_enum_type(member.m_enum->identifier->name, p_class, script_path, true);
-					resolve_enum_values(member.m_enum, enum_shell, p_class);
-				}
-				break;
-			default:
-				break;
+		if (member.type == BSParser::ClassNode::Member::CLASS) {
+			// Nested class interface after inheritance (Foundry resolve_class_member CLASS arm
+			// only solves inheritance; recurse interface here as before).
+			if (member.m_class != nullptr && !member.m_class->base_type.is_resolving()) {
+				resolve_class_inheritance(member.m_class);
+			}
+			analyze_class_interface(member.m_class);
+			continue;
 		}
+		// Foundry resolve_class_interface @ c9d5e35: each member via resolve_class_member.
+		resolve_class_member(p_class, i);
 	}
 	if (!p_class->type_parameters.is_empty()) {
 		push_error("Generic class specialization is not available until M5.", p_class);
@@ -1853,6 +1810,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						first = false;
 						continue;
 					}
+					resolve_class_member(lookup, p_subscript->attribute->name, p_subscript->attribute);
 					const BSParser::ClassNode::Member member = lookup->get_member(p_subscript->attribute->name);
 					if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
 						if (class_name_receiver && !member.variable->is_static) {
@@ -1869,6 +1827,18 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 							p_subscript->set_datatype(member.variable->get_datatype());
 							return;
 						}
+					}
+					if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
+						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+						p_subscript->attribute->constant_source = member.constant;
+						member.constant->usages++;
+						p_subscript->attribute->set_datatype(member.constant->get_datatype());
+						p_subscript->set_datatype(member.constant->get_datatype());
+						if (member.constant->initializer != nullptr && member.constant->initializer->is_constant) {
+							p_subscript->is_constant = true;
+							p_subscript->reduced_value = member.constant->initializer->reduced_value;
+						}
+						return;
 					}
 					if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr && !class_name_receiver) {
 						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
