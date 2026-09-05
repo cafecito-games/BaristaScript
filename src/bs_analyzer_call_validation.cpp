@@ -20,23 +20,6 @@
 
 namespace barista_script {
 
-// Foundry make_coroutine_type @ c9d5e35 (~1646): wrap result T as Coroutine[T]. Principal identity
-// is the native BSFunctionState skin; is_coroutine discriminates await / missing-await; the phantom
-// result type lives in container_element_types[0].
-static BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type) {
-	BSParser::DataType type;
-	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-	type.kind = BSParser::DataType::NATIVE;
-	type.builtin_type = Variant::OBJECT;
-	type.native_type = SNAME("BSFunctionState");
-	type.is_coroutine = true;
-	BSParser::DataType result_type = p_result_type;
-	result_type.is_constant = false;
-	result_type.is_meta_type = false;
-	type.set_container_element_type(0, result_type);
-	return type;
-}
-
 static BSParser::DataType make_signal_type(const MethodInfo &p_info) {
 	BSParser::DataType type;
 	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;

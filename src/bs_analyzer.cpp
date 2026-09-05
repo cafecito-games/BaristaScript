@@ -10,7 +10,8 @@
 /*  capture + compound-assign restore, get_operation_type,                */
 /*  resolve_class_member same-parser depth, reduce_await + MISSING_AWAIT / */
 /*  REDUNDANT_AWAIT (#60), class-phase INTERFACE/BODY foreign failure     */
-/*  recording and dependent replay (#60 residual after #118).             */
+/*  recording and dependent replay (#60 residual after #118), Coroutine[T]*/
+/*  annotation decode in datatype_from_type_node (#60 residual).          */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -75,6 +76,23 @@ static String _dependency_error_suffix(const char *p_noun, const String &p_path,
 		return vformat(R"(The %s is declared in "%s".)", p_noun, script_path);
 	}
 	return vformat(R"(The %s is declared in "%s", which has errors, the first at %s)", p_noun, script_path, first_error);
+}
+
+// Foundry make_coroutine_type @ c9d5e35 (~1646): wrap result T as Coroutine[T]. Principal identity
+// is the native BSFunctionState skin; is_coroutine discriminates await / missing-await; the phantom
+// result type lives in container_element_types[0].
+BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type) {
+	BSParser::DataType type;
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	type.kind = BSParser::DataType::NATIVE;
+	type.builtin_type = Variant::OBJECT;
+	type.native_type = SNAME("BSFunctionState");
+	type.is_coroutine = true;
+	BSParser::DataType result_type = p_result_type;
+	result_type.is_constant = false;
+	result_type.is_meta_type = false;
+	type.set_container_element_type(0, result_type);
+	return type;
 }
 
 // Foundry coroutine_result_is_void @ c9d5e35 (~1664): True when a coroutine's phantom result is
@@ -787,6 +805,23 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 		return result;
 	}
+	// Foundry datatype_from_type_node @ c9d5e35 (~3161): Coroutine[T] is a source-level skin over
+	// BSFunctionState rather than a real class / M5 generic. The parser marks TypeNode::is_coroutine
+	// for the bracketed form and guarantees a single result type when well-formed; wrong arity still
+	// reaches here (empty or over-specified) and must fail-stop rather than fall into M5 generics.
+	if (p_type_node->is_coroutine) {
+		const StringName head = p_type_node->type_chain[0]->name;
+		if (p_type_node->type_chain.size() != 1 || head != SNAME("Coroutine") || p_type_node->container_types.size() != 1) {
+			push_error("Coroutine[T] expects exactly one result type argument.", p_type_node);
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+		BSParser::DataType result_type = datatype_from_type_node(p_type_node->container_types[0]);
+		result = make_coroutine_type(result_type);
+		result.is_nullable = p_type_node->is_nullable;
+		return result;
+	}
+
 	if (!p_type_node->container_types.is_empty() || !p_type_node->type_argument_expressions.is_empty()) {
 		// Generic / container specialization — deferred unless it is a plain builtin container.
 		const StringName head = p_type_node->type_chain[0]->name;
