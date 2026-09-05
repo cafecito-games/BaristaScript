@@ -38,6 +38,7 @@ public:
  * Conversion sites consult Variant::can_convert_strict (String→StringName / NodePath, …) and
  * then apply D1 numeric classify so float→int stays explicit unless constant-proven.
  * Union sources require every alternative to satisfy the target (Number→Number / set-wise assign).
+ * Target-UNION selection prefers exact alternatives, then numeric store-carrier conversions only.
  */
 class BSTypeCompatibility {
 public:
@@ -63,6 +64,12 @@ public:
 
 	static Result check(const BSParser::DataType &p_target, const BSParser::DataType &p_source);
 	static Result check(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const Options &p_options);
+	/**
+	 * Foundry selected_union_alternative @ c9d5e35: the alternative a UNION target admits
+	 * `p_source` through (exact preferred, then numeric store-carrier conversion only).
+	 */
+	static bool selected_union_alternative(const BSParser::DataType &p_target, const BSParser::DataType &p_source,
+			const Options &p_options, BSParser::DataType &r_alternative);
 	static bool is_compatible(const BSParser::DataType &p_target, const BSParser::DataType &p_source, bool p_allow_implicit_conversion = false);
 	static bool is_invariant_equal(const BSParser::DataType &p_a, const BSParser::DataType &p_b);
 	static bool allows_runtime_narrowing(const BSParser::DataType &p_narrow, const BSParser::DataType &p_wide);

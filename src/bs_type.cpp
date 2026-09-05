@@ -3,6 +3,7 @@
 /*                                                                        */
 /*  Hard fork of Foundry fs_type.cpp @ c9d5e35 (D1-trimmed).              */
 /*  Union sources require every alternative to satisfy the target.        */
+/*  Target-UNION uses two-pass select + numeric store-carrier gate.       */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -11,6 +12,55 @@
 #include "bs_type.h"
 
 namespace barista_script {
+
+namespace {
+
+// Foundry _union_store_converts_carrier @ c9d5e35 (D1-trimmed): a UNION slot has no carrier of its
+// own, so an alternative reached only by converting the value is admitted only where the store can
+// perform that conversion. Under D1 that is the numeric IDENTITY / IMPLICIT_WIDEN /
+// CONSTANT_CHECKED model — engine bridges such as String→StringName have no union-store counterpart.
+bool _union_store_converts_carrier(const BSParser::DataType &p_alternative, const BSParser::DataType &p_source,
+		const BSTypeCompatibility::Options &p_options) {
+	if (!p_options.allow_implicit_conversion ||
+			!BSNumericConversion::is_numeric_builtin(p_alternative) || !BSNumericConversion::is_numeric_builtin(p_source)) {
+		return false;
+	}
+	switch (BSNumericConversion::classify(p_alternative, p_source, p_options.constant_source_value)) {
+		case BSNumericConversion::Conversion::IDENTITY:
+		case BSNumericConversion::Conversion::IMPLICIT_WIDEN:
+		case BSNumericConversion::Conversion::CONSTANT_CHECKED:
+			return true;
+		default:
+			return false;
+	}
+}
+
+// Foundry _select_union_alternative @ c9d5e35: prefer an alternative the source satisfies without
+// converting; only then admit a converting alternative the union store can actually carry.
+bool _select_union_alternative(const BSParser::DataType &p_target, const BSParser::DataType &p_source,
+		const BSTypeCompatibility::Options &p_options, BSParser::DataType &r_alternative,
+		BSTypeCompatibility::Result &r_member_result) {
+	for (int pass = 0; pass < 2; pass++) {
+		const bool converting_pass = pass == 1;
+		for (int i = 0; i < p_target.union_members.size(); i++) {
+			BSParser::DataType target_member = p_target.union_members[i];
+			target_member.is_nullable = p_target.is_nullable;
+			const BSTypeCompatibility::Result member_result = BSTypeCompatibility::check(target_member, p_source, p_options);
+			if (!member_result.compatible || member_result.uses_implicit_conversion != converting_pass) {
+				continue;
+			}
+			if (converting_pass && !_union_store_converts_carrier(target_member, p_source, p_options)) {
+				continue;
+			}
+			r_alternative = target_member;
+			r_member_result = member_result;
+			return true;
+		}
+	}
+	return false;
+}
+
+} // namespace
 
 bool BSNumericConversion::is_numeric_builtin(const BSParser::DataType &p_type) {
 	if (p_type.kind != BSParser::DataType::BUILTIN) {
@@ -199,23 +249,32 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 	}
 
 	if (p_target.kind == BSParser::DataType::UNION) {
-		// A union target accepts a source that satisfies any one of its alternatives.
-		for (int i = 0; i < p_target.union_members.size(); i++) {
-			BSParser::DataType target_member = p_target.union_members[i];
-			target_member.is_nullable = p_target.is_nullable;
-			Result member = check(target_member, p_source, p_options);
-			if (member.compatible) {
-				// Mirror Foundry: an alternative reached by conversion still needs a runtime store check.
-				if (member.uses_implicit_conversion) {
-					member.requires_runtime_check = true;
-				}
-				return member;
-			}
+		// Foundry target-UNION @ c9d5e35: accept a source that satisfies any one alternative, preferring
+		// exact matches and admitting converting alternatives only when the union store can convert.
+		BSParser::DataType alternative;
+		Result member_result;
+		Result result(false, false, false);
+		if (!_select_union_alternative(p_target, p_source, p_options, alternative, member_result)) {
+			return result;
 		}
-		return Result(false, false, false);
+		result.compatible = true;
+		result.uses_implicit_conversion = member_result.uses_implicit_conversion;
+		// An alternative reached by conversion (or that already required a runtime check) keeps that
+		// obligation: the compiled store tests/converts against the whole alternative set.
+		result.requires_runtime_check = member_result.requires_runtime_check || member_result.uses_implicit_conversion;
+		return result;
 	}
 
 	return Result(is_invariant_equal(p_target, p_source), false, false);
+}
+
+bool BSTypeCompatibility::selected_union_alternative(const BSParser::DataType &p_target, const BSParser::DataType &p_source,
+		const Options &p_options, BSParser::DataType &r_alternative) {
+	if (p_target.kind != BSParser::DataType::UNION) {
+		return false;
+	}
+	Result member_result;
+	return _select_union_alternative(p_target, p_source, p_options, r_alternative, member_result);
 }
 
 bool BSTypeCompatibility::is_compatible(const BSParser::DataType &p_target, const BSParser::DataType &p_source, bool p_allow_implicit_conversion) {

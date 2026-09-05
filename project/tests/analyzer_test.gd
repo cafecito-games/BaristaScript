@@ -44,6 +44,7 @@ func _init() -> void:
 	_test_flow_narrowing(failures)
 	_test_builtin_annotation_resolve(failures)
 	_test_union_union_assignability(failures)
+	_test_union_store_carrier_select(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1629,3 +1630,46 @@ func _test_union_union_assignability(failures: PackedStringArray) -> void:
 		"Number→Number remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for Number→Number")
+
+
+func _test_union_store_carrier_select(failures: PackedStringArray) -> void:
+	# Foundry target-UNION _select_union_alternative / _union_store_converts_carrier @ c9d5e35:
+	# prefer exact alternatives; converting alternatives need a numeric store-carrier conversion.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Exact alternative preferred over a converting one (int before float conversion).
+	var exact_prefers_int := "class_name UnionExactPrefersInt extends Node\nfunc take(n: int) -> void:\n\tvar _x: int | float = n\n"
+	var exact_prefers_int_report: Dictionary = probe.analyze_source(exact_prefers_int, "res://tests/union_exact_prefers_int.barista")
+	_expect(failures, exact_prefers_int_report.get("valid", false) == true, "int → int|float exact alternative is valid")
+
+	# Numeric store can convert int→float into a float|String union.
+	var int_to_float_union := "class_name UnionNumericStoreWiden extends Node\nfunc take(n: int) -> void:\n\tvar _x: float | String = n\n"
+	var int_to_float_union_report: Dictionary = probe.analyze_source(int_to_float_union, "res://tests/union_numeric_store_widen.barista")
+	_expect(failures, int_to_float_union_report.get("valid", false) == true, "int → float|String numeric store widen is valid")
+
+	# Plain String→StringName still works (non-union slot performs the engine bridge).
+	var plain_string_name := "class_name PlainStringToStringName extends Node\nfunc take() -> void:\n\tvar _n: StringName = \"ready\"\n"
+	var plain_string_name_report: Dictionary = probe.analyze_source(plain_string_name, "res://tests/plain_string_to_string_name.barista")
+	_expect(failures, plain_string_name_report.get("valid", false) == true, "String → StringName plain assign remains valid")
+
+	# Union store cannot perform String→StringName: no numeric store-carrier counterpart.
+	var string_to_string_name_union := "class_name UnionRejectsStringNameBridge extends Node\nfunc take() -> void:\n\tvar _x: StringName | int = \"ready\"\n"
+	var string_to_string_name_union_report: Dictionary = probe.analyze_source(string_to_string_name_union, "res://tests/union_rejects_string_name_bridge.barista")
+	_expect(failures, string_to_string_name_union_report.get("valid", true) == false,
+		"String → StringName|int rejected (union store cannot bridge)")
+
+	# Same bridge rejection with a non-literal String source.
+	var string_param_to_union := "class_name UnionRejectsStringParamBridge extends Node\nfunc take(s: String) -> void:\n\tvar _x: StringName | Node = s\n"
+	var string_param_to_union_report: Dictionary = probe.analyze_source(string_param_to_union, "res://tests/union_rejects_string_param_bridge.barista")
+	_expect(failures, string_param_to_union_report.get("valid", true) == false,
+		"String param → StringName|Node rejected (union store cannot bridge)")
+
+	# Opt-in declaration-index mutation unchanged.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(exact_prefers_int, "res://tests/union_store_carrier_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "int→int|float remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(exact_prefers_int, "res://tests/union_store_carrier_is_valid.barista"),
+		"int→int|float remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for union store-carrier")
