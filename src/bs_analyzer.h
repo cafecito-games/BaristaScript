@@ -8,8 +8,10 @@
 /*  / `.Case` / exhaustiveness; Callable.bind/unbind/call/callv/rpc;      */
 /*  pending-warning finalize on flow-finality early exit; trait           */
 /*  conformance witness; get_operation_type for binary/unary/compound;    */
-/*  resolve_class_member same-parser depth; reduce_await + MISSING_AWAIT / */
-/*  REDUNDANT_AWAIT for AsyncCallable→coroutine wrap (#60).               */
+/*  resolve_class_member same-parser depth; OwnerResolutionFailures /     */
+/*  DependentResolutionFailureReplays / ForeignAnalyzerVisibilityScope    */
+/*  for external SCRIPT member failure replay; reduce_await +             */
+/*  MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→coroutine wrap.     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -206,6 +208,137 @@ public:
 	};
 
 	/**
+	 * Hard fork of Foundry `FSAnalyzer::OwnerResolutionFailures` (@ c9d5e35,
+	 * `fs_analyzer.h` ~195–260). Resolution flags and datatypes are shared through
+	 * BSCache, so owner-local failures must be memoized alongside them. Records only
+	 * errors added by the exact class phase/member so a later foreign caller never
+	 * infers failure from unrelated errors already in the owner parser.
+	 * Class-phase (INTERFACE/BODY) recording sites beyond member path remain #60 residual.
+	 */
+	class OwnerResolutionFailures {
+	public:
+		enum ClassPhase : uint8_t {
+			INTERFACE = 1 << 0,
+			BODY = 1 << 1,
+		};
+
+	private:
+		struct ClassFailures {
+			uint8_t phases = 0;
+			int interface_first_error_index = -1;
+			int body_first_error_index = -1;
+			HashMap<int, int> member_first_error_indices;
+		};
+
+		HashMap<const BSParser::ClassNode *, ClassFailures> failures;
+
+	public:
+		void record_class(const BSParser::ClassNode *p_class, ClassPhase p_phase, int p_first_error_index) {
+			ClassFailures &class_failures = failures[p_class];
+			class_failures.phases |= p_phase;
+			int *first_error_index = &class_failures.body_first_error_index;
+			if (p_phase == INTERFACE) {
+				first_error_index = &class_failures.interface_first_error_index;
+			}
+			if (*first_error_index < 0 || p_first_error_index < *first_error_index) {
+				*first_error_index = p_first_error_index;
+			}
+		}
+
+		bool has_class(const BSParser::ClassNode *p_class, ClassPhase p_phase) const {
+			const ClassFailures *class_failures = failures.getptr(p_class);
+			return class_failures != nullptr && (class_failures->phases & p_phase) != 0;
+		}
+
+		int first_error_index(const BSParser::ClassNode *p_class, ClassPhase p_phase) const {
+			const ClassFailures *class_failures = failures.getptr(p_class);
+			if (class_failures == nullptr) {
+				return -1;
+			}
+			if (p_phase == INTERFACE) {
+				return class_failures->interface_first_error_index;
+			}
+			return class_failures->body_first_error_index;
+		}
+
+		void record_member(const BSParser::ClassNode *p_class, int p_index, int p_first_error_index) {
+			failures[p_class].member_first_error_indices.insert(p_index, p_first_error_index);
+		}
+
+		bool has_member(const BSParser::ClassNode *p_class, int p_index) const {
+			const ClassFailures *class_failures = failures.getptr(p_class);
+			return class_failures != nullptr && class_failures->member_first_error_indices.has(p_index);
+		}
+
+		int member_first_error_index(const BSParser::ClassNode *p_class, int p_index) const {
+			const ClassFailures *class_failures = failures.getptr(p_class);
+			if (class_failures == nullptr) {
+				return -1;
+			}
+			const int *first_error_index = class_failures->member_first_error_indices.getptr(p_index);
+			return first_error_index != nullptr ? *first_error_index : -1;
+		}
+	};
+
+	OwnerResolutionFailures owner_resolution_failures;
+
+	/**
+	 * Hard fork of Foundry `FSAnalyzer::DependentResolutionFailureReplays` (@ c9d5e35,
+	 * `fs_analyzer.h` ~265–293). Replaying an owner-memoized failure is observable in the
+	 * dependent parser, whose analysis may revisit the same shared node many times. Record
+	 * replays so one dependent reports each foreign member/phase once, while separate
+	 * analyzers and separate operations still propagate it.
+	 */
+	class DependentResolutionFailureReplays {
+		struct ClassReplays {
+			uint8_t phases = 0;
+			HashSet<int> members;
+		};
+
+		HashMap<const BSParser::ClassNode *, ClassReplays> replays;
+
+	public:
+		bool record_class(const BSParser::ClassNode *p_class, OwnerResolutionFailures::ClassPhase p_phase) {
+			ClassReplays &class_replays = replays[p_class];
+			if ((class_replays.phases & p_phase) != 0) {
+				return false;
+			}
+			class_replays.phases |= p_phase;
+			return true;
+		}
+
+		bool record_member(const BSParser::ClassNode *p_class, int p_index) {
+			ClassReplays &class_replays = replays[p_class];
+			if (class_replays.members.has(p_index)) {
+				return false;
+			}
+			class_replays.members.insert(p_index);
+			return true;
+		}
+	};
+
+	DependentResolutionFailureReplays dependent_resolution_failure_replays;
+
+	/**
+	 * Hard fork of Foundry `FSAnalyzer::ForeignAnalyzerVisibilityScope` (@ c9d5e35,
+	 * `fs_analyzer.h` ~298+). A foreign node's memoized result must be defined by its
+	 * owning file; Foundry routes the owner's `ConformanceVisibility` via
+	 * `FSConformanceRegistry::ScopedVisibility`. Barista has not yet ported
+	 * FSConformanceRegistry (residual under #60); this RAII preserves call-site shape on
+	 * delegated analyzer resolution so registry wiring can land without reshaping the
+	 * external SCRIPT member path.
+	 */
+	class ForeignAnalyzerVisibilityScope {
+		BSAnalyzer *owner = nullptr;
+
+	public:
+		explicit ForeignAnalyzerVisibilityScope(BSAnalyzer *p_owner) :
+				owner(p_owner) {
+			(void)owner;
+		}
+	};
+
+	/**
 	 * Foundry `TraitMethodImplementation` (@ c9d5e35): a concrete method that
 	 * satisfies a trait abstract requirement, either as a FunctionNode or as
 	 * MethodInfo from a native / foreign script surface.
@@ -315,8 +448,9 @@ private:
 	 * Foundry resolve_class_member @ c9d5e35 (`fs_analyzer_surface.cpp`): lazily resolve a class
 	 * member's datatype with cyclic `RESOLVING` fail-stop before identifier/member binds read it.
 	 * Same-parser path is complete for VARIABLE/CONSTANT/FUNCTION/SIGNAL/ENUM/CLASS. External /
-	 * SCRIPT members raise the owning parser via `BSCache::get_parser` and delegate; full
-	 * ForeignAnalyzerVisibilityScope / dependent_resolution_failure_replays remain #60 residual.
+	 * SCRIPT members raise via `BSCache::get_parser`, wrap `ForeignAnalyzerVisibilityScope`,
+	 * record owner member failures, and replay dependent diagnostics with dedupe. Class-phase
+	 * INTERFACE/BODY foreign recording sites remain #60 residual.
 	 */
 	void resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source = nullptr);
 	void resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);

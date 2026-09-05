@@ -4,9 +4,10 @@
 /*  #60 class-body surface diagnostics. Ports unused-private /            */
 /*  unused-signal post-pass, built-in resolve_annotation,                 */
 /*  resolve_enum_values, same-file scope inheritance helpers, CLASS       */
-/*  inheritance member bind, and resolve_class_member same-parser depth   */
-/*  (@ c9d5e35 fs_analyzer_surface.cpp). External SCRIPT richness beyond  */
-/*  BSCache::get_parser raise+delegate remains follow-up under #60.       */
+/*  inheritance member bind, and resolve_class_member with external       */
+/*  OwnerResolutionFailures / DependentResolutionFailureReplays /         */
+/*  ForeignAnalyzerVisibilityScope (@ c9d5e35). Class-phase INTERFACE/BODY*/
+/*  foreign recording sites remain follow-up under #60.                   */
 /*  FS* -> BS*; engine contact through bs_platform.h.                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -354,8 +355,9 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, const String
 void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source) {
 	// Foundry resolve_class_member @ c9d5e35 (`fs_analyzer_surface.cpp` ~1665): lazy member datatype
 	// resolution with cyclic RESOLVING fail-stop. Hard fork FS*→BS*; external path uses
-	// BSCache::get_parser raise+delegate without ForeignAnalyzerVisibilityScope /
-	// dependent_resolution_failure_replays (those remain #60 residual).
+	// BSCache::get_parser raise+delegate with ForeignAnalyzerVisibilityScope, owner member
+	// failure recording, and dependent_resolution_failure_replays dedupe. Class-phase
+	// INTERFACE/BODY foreign recording remains #60 residual.
 	ERR_FAIL_NULL(p_class);
 	ERR_FAIL_INDEX(p_index, p_class->members.size());
 	ERR_FAIL_NULL(parser);
@@ -365,12 +367,34 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 		p_source = member.get_source_node();
 	}
 
+	const bool owns_class = parser->has_class(p_class) || p_class->is_native_conformance_shim || p_class->is_builtin_conformance_shim;
+	auto push_external_member_failure = [&]() {
+		if (dependent_resolution_failure_replays.record_member(p_class, p_index)) {
+			push_error(vformat(R"(Could not resolve external class member "%s".)", member.get_name()), p_source);
+		}
+	};
+
 	if (member.get_datatype().is_resolving()) {
 		push_error(vformat(R"(Could not resolve member "%s": Cyclic reference.)", member.get_name()), p_source);
 		return;
 	}
 
 	if (member.get_datatype().is_set()) {
+		// Foundry @ c9d5e35: datatype may already be published while the owner recorded a
+		// member-local failure; dependents must still surface it (once) via replay dedupe.
+		if (!owns_class) {
+			const String path = _resolve_class_member_script_path(p_class);
+			if (!path.is_empty()) {
+				Error err = OK;
+				Ref<BSParserRef> parser_ref = BSCache::get_parser(path, BSParserRef::PARSED, err, parser->script_path);
+				if (parser_ref.is_valid() && err == OK && parser_ref->get_analyzer() != nullptr) {
+					BSAnalyzer *other_analyzer = parser_ref->get_analyzer();
+					if (other_analyzer->owner_resolution_failures.has_member(p_class, p_index)) {
+						push_external_member_failure();
+					}
+				}
+			}
+		}
 		return;
 	}
 
@@ -379,7 +403,6 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 		resolve_class_inheritance(p_class);
 	}
 
-	const bool owns_class = parser->has_class(p_class) || p_class->is_native_conformance_shim || p_class->is_builtin_conformance_shim;
 	if (!owns_class) {
 		const String path = _resolve_class_member_script_path(p_class);
 		if (path.is_empty()) {
@@ -404,9 +427,11 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			return;
 		}
 		const int error_count = other_parser->get_errors().size();
+		ForeignAnalyzerVisibilityScope visibility_scope(other_analyzer);
 		other_analyzer->resolve_class_member(p_class, p_index);
-		if (other_parser->get_errors().size() > error_count) {
-			push_error(vformat(R"(Could not resolve external class member "%s".)", member.get_name()), p_source);
+		if (other_parser->get_errors().size() > error_count ||
+				other_analyzer->owner_resolution_failures.has_member(p_class, p_index)) {
+			push_external_member_failure();
 		}
 		return;
 	}
@@ -416,6 +441,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 
 	BSParser::DataType resolving_datatype;
 	resolving_datatype.kind = BSParser::DataType::RESOLVING;
+	const int member_error_count = parser->get_errors().size();
 
 	switch (member.type) {
 		case BSParser::ClassNode::Member::VARIABLE: {
@@ -627,6 +653,10 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 		case BSParser::ClassNode::Member::TYPE_ALIAS:
 		case BSParser::ClassNode::Member::UNDEFINED:
 			break;
+	}
+
+	if (parser->get_errors().size() > member_error_count) {
+		owner_resolution_failures.record_member(p_class, p_index, member_error_count);
 	}
 
 	current_class = previous_class;
