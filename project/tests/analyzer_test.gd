@@ -40,6 +40,7 @@ func _init() -> void:
 	_test_unused_locals(failures)
 	_test_unused_class_members_and_signals(failures)
 	_test_trait_requirements_and_conformance_witness(failures)
+	_test_flow_narrowing(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1360,3 +1361,48 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 		if "native function" in message and "get_node()" in message and "NeedsGetNode.get_node()" in message:
 			saw_native_sig = true
 	_expect(failures, saw_native_sig, "native MethodInfo signature mismatch diagnostic")
+
+
+func _test_flow_narrowing(failures: PackedStringArray) -> void:
+	# Foundry flow-narrowing starter (@ c9d5e35): null-check + `is` type-test overlays for locals/params.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", true)
+
+	var bare_null := "class_name BareNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tvar x: Node = n\n"
+	var bare_null_report: Dictionary = probe.analyze_source(bare_null, "res://tests/bare_nullable_assign.barista")
+	_expect(failures, bare_null_report.get("valid", true) == false, "nullable to non-null assign fails under strict_null")
+
+	var narrowed_null := "class_name NarrowedNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar x: Node = n\n"
+	var narrowed_null_report: Dictionary = probe.analyze_source(narrowed_null, "res://tests/narrowed_nullable_assign.barista")
+	_expect(failures, narrowed_null_report.get("valid", false) == true, "null-check true arm allows Node? → Node")
+
+	var else_null := "class_name ElseNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tpass\n\telse:\n\t\tvar x: Node = n\n"
+	var else_null_report: Dictionary = probe.analyze_source(else_null, "res://tests/else_nullable_assign.barista")
+	_expect(failures, else_null_report.get("valid", true) == false, "null-check else arm keeps Node? → Node invalid")
+
+	var assert_null := "class_name AssertNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tassert(n != null)\n\tvar x: Node = n\n"
+	var assert_null_report: Dictionary = probe.analyze_source(assert_null, "res://tests/assert_nullable_assign.barista")
+	_expect(failures, assert_null_report.get("valid", false) == true, "assert null-check narrows later statements")
+
+	var bare_union := "class_name BareUnionAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar s: String = v\n"
+	var bare_union_report: Dictionary = probe.analyze_source(bare_union, "res://tests/bare_union_assign.barista")
+	_expect(failures, bare_union_report.get("valid", true) == false, "union to String without type test is invalid")
+
+	var narrowed_is := "class_name NarrowedIsAssign extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tvar s: String = v\n"
+	var narrowed_is_report: Dictionary = probe.analyze_source(narrowed_is, "res://tests/narrowed_is_assign.barista")
+	_expect(failures, narrowed_is_report.get("valid", false) == true, "`is String` true arm allows int|String → String")
+
+	var else_is := "class_name ElseIsAssign extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tpass\n\telse:\n\t\tvar i: int = v\n"
+	var else_is_report: Dictionary = probe.analyze_source(else_is, "res://tests/else_is_assign.barista")
+	_expect(failures, else_is_report.get("valid", false) == true, "`is String` else arm subtracts String leaving int")
+
+	var cleared := "class_name ClearedNarrowingAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tn = null\n\t\tvar x: Node = n\n"
+	var cleared_report: Dictionary = probe.analyze_source(cleared, "res://tests/cleared_narrowing_assign.barista")
+	_expect(failures, cleared_report.get("valid", true) == false, "assignment clears prior null-check narrowing")
+
+	var and_narrow := "class_name AndNarrowingAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null and n is Node:\n\t\tvar x: Node = n\n"
+	var and_narrow_report: Dictionary = probe.analyze_source(and_narrow, "res://tests/and_narrowing_assign.barista")
+	_expect(failures, and_narrow_report.get("valid", false) == true, "`and` condition applies left-side null-check narrowing")
+
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()

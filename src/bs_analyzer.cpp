@@ -838,6 +838,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				if (local.variable != nullptr) {
 					p_identifier->set_datatype(local.variable->get_datatype());
 				}
+				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
+					p_identifier->set_datatype(*narrowed);
+				}
 				return;
 			}
 			case BSParser::SuiteNode::Local::PARAMETER: {
@@ -845,6 +848,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->parameter_source = local.parameter;
 				if (local.parameter != nullptr) {
 					p_identifier->set_datatype(local.parameter->get_datatype());
+				}
+				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
+					p_identifier->set_datatype(*narrowed);
 				}
 				return;
 			}
@@ -855,6 +861,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->bind_source = local.bind;
 				if (local.bind != nullptr) {
 					p_identifier->set_datatype(local.bind->get_datatype());
+				}
+				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
+					p_identifier->set_datatype(*narrowed);
 				}
 				return;
 			}
@@ -870,6 +879,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->parameter_source = parameter;
 				p_identifier->set_datatype(parameter->get_datatype());
 				p_identifier->source_function = current_function;
+				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
+					p_identifier->set_datatype(*narrowed);
+				}
 				return;
 			}
 		}
@@ -1187,6 +1199,68 @@ void BSAnalyzer::reduce_ternary(BSParser::TernaryOpNode *p_ternary) {
 	p_ternary->set_datatype(type);
 }
 
+void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
+	// Foundry reduce_type_test starter (@ c9d5e35): resolve the tested type so flow narrowing can
+	// overlay it on locals/parameters. Contextual enum-case shorthand, case-bind payload typing,
+	// constant folding, and exhausting-alternative diagnostics remain follow-up under #60.
+	if (p_type_test == nullptr) {
+		return;
+	}
+	BSParser::DataType result;
+	result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	result.kind = BSParser::DataType::BUILTIN;
+	result.builtin_type = Variant::BOOL;
+	p_type_test->set_datatype(result);
+
+	if (p_type_test->operand == nullptr || p_type_test->test_type == nullptr) {
+		return;
+	}
+	reduce_expression(p_type_test->operand);
+
+	BSParser::DataType test_type = datatype_from_type_node(p_type_test->test_type);
+	test_type.is_meta_type = false;
+	if (test_type.is_union()) {
+		push_error(vformat(R"(Cannot test against the type union "%s", because it has no runtime type. Test one of its alternatives instead.)", test_type.to_string()), p_type_test->test_type);
+		test_type = BSParser::DataType();
+	}
+	p_type_test->test_datatype = test_type;
+
+	if (!test_type.is_set()) {
+		for (BSParser::IdentifierNode *bind : p_type_test->case_binds) {
+			if (bind != nullptr) {
+				BSParser::DataType bind_type;
+				bind_type.kind = BSParser::DataType::VARIANT;
+				bind_type.type_source = BSParser::DataType::INFERRED;
+				bind->set_datatype(bind_type);
+			}
+		}
+	}
+}
+
+void BSAnalyzer::analyze_if(BSParser::IfNode *p_if) {
+	if (p_if == nullptr) {
+		return;
+	}
+	// Foundry resolve_if @ c9d5e35: reduce the condition, then overlay true/false narrowing on each arm.
+	flow_finality.reduce_condition_expression(p_if->condition);
+
+	HashMap<const BSParser::Node *, BSParser::DataType> previous_flow_narrowed_types(flow_finality.get_flow_narrowed_types());
+	flow_finality.apply_flow_narrowing_from_condition(p_if->condition, true);
+	analyze_suite(p_if->true_block);
+	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
+
+	if (p_if->false_block != nullptr) {
+		previous_flow_narrowed_types = flow_finality.get_flow_narrowed_types();
+		flow_finality.apply_flow_narrowing_from_condition(p_if->condition, false);
+		if (BSParser::IfNode *elif = p_if->get_elif()) {
+			analyze_if(elif);
+		} else {
+			analyze_suite(p_if->false_block);
+		}
+		flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
+	}
+}
+
 void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root) {
 	(void)p_is_root;
 	if (p_expression == nullptr || p_expression->reduced) {
@@ -1220,6 +1294,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::TERNARY_OPERATOR:
 			reduce_ternary(static_cast<BSParser::TernaryOpNode *>(p_expression));
 			break;
+		case BSParser::Node::TYPE_TEST:
+			reduce_type_test(static_cast<BSParser::TypeTestNode *>(p_expression));
+			break;
 		case BSParser::Node::SELF: {
 			BSParser::SelfNode *self_node = static_cast<BSParser::SelfNode *>(p_expression);
 			if (current_class != nullptr) {
@@ -1237,6 +1314,8 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 					assignee->variable_source->assignments++;
 				}
 			}
+			// Foundry: assignment clears prior narrowing for the assignee (new value may not satisfy it).
+			flow_finality.clear_flow_narrowing(assignment->assignee);
 			if (assignment->assigned_value != nullptr) {
 				assignment->set_datatype(assignment->assigned_value->get_datatype());
 			}
@@ -1288,15 +1367,15 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			}
 		} break;
 		case BSParser::Node::IF: {
-			BSParser::IfNode *if_node = static_cast<BSParser::IfNode *>(p_node);
-			reduce_expression(if_node->condition);
-			analyze_suite(if_node->true_block);
-			analyze_suite(if_node->false_block);
+			analyze_if(static_cast<BSParser::IfNode *>(p_node));
 		} break;
 		case BSParser::Node::WHILE: {
 			BSParser::WhileNode *while_node = static_cast<BSParser::WhileNode *>(p_node);
-			reduce_expression(while_node->condition);
+			flow_finality.reduce_condition_expression(while_node->condition);
+			HashMap<const BSParser::Node *, BSParser::DataType> previous_flow_narrowed_types(flow_finality.get_flow_narrowed_types());
+			flow_finality.apply_flow_narrowing_from_condition(while_node->condition, true);
 			analyze_suite(while_node->loop);
+			flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
 		} break;
 		case BSParser::Node::FOR: {
 			BSParser::ForNode *for_node = static_cast<BSParser::ForNode *>(p_node);
@@ -1315,8 +1394,10 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 		} break;
 		case BSParser::Node::ASSERT: {
 			BSParser::AssertNode *assert_node = static_cast<BSParser::AssertNode *>(p_node);
-			reduce_expression(assert_node->condition);
+			flow_finality.reduce_condition_expression(assert_node->condition);
 			reduce_expression(assert_node->message);
+			// Foundry resolve_assert: successful assert keeps true-branch narrowing for later statements.
+			flow_finality.apply_flow_narrowing_from_condition(assert_node->condition, true);
 		} break;
 		case BSParser::Node::SUITE:
 			analyze_suite(static_cast<BSParser::SuiteNode *>(p_node));
@@ -1356,7 +1437,10 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function) {
 		current_function = previous;
 		return;
 	}
-	analyze_suite(p_function->body);
+	{
+		FlowFinalityContext::FlowNarrowingScope flow_scope(flow_finality, true);
+		analyze_suite(p_function->body);
+	}
 	warn_unused_parameters(p_function);
 	warn_unused_locals(p_function->body);
 	current_function = previous;

@@ -4,7 +4,8 @@
 /*  Hard fork of Foundry `modules/foundry_script/fs_analyzer_flow_finality */
 /*  .cpp` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6. FS* -> BS*; engine  */
 /*  contact through bs_platform.h. LOCAL + INSTANCE + STATIC final        */
-/*  definite assignment + trait flattening for #60; narrowing follow-up.  */
+/*  definite assignment + trait flattening for #60; if/while/assert       */
+/*  null-check + `is` type-test flow narrowing starter (#60).             */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -18,6 +19,27 @@ namespace barista_script {
 
 BSAnalyzer::FlowFinalityContext::FlowFinalityContext(BSAnalyzer *p_analyzer) :
 		analyzer(p_analyzer) {
+}
+
+BSAnalyzer::FlowFinalityContext::FlowNarrowingScope::FlowNarrowingScope(FlowFinalityContext &p_context, bool p_track_captured_sources) {
+	context = &p_context;
+	previous_flow_narrowed_types = context->flow_narrowed_types;
+	if (p_track_captured_sources) {
+		previous_flow_narrowing_captured_sources = context->flow_narrowing_captured_sources;
+		context->flow_narrowing_captured_sources.clear();
+		restore_captured_sources = true;
+	}
+	context->flow_narrowed_types.clear();
+}
+
+BSAnalyzer::FlowFinalityContext::FlowNarrowingScope::~FlowNarrowingScope() {
+	if (context == nullptr) {
+		return;
+	}
+	context->flow_narrowed_types = previous_flow_narrowed_types;
+	if (restore_captured_sources) {
+		context->flow_narrowing_captured_sources = previous_flow_narrowing_captured_sources;
+	}
 }
 
 BSAnalyzer::FlowFinalityContext::FlattenedTraitFinalNodesScope::FlattenedTraitFinalNodesScope(FlowFinalityContext &p_context) {
@@ -1189,6 +1211,282 @@ void BSAnalyzer::FlowFinalityContext::analyze_final_definite_assignment_suite(co
 	for (int i = 0; i < p_suite->statements.size(); i++) {
 		analyze_final_definite_assignment_statement(p_suite->statements[i], p_finals, p_finals_by_name, p_scope, r_state, r_assigned_anywhere, p_flattened_trait_body);
 	}
+}
+
+// --- Flow narrowing (@ c9d5e35 fs_analyzer_flow_finality.cpp). Match-branch
+// narrowing and D1 numeric width subsumption remain follow-up under #60.
+
+static bool _is_null_literal(const BSParser::ExpressionNode *p_expression) {
+	if (p_expression == nullptr || p_expression->type != BSParser::Node::LITERAL) {
+		return false;
+	}
+	const BSParser::LiteralNode *literal = static_cast<const BSParser::LiteralNode *>(p_expression);
+	return literal->value.get_type() == Variant::NIL;
+}
+
+// D1-trimmed: exact alternative identity only (no fixed-width numeric ranges).
+static bool _type_test_subsumes(const BSParser::DataType &p_test_type, const BSParser::DataType &p_alternative) {
+	BSParser::DataType test_identity = p_test_type;
+	BSParser::DataType alternative_identity = p_alternative;
+	test_identity.is_nullable = false;
+	alternative_identity.is_nullable = false;
+	return test_identity == alternative_identity;
+}
+
+static const BSParser::DataType *_flow_narrowing_alternative_set(const BSParser::DataType &p_type) {
+	if (p_type.is_union()) {
+		return &p_type;
+	}
+	if (p_type.is_type_parameter() && p_type.type_parameter_bound.size() == 1 && p_type.type_parameter_bound[0].is_union()) {
+		return &p_type.type_parameter_bound[0];
+	}
+	return nullptr;
+}
+
+const BSParser::Node *BSAnalyzer::FlowFinalityContext::flow_narrowing_key_from_identifier(const BSParser::IdentifierNode *p_identifier) const {
+	if (p_identifier == nullptr) {
+		return nullptr;
+	}
+	switch (p_identifier->source) {
+		case BSParser::IdentifierNode::FUNCTION_PARAMETER:
+			return p_identifier->parameter_source;
+		case BSParser::IdentifierNode::LOCAL_VARIABLE:
+			return p_identifier->variable_source;
+		case BSParser::IdentifierNode::LOCAL_ITERATOR:
+		case BSParser::IdentifierNode::LOCAL_BIND:
+			return p_identifier->bind_source;
+		case BSParser::IdentifierNode::UNDEFINED_SOURCE:
+		case BSParser::IdentifierNode::LOCAL_CONSTANT:
+		case BSParser::IdentifierNode::MEMBER_VARIABLE:
+		case BSParser::IdentifierNode::MEMBER_CONSTANT:
+		case BSParser::IdentifierNode::MEMBER_FUNCTION:
+		case BSParser::IdentifierNode::MEMBER_SIGNAL:
+		case BSParser::IdentifierNode::MEMBER_CLASS:
+		case BSParser::IdentifierNode::INHERITED_VARIABLE:
+		case BSParser::IdentifierNode::STATIC_VARIABLE:
+		case BSParser::IdentifierNode::NATIVE_CLASS:
+		case BSParser::IdentifierNode::STATIC_SELF_CLASS:
+			return nullptr;
+	}
+	return nullptr;
+}
+
+const BSParser::DataType *BSAnalyzer::FlowFinalityContext::lookup_flow_narrowed_type(const BSParser::Node *p_key) const {
+	if (p_key == nullptr) {
+		return nullptr;
+	}
+	HashMap<const BSParser::Node *, BSParser::DataType>::ConstIterator found = flow_narrowed_types.find(p_key);
+	if (!found) {
+		return nullptr;
+	}
+	return &found->value;
+}
+
+void BSAnalyzer::FlowFinalityContext::apply_flow_narrowing(const BSParser::IdentifierNode *p_identifier) {
+	const BSParser::Node *key = flow_narrowing_key_from_identifier(p_identifier);
+	if (key == nullptr) {
+		return;
+	}
+	BSParser::DataType narrowed_type = p_identifier->get_datatype();
+	if (!narrowed_type.is_nullable) {
+		return;
+	}
+	narrowed_type.is_nullable = false;
+	flow_narrowed_types[key] = narrowed_type;
+}
+
+void BSAnalyzer::FlowFinalityContext::apply_flow_narrowing(const BSParser::IdentifierNode *p_identifier, const BSParser::DataType &p_type) {
+	const BSParser::Node *key = flow_narrowing_key_from_identifier(p_identifier);
+	if (key == nullptr || !p_type.is_set()) {
+		return;
+	}
+	BSParser::DataType narrowed_type = p_type;
+	narrowed_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+	flow_narrowed_types[key] = narrowed_type;
+}
+
+void BSAnalyzer::FlowFinalityContext::clear_flow_narrowing(const BSParser::ExpressionNode *p_expression) {
+	if (p_expression == nullptr || p_expression->type != BSParser::Node::IDENTIFIER) {
+		return;
+	}
+	const BSParser::IdentifierNode *identifier = static_cast<const BSParser::IdentifierNode *>(p_expression);
+	const BSParser::Node *key = flow_narrowing_key_from_identifier(identifier);
+	if (key != nullptr) {
+		flow_narrowed_types.erase(key);
+	}
+}
+
+void BSAnalyzer::FlowFinalityContext::mark_flow_narrowing_capture(const BSParser::IdentifierNode *p_identifier) {
+	const BSParser::Node *key = flow_narrowing_key_from_identifier(p_identifier);
+	if (key != nullptr) {
+		flow_narrowing_captured_sources[key] = true;
+	}
+}
+
+void BSAnalyzer::FlowFinalityContext::clear_captured_flow_narrowing() {
+	for (const KeyValue<const BSParser::Node *, bool> &E : flow_narrowing_captured_sources) {
+		flow_narrowed_types.erase(E.key);
+	}
+}
+
+bool BSAnalyzer::FlowFinalityContext::null_check_narrowing_identifier(BSParser::ExpressionNode *p_condition, bool p_condition_value, BSParser::IdentifierNode *&r_identifier) const {
+	r_identifier = nullptr;
+	if (p_condition == nullptr || p_condition->type != BSParser::Node::BINARY_OPERATOR) {
+		return false;
+	}
+	BSParser::BinaryOpNode *binary_op = static_cast<BSParser::BinaryOpNode *>(p_condition);
+	if (binary_op->variant_op != Variant::OP_EQUAL && binary_op->variant_op != Variant::OP_NOT_EQUAL) {
+		return false;
+	}
+	const bool condition_true_means_not_null = binary_op->variant_op == Variant::OP_NOT_EQUAL;
+	if (p_condition_value != condition_true_means_not_null) {
+		return false;
+	}
+	BSParser::ExpressionNode *candidate = nullptr;
+	if (_is_null_literal(binary_op->left_operand)) {
+		candidate = binary_op->right_operand;
+	} else if (_is_null_literal(binary_op->right_operand)) {
+		candidate = binary_op->left_operand;
+	}
+	if (candidate == nullptr || candidate->type != BSParser::Node::IDENTIFIER) {
+		return false;
+	}
+	BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(candidate);
+	if (flow_narrowing_key_from_identifier(identifier) == nullptr || !identifier->get_datatype().is_nullable) {
+		return false;
+	}
+	r_identifier = identifier;
+	return true;
+}
+
+bool BSAnalyzer::FlowFinalityContext::type_test_condition(BSParser::ExpressionNode *p_condition, BSParser::TypeTestNode *&r_type_test, BSParser::IdentifierNode *&r_identifier, bool &r_true_means_match) const {
+	r_type_test = nullptr;
+	r_identifier = nullptr;
+	r_true_means_match = true;
+
+	BSParser::ExpressionNode *condition = p_condition;
+	if (condition != nullptr && condition->type == BSParser::Node::UNARY_OPERATOR) {
+		BSParser::UnaryOpNode *unary_op = static_cast<BSParser::UnaryOpNode *>(condition);
+		if (unary_op->variant_op != Variant::OP_NOT) {
+			return false;
+		}
+		r_true_means_match = false;
+		condition = unary_op->operand;
+	}
+	if (condition == nullptr || condition->type != BSParser::Node::TYPE_TEST) {
+		return false;
+	}
+	BSParser::TypeTestNode *type_test = static_cast<BSParser::TypeTestNode *>(condition);
+	if (type_test->operand == nullptr || type_test->operand->type != BSParser::Node::IDENTIFIER || !type_test->test_datatype.is_set()) {
+		return false;
+	}
+	BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(type_test->operand);
+	if (flow_narrowing_key_from_identifier(identifier) == nullptr) {
+		return false;
+	}
+	r_type_test = type_test;
+	r_identifier = identifier;
+	return true;
+}
+
+bool BSAnalyzer::FlowFinalityContext::type_test_narrowing_identifier(BSParser::ExpressionNode *p_condition, bool p_condition_value, BSParser::IdentifierNode *&r_identifier, BSParser::DataType &r_type) const {
+	r_identifier = nullptr;
+	r_type = BSParser::DataType();
+	BSParser::TypeTestNode *type_test = nullptr;
+	BSParser::IdentifierNode *identifier = nullptr;
+	bool true_means_match = true;
+	if (!type_test_condition(p_condition, type_test, identifier, true_means_match) || p_condition_value != true_means_match) {
+		return false;
+	}
+	r_identifier = identifier;
+	r_type = type_test->test_datatype;
+	return true;
+}
+
+void BSAnalyzer::FlowFinalityContext::apply_failed_type_test_flow_narrowing(const BSParser::IdentifierNode *p_identifier, const BSParser::DataType &p_tested_type) {
+	if (flow_narrowing_key_from_identifier(p_identifier) == nullptr || !p_tested_type.is_set()) {
+		return;
+	}
+	const BSParser::DataType current_type = p_identifier->get_datatype();
+	const BSParser::DataType *alternative_set = _flow_narrowing_alternative_set(current_type);
+	if (alternative_set == nullptr) {
+		return;
+	}
+	const Vector<BSParser::DataType> &alternatives = alternative_set->union_members;
+	Vector<BSParser::DataType> survivors;
+	for (const BSParser::DataType &alternative : alternatives) {
+		if (!_type_test_subsumes(p_tested_type, alternative)) {
+			survivors.push_back(alternative);
+		}
+	}
+	if (survivors.is_empty() || survivors.size() == alternatives.size()) {
+		return;
+	}
+	BSParser::DataType narrowed_type = BSParser::DataType::make_union(survivors);
+	if (!narrowed_type.is_set()) {
+		return;
+	}
+	narrowed_type.is_nullable = current_type.is_nullable || alternative_set->is_nullable;
+	apply_flow_narrowing(p_identifier, narrowed_type);
+}
+
+void BSAnalyzer::FlowFinalityContext::reduce_condition_expression(BSParser::ExpressionNode *p_condition) {
+	if (p_condition == nullptr || analyzer == nullptr) {
+		return;
+	}
+	if (p_condition->type == BSParser::Node::BINARY_OPERATOR) {
+		BSParser::BinaryOpNode *binary_op = static_cast<BSParser::BinaryOpNode *>(p_condition);
+		if (binary_op->variant_op == Variant::OP_AND) {
+			reduce_condition_expression(binary_op->left_operand);
+			HashMap<const BSParser::Node *, BSParser::DataType> previous_flow_narrowed_types(flow_narrowed_types);
+			apply_flow_narrowing_from_condition(binary_op->left_operand, true);
+			reduce_condition_expression(binary_op->right_operand);
+			flow_narrowed_types = previous_flow_narrowed_types;
+			// Leave AND typing to the ordinary reduce path when both sides already have types.
+			if (binary_op->left_operand != nullptr && binary_op->right_operand != nullptr &&
+					binary_op->left_operand->get_datatype().is_set() && binary_op->right_operand->get_datatype().is_set()) {
+				BSParser::DataType bool_type;
+				bool_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+				bool_type.kind = BSParser::DataType::BUILTIN;
+				bool_type.builtin_type = Variant::BOOL;
+				binary_op->set_datatype(bool_type);
+				binary_op->reduced = true;
+			}
+			return;
+		}
+	}
+	analyzer->reduce_expression(p_condition);
+}
+
+void BSAnalyzer::FlowFinalityContext::apply_flow_narrowing_from_condition(BSParser::ExpressionNode *p_condition, bool p_condition_value) {
+	if (p_condition == nullptr) {
+		return;
+	}
+	if (p_condition->type == BSParser::Node::BINARY_OPERATOR) {
+		BSParser::BinaryOpNode *binary_op = static_cast<BSParser::BinaryOpNode *>(p_condition);
+		if (binary_op->variant_op == Variant::OP_AND) {
+			if (p_condition_value) {
+				apply_flow_narrowing_from_condition(binary_op->left_operand, true);
+				apply_flow_narrowing_from_condition(binary_op->right_operand, true);
+			}
+			return;
+		}
+	}
+	BSParser::IdentifierNode *narrowed_identifier = nullptr;
+	if (null_check_narrowing_identifier(p_condition, p_condition_value, narrowed_identifier)) {
+		apply_flow_narrowing(narrowed_identifier);
+		return;
+	}
+	BSParser::TypeTestNode *type_test = nullptr;
+	bool true_means_match = true;
+	if (!type_test_condition(p_condition, type_test, narrowed_identifier, true_means_match)) {
+		return;
+	}
+	if (p_condition_value == true_means_match) {
+		apply_flow_narrowing(narrowed_identifier, type_test->test_datatype);
+		return;
+	}
+	apply_failed_type_test_flow_narrowing(narrowed_identifier, type_test->test_datatype);
 }
 
 } // namespace barista_script

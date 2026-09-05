@@ -5,6 +5,7 @@
 /*  mirror Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body     */
 /*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
 /*  local + member/static final definite assignment (#60 flow TU),        */
+/*  if/while/assert null-check + `is` type-test flow narrowing starter,   */
 /*  CallSiteValidationContext MethodInfo / signal emit (#60 call TU),     */
 /*  unused private/signal + built-in annotation resolve (#60 surface),    */
 /*  trait requirement / conformance witness + non-generic signature match */
@@ -79,11 +80,15 @@ public:
 	/**
 	 * Hard fork of Foundry `FSAnalyzer::FlowFinalityContext` (@ c9d5e35,
 	 * `fs_analyzer_flow_finality.cpp`). LOCAL + INSTANCE + STATIC `final var`
-	 * definite assignment / illegal writes, plus trait-member flattening into
-	 * implementers. Flow narrowing remains follow-up under #60.
+	 * definite assignment / illegal writes, trait-member flattening into
+	 * implementers, plus if/while/assert null-check and `is` type-test flow
+	 * narrowing for locals/parameters. Match-branch narrowing, lambda capture
+	 * clearing, and compound-assignment narrowed reads remain follow-up under #60.
 	 */
 	class FlowFinalityContext {
 		BSAnalyzer *analyzer = nullptr;
+		HashMap<const BSParser::Node *, BSParser::DataType> flow_narrowed_types;
+		HashMap<const BSParser::Node *, bool> flow_narrowing_captured_sources;
 		HashSet<const BSParser::VariableNode *> flattened_trait_final_nodes;
 
 	public:
@@ -99,6 +104,18 @@ public:
 			bool reachable = true;
 		};
 
+		/** Saves/clears flow narrowing for one function-body analysis pass. */
+		class FlowNarrowingScope {
+			FlowFinalityContext *context = nullptr;
+			HashMap<const BSParser::Node *, BSParser::DataType> previous_flow_narrowed_types;
+			HashMap<const BSParser::Node *, bool> previous_flow_narrowing_captured_sources;
+			bool restore_captured_sources = false;
+
+		public:
+			FlowNarrowingScope(FlowFinalityContext &p_context, bool p_track_captured_sources);
+			~FlowNarrowingScope();
+		};
+
 		/** Clears `flattened_trait_final_nodes` for one member/static final pass. */
 		class FlattenedTraitFinalNodesScope {
 			FlowFinalityContext *context = nullptr;
@@ -110,6 +127,22 @@ public:
 		};
 
 		explicit FlowFinalityContext(BSAnalyzer *p_analyzer);
+
+		const BSParser::Node *flow_narrowing_key_from_identifier(const BSParser::IdentifierNode *p_identifier) const;
+		void apply_flow_narrowing(const BSParser::IdentifierNode *p_identifier);
+		void apply_flow_narrowing(const BSParser::IdentifierNode *p_identifier, const BSParser::DataType &p_type);
+		void clear_flow_narrowing(const BSParser::ExpressionNode *p_expression);
+		void mark_flow_narrowing_capture(const BSParser::IdentifierNode *p_identifier);
+		void clear_captured_flow_narrowing();
+		bool null_check_narrowing_identifier(BSParser::ExpressionNode *p_condition, bool p_condition_value, BSParser::IdentifierNode *&r_identifier) const;
+		bool type_test_narrowing_identifier(BSParser::ExpressionNode *p_condition, bool p_condition_value, BSParser::IdentifierNode *&r_identifier, BSParser::DataType &r_type) const;
+		bool type_test_condition(BSParser::ExpressionNode *p_condition, BSParser::TypeTestNode *&r_type_test, BSParser::IdentifierNode *&r_identifier, bool &r_true_means_match) const;
+		void apply_failed_type_test_flow_narrowing(const BSParser::IdentifierNode *p_identifier, const BSParser::DataType &p_tested_type);
+		void reduce_condition_expression(BSParser::ExpressionNode *p_condition);
+		void apply_flow_narrowing_from_condition(BSParser::ExpressionNode *p_condition, bool p_condition_value);
+		const BSParser::DataType *lookup_flow_narrowed_type(const BSParser::Node *p_key) const;
+		HashMap<const BSParser::Node *, BSParser::DataType> &get_flow_narrowed_types() { return flow_narrowed_types; }
+		const HashMap<const BSParser::Node *, BSParser::DataType> &get_flow_narrowed_types() const { return flow_narrowed_types; }
 
 		void check_final_member_assignments(BSParser::ClassNode *p_class);
 		void check_final_static_assignments(BSParser::ClassNode *p_class);
@@ -242,6 +275,9 @@ private:
 	void reduce_array(BSParser::ArrayNode *p_array);
 	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);
 	void reduce_ternary(BSParser::TernaryOpNode *p_ternary);
+	/** Foundry reduce_type_test starter (@ c9d5e35): resolve `is T` test type for flow narrowing. */
+	void reduce_type_test(BSParser::TypeTestNode *p_type_test);
+	void analyze_if(BSParser::IfNode *p_if);
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);
