@@ -53,6 +53,7 @@ func _init() -> void:
 	_test_callable_bind_unbind(failures)
 	_test_callable_callv_rpc(failures)
 	_test_async_callable_coroutine_wrap(failures)
+	_test_await_reduction_and_missing_await(failures)
 	_test_surface_inheritance_member_depth(failures)
 	_test_resolve_class_member_depth(failures)
 	BaristaScriptParseCache.clear_script_cache()
@@ -2405,6 +2406,88 @@ func _test_async_callable_coroutine_wrap(failures: PackedStringArray) -> void:
 		"async-callable wrap suite remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for async-callable wrap")
+
+
+func _test_await_reduction_and_missing_await(failures: PackedStringArray) -> void:
+	# Foundry reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT @ c9d5e35 (#60).
+	# Makes AsyncCallable→coroutine wrap (#116) usable end-to-end via await unwrap.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
+	ProjectSettings.set_setting("debug/barista_script/warnings/missing_await", 1) # WARN
+	ProjectSettings.set_setting("debug/barista_script/warnings/redundant_await", 1) # WARN
+
+	# await AsyncCallable.call unwraps Coroutine[T] → T (assign succeeds).
+	var await_call_ok := _src_class("AwaitCallOk extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = await fetch.call()\n")
+	var await_call_ok_report: Dictionary = probe.analyze_source(await_call_ok, "res://tests/await_call_ok.barista")
+	_expect(failures, await_call_ok_report.get("valid", false) == true, "await AsyncCallable.call unwraps Coroutine[int] to int")
+
+	var await_callv_ok := _src_class("AwaitCallvOk extends Node\nasync func fetch(value: int) -> String:\n\treturn \"ok\"\nfunc test() -> void:\n\tvar result: String = await fetch.callv([1])\n")
+	var await_callv_ok_report: Dictionary = probe.analyze_source(await_callv_ok, "res://tests/await_callv_ok.barista")
+	_expect(failures, await_callv_ok_report.get("valid", false) == true, "await AsyncCallable.callv unwraps Coroutine[String] to String")
+
+	# Bound AsyncCallable.call still unwraps after await.
+	var await_bound_ok := _src_class("AwaitBoundOk extends Node\nasync func add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tvar result: int = await add.bind(1).call(2)\n")
+	var await_bound_ok_report: Dictionary = probe.analyze_source(await_bound_ok, "res://tests/await_bound_ok.barista")
+	_expect(failures, await_bound_ok_report.get("valid", false) == true, "await bound AsyncCallable.call unwraps to int")
+
+	# Root-position non-void coroutine discard emits MISSING_AWAIT (valid with warn-level default).
+	var missing_await := _src_class("MissingAwaitRoot extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.call()\n")
+	var missing_await_report: Dictionary = probe.validate_source(missing_await, "res://tests/missing_await_root.barista", true)
+	_expect(failures, missing_await_report.get("valid", false) == true, "MISSING_AWAIT at warn level stays valid")
+	var saw_missing_await := false
+	for warn in missing_await_report.get("warnings", []):
+		if "MISSING_AWAIT" in str(warn.get("string_code", "")) or ("discarded" in str(warn.get("message", "")).to_lower() and "await" in str(warn.get("message", "")).to_lower()):
+			saw_missing_await = true
+	_expect(failures, saw_missing_await, "root-position non-void coroutine discard emits MISSING_AWAIT")
+
+	# Coroutine[void] / void async fire-and-forget does not warn.
+	var void_fire := _src_class("VoidFireForget extends Node\nasync func fire() -> void:\n\tpass\nfunc test() -> void:\n\tfire.call()\n")
+	var void_fire_report: Dictionary = probe.validate_source(void_fire, "res://tests/void_fire_forget.barista", true)
+	_expect(failures, void_fire_report.get("valid", false) == true, "Coroutine[void] fire-and-forget stays valid")
+	var saw_void_missing := false
+	for warn in void_fire_report.get("warnings", []):
+		if "MISSING_AWAIT" in str(warn.get("string_code", "")):
+			saw_void_missing = true
+	_expect(failures, not saw_void_missing, "Coroutine[void] root discard does not emit MISSING_AWAIT")
+
+	# call_deferred does not trigger MISSING_AWAIT (non-coroutine NIL).
+	var deferred_no_missing := _src_class("DeferredNoMissing extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.call_deferred()\n")
+	var deferred_no_missing_report: Dictionary = probe.validate_source(deferred_no_missing, "res://tests/deferred_no_missing.barista", true)
+	_expect(failures, deferred_no_missing_report.get("valid", false) == true, "call_deferred statement stays valid")
+	var saw_deferred_missing := false
+	for warn in deferred_no_missing_report.get("warnings", []):
+		if "MISSING_AWAIT" in str(warn.get("string_code", "")):
+			saw_deferred_missing = true
+	_expect(failures, not saw_deferred_missing, "call_deferred does not emit MISSING_AWAIT")
+
+	# REDUNDANT_AWAIT on await of a plain synchronous int (Foundry gate).
+	var redundant_await := _src_class("RedundantAwaitInt extends Node\nfunc test() -> void:\n\tvar _x: int = await 1\n")
+	var redundant_await_report: Dictionary = probe.validate_source(redundant_await, "res://tests/redundant_await_int.barista", true)
+	_expect(failures, redundant_await_report.get("valid", false) == true, "REDUNDANT_AWAIT at warn level stays valid")
+	var saw_redundant := false
+	for warn in redundant_await_report.get("warnings", []):
+		if "REDUNDANT_AWAIT" in str(warn.get("string_code", "")) or ("unnecessary" in str(warn.get("message", "")).to_lower() and "await" in str(warn.get("message", "")).to_lower()):
+			saw_redundant = true
+	_expect(failures, saw_redundant, "await of plain int emits REDUNDANT_AWAIT")
+
+	# await of a non-void coroutine under await must not also emit MISSING_AWAIT.
+	var awaited_no_missing := _src_class("AwaitedNoMissing extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar _result: int = await fetch.call()\n")
+	var awaited_no_missing_report: Dictionary = probe.validate_source(awaited_no_missing, "res://tests/awaited_no_missing.barista", true)
+	_expect(failures, awaited_no_missing_report.get("valid", false) == true, "awaited AsyncCallable.call stays valid")
+	var saw_awaited_missing := false
+	for warn in awaited_no_missing_report.get("warnings", []):
+		if "MISSING_AWAIT" in str(warn.get("string_code", "")):
+			saw_awaited_missing = true
+	_expect(failures, not saw_awaited_missing, "awaited coroutine call does not emit MISSING_AWAIT")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(await_call_ok, "res://tests/await_reduce_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "await-reduction suite remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(await_call_ok, "res://tests/await_reduce_is_valid.barista"),
+		"await-reduction suite remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for await reduction")
 
 
 func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void:

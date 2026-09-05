@@ -908,6 +908,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_local_object_signal_callabl
 bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type) {
 	// Foundry get_function_signature Callable.bind/bindv/unbind/call/callv/call_deferred/rpc/rpc_id
 	// slice (@ c9d5e35), including AsyncCallable→coroutine wrapping on synchronous call/callv.
+	// Await unwrap + MISSING_AWAIT live in reduce_await / reduce_call (#60).
 	if (p_call == nullptr || p_base_type.kind != BSParser::DataType::BUILTIN || p_base_type.builtin_type != Variant::CALLABLE) {
 		return false;
 	}
