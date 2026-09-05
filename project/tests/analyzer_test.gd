@@ -1944,7 +1944,7 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 	var call_arg_ok_report: Dictionary = probe.analyze_source(call_arg_ok, "res://tests/ctx_call_arg_ok.barista")
 	_expect(failures, call_arg_ok_report.get("valid", false) == true, "call-argument .Case construction is valid")
 
-	var array_untyped := _src_class("CtxArrayUntyped extends Node\nenum Message:\n\tQuit\nfunc handle() -> void:\n\tvar msgs = [.Quit]\n")
+	var array_untyped := _src_class("CtxArrayUntyped extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle() -> void:\n\tvar msgs = [.Quit]\n")
 	var array_untyped_report: Dictionary = probe.analyze_source(array_untyped, "res://tests/ctx_array_untyped.barista")
 	_expect(failures, array_untyped_report.get("valid", true) == false, "untyped array element .Quit is invalid")
 	var saw_array_annotate := false
