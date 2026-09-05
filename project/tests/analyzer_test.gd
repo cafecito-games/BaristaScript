@@ -1972,15 +1972,17 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 
 func _test_tagged_union_match_exhaustiveness(failures: PackedStringArray) -> void:
 	# Foundry check_match_exhaustiveness tagged-union / plain-enum slice @ c9d5e35 (#60).
+	# Warning apply runs in finalize; a flow-finality return error can exit analyze before that,
+	# so NON_EXHAUSTIVE fixtures use void bodies (same pattern as Foundry's match-finality tests).
 	var probe := BaristaScriptAnalyzerProbe.new()
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
 	ProjectSettings.set_setting("debug/barista_script/warnings/non_exhaustive_match", 1) # WARN
 	ProjectSettings.set_setting("debug/barista_script/warnings/open_enum_match_without_default", 1) # WARN
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
 
-	var incomplete := _src_class("TaggedMatchIncomplete extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\treturn dx + dy\n")
+	var incomplete := _src_class("TaggedMatchIncomplete extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\tpass\n")
 	var incomplete_report: Dictionary = probe.validate_source(incomplete, "res://tests/tagged_match_incomplete.barista", true)
-	_expect(failures, incomplete_report.get("valid", true) == false, "non-exhaustive tagged-union match / missing return is invalid")
+	_expect(failures, incomplete_report.get("valid", false) == true, "non-exhaustive tagged-union void match stays valid (warning-only)")
 	var saw_non_exhaustive := false
 	var saw_quit_uncovered := false
 	for warn in incomplete_report.get("warnings", []):
@@ -1990,6 +1992,16 @@ func _test_tagged_union_match_exhaustiveness(failures: PackedStringArray) -> voi
 			saw_quit_uncovered = true
 	_expect(failures, saw_non_exhaustive, "tagged-union match emits NON_EXHAUSTIVE_MATCH")
 	_expect(failures, saw_quit_uncovered, "NON_EXHAUSTIVE_MATCH lists uncovered Quit case")
+
+	# covers_subject_domain false keeps value-returning matches fail-closed for flow finality.
+	var incomplete_ret := _src_class("TaggedMatchIncompleteRet extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\treturn dx + dy\n")
+	var incomplete_ret_report: Dictionary = probe.analyze_source(incomplete_ret, "res://tests/tagged_match_incomplete_ret.barista")
+	_expect(failures, incomplete_ret_report.get("valid", true) == false, "non-exhaustive tagged-union match / missing return is invalid")
+	var saw_flow := false
+	for message in incomplete_ret_report.get("errors", PackedStringArray()):
+		if "Not all code paths return a value" in message:
+			saw_flow = true
+	_expect(failures, saw_flow, "non-covering tagged-union match fails return-path flow finality")
 
 	var exhaustive := _src_class("TaggedMatchOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\treturn dx + dy\n\t\tMessage.Quit:\n\t\t\treturn 0\n")
 	var exhaustive_report: Dictionary = probe.analyze_source(exhaustive, "res://tests/tagged_match_ok.barista")

@@ -2784,7 +2784,11 @@ void BSAnalyzer::check_match_exhaustiveness(BSParser::MatchNode *p_match) {
 		}
 	}
 
-	p_match->uncovered_domain_values = String(", ").join(unhandled);
+	PackedStringArray uncovered_packed;
+	for (int u = 0; u < unhandled.size(); u++) {
+		uncovered_packed.push_back(unhandled[u]);
+	}
+	p_match->uncovered_domain_values = String(", ").join(uncovered_packed);
 #ifdef DEBUG_ENABLED
 	Vector<String> symbols;
 	symbols.push_back(type_name);
