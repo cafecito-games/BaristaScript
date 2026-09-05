@@ -5,8 +5,8 @@
 /*  resolve_*; inheritance/interface/body fold (#49); declaration commit  */
 /*  (#52/#58); call/match/flow (#61); final DA + null/`is` narrowing;     */
 /*  CallSiteValidationContext / connect-callable; unused surface; ENUM_CASE*/
-/*  / `.Case` / exhaustiveness; Callable.bind/unbind/call; trait          */
-/*  conformance witness (#60).                                            */
+/*  / `.Case` / exhaustiveness; Callable.bind/unbind/call; pending-warning*/
+/*  finalize on flow-finality early exit; trait conformance witness (#60).*/
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */

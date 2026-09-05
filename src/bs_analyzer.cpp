@@ -13,7 +13,8 @@
 /*  qualification (#60), expression-position `.Case` assign/return (#60), */
 /*  array/dict/cast/ternary consumer `.Case` finalization (#60),          */
 /*  tagged-union match exhaustiveness (#60), Callable.bind/unbind/call    */
-/*  signature transforms (#60).                                           */
+/*  signature transforms (#60), pending-warning finalize on flow-finality */
+/*  early exit (#60).                                                     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -3370,6 +3371,9 @@ Error BSAnalyzer::resolve_body() {
 	}
 	err = run_phase_flow_finality();
 	if (err != OK) {
+		// Foundry residual #60: body already queued pending warnings (e.g. NON_EXHAUSTIVE_MATCH);
+		// flush them even when flow-finality exits early (return-typed incomplete matches).
+		run_phase_finalize();
 		commit_or_remove_declaration(false);
 		return err;
 	}
@@ -3406,6 +3410,9 @@ Error BSAnalyzer::analyze() {
 	}
 	Error flow_err = run_phase_flow_finality();
 	if (flow_err != OK && !errors_are_only_m5_deferred()) {
+		// Foundry residual #60: flush pending warnings even when flow-finality exits early
+		// (latent with return-typed incomplete tagged-union matches).
+		run_phase_finalize();
 		commit_or_remove_declaration(false);
 		return flow_err;
 	}
