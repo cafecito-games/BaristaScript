@@ -8,7 +8,8 @@
 /*  / `.Case` / exhaustiveness; Callable.bind/unbind/call/callv/rpc;      */
 /*  pending-warning finalize on flow-finality early exit; trait           */
 /*  conformance witness; get_operation_type for binary/unary/compound;    */
-/*  resolve_class_member same-parser depth (#60).                         */
+/*  resolve_class_member same-parser depth; reduce_await + MISSING_AWAIT / */
+/*  REDUNDANT_AWAIT for AsyncCallable→coroutine wrap (#60).               */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -367,7 +368,18 @@ private:
 	void reduce_identifier(BSParser::IdentifierNode *p_identifier);
 	/** Foundry reduce_identifier lambda capture walk (@ c9d5e35) after a capturable local bind. */
 	void maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier);
-	void reduce_call(BSParser::CallNode *p_call);
+	/**
+	 * Foundry reduce_call @ c9d5e35: `p_is_await` / `p_is_root` gate MISSING_AWAIT on discarded
+	 * non-void coroutine results. Direct async-call wrap (bare `async_fn()` → Coroutine[T]) remains
+	 * residual under #60; AsyncCallable.call/callv wrapping is already landed.
+	 */
+	void reduce_call(BSParser::CallNode *p_call, bool p_is_await = false, bool p_is_root = false);
+	/**
+	 * Foundry reduce_await @ c9d5e35: single-level Coroutine[T]→T unwrap, signal→Variant,
+	 * constant non-coroutine passthrough, nullable coroutine nullability propagation, and
+	 * REDUNDANT_AWAIT on synchronous non-signal operands.
+	 */
+	void reduce_await(BSParser::AwaitNode *p_await);
 	/** Foundry reduce_lambda (@ c9d5e35): Callable type + body under `current_lambda`. */
 	void reduce_lambda(BSParser::LambdaNode *p_lambda);
 	void reduce_subscript(BSParser::SubscriptNode *p_subscript);

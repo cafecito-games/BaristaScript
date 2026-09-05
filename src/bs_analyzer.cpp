@@ -8,7 +8,8 @@
 /*  pending-warning finalize, trait conformance (#60), same-file extends  */
 /*  + CLASS inheritance member walk, cycle-safe walks (#110), lambda      */
 /*  capture + compound-assign restore, get_operation_type,                */
-/*  resolve_class_member same-parser depth (#60).                         */
+/*  resolve_class_member same-parser depth, reduce_await + MISSING_AWAIT / */
+/*  REDUNDANT_AWAIT (#60).                                                */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -30,6 +31,19 @@
 namespace barista_script {
 
 namespace {
+
+// Foundry coroutine_result_is_void @ c9d5e35 (~1664): True when a coroutine's phantom result is
+// hard `void` (BUILTIN NIL in container_element_types[0]). Root-position discards of
+// Coroutine[void] are intentional fire-and-forget launches — no result exists to lose — so
+// MISSING_AWAIT skips them. A missing element (lossy signature boundary) or any non-void result
+// still warns.
+bool coroutine_result_is_void(const BSParser::DataType &p_type) {
+	if (!p_type.is_coroutine || !p_type.has_container_element_type(0)) {
+		return false;
+	}
+	const BSParser::DataType result = p_type.get_container_element_type(0);
+	return result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL;
+}
 
 // Foundry fs_tagged_union_case_singleton @ c9d5e35: payload-less cases erase to a read-only
 // `[tag]` Array singleton. Full bs_tagged_union.h port remains available for later TUs.
@@ -1512,7 +1526,7 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	p_call->set_datatype(p_callee->get_datatype());
 }
 
-void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
+void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p_is_root) {
 	if (p_call == nullptr) {
 		return;
 	}
@@ -1525,6 +1539,24 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 	Finally clear_captured_flow_narrowing_after_call([&]() {
 		flow_finality.clear_captured_flow_narrowing();
 	});
+
+	// Foundry MISSING_AWAIT @ c9d5e35 (~9178): fire on every exit once the call's datatype is set.
+	// Honest Coroutine[T] typing makes a held or passed coroutine well-typed, so only a discarded
+	// coroutine *statement* (root position) still warns about a probably-forgotten "await".
+	// Coroutine[void] root discards are exempt: fire-and-forget launches lose no result value.
+#ifdef DEBUG_ENABLED
+	Finally warn_missing_await([&]() {
+		const BSParser::DataType call_type = p_call->get_datatype();
+		if (call_type.is_coroutine && !p_is_await && p_is_root && !coroutine_result_is_void(call_type)) {
+			Vector<String> symbols;
+			symbols.push_back(call_type.to_string());
+			push_warning(p_call, BSWarning::MISSING_AWAIT, symbols);
+		}
+	});
+#else
+	(void)p_is_await;
+	(void)p_is_root;
+#endif
 
 	// Attribute call: `receiver.method(...)` — signal.emit and member-method shapes.
 	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
@@ -1694,6 +1726,65 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_call->set_datatype(type);
+}
+
+void BSAnalyzer::reduce_await(BSParser::AwaitNode *p_await) {
+	// Foundry reduce_await @ c9d5e35 (~8014): unwrap Coroutine[T]→T (single-level), signal→Variant,
+	// constant non-coroutine passthrough, nullable coroutine nullability propagation.
+	if (p_await == nullptr) {
+		return;
+	}
+	if (p_await->to_await == nullptr) {
+		BSParser::DataType await_type;
+		await_type.kind = BSParser::DataType::VARIANT;
+		p_await->set_datatype(await_type);
+		return;
+	}
+
+	if (p_await->to_await->type == BSParser::Node::CALL) {
+		reduce_call(static_cast<BSParser::CallNode *>(p_await->to_await), true);
+	} else {
+		reduce_expression(p_await->to_await);
+	}
+
+	BSParser::DataType operand_type = p_await->to_await->get_datatype();
+	BSParser::DataType await_type = operand_type;
+	if (operand_type.is_coroutine) {
+		// Awaiting a Coroutine[T] yields T from container_element_types[0]; a coroutine without a
+		// recorded result type (e.g. a bare AsyncCallable.call()) unwraps to Variant. This is a
+		// single-level unwrap: await Coroutine[Coroutine[U]] yields Coroutine[U].
+		if (operand_type.has_container_element_type(0)) {
+			await_type = operand_type.get_container_element_type(0);
+			if (operand_type.is_nullable && !await_type.is_variant() &&
+					!(await_type.kind == BSParser::DataType::BUILTIN && await_type.builtin_type == Variant::NIL)) {
+				// Awaiting a nullable coroutine can observe a null handle (`await null` yields null at
+				// runtime), so the awaited result is nullable too.
+				await_type.is_nullable = true;
+			}
+		} else {
+			await_type = BSParser::DataType();
+			await_type.kind = BSParser::DataType::VARIANT;
+		}
+	} else if (operand_type.is_hard_type() && operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::SIGNAL) {
+		// We cannot infer the type of the result of waiting for a signal.
+		await_type.kind = BSParser::DataType::VARIANT;
+		await_type.type_source = BSParser::DataType::UNDETECTED;
+	} else if (p_await->to_await->is_constant) {
+		p_await->is_constant = p_await->to_await->is_constant;
+		p_await->reduced_value = p_await->to_await->reduced_value;
+		// Awaiting a plain value yields it unchanged; a non-coroutine operand never carries the flag.
+		await_type.is_coroutine = false;
+	}
+	// The coroutine branch keeps the unwrapped result's own flag, so awaiting Coroutine[Coroutine[U]]
+	// correctly stays a Coroutine[U]; only the non-coroutine branches above can leave a stale flag.
+	p_await->set_datatype(await_type);
+
+#ifdef DEBUG_ENABLED
+	BSParser::DataType to_await_type = p_await->to_await->get_datatype();
+	if (!to_await_type.is_coroutine && !to_await_type.is_variant() && to_await_type.builtin_type != Variant::SIGNAL) {
+		push_warning(p_await, BSWarning::REDUNDANT_AWAIT);
+	}
+#endif
 }
 
 void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
@@ -2763,7 +2854,6 @@ bool BSAnalyzer::resolve_contextual_enum_case(BSParser::ExpressionNode *p_expres
 }
 
 void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root) {
-	(void)p_is_root;
 	if (p_expression == nullptr || p_expression->reduced) {
 		return;
 	}
@@ -2780,8 +2870,11 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::IDENTIFIER:
 			reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_expression));
 			break;
+		case BSParser::Node::AWAIT:
+			reduce_await(static_cast<BSParser::AwaitNode *>(p_expression));
+			break;
 		case BSParser::Node::CALL:
-			reduce_call(static_cast<BSParser::CallNode *>(p_expression));
+			reduce_call(static_cast<BSParser::CallNode *>(p_expression), false, p_is_root);
 			break;
 		case BSParser::Node::LAMBDA:
 			reduce_lambda(static_cast<BSParser::LambdaNode *>(p_expression));
