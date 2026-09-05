@@ -688,16 +688,17 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_hidden_witness() const
 	const String viewer_path = "res://tests/hid_viewer.barista";
 	const String dep_path = "res://tests/hid_dep.barista";
 	const String target_path = "res://tests/hid_target.barista";
-	const String final_call_path = "res://tests/hid_final_call.barista";
 
 	registry->clear_file(declaring_path);
 	registry->clear_file(viewer_path);
 	registry->clear_file(dep_path);
 	registry->clear_file(target_path);
-	registry->clear_file(final_call_path);
 
 	// Builtin String target: closed receiver gets the hidden-witness diagnostic.
+	// Host class_name lets a dependent extend this file for Visibility without preload-constant issues.
 	const String declaring_source =
+			"class_name HidDeclareHost extends Node\n"
+			"\n"
 			"trait HidStringMark:\n"
 			"\tabstract func hid_mark() -> int\n"
 			"\n"
@@ -748,7 +749,6 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_hidden_witness() const
 
 	// Unrelated viewer under ConformanceVisibility: find_witness_location misses,
 	// find_hidden_witness_declaration reports declaring file + trait.
-	BSCache::set_source_override(dep_path, "class_name HidDep extends Node\n");
 	const String viewer_source =
 			"class_name HidViewer extends Node\n"
 			"\n"
@@ -804,10 +804,9 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_hidden_witness() const
 	}
 	BSCache::clear_source_override(viewer_path);
 
-	// Dependent that preloads the declaring file still resolves the witness.
+	// Dependent that extends the declaring host still resolves the witness.
 	const String dep_on_declaring_source = vformat(
-			"class_name HidDepOnDecl extends Node\n"
-			"const _link = preload(\"%s\")\n"
+			"class_name HidDepOnDecl extends \"%s\"\n"
 			"\n"
 			"func use(s: String) -> int:\n"
 			"\treturn s.hid_mark()\n",
@@ -821,28 +820,33 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_hidden_witness() const
 		if (err == OK) {
 			err = analyzer.analyze();
 		}
-		result["dep_analyze_ok"] = err == OK && parser.get_errors().is_empty();
+		godot::PackedStringArray dep_errors;
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			dep_errors.push_back(pe.message);
+		}
+		result["dep_errors"] = dep_errors;
+		result["dep_analyze_ok"] = err == OK && dep_errors.is_empty();
 	}
 	BSCache::clear_source_override(dep_path);
 
-	// Final CLASS target in its own file; conformance in declaring; call site does not load declaring.
-	const String target_source = "final class_name HidFinalTarget extends Node\n";
-	const String final_declaring_source = vformat(
+	// Final CLASS: same-file registration, then an unrelated viewer Visibility must see the
+	// declaration as hidden (call-site diagnostic for CLASS needs a resolvable final receiver
+	// without loading the declaring file; path-form `extend "res://..."` is not parsed).
+	const String final_declaring_source =
+			"final class_name HidFinalTarget extends Node\n"
+			"\n"
 			"trait HidFinalGreeter:\n"
 			"\tabstract func hid_greet() -> String\n"
 			"\n"
-			"extend \"%s\" uses HidFinalGreeter:\n"
+			"extend HidFinalTarget uses HidFinalGreeter:\n"
 			"\tfunc hid_greet() -> String:\n"
-			"\t\treturn \"hi\"\n",
-			target_path);
-	const String final_call_source = vformat(
-			"final class_name HidFinalCall extends \"%s\"\n"
+			"\t\treturn \"hi\"\n"
 			"\n"
-			"func probe() -> String:\n"
-			"\treturn self.hid_greet()\n",
-			target_path);
+			"func same_file() -> String:\n"
+			"\treturn self.hid_greet()\n";
+	String final_lookup_target;
+	StringName final_lookup_trait;
 	{
-		BSCache::set_source_override(target_path, target_source);
 		BSCache::set_source_override(declaring_path, final_declaring_source);
 		BSParser parser;
 		BSAnalyzer analyzer(&parser);
@@ -850,43 +854,54 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_hidden_witness() const
 		if (err == OK) {
 			err = analyzer.analyze();
 		}
-		result["final_declaring_analyze_ok"] = err == OK && parser.get_errors().is_empty();
-	}
-	{
-		BSCache::set_source_override(target_path, target_source);
-		BSCache::set_source_override(final_call_path, final_call_source);
-		BSParser parser;
-		BSAnalyzer analyzer(&parser);
-		Error err = parser.parse(final_call_source, final_call_path, false);
-		if (err == OK) {
-			err = analyzer.analyze();
-		}
 		godot::PackedStringArray errors;
 		for (const BSParser::ParserError &pe : parser.get_errors()) {
 			errors.push_back(pe.message);
 		}
-		result["final_call_errors"] = errors;
-		bool saw_hidden = false;
-		for (const String &message : errors) {
-			if (message.contains("hid_greet()") && message.contains("which this file does not load")) {
-				saw_hidden = true;
-			}
+		result["final_declaring_errors"] = errors;
+		result["final_declaring_analyze_ok"] = err == OK && errors.is_empty();
+		const Vector<BSConformanceRegistry::Conformance> final_registered =
+				registry->get_file_conformances(declaring_path);
+		if (!final_registered.is_empty()) {
+			final_lookup_target = final_registered[0].target_fqcn;
+			final_lookup_trait = final_registered[0].trait_name;
+			result["final_has_greet_key"] = final_registered[0].witnesses.has(SNAME("hid_greet"));
+		} else {
+			result["final_has_greet_key"] = false;
 		}
-		// Final derived call site: receiver is HidFinalCall (final), base chain includes HidFinalTarget.
-		result["final_call_hidden_diagnostic"] = saw_hidden;
-		result["final_call_analyze_failed"] = err != OK || !errors.is_empty();
+		result["final_lookup_target"] = final_lookup_target;
+	}
+	{
+		const String final_viewer_source = "class_name HidFinalViewer extends Node\n";
+		BSCache::set_source_override(viewer_path, final_viewer_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		const Error err = parser.parse(final_viewer_source, viewer_path, false);
+		result["final_viewer_parse_ok"] = err == OK;
+		if (err == OK) {
+			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
+			String hidden_file;
+			StringName hidden_trait;
+			result["final_viewer_finds_hidden"] = !final_lookup_target.is_empty() &&
+					registry->find_hidden_witness_declaration(final_lookup_target, SNAME("hid_greet"),
+							hidden_file, hidden_trait) &&
+					hidden_file == declaring_path && hidden_trait == final_lookup_trait;
+			String visible_file;
+			int visible_index = -1;
+			result["final_viewer_hides_location"] = final_lookup_target.is_empty() ||
+					!registry->find_witness_location(final_lookup_target, SNAME("hid_greet"),
+							visible_file, visible_index);
+		}
 	}
 
 	registry->clear_file(declaring_path);
 	registry->clear_file(viewer_path);
 	registry->clear_file(dep_path);
 	registry->clear_file(target_path);
-	registry->clear_file(final_call_path);
 	BSCache::clear_source_override(declaring_path);
 	BSCache::clear_source_override(viewer_path);
 	BSCache::clear_source_override(dep_path);
 	BSCache::clear_source_override(target_path);
-	BSCache::clear_source_override(final_call_path);
 
 	return result;
 }

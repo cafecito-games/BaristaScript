@@ -3160,14 +3160,18 @@ func _test_conformance_hidden_witness(failures: PackedStringArray) -> void:
 		"ConformanceVisibility hides find_witness_location for unrelated viewer")
 
 	_expect(failures, report.get("dep_analyze_ok", false) == true,
-		"preload dependency of declaring file still resolves witness call")
+		"extends dependency of declaring file still resolves witness call")
 
 	_expect(failures, report.get("final_declaring_analyze_ok", false) == true,
-		"final CLASS path-extend declaring file analyzes")
-	_expect(failures, report.get("final_call_analyze_failed", false) == true,
-		"final CLASS call site without declaring dependency must not silently succeed")
-	_expect(failures, report.get("final_call_hidden_diagnostic", false) == true,
-		"final CLASS call site surfaces hidden-witness diagnostic")
+		"final CLASS same-file extend declaring file analyzes")
+	_expect(failures, report.get("final_has_greet_key", false) == true,
+		"final CLASS Conformance stores hid_greet witness method-name key")
+	_expect(failures, report.get("final_viewer_parse_ok", false) == true,
+		"final CLASS unrelated viewer parse ok")
+	_expect(failures, report.get("final_viewer_finds_hidden", false) == true,
+		"final CLASS ConformanceVisibility find_hidden_witness_declaration reports declaring file")
+	_expect(failures, report.get("final_viewer_hides_location", false) == true,
+		"final CLASS ConformanceVisibility hides find_witness_location")
 
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
