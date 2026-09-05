@@ -102,8 +102,9 @@ public:
 	 * definite assignment / illegal writes, trait-member flattening into
 	 * implementers, plus if/while/assert null-check and `is` type-test flow
 	 * narrowing for locals/parameters (including ENUM_CASE arms once
-	 * `case_datatype` is published). Lambda capture clearing and
-	 * compound-assignment narrowed reads remain follow-up under #60.
+	 * `case_datatype` is published). Lambda capture mark/clear and
+	 * compound-assignment narrowed-read restore are wired in `bs_analyzer.cpp`
+	 * (@ c9d5e35); remaining flow TU depth stays under #60.
 	 */
 	class FlowFinalityContext {
 		BSAnalyzer *analyzer = nullptr;
@@ -209,6 +210,19 @@ public:
 		bool has_method_info = false;
 	};
 
+	/** Foundry `FSAnalyzer::Finally` (@ c9d5e35): run a cleanup lambda on scope exit. */
+	template <typename Fn>
+	class Finally {
+		Fn fn;
+
+	public:
+		explicit Finally(Fn p_fn) :
+				fn(p_fn) {}
+		~Finally() {
+			fn();
+		}
+	};
+
 	explicit BSAnalyzer(BSParser *p_parser);
 	~BSAnalyzer() = default;
 
@@ -259,6 +273,8 @@ private:
 	bool update_declaration_index = false;
 	BSParser::ClassNode *current_class = nullptr;
 	BSParser::FunctionNode *current_function = nullptr;
+	/** Foundry `current_lambda` (@ c9d5e35): set while reducing a lambda body for capture marking. */
+	BSParser::LambdaNode *current_lambda = nullptr;
 	CallSiteValidationContext call_site_validation;
 	FlowFinalityContext flow_finality;
 
@@ -289,7 +305,8 @@ private:
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
 	void analyze_class_interface(BSParser::ClassNode *p_class);
 	void analyze_class_body(BSParser::ClassNode *p_class);
-	void analyze_function_body(BSParser::FunctionNode *p_function);
+	/** `p_is_lambda`: Foundry resolve_function_body — skip clearing captured-source tracking. */
+	void analyze_function_body(BSParser::FunctionNode *p_function, bool p_is_lambda = false);
 	void analyze_suite(BSParser::SuiteNode *p_suite);
 	void analyze_statement(BSParser::Node *p_node);
 	void warn_unused_locals(BSParser::SuiteNode *p_suite);
@@ -319,7 +336,11 @@ private:
 	void reduce_unary_op(BSParser::UnaryOpNode *p_unary_op);
 	void reduce_binary_op(BSParser::BinaryOpNode *p_binary_op);
 	void reduce_identifier(BSParser::IdentifierNode *p_identifier);
+	/** Foundry reduce_identifier lambda capture walk (@ c9d5e35) after a capturable local bind. */
+	void maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier);
 	void reduce_call(BSParser::CallNode *p_call);
+	/** Foundry reduce_lambda (@ c9d5e35): Callable type + body under `current_lambda`. */
+	void reduce_lambda(BSParser::LambdaNode *p_lambda);
 	void reduce_subscript(BSParser::SubscriptNode *p_subscript);
 	void reduce_array(BSParser::ArrayNode *p_array);
 	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);

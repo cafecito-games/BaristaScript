@@ -42,6 +42,7 @@ func _init() -> void:
 	_test_unused_class_members_and_signals(failures)
 	_test_trait_requirements_and_conformance_witness(failures)
 	_test_flow_narrowing(failures)
+	_test_lambda_capture_and_compound_narrowing(failures)
 	_test_builtin_annotation_resolve(failures)
 	_test_union_union_assignability(failures)
 	_test_union_store_carrier_select(failures)
@@ -1542,6 +1543,44 @@ func _test_flow_narrowing(failures: PackedStringArray) -> void:
 	var match_shadowed_classdb := _src_class("MatchShadowedClassDBName extends Node\nfunc take(v: int | String) -> void:\n\tconst Node := 1\n\tmatch v:\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n")
 	var match_shadowed_classdb_report: Dictionary = probe.analyze_source(match_shadowed_classdb, "res://tests/match_shadowed_classdb_name.barista")
 	_expect(failures, match_shadowed_classdb_report.get("valid", true) == false, "match local Node shadow stays value pattern (no ClassDB type overlay)")
+
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_lambda_capture_and_compound_narrowing(failures: PackedStringArray) -> void:
+	# Foundry @ c9d5e35: lambda capture marks flow-narrowing sources; any later call clears them.
+	# Compound assignment restores the declared type on the assignee and clears narrowing.
+	# Lambda bodies analyze under a nested FlowNarrowingScope that clears overlays, so captures
+	# must not require the narrowed width inside the lambda (same as Foundry).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", true)
+
+	var capture_clears := _src_class("LambdaCaptureClearsNarrowing extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar f := func():\n\t\t\tvar _used = n\n\t\tf.call()\n\t\tvar x: Node = n\n")
+	var capture_clears_report: Dictionary = probe.analyze_source(capture_clears, "res://tests/lambda_capture_clears_narrowing.barista")
+	_expect(failures, capture_clears_report.get("valid", true) == false, "captured null-narrowing cleared after call makes Node? → Node invalid")
+
+	var capture_no_call := _src_class("LambdaCaptureNoCallKeepsNarrowing extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar f := func():\n\t\t\tvar _used = n\n\t\tvar x: Node = n\n")
+	var capture_no_call_report: Dictionary = probe.analyze_source(capture_no_call, "res://tests/lambda_capture_no_call_keeps_narrowing.barista")
+	_expect(failures, capture_no_call_report.get("valid", false) == true, "captured narrowing stays until a call clears it")
+
+	var member_no_capture := _src_class("LambdaMemberSkipsCapture extends Node\nvar member_n: Node?\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar f := func():\n\t\t\tvar _m = member_n\n\t\tf.call()\n\t\tvar x: Node = n\n")
+	var member_no_capture_report: Dictionary = probe.analyze_source(member_no_capture, "res://tests/lambda_member_skips_capture.barista")
+	_expect(failures, member_no_capture_report.get("valid", false) == true, "member read in lambda does not capture / clear local narrowing")
+
+	var is_capture_clears := _src_class("LambdaIsCaptureClearsNarrowing extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tvar f := func():\n\t\t\tvar _used = v\n\t\tf.call()\n\t\tvar s: String = v\n")
+	var is_capture_clears_report: Dictionary = probe.analyze_source(is_capture_clears, "res://tests/lambda_is_capture_clears_narrowing.barista")
+	_expect(failures, is_capture_clears_report.get("valid", true) == false, "captured `is` narrowing cleared after call")
+
+	# Compound assign: restore declared type on assignee for the write, clear narrowing after.
+	var compound_clears := _src_class("CompoundAssignClearsNarrowing extends Node\nfunc take(v: int | String) -> void:\n\tif v is int:\n\t\tv += 1\n\t\tvar i: int = v\n")
+	var compound_clears_report: Dictionary = probe.analyze_source(compound_clears, "res://tests/compound_assign_clears_narrowing.barista")
+	_expect(failures, compound_clears_report.get("valid", true) == false, "compound assignment clears prior `is` narrowing")
+
+	# Narrowed compound read: inside the `is int` arm, `v += 1` is accepted (narrowed left operand).
+	var compound_narrow_ok := _src_class("CompoundAssignNarrowedReadOk extends Node\nfunc take(v: int | String) -> void:\n\tif v is int:\n\t\tv += 1\n")
+	var compound_narrow_ok_report: Dictionary = probe.analyze_source(compound_narrow_ok, "res://tests/compound_assign_narrowed_read_ok.barista")
+	_expect(failures, compound_narrow_ok_report.get("valid", false) == true, "compound += inside `is int` arm is valid")
 
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
