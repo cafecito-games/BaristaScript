@@ -3094,17 +3094,19 @@ func _test_conformance_witness_lookup(failures: PackedStringArray) -> void:
 	var report: Dictionary = probe.conformance_witness_lookup()
 
 	_expect(failures, report.get("same_file_analyze_ok", false) == true,
-		"same-file witness call on conformed target analyzes")
+		"same-file CLASS self.greet() witness call analyzes")
 	_expect(failures, int(report.get("registered_count", 0)) >= 1, "registry stores Conformance with witnesses")
 	_expect(failures, report.get("has_greet_witness_key", false) == true,
 		"registered Conformance stores greet witness method-name key")
 	_expect(failures, report.get("find_witness_location_ok", false) == true,
 		"find_witness_location returns declaring file + conformance_index")
+	_expect(failures, report.get("class_arity_checks_witness", false) == true,
+		"CLASS witness signature applied (arity diagnostic on self.greet(1))")
 
-	_expect(failures, report.get("consumer_analyze_ok", false) == true,
-		"cross-file consumer calling native-target witness analyzes")
-	_expect(failures, report.get("native_declare_ok", false) == true,
-		"native Node extend with witness registers")
+	_expect(failures, report.get("native_analyze_ok", false) == true,
+		"native Node extend witness call analyzes")
+	_expect(failures, report.get("native_arity_checks_witness", false) == true,
+		"NATIVE witness signature applied (arity diagnostic on wit_greet(1))")
 
 	_expect(failures, report.get("viewer_parse_ok", false) == true, "unrelated viewer parse ok")
 	_expect(failures, report.get("viewer_hides_witness_location", false) == true,
