@@ -1525,7 +1525,8 @@ func _test_flow_narrowing(failures: PackedStringArray) -> void:
 	_expect(failures, match_native_type_report.get("valid", false) == true, "match bare Node type pattern narrows Object? → Node")
 
 	# Local/const shadowing a ClassDB name must stay a value pattern (no type overlay).
-	var match_shadowed_classdb := "class_name MatchShadowedClassDBName extends Node\nfunc take(v: Object?) -> void:\n\tconst Node := 1\n\tmatch v:\n\t\tnull:\n\t\t\tpass\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n"
+	# Use int|String so a mistaken ClassDB promotion would wrongly allow `var x: Node = v`.
+	var match_shadowed_classdb := "class_name MatchShadowedClassDBName extends Node\nfunc take(v: int | String) -> void:\n\tconst Node := 1\n\tmatch v:\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n"
 	var match_shadowed_classdb_report: Dictionary = probe.analyze_source(match_shadowed_classdb, "res://tests/match_shadowed_classdb_name.barista")
 	_expect(failures, match_shadowed_classdb_report.get("valid", true) == false, "match local Node shadow stays value pattern (no ClassDB type overlay)")
 
