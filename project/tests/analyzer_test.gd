@@ -49,6 +49,7 @@ func _init() -> void:
 	_test_contextual_case_shorthand(failures)
 	_test_tagged_union_match_exhaustiveness(failures)
 	_test_callable_bind_unbind(failures)
+	_test_surface_inheritance_member_depth(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -2119,3 +2120,65 @@ func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 		"callable bind remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for callable bind")
+
+
+func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void:
+	# Foundry same-file extends + CLASS inheritance member walk @ c9d5e35 (#60 surface).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var same_file_ok := _src_class("InheritSameFileHost extends Node\nclass Parent extends Node:\n\tvar parent_value: int = 1\n\tfunc parent_add(a: int, b: int) -> int:\n\t\treturn a + b\nclass Child extends Parent:\n\tfunc use() -> int:\n\t\treturn parent_add(1, 2) + parent_value + self.parent_value\n")
+	var same_file_ok_report: Dictionary = probe.analyze_source(same_file_ok, "res://tests/inherit_same_file_ok.barista")
+	_expect(failures, same_file_ok_report.get("valid", false) == true, "same-file Child extends Parent inherits members")
+
+	var same_file_arity := _src_class("InheritSameFileArity extends Node\nclass Parent extends Node:\n\tfunc parent_add(a: int, b: int) -> int:\n\t\treturn a + b\nclass Child extends Parent:\n\tfunc use() -> void:\n\t\tparent_add(1)\n")
+	var same_file_arity_report: Dictionary = probe.analyze_source(same_file_arity, "res://tests/inherit_same_file_arity.barista")
+	_expect(failures, same_file_arity_report.get("valid", true) == false, "inherited same-file method arity is validated")
+	var saw_same_file_arity := false
+	for message in same_file_arity_report.get("errors", PackedStringArray()):
+		if "Too few arguments" in message and "parent_add" in message:
+			saw_same_file_arity = true
+	_expect(failures, saw_same_file_arity, "same-file inherited call too-few-arguments diagnostic")
+
+	var same_file_type := _src_class("InheritSameFileType extends Node\nclass Parent extends Node:\n\tfunc parent_add(a: int, b: int) -> int:\n\t\treturn a + b\nclass Child extends Parent:\n\tfunc use() -> void:\n\t\tparent_add(1, 1.5)\n")
+	var same_file_type_report: Dictionary = probe.analyze_source(same_file_type, "res://tests/inherit_same_file_type.barista")
+	_expect(failures, same_file_type_report.get("valid", true) == false, "inherited same-file method arg types are validated")
+
+	var nested_extends := _src_class("InheritNestedHost extends Node\nclass Outer extends Node:\n\tclass Inner extends Node:\n\t\tfunc inner_add(a: int, b: int) -> int:\n\t\t\treturn a + b\nclass Child extends Outer.Inner:\n\tfunc use() -> int:\n\t\treturn inner_add(1, 2)\n")
+	var nested_extends_report: Dictionary = probe.analyze_source(nested_extends, "res://tests/inherit_nested_extends.barista")
+	_expect(failures, nested_extends_report.get("valid", false) == true, "extends Outer.Inner nested CLASS chain resolves")
+
+	var final_base := _src_class("InheritFinalHost extends Node\nfinal class Sealed extends Node:\n\tpass\nclass Child extends Sealed:\n\tpass\n")
+	var final_base_report: Dictionary = probe.analyze_source(final_base, "res://tests/inherit_final_base.barista")
+	_expect(failures, final_base_report.get("valid", true) == false, "extending a final class is invalid")
+	var saw_final := false
+	for message in final_base_report.get("errors", PackedStringArray()):
+		if "Cannot extend final class" in message:
+			saw_final = true
+	_expect(failures, saw_final, "final class extends diagnostic")
+
+	# Cross-file via extends path: base CLASS members are visible on the derived head.
+	var base_source := _src_class("InheritCrossBase extends Node\nvar base_value: int = 7\nfunc base_add(a: int, b: int) -> int:\n\treturn a + b\n")
+	BaristaScriptParseCache.set_source_override("res://tests/inherit_cross_base.barista", base_source)
+	var derived_ok := _src_class("InheritCrossDerived extends \"res://tests/inherit_cross_base.barista\"\nfunc use() -> int:\n\treturn base_add(1, 2) + base_value + self.base_value\n")
+	var derived_ok_report: Dictionary = probe.analyze_source(derived_ok, "res://tests/inherit_cross_derived_ok.barista")
+	_expect(failures, derived_ok_report.get("valid", false) == true, "cross-file extends path inherits base members")
+
+	var derived_arity := _src_class("InheritCrossDerivedArity extends \"res://tests/inherit_cross_base.barista\"\nfunc use() -> void:\n\tbase_add(1)\n")
+	var derived_arity_report: Dictionary = probe.analyze_source(derived_arity, "res://tests/inherit_cross_derived_arity.barista")
+	_expect(failures, derived_arity_report.get("valid", true) == false, "cross-file inherited method arity is validated")
+	var saw_cross_arity := false
+	for message in derived_arity_report.get("errors", PackedStringArray()):
+		if "Too few arguments" in message and "base_add" in message:
+			saw_cross_arity = true
+	_expect(failures, saw_cross_arity, "cross-file inherited call too-few-arguments diagnostic")
+
+	BaristaScriptParseCache.clear_source_override("res://tests/inherit_cross_base.barista")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(same_file_ok, "res://tests/inherit_same_file_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "same-file inheritance remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(same_file_ok, "res://tests/inherit_same_file_is_valid.barista"),
+		"same-file inheritance remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for inheritance member depth")

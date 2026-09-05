@@ -2,11 +2,12 @@
 /*  bs_analyzer_surface.cpp                                               */
 /*                                                                        */
 /*  #60 class-body surface diagnostics. Ports unused-private /            */
-/*  unused-signal post-pass, built-in resolve_annotation, and             */
-/*  resolve_enum_values from Foundry @ c9d5e35 (fs_analyzer.cpp /         */
-/*  fs_analyzer_surface.cpp). Remaining surface inheritance/cross-file    */
-/*  member depth remains follow-up under #60. FS* -> BS*; engine contact  */
-/*  through bs_platform.h.                                                */
+/*  unused-signal post-pass, built-in resolve_annotation,                 */
+/*  resolve_enum_values, same-file scope inheritance helpers, and CLASS   */
+/*  inheritance member bind (@ c9d5e35 fs_analyzer_surface.cpp). Remaining */
+/*  surface cross-file SCRIPT richness / resolve_class_member depth       */
+/*  remains follow-up under #60. FS* -> BS*; engine contact through       */
+/*  bs_platform.h.                                                        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -300,6 +301,106 @@ void BSAnalyzer::mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_i
 	(void)p_call;
 	(void)p_is_self;
 #endif
+}
+
+void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source) {
+	// Foundry get_class_node_current_scope_classes @ c9d5e35: base CLASS chain before outer.
+	ERR_FAIL_NULL(p_node);
+	ERR_FAIL_NULL(p_list);
+	if (p_list->find(p_node) != nullptr) {
+		return;
+	}
+	p_list->push_back(p_node);
+
+	auto resolve_for_scope_traverse = [&](BSParser::ClassNode *p_scope_class) {
+		if (p_scope_class == nullptr || p_scope_class->base_type.is_resolving()) {
+			return;
+		}
+		if (!p_scope_class->base_type.is_set()) {
+			resolve_class_inheritance(p_scope_class);
+		}
+		(void)p_source;
+	};
+
+	if (p_node->base_type.class_type != nullptr) {
+		resolve_for_scope_traverse(p_node->base_type.class_type);
+		get_class_node_current_scope_classes(p_node->base_type.class_type, p_list, p_source);
+	}
+	if (p_node->outer != nullptr) {
+		resolve_for_scope_traverse(p_node->outer);
+		get_class_node_current_scope_classes(p_node->outer, p_list, p_source);
+	}
+}
+
+bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited) {
+	if (p_identifier == nullptr || p_class == nullptr || !p_class->has_member(p_identifier->name)) {
+		return false;
+	}
+	const BSParser::ClassNode::Member member = p_class->get_member(p_identifier->name);
+	if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
+		if (p_mark_inherited && !member.variable->is_static) {
+			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+		} else {
+			p_identifier->source = member.variable->is_static ? BSParser::IdentifierNode::STATIC_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE;
+		}
+		p_identifier->variable_source = member.variable;
+		member.variable->usages++;
+		p_identifier->set_datatype(member.variable->get_datatype());
+		return true;
+	}
+	if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+		p_identifier->constant_source = member.constant;
+		member.constant->usages++;
+		p_identifier->set_datatype(member.constant->get_datatype());
+		return true;
+	}
+	if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr) {
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
+		p_identifier->signal_source = member.signal;
+		member.signal->usages++;
+		const BSParser::DataType owner_type = p_class->get_datatype().is_set() ? p_class->get_datatype() : (current_class != nullptr ? current_class->get_datatype() : BSParser::DataType());
+		p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_node(member.signal, owner_type, p_class));
+		return true;
+	}
+	if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
+		p_identifier->function_source = member.function;
+		p_identifier->function_source_is_static = member.function->is_static;
+		p_identifier->set_datatype(call_site_validation.callable_type_from_function(member.function));
+		return true;
+	}
+	if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
+		const BSParser::DataType enum_meta = lookup_local_enum_meta_type(p_identifier->name, p_identifier);
+		if (enum_meta.is_set()) {
+			p_identifier->set_datatype(enum_meta);
+			p_identifier->is_constant = true;
+			return true;
+		}
+		// Enum declared on an ancestor: publish via resolve_enum_values on that class.
+		const String script_path = parser != nullptr ? parser->script_path : String();
+		BSParser::DataType ancestor_enum = resolve_enum_values(member.m_enum, make_class_enum_type(p_identifier->name, p_class, script_path, true), p_class);
+		if (ancestor_enum.is_set()) {
+			p_identifier->set_datatype(ancestor_enum);
+			p_identifier->is_constant = true;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class) {
+	if (p_identifier == nullptr || p_class == nullptr) {
+		return false;
+	}
+	bool first = true;
+	for (BSParser::ClassNode *lookup = p_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
+		if (try_bind_identifier_member(p_identifier, lookup, !first)) {
+			return true;
+		}
+		first = false;
+	}
+	return false;
 }
 
 } // namespace barista_script
