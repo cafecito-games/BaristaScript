@@ -391,10 +391,11 @@ bool BSAnalyzer::validate_trait_method_signature(BSParser::ClassNode *p_trait,
 			valid = valid && required_return_type.is_variant();
 		} else if (implementation_return_type.kind == BSParser::DataType::BUILTIN &&
 				implementation_return_type.builtin_type == Variant::NIL) {
+			// Foundry pin c9d5e35: void/`NIL` impl rejects any hard non-void required return (no
+			// extra `!is_variant()` gate — Variant is already soft).
 			if (required_return_type.is_hard_type() &&
 					!(required_return_type.kind == BSParser::DataType::BUILTIN &&
-							required_return_type.builtin_type == Variant::NIL) &&
-					!required_return_type.is_variant()) {
+							required_return_type.builtin_type == Variant::NIL)) {
 				valid = false;
 			}
 		} else if (required_return_type.is_set() && implementation_return_type.is_set()) {

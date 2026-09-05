@@ -74,20 +74,59 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 	}
 
 	if (p_target.kind == BSParser::DataType::BUILTIN && p_source.kind == BSParser::DataType::BUILTIN) {
+		Result result(false, false, false);
 		if (p_target.builtin_type == p_source.builtin_type) {
-			return Result(true, false, false);
+			result.compatible = true;
+		} else {
+			const BSNumericConversion::Conversion conversion = BSNumericConversion::classify(p_target, p_source, p_options.constant_source_value);
+			if (conversion == BSNumericConversion::Conversion::IDENTITY) {
+				result.compatible = true;
+			} else if (p_options.allow_implicit_conversion && conversion == BSNumericConversion::Conversion::IMPLICIT_WIDEN) {
+				result.compatible = true;
+				result.uses_implicit_conversion = true;
+			} else if (conversion == BSNumericConversion::Conversion::CONSTANT_CHECKED) {
+				result.compatible = true;
+				result.uses_implicit_conversion = true;
+			}
 		}
-		const BSNumericConversion::Conversion conversion = BSNumericConversion::classify(p_target, p_source, p_options.constant_source_value);
-		if (conversion == BSNumericConversion::Conversion::IDENTITY) {
-			return Result(true, false, false);
+
+		// Foundry FSTypeCompatibility::check @ c9d5e35: after carrier agreement, typed Array /
+		// Dictionary containers still compare element types (invariant; no implicit conversion).
+		if (result.compatible && p_target.builtin_type == Variant::ARRAY && p_source.builtin_type == Variant::ARRAY) {
+			if (p_target.has_container_element_type(0) && p_source.has_container_element_type(0)) {
+				Options element_options = p_options;
+				element_options.allow_implicit_conversion = false;
+				element_options.constant_source_value = nullptr;
+				const Result element_result = check(p_target.get_container_element_type(0), p_source.get_container_element_type(0), element_options);
+				result.compatible = element_result.compatible;
+				result.requires_runtime_check = result.requires_runtime_check || element_result.requires_runtime_check;
+				result.uses_implicit_conversion = result.uses_implicit_conversion || element_result.uses_implicit_conversion;
+			} else if (p_target.has_container_element_type(0)) {
+				// Typed container from untyped: carriers agree; contents need a runtime store check.
+				result.requires_runtime_check = true;
+			}
 		}
-		if (p_options.allow_implicit_conversion && conversion == BSNumericConversion::Conversion::IMPLICIT_WIDEN) {
-			return Result(true, false, true);
+		if (result.compatible && p_target.builtin_type == Variant::DICTIONARY && p_source.builtin_type == Variant::DICTIONARY) {
+			Options element_options = p_options;
+			element_options.allow_implicit_conversion = false;
+			element_options.constant_source_value = nullptr;
+			if (p_target.has_container_element_type(0) && p_source.has_container_element_type(0)) {
+				const Result key_result = check(p_target.get_container_element_type(0), p_source.get_container_element_type(0), element_options);
+				result.compatible = key_result.compatible;
+				result.requires_runtime_check = result.requires_runtime_check || key_result.requires_runtime_check;
+				result.uses_implicit_conversion = result.uses_implicit_conversion || key_result.uses_implicit_conversion;
+			}
+			if (result.compatible && p_target.has_container_element_type(1) && p_source.has_container_element_type(1)) {
+				const Result value_result = check(p_target.get_container_element_type(1), p_source.get_container_element_type(1), element_options);
+				result.compatible = value_result.compatible;
+				result.requires_runtime_check = result.requires_runtime_check || value_result.requires_runtime_check;
+				result.uses_implicit_conversion = result.uses_implicit_conversion || value_result.uses_implicit_conversion;
+			}
+			if (result.compatible && p_target.has_container_element_types() && !p_source.has_container_element_types()) {
+				result.requires_runtime_check = true;
+			}
 		}
-		if (conversion == BSNumericConversion::Conversion::CONSTANT_CHECKED) {
-			return Result(true, false, true);
-		}
-		return Result(false, false, false);
+		return result;
 	}
 
 	if (p_target.kind == BSParser::DataType::NATIVE || p_target.kind == BSParser::DataType::CLASS || p_target.kind == BSParser::DataType::SCRIPT) {
