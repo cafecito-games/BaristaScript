@@ -13,7 +13,8 @@
 /*  (real BSConformanceRegistry::ScopedVisibility) for external SCRIPT    */
 /*  member + class-phase INTERFACE/BODY failure replay;                   */
 /*  ConformanceVisibility can_see BFS; reduce_await + MISSING_AWAIT /     */
-/*  REDUNDANT_AWAIT for AsyncCallable→coroutine wrap.                     */
+/*  REDUNDANT_AWAIT for AsyncCallable→coroutine wrap; Coroutine[T]        */
+/*  annotation decode via datatype_from_type_node + make_coroutine_type.  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -681,5 +682,12 @@ private:
 
 /** Shared helper: parse + analyze; true when no errors remain. */
 bool bs_source_analyzes(const String &p_source, const String &p_path);
+
+/**
+ * Foundry make_coroutine_type @ c9d5e35 (~1646): wrap result T as Coroutine[T]. Principal identity
+ * is the native BSFunctionState skin; is_coroutine discriminates await / missing-await; the phantom
+ * result type lives in container_element_types[0]. Shared by annotation decode and AsyncCallable wrap.
+ */
+BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type);
 
 } // namespace barista_script

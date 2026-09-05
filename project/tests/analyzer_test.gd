@@ -54,6 +54,7 @@ func _init() -> void:
 	_test_callable_callv_rpc(failures)
 	_test_async_callable_coroutine_wrap(failures)
 	_test_await_reduction_and_missing_await(failures)
+	_test_coroutine_annotation_decode(failures)
 	_test_surface_inheritance_member_depth(failures)
 	_test_resolve_class_member_depth(failures)
 	_test_foreign_member_failure_replay(failures)
@@ -2491,6 +2492,95 @@ func _test_await_reduction_and_missing_await(failures: PackedStringArray) -> voi
 		"await-reduction suite remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for await reduction")
+
+
+func _test_coroutine_annotation_decode(failures: PackedStringArray) -> void:
+	# Foundry datatype_from_type_node Coroutine[T] annotation decode @ c9d5e35 (#60).
+	# Bridges parser is_coroutine TypeNode → NATIVE BSFunctionState skin via make_coroutine_type.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Annotated Coroutine[T] holds an AsyncCallable.call result (honest awaitable skin).
+	var annotate_hold := _src_class("CoroutineAnnotateHold extends Node\nasync func fetch() -> String:\n\treturn \"ok\"\nfunc test() -> void:\n\tvar work: Coroutine[String] = fetch.call()\n")
+	var annotate_hold_report: Dictionary = probe.analyze_source(annotate_hold, "res://tests/coroutine_annotate_hold.barista")
+	_expect(failures, annotate_hold_report.get("valid", false) == true, "var work: Coroutine[String] holds AsyncCallable.call result")
+
+	# await of an annotated Coroutine[T] yields T.
+	var annotate_await := _src_class("CoroutineAnnotateAwait extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[int] = fetch.call()\n\tvar result: int = await work\n")
+	var annotate_await_report: Dictionary = probe.analyze_source(annotate_await, "res://tests/coroutine_annotate_await.barista")
+	_expect(failures, annotate_await_report.get("valid", false) == true, "await of Coroutine[int] annotation yields int")
+
+	# Phantom result mismatch: Coroutine[int] is not assignable to Coroutine[String].
+	var annotate_mismatch := _src_class("CoroutineAnnotateMismatch extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[String] = fetch.call()\n")
+	var annotate_mismatch_report: Dictionary = probe.analyze_source(annotate_mismatch, "res://tests/coroutine_annotate_mismatch.barista")
+	_expect(failures, annotate_mismatch_report.get("valid", true) == false, "Coroutine[int] is not assignable to Coroutine[String]")
+	var saw_coro_mismatch := false
+	for message in annotate_mismatch_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and "Coroutine[String]" in message:
+			saw_coro_mismatch = true
+	_expect(failures, saw_coro_mismatch, "Coroutine phantom-result mismatch diagnoses Coroutine[int] vs Coroutine[String]")
+
+	# Assigning annotated Coroutine[T] into T without await fails.
+	var annotate_no_await := _src_class("CoroutineAnnotateNoAwait extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[int] = fetch.call()\n\tvar result: int = work\n")
+	var annotate_no_await_report: Dictionary = probe.analyze_source(annotate_no_await, "res://tests/coroutine_annotate_no_await.barista")
+	_expect(failures, annotate_no_await_report.get("valid", true) == false, "Coroutine[int] is not assignable to int without await")
+	var saw_no_await := false
+	for message in annotate_no_await_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable of type "int"' in message:
+			saw_no_await = true
+	_expect(failures, saw_no_await, "annotated Coroutine[int] without await diagnoses assign to int")
+
+	# Wrong arity: Coroutine[] (parser + analyzer fail-stop; must not be M5 generic).
+	var arity_empty := _src_class("CoroutineArityEmpty extends Node\nfunc test() -> void:\n\tvar work: Coroutine[]\n")
+	var arity_empty_report: Dictionary = probe.analyze_source(arity_empty, "res://tests/coroutine_arity_empty.barista")
+	_expect(failures, arity_empty_report.get("valid", true) == false, "Coroutine[] wrong arity is invalid")
+	var saw_arity_empty := false
+	var saw_m5_on_coro := false
+	for message in arity_empty_report.get("errors", PackedStringArray()):
+		if "Coroutine[T]" in message and ("expects" in message or "single" in message or "exactly one" in message):
+			saw_arity_empty = true
+		if "Generic type specialization is not available until M5" in message:
+			saw_m5_on_coro = true
+	_expect(failures, saw_arity_empty, "Coroutine[] diagnoses wrong arity")
+	_expect(failures, not saw_m5_on_coro, "Coroutine[] must not emit M5 generic specialization error")
+
+	# Wrong arity: Coroutine[int, String] keeps parser arity error (analyzer still sees one container type).
+	var arity_extra := _src_class("CoroutineArityExtra extends Node\nfunc test() -> void:\n\tvar work: Coroutine[int, String]\n")
+	var arity_extra_report: Dictionary = probe.analyze_source(arity_extra, "res://tests/coroutine_arity_extra.barista")
+	_expect(failures, arity_extra_report.get("valid", true) == false, "Coroutine[int, String] wrong arity is invalid")
+	var saw_arity_extra := false
+	for message in arity_extra_report.get("errors", PackedStringArray()):
+		if "Coroutine[T]" in message and ("more were given" in message or "single" in message or "expects" in message):
+			saw_arity_extra = true
+	_expect(failures, saw_arity_extra, "Coroutine[int, String] diagnoses wrong arity")
+
+	# Array/Dictionary containers stay intact (not routed through Coroutine decode).
+	var array_ok := _src_class("CoroutineArrayStillOk extends Node\nfunc test() -> void:\n\tvar a: Array[int] = [1]\n\tvar d: Dictionary[String, int] = {\"a\": 1}\n")
+	var array_ok_report: Dictionary = probe.analyze_source(array_ok, "res://tests/coroutine_array_still_ok.barista")
+	_expect(failures, array_ok_report.get("valid", false) == true, "Array/Dictionary containers still decode after Coroutine annotation path")
+
+	# Other bracketed generics remain M5-deferred.
+	var other_generic := _src_class("CoroutineOtherGeneric extends Node\nfunc test() -> void:\n\tvar x: NotAContainer[int]\n")
+	var other_generic_report: Dictionary = probe.analyze_source(other_generic, "res://tests/coroutine_other_generic.barista")
+	_expect(failures, other_generic_report.get("valid", true) == false, "non-Coroutine generic specialization stays invalid")
+	var saw_m5_other := false
+	for message in other_generic_report.get("errors", PackedStringArray()):
+		if "Generic type specialization is not available until M5" in message:
+			saw_m5_other = true
+	_expect(failures, saw_m5_other, "non-Coroutine generic still emits M5 deferred diagnostic")
+
+	# Coroutine[void] annotation is nameable (fire-and-forget handle).
+	var void_anno := _src_class("CoroutineVoidAnnotate extends Node\nasync func fire() -> void:\n\tpass\nfunc test() -> void:\n\tvar work: Coroutine[void] = fire.call()\n")
+	var void_anno_report: Dictionary = probe.analyze_source(void_anno, "res://tests/coroutine_void_annotate.barista")
+	_expect(failures, void_anno_report.get("valid", false) == true, "var work: Coroutine[void] holds void async call")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(annotate_hold, "res://tests/coroutine_annotate_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "coroutine annotation suite remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(annotate_hold, "res://tests/coroutine_annotate_is_valid.barista"),
+		"coroutine annotation suite remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for coroutine annotation")
 
 
 func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void:
