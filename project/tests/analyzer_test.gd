@@ -65,6 +65,7 @@ func _init() -> void:
 	_test_conformance_witness_lookup(failures)
 	_test_conformance_hidden_witness(failures)
 	_test_self_type_parameter_compat(failures)
+	_test_enum_self_payload_field_leg(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -3215,4 +3216,80 @@ func _test_self_type_parameter_compat(failures: PackedStringArray) -> void:
 		_src_class("SelfCompatIndexGuard extends Node\n"), "res://tests/self_compat_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"Self TYPE_PARAMETER compat probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_enum_self_payload_field_leg(failures: PackedStringArray) -> void:
+	# Foundry reduce_call_enum_case_construction SelfFieldLeg @ c9d5e35 (#60 residual).
+	# Non-generic legs only: FRAME_RECEIVER / BASE_RECEIVER / EXACT_HANDLE / EXACT_DECLARING /
+	# LITERAL_SELF. Generic open-schema / union-collapse remain deferred.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# FRAME_RECEIVER: unqualified / self-qualified / contextual shorthand admit `self`.
+	var same_receiver := _src_class("EnumSelfSameReceiver extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nfunc construct_all() -> void:\n\tvar made := Message.Attach(1, self)\n\tvar qualified := self.Message.Attach(2, self)\n\tvar shorthand: Message = .Attach(3, self)\n")
+	var same_receiver_report: Dictionary = probe.analyze_source(same_receiver, "res://tests/enum_self_same_receiver.barista")
+	_expect(failures, same_receiver_report.get("valid", false) == true, "Self payload admits self via frame/self/shorthand spellings")
+
+	# FRAME_RECEIVER rejects a foreign instance typed as the declaring class.
+	var foreign := _src_class("EnumSelfForeign extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nfunc construct_foreign(other: EnumSelfForeign) -> void:\n\tvar bad := Message.Attach(1, other)\n")
+	var foreign_report: Dictionary = probe.analyze_source(foreign, "res://tests/enum_self_foreign.barista")
+	_expect(failures, foreign_report.get("valid", true) == false, "Self payload rejects foreign same-class instance on frame spelling")
+	var saw_foreign := false
+	for message in foreign_report.get("errors", PackedStringArray()):
+		if 'Invalid argument 2 for enum case "Message.Attach"' in message:
+			saw_foreign = true
+	_expect(failures, saw_foreign, "foreign Self payload diagnostic")
+
+	# EXACT_DECLARING: static frame substitutes Self to the declaring class.
+	var static_ok := _src_class("EnumSelfStaticOk extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nstatic func construct_static(value: EnumSelfStaticOk) -> void:\n\tvar made := Message.Attach(3, value)\n")
+	var static_ok_report: Dictionary = probe.analyze_source(static_ok, "res://tests/enum_self_static_ok.barista")
+	_expect(failures, static_ok_report.get("valid", false) == true, "static Message.Attach admits declaring-class value")
+
+	# EXACT_HANDLE: ClassName.Message substitutes Self to the named class.
+	var handle_ok := _src_class("EnumSelfHandleOk extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nfunc construct_handle(value: EnumSelfHandleOk) -> void:\n\tvar made := EnumSelfHandleOk.Message.Attach(4, value)\n")
+	var handle_ok_report: Dictionary = probe.analyze_source(handle_ok, "res://tests/enum_self_handle_ok.barista")
+	_expect(failures, handle_ok_report.get("valid", false) == true, "ClassName.Message.Attach admits declaring-class value")
+
+	var handle_bad := _src_class("EnumSelfHandleBad extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nfunc construct_handle() -> void:\n\tvar bad := EnumSelfHandleBad.Message.Attach(1, \"nope\")\n")
+	var handle_bad_report: Dictionary = probe.analyze_source(handle_bad, "res://tests/enum_self_handle_bad.barista")
+	_expect(failures, handle_bad_report.get("valid", true) == false, "ClassName.Message.Attach rejects unrelated type")
+
+	# BASE_RECEIVER: instance base admits the base expression; rejects frame self / other.
+	var base_ok := _src_class("EnumSelfBaseOk extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nfunc construct_via_base(receiver: EnumSelfBaseOk) -> void:\n\tvar made := receiver.Message.Attach(8, receiver)\n")
+	var base_ok_report: Dictionary = probe.analyze_source(base_ok, "res://tests/enum_self_base_ok.barista")
+	_expect(failures, base_ok_report.get("valid", false) == true, "receiver.Message.Attach admits the base expression")
+
+	var base_bad := _src_class("EnumSelfBaseBad extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nfunc construct_via_base(receiver: EnumSelfBaseBad, other: EnumSelfBaseBad) -> void:\n\tvar first := receiver.Message.Attach(1, other)\n\tvar second := receiver.Message.Attach(2, self)\n")
+	var base_bad_report: Dictionary = probe.analyze_source(base_bad, "res://tests/enum_self_base_bad.barista")
+	_expect(failures, base_bad_report.get("valid", true) == false, "receiver.Message.Attach rejects other / frame self")
+
+	# LITERAL_SELF: static Self.Message keeps Self identity (admits Self-typed parameter).
+	var literal_self := _src_class("EnumSelfLiteralStatic extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nstatic func construct_static(value: Self) -> void:\n\tvar made := Self.Message.Attach(1, value)\n")
+	var literal_self_report: Dictionary = probe.analyze_source(literal_self, "res://tests/enum_self_literal_static.barista")
+	_expect(failures, literal_self_report.get("valid", false) == true, "static Self.Message.Attach admits Self-typed parameter")
+
+	# Instance Self.Message is FRAME_RECEIVER: admits self, rejects foreign.
+	var self_handle := _src_class("EnumSelfHandleFrame extends Node\nenum Message:\n\tDetach\n\tAttach(index: int, owner: Self)\nfunc construct_via_self_handle(other: EnumSelfHandleFrame) -> void:\n\tvar good := Self.Message.Attach(1, self)\n\tvar bad := Self.Message.Attach(2, other)\n")
+	var self_handle_report: Dictionary = probe.analyze_source(self_handle, "res://tests/enum_self_handle_frame.barista")
+	_expect(failures, self_handle_report.get("valid", true) == false, "instance Self.Message rejects foreign; admits self")
+	var saw_self_handle_bad := false
+	var saw_self_handle_only_one := 0
+	for message in self_handle_report.get("errors", PackedStringArray()):
+		if 'Invalid argument 2 for enum case "Message.Attach"' in message:
+			saw_self_handle_bad = true
+			saw_self_handle_only_one += 1
+	_expect(failures, saw_self_handle_bad and saw_self_handle_only_one == 1, "instance Self.Message foreign diagnostic once")
+
+	# final declaring class: EXACT_DECLARING admits any value of that class.
+	var final_ok := "final " + _kw_class_name() + " EnumSelfFinalSolo extends Node\nenum Note:\n\tTag(owner: Self)\nfunc construct_with_value(value: EnumSelfFinalSolo) -> void:\n\tvar made := Note.Tag(value)\n"
+	var final_ok_report: Dictionary = probe.analyze_source(final_ok, "res://tests/enum_self_final_solo.barista")
+	_expect(failures, final_ok_report.get("valid", false) == true, "final class Self payload admits same-class value")
+
+	# Declaration-index stays opt-in under analyze probes.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("EnumSelfIndexGuard extends Node\n"), "res://tests/enum_self_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"enum Self payload probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()

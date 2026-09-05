@@ -639,8 +639,9 @@ private:
 	/** resolve_contextual_enum_case + container-literal element descent for one consumer site. */
 	void qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
 	/**
-	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic slice): arity + payload
-	 * field compatibility + constant bake. Self/generic payload depth remains #60.
+	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (non-generic SelfFieldLeg slice):
+	 * arity + payload field compatibility with Self spelling legs + constant bake.
+	 * Generic open-schema / type-argument / union-collapse machinery remains #60.
 	 */
 	void reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type);
 
