@@ -394,7 +394,13 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 		return false;
 	}
 	bool first = true;
+	// Soft mutual path-extends may install CLASS loops for registration; stop identity revisits.
+	HashSet<const BSParser::ClassNode *> visited;
 	for (BSParser::ClassNode *lookup = p_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
+		if (visited.has(lookup)) {
+			break;
+		}
+		visited.insert(lookup);
 		if (try_bind_identifier_member(p_identifier, lookup, !first)) {
 			return true;
 		}
