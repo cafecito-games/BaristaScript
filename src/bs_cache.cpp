@@ -658,7 +658,11 @@ String BSCache::get_source_code(const String &p_path) {
 
 void BSCache::set_source_override(const String &p_path, const String &p_source) {
 	std::lock_guard<std::mutex> lock(get_singleton()->mutex);
-	get_singleton()->source_overrides[p_path] = p_source;
+	// Rebuild via UTF-8 round-trip so the cache never aliases a caller/GDScript CoW buffer.
+	// Shared buffers have been observed to corrupt under dense analyzer_test traffic
+	// (`class_name` -> `class_nane`), which flakes Linux CI.
+	const PackedByteArray utf8 = p_source.to_utf8_buffer();
+	get_singleton()->source_overrides[p_path] = String::utf8(reinterpret_cast<const char *>(utf8.ptr()), utf8.size());
 }
 
 bool BSCache::has_source_override(const String &p_path) {
