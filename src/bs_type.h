@@ -81,6 +81,20 @@ public:
 	 */
 	static bool resolve_final_class_bound(const BSParser::DataType &p_type, BSParser::DataType &r_resolved);
 
+	/**
+	 * Foundry final_class_bound_survives_lowering @ c9d5e35: a resolved final bound keeps evidence
+	 * only where lowering still states nullability / class-handle wrappers.
+	 */
+	static bool final_class_bound_survives_lowering(const BSParser::DataType &p_resolved_bound, bool p_wrappers_are_expressible);
+
+	/**
+	 * Foundry destination_is_undecidable_type_parameter @ c9d5e35: erased method-scope parameters
+	 * anywhere, or class-scope non-`@Self` parameters without a receiver. Free method/`T` generics
+	 * remain M5 residual until those parameters are fully live; the walk is Foundry-faithful for
+	 * TYPE_PARAMETER shapes Barista already models.
+	 */
+	static bool destination_is_undecidable_type_parameter(const BSParser::DataType &p_type, const Options &p_options);
+
 	/** Foundry FSTypeCompatibility rest-tail helpers @ c9d5e35 (trait signature matching). */
 	static bool rest_parameter_type_is_narrowing(const BSParser::DataType &p_rest_parameter_type);
 	static bool rest_parameter_accepts_required_arguments(const BSParser::DataType *p_implementation_rest_array,

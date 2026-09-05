@@ -658,8 +658,16 @@ private:
 	 * PARAMETER delegates to the receiver-contract helpers).
 	 */
 	bool self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source = nullptr) const;
-	/** Foundry self_contract_admits_gradual_value stub (UNION-only; undecidable residual). */
+	/**
+	 * Foundry self_contract_admits_gradual_value @ c9d5e35: UNION destinations only; refuses
+	 * Variant under strict_dynamic and refuses undecidable destinations.
+	 */
 	bool self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type) const;
+	/**
+	 * Foundry gradual_destination_is_undecidable @ c9d5e35. Free method-`T` erased destinations
+	 * remain M5 residual until method generics are fully live.
+	 */
+	bool gradual_destination_is_undecidable(const BSParser::DataType &p_destination) const;
 	bool self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) const;
 	bool self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) const;
 
