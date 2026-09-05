@@ -20,6 +20,23 @@
 
 namespace barista_script {
 
+// Foundry make_coroutine_type @ c9d5e35 (~1646): wrap result T as Coroutine[T]. Principal identity
+// is the native BSFunctionState skin; is_coroutine discriminates await / missing-await; the phantom
+// result type lives in container_element_types[0].
+static BSParser::DataType make_coroutine_type(const BSParser::DataType &p_result_type) {
+	BSParser::DataType type;
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	type.kind = BSParser::DataType::NATIVE;
+	type.builtin_type = Variant::OBJECT;
+	type.native_type = SNAME("BSFunctionState");
+	type.is_coroutine = true;
+	BSParser::DataType result_type = p_result_type;
+	result_type.is_constant = false;
+	result_type.is_meta_type = false;
+	type.set_container_element_type(0, result_type);
+	return type;
+}
+
 static BSParser::DataType make_signal_type(const MethodInfo &p_info) {
 	BSParser::DataType type;
 	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
@@ -890,7 +907,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_local_object_signal_callabl
 
 bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type) {
 	// Foundry get_function_signature Callable.bind/bindv/unbind/call/callv/call_deferred/rpc/rpc_id
-	// slice (@ c9d5e35). AsyncCallable→coroutine wrapping on call/callv remains residual under #60.
+	// slice (@ c9d5e35), including AsyncCallable→coroutine wrapping on synchronous call/callv.
 	if (p_call == nullptr || p_base_type.kind != BSParser::DataType::BUILTIN || p_base_type.builtin_type != Variant::CALLABLE) {
 		return false;
 	}
@@ -927,6 +944,14 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 	}
 
 	if (!p_base_type.has_explicit_method_signature) {
+		// Foundry bare AsyncCallable @ c9d5e35 (~16658): signatureless `var cb: AsyncCallable` still
+		// yields a coroutine from call/callv (untyped Variant result wrapped). Deferred/RPC stay NIL.
+		if (p_base_type.signature_is_async && (is_callable_call || is_callable_callv)) {
+			BSParser::DataType variant_return;
+			variant_return.kind = BSParser::DataType::VARIANT;
+			p_call->set_datatype(make_coroutine_type(variant_return));
+			return true;
+		}
 		return false;
 	}
 
@@ -1014,7 +1039,11 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		} else {
 			return_type = p_base_type.method_return_type[0];
 		}
-		// AsyncCallable→coroutine wrapping on call remains residual under #60 (not yet represented here).
+		// Synchronously invoking an AsyncCallable yields a coroutine (must be awaited).
+		// Deferred/RPC dispatches do not return the callee's value, so they stay non-coroutine.
+		if (is_callable_call && p_base_type.signature_is_async) {
+			return_type = make_coroutine_type(return_type);
+		}
 		p_call->set_datatype(return_type);
 		return true;
 	}
@@ -1030,7 +1059,10 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		} else {
 			return_type = p_base_type.method_return_type[0];
 		}
-		// AsyncCallable→coroutine wrapping on callv remains residual under #60 (mirrors call).
+		// As with call(), invoking an AsyncCallable through callv() yields a coroutine.
+		if (p_base_type.signature_is_async) {
+			return_type = make_coroutine_type(return_type);
+		}
 
 		const BSParser::DataType *callv_rest_type = p_base_type.has_method_rest_parameter_type() ? &p_base_type.get_method_rest_parameter_type() : nullptr;
 		validate_callable_array_literal_args(p_base_type.method_parameter_types, p_base_type.method_info.default_arguments.size(), is_callable_vararg,

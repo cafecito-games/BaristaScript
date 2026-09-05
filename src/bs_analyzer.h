@@ -79,7 +79,8 @@ public:
 		 * Foundry get_function_signature Callable.bind/bindv/unbind/call/callv/call_deferred/rpc/rpc_id
 		 * slice (@ c9d5e35). When `p_call` is a typed-Callable attribute call, validates args and
 		 * types the result. Returns true when the call was handled (including over-bound invocation
-		 * errors). AsyncCallable→coroutine wrapping on call/callv remains residual under #60.
+		 * errors). Synchronous call/callv on AsyncCallable wraps the return as Coroutine[T];
+		 * deferred/RPC stay non-coroutine NIL.
 		 */
 		bool try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type);
 

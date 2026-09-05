@@ -52,6 +52,7 @@ func _init() -> void:
 	_test_tagged_union_match_exhaustiveness(failures)
 	_test_callable_bind_unbind(failures)
 	_test_callable_callv_rpc(failures)
+	_test_async_callable_coroutine_wrap(failures)
 	_test_surface_inheritance_member_depth(failures)
 	_test_resolve_class_member_depth(failures)
 	BaristaScriptParseCache.clear_script_cache()
@@ -2315,6 +2316,95 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 		"callable callv remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for callable callv/rpc")
+
+
+func _test_async_callable_coroutine_wrap(failures: PackedStringArray) -> void:
+	# Foundry AsyncCallable→coroutine wrap on call/callv @ c9d5e35 (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Synchronous call on an async method reference yields Coroutine[T], not T.
+	var async_call_assign := _src_class("AsyncCallableCallAssign extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch.call()\n")
+	var async_call_assign_report: Dictionary = probe.analyze_source(async_call_assign, "res://tests/async_callable_call_assign.barista")
+	_expect(failures, async_call_assign_report.get("valid", true) == false, "AsyncCallable.call result is not assignable to int")
+	var saw_async_call_coro := false
+	for message in async_call_assign_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable of type "int"' in message:
+			saw_async_call_coro = true
+	_expect(failures, saw_async_call_coro, "AsyncCallable.call diagnose Coroutine[int] assign to int")
+
+	var async_callv_assign := _src_class("AsyncCallableCallvAssign extends Node\nasync func fetch(value: int) -> String:\n\treturn \"ok\"\nfunc test() -> void:\n\tvar result: String = fetch.callv([1])\n")
+	var async_callv_assign_report: Dictionary = probe.analyze_source(async_callv_assign, "res://tests/async_callable_callv_assign.barista")
+	_expect(failures, async_callv_assign_report.get("valid", true) == false, "AsyncCallable.callv result is not assignable to String")
+	var saw_async_callv_coro := false
+	for message in async_callv_assign_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[String]" in message and 'variable of type "String"' in message:
+			saw_async_callv_coro = true
+	_expect(failures, saw_async_callv_coro, "AsyncCallable.callv diagnose Coroutine[String] assign to String")
+
+	# Bound AsyncCallable preserves signature_is_async through bind, then call wraps.
+	var async_bound_call := _src_class("AsyncCallableBoundCall extends Node\nasync func add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tvar result: int = add.bind(1).call(2)\n")
+	var async_bound_call_report: Dictionary = probe.analyze_source(async_bound_call, "res://tests/async_callable_bound_call.barista")
+	_expect(failures, async_bound_call_report.get("valid", true) == false, "bound AsyncCallable.call still yields coroutine")
+	var saw_bound_coro := false
+	for message in async_bound_call_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[int]" in message:
+			saw_bound_coro = true
+	_expect(failures, saw_bound_coro, "bound AsyncCallable.call diagnose Coroutine[int]")
+
+	# Deferred / RPC on AsyncCallable stay non-coroutine (NIL), so statement use is valid.
+	var async_deferred_ok := _src_class("AsyncCallableDeferredOk extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.call_deferred()\n")
+	var async_deferred_ok_report: Dictionary = probe.analyze_source(async_deferred_ok, "res://tests/async_callable_deferred_ok.barista")
+	_expect(failures, async_deferred_ok_report.get("valid", false) == true, "AsyncCallable.call_deferred stays non-coroutine / valid")
+
+	var async_rpc_ok := _src_class("AsyncCallableRpcOk extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.rpc()\n")
+	var async_rpc_ok_report: Dictionary = probe.analyze_source(async_rpc_ok, "res://tests/async_callable_rpc_ok.barista")
+	_expect(failures, async_rpc_ok_report.get("valid", false) == true, "AsyncCallable.rpc stays non-coroutine / valid")
+
+	var async_rpc_id_ok := _src_class("AsyncCallableRpcIdOk extends Node\nasync func fetch(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tfetch.rpc_id(1, 2)\n")
+	var async_rpc_id_ok_report: Dictionary = probe.analyze_source(async_rpc_id_ok, "res://tests/async_callable_rpc_id_ok.barista")
+	_expect(failures, async_rpc_id_ok_report.get("valid", false) == true, "AsyncCallable.rpc_id stays non-coroutine / valid")
+
+	# Assigning deferred NIL to int would fail if it were wrongly wrapped as Coroutine — prove NIL.
+	var async_deferred_assign := _src_class("AsyncCallableDeferredAssign extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch.call_deferred()\n")
+	var async_deferred_assign_report: Dictionary = probe.analyze_source(async_deferred_assign, "res://tests/async_callable_deferred_assign.barista")
+	_expect(failures, async_deferred_assign_report.get("valid", true) == false, "call_deferred NIL is not assignable to int")
+	var saw_deferred_nil := false
+	var saw_deferred_coro := false
+	for message in async_deferred_assign_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[" in message:
+			saw_deferred_coro = true
+		if "Cannot assign a value of type" in message and ("null" in message or "void" in message or "Nil" in message or "nil" in message):
+			saw_deferred_nil = true
+	_expect(failures, not saw_deferred_coro, "call_deferred on AsyncCallable must not wrap as Coroutine")
+	_expect(failures, saw_deferred_nil, "call_deferred on AsyncCallable diagnoses NIL/null assign to int")
+
+	# Plain (non-async) Callable.call is unchanged: returns T, assignable to T.
+	var sync_call_ok := _src_class("SyncCallableCallOk extends Node\nfunc fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch.call()\n")
+	var sync_call_ok_report: Dictionary = probe.analyze_source(sync_call_ok, "res://tests/sync_callable_call_ok.barista")
+	_expect(failures, sync_call_ok_report.get("valid", false) == true, "plain Callable.call return type unchanged")
+
+	var sync_callv_ok := _src_class("SyncCallableCallvOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tvar result: int = add.callv([2, 3])\n")
+	var sync_callv_ok_report: Dictionary = probe.analyze_source(sync_callv_ok, "res://tests/sync_callable_callv_ok.barista")
+	_expect(failures, sync_callv_ok_report.get("valid", false) == true, "plain Callable.callv return type unchanged")
+
+	# Bare AsyncCallable (no explicit signature) still wraps call as Coroutine[Variant].
+	var bare_async_call := _src_class("BareAsyncCallableCall extends Node\nfunc test() -> void:\n\tvar cb: AsyncCallable\n\tvar result: int = cb.call()\n")
+	var bare_async_call_report: Dictionary = probe.analyze_source(bare_async_call, "res://tests/bare_async_callable_call.barista")
+	_expect(failures, bare_async_call_report.get("valid", true) == false, "bare AsyncCallable.call is not assignable to int")
+	var saw_bare_coro := false
+	for message in bare_async_call_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message and "Coroutine[" in message:
+			saw_bare_coro = true
+	_expect(failures, saw_bare_coro, "bare AsyncCallable.call diagnose Coroutine wrap")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(sync_call_ok, "res://tests/async_callable_wrap_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "async-callable wrap suite remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(sync_call_ok, "res://tests/async_callable_wrap_is_valid.barista"),
+		"async-callable wrap suite remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for async-callable wrap")
 
 
 func _test_surface_inheritance_member_depth(failures: PackedStringArray) -> void:
