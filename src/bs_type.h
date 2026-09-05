@@ -37,6 +37,7 @@ public:
  * Structural / gradual type compatibility used by the analyzer (Foundry FSTypeCompatibility).
  * Conversion sites consult Variant::can_convert_strict (String→StringName / NodePath, …) and
  * then apply D1 numeric classify so float→int stays explicit unless constant-proven.
+ * Union sources require every alternative to satisfy the target (Number→Number / set-wise assign).
  */
 class BSTypeCompatibility {
 public:
