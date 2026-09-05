@@ -108,28 +108,36 @@ godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::Strin
 godot::Dictionary BaristaScriptAnalyzerProbe::analyze_source(const godot::String &p_source, const godot::String &p_path) const {
 	godot::Dictionary result;
 	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
-	BSCache::set_source_override(path, p_source);
-	BSParser parser;
-	BSAnalyzer analyzer(&parser);
-	Error err = parser.parse(p_source, path, false);
-	if (err == OK) {
-		err = analyzer.analyze();
+	godot::PackedStringArray errors;
+	Error err = ERR_BUG;
+	int phase = -1;
+	{
+		BSCache::set_source_override(path, p_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		err = parser.parse(p_source, path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			errors.push_back(pe.message);
+		}
+		phase = (int)analyzer.get_highest_completed_phase();
 	}
 	BSCache::clear_source_override(path);
-	godot::PackedStringArray errors;
-	for (const BSParser::ParserError &pe : parser.get_errors()) {
-		errors.push_back(pe.message);
-	}
 	result["valid"] = err == OK && errors.is_empty();
 	result["errors"] = errors;
-	result["phase"] = (int)analyzer.get_highest_completed_phase();
+	result["phase"] = phase;
 	return result;
 }
 
 bool BaristaScriptAnalyzerProbe::is_semantically_valid(const godot::String &p_source, const godot::String &p_path) const {
 	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
-	BSCache::set_source_override(path, p_source);
-	const bool ok = bs_source_analyzes(p_source, path);
+	bool ok = false;
+	{
+		BSCache::set_source_override(path, p_source);
+		ok = bs_source_analyzes(p_source, path);
+	}
 	BSCache::clear_source_override(path);
 	return ok;
 }
