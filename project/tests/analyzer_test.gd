@@ -775,10 +775,9 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	_expect(failures, saw_connect_type, "signal.connect type diagnostic")
 
 	# Object.connect("name", handler) spelling must match Signal-value diagnostics.
-	# Use StringName literals (`&"..."`) for the MethodInfo first arg: stock Godot types the
-	# name as StringName, and BSTypeCompatibility does not yet port Foundry's
-	# Variant::can_convert_strict String→StringName bridge (follow-up under #60).
-	var object_connect_type := "class_name ObjectConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tconnect(&\"registered\", on_registered)\n"
+	# Plain String literals are accepted for the MethodInfo StringName parameter via
+	# Variant::can_convert_strict (Foundry FSTypeCompatibility @ c9d5e35).
+	var object_connect_type := "class_name ObjectConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tconnect(\"registered\", on_registered)\n"
 	var object_connect_report: Dictionary = probe.analyze_source(object_connect_type, "res://tests/object_connect_type.barista")
 	_expect(failures, object_connect_report.get("valid", true) == false, "Object.connect type mismatch invalid")
 	var saw_object_connect := false
@@ -787,9 +786,19 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 			saw_object_connect = true
 	_expect(failures, saw_object_connect, "Object.connect type diagnostic")
 
-	var connect_ok := "class_name ConnectOk extends Node\nsignal registered(node: Node)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n\tconnect(&\"registered\", on_registered)\n"
+	var connect_ok := "class_name ConnectOk extends Node\nsignal registered(node: Node)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n\tconnect(\"registered\", on_registered)\n"
 	var connect_ok_report: Dictionary = probe.analyze_source(connect_ok, "res://tests/connect_ok.barista")
 	_expect(failures, connect_ok_report.get("valid", false) == true, "matching connect callables are valid")
+
+	# Direct String→StringName assignment at a conversion site (Foundry can_convert_strict bridge).
+	var string_to_string_name := "class_name StringToStringName extends Node\nfunc _ready() -> void:\n\tvar name: StringName = \"registered\"\n\tvar _used: StringName = name\n"
+	var string_name_report: Dictionary = probe.analyze_source(string_to_string_name, "res://tests/string_to_string_name.barista")
+	_expect(failures, string_name_report.get("valid", false) == true, "String assigns to StringName via can_convert_strict")
+
+	# D1: float→int still requires a proven constant (or `as`); can_convert_strict must not widen it.
+	var float_to_int := "class_name FloatToIntReject extends Node\nfunc _ready() -> void:\n\tvar value: float = 1.5\n\tvar _narrowed: int = value\n"
+	var float_to_int_report: Dictionary = probe.analyze_source(float_to_int, "res://tests/float_to_int_reject.barista")
+	_expect(failures, float_to_int_report.get("valid", true) == false, "non-constant float→int remains invalid")
 
 
 func _test_match_and_flow(failures: PackedStringArray) -> void:
