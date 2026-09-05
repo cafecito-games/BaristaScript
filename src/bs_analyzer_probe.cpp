@@ -562,6 +562,9 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_witness_lookup() const
 		result["native_analyze_ok"] = err == OK && parser.get_errors().is_empty();
 	}
 	BSCache::clear_source_override(native_path);
+	// Drop the Node witness before the arity fixture: WITNESS_COLLISION is program-wide, so a
+	// second file re-supplying wit_greet() for Node would be rejected instead of arity-checked.
+	registry->clear_file(native_path);
 
 	const String native_arity_source =
 			"trait WitNativeArity:\n"
