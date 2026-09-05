@@ -10,8 +10,9 @@
 /*  conformance witness; get_operation_type for binary/unary/compound;    */
 /*  resolve_class_member same-parser depth; OwnerResolutionFailures /     */
 /*  DependentResolutionFailureReplays / ForeignAnalyzerVisibilityScope    */
-/*  for external SCRIPT member failure replay; reduce_await +             */
-/*  MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→coroutine wrap.     */
+/*  for external SCRIPT member + class-phase INTERFACE/BODY failure       */
+/*  replay; reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for            */
+/*  AsyncCallable→coroutine wrap.                                         */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -213,7 +214,7 @@ public:
 	 * BSCache, so owner-local failures must be memoized alongside them. Records only
 	 * errors added by the exact class phase/member so a later foreign caller never
 	 * infers failure from unrelated errors already in the owner parser.
-	 * Class-phase (INTERFACE/BODY) recording sites beyond member path remain #60 residual.
+	 * Wired for member path (#118) and class-phase INTERFACE/BODY (#60 residual slice).
 	 */
 	class OwnerResolutionFailures {
 	public:
@@ -325,8 +326,8 @@ public:
 	 * owning file; Foundry routes the owner's `ConformanceVisibility` via
 	 * `FSConformanceRegistry::ScopedVisibility`. Barista has not yet ported
 	 * FSConformanceRegistry (residual under #60); this RAII preserves call-site shape on
-	 * delegated analyzer resolution so registry wiring can land without reshaping the
-	 * external SCRIPT member path.
+	 * delegated member / INTERFACE / BODY resolve sites so registry wiring can land
+	 * without reshaping those paths.
 	 */
 	class ForeignAnalyzerVisibilityScope {
 		BSAnalyzer *owner = nullptr;
@@ -449,15 +450,25 @@ private:
 	 * member's datatype with cyclic `RESOLVING` fail-stop before identifier/member binds read it.
 	 * Same-parser path is complete for VARIABLE/CONSTANT/FUNCTION/SIGNAL/ENUM/CLASS. External /
 	 * SCRIPT members raise via `BSCache::get_parser`, wrap `ForeignAnalyzerVisibilityScope`,
-	 * record owner member failures, and replay dependent diagnostics with dedupe. Class-phase
-	 * INTERFACE/BODY foreign recording sites remain #60 residual.
+	 * record owner member failures, and replay dependent diagnostics with dedupe.
 	 */
 	void resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source = nullptr);
 	void resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);
 	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
-	void analyze_class_interface(BSParser::ClassNode *p_class);
-	void analyze_class_body(BSParser::ClassNode *p_class);
+	/**
+	 * Foundry resolve_class_interface @ c9d5e35 (`fs_analyzer_surface.cpp` ~2030): own-class
+	 * member surface + base INTERFACE walk; foreign SCRIPT raise under
+	 * ForeignAnalyzerVisibilityScope with OwnerResolutionFailures::INTERFACE memoization and
+	 * DependentResolutionFailureReplays dedupe ("Could not resolve class").
+	 */
+	void analyze_class_interface(BSParser::ClassNode *p_class, const BSParser::Node *p_source = nullptr);
+	/**
+	 * Foundry resolve_class_body @ c9d5e35 (`fs_analyzer.cpp` ~3545): own-class body analysis;
+	 * foreign SCRIPT raise under ForeignAnalyzerVisibilityScope with
+	 * OwnerResolutionFailures::BODY memoization and dependent replay dedupe.
+	 */
+	void analyze_class_body(BSParser::ClassNode *p_class, const BSParser::Node *p_source = nullptr);
 	/** `p_is_lambda`: Foundry resolve_function_body — skip clearing captured-source tracking. */
 	void analyze_function_body(BSParser::FunctionNode *p_function, bool p_is_lambda = false);
 	/** Foundry resolve_pending_lambda_bodies @ c9d5e35. */
@@ -641,6 +652,8 @@ private:
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
 	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
 	bool errors_are_only_m5_deferred() const;
+	/** True when every error at/after `p_from_index` is an M5 deferred diagnostic (or none exist). */
+	bool errors_from_index_are_only_m5_deferred(int p_from_index) const;
 
 	void push_error(const String &p_message, const BSParser::Node *p_origin = nullptr);
 #ifdef DEBUG_ENABLED

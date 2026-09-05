@@ -57,6 +57,7 @@ func _init() -> void:
 	_test_surface_inheritance_member_depth(failures)
 	_test_resolve_class_member_depth(failures)
 	_test_foreign_member_failure_replay(failures)
+	_test_foreign_class_phase_failure_replay(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -2723,3 +2724,101 @@ func _test_foreign_member_failure_replay(failures: PackedStringArray) -> void:
 	_expect(failures, validate_report.get("valid", false) == true, "foreign failure replay suite remains valid under validate()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate must not mutate declaration index for foreign failure replay")
+
+
+func _test_foreign_class_phase_failure_replay(failures: PackedStringArray) -> void:
+	# Foundry resolve_class_interface / resolve_class_body foreign failure recording @ c9d5e35 (#60):
+	# owner INTERFACE/BODY failures surface once per phase on dependents as "Could not resolve class",
+	# with DependentResolutionFailureReplays dedupe across revisits in the same analyzer.
+	# INTERFACE and BODY are distinct phase bits, so a FULLY_SOLVED dependent of an INTERFACE-failed
+	# owner may see one plain INTERFACE replay plus one BODY replay (suffix) — not intra-phase spam.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# --- INTERFACE phase: cyclic consts fail while resolving the owner interface. ---
+	var iface_owner := _src_class("ForeignIfaceFailOwner extends Node\nconst c1 = c2\nconst c2 = c1\n")
+	BaristaScriptParseCache.set_source_override("res://tests/foreign_iface_fail_owner.barista", iface_owner)
+
+	var iface_dependent := _src_class("ForeignIfaceFailDependent extends \"res://tests/foreign_iface_fail_owner.barista\"\nfunc ok() -> void:\n\tpass\n")
+	var iface_report: Dictionary = probe.analyze_source(iface_dependent, "res://tests/foreign_iface_fail_dependent.barista")
+	_expect(failures, iface_report.get("valid", true) == false, "cross-file owner INTERFACE failure invalidates dependent")
+	var iface_plain := 0
+	var iface_body_suffix := 0
+	for message in iface_report.get("errors", PackedStringArray()):
+		if "Could not resolve class" in message and "ForeignIfaceFailOwner" in message:
+			if "declared in" in message:
+				iface_body_suffix += 1
+			else:
+				iface_plain += 1
+	_expect(failures, iface_plain >= 1, "dependent surfaces class-phase INTERFACE failure for owner")
+	_expect(failures, iface_plain == 1, "single dependent does not spam duplicate INTERFACE class-phase failures")
+	_expect(failures, iface_body_suffix <= 1, "INTERFACE→BODY propagation replays BODY at most once")
+
+	var iface_dependent_two := _src_class("ForeignIfaceFailDependentTwo extends \"res://tests/foreign_iface_fail_owner.barista\"\nfunc ok() -> void:\n\tpass\n")
+	var iface_report_two: Dictionary = probe.analyze_source(iface_dependent_two, "res://tests/foreign_iface_fail_dependent_two.barista")
+	_expect(failures, iface_report_two.get("valid", true) == false, "second INTERFACE dependent also sees owner failure")
+	var iface_plain_two := 0
+	for message in iface_report_two.get("errors", PackedStringArray()):
+		if "Could not resolve class" in message and "ForeignIfaceFailOwner" in message and not ("declared in" in message):
+			iface_plain_two += 1
+	_expect(failures, iface_plain_two == 1, "second INTERFACE dependent replays INTERFACE failure once")
+
+	var iface_reanalyze: Dictionary = probe.analyze_source(iface_dependent, "res://tests/foreign_iface_fail_dependent_reanalyze.barista")
+	_expect(failures, iface_reanalyze.get("valid", true) == false, "INTERFACE re-analyze still invalid")
+	var iface_plain_reanalyze := 0
+	for message in iface_reanalyze.get("errors", PackedStringArray()):
+		if "Could not resolve class" in message and "ForeignIfaceFailOwner" in message and not ("declared in" in message):
+			iface_plain_reanalyze += 1
+	_expect(failures, iface_plain_reanalyze == 1, "INTERFACE re-analyze keeps single INTERFACE class-phase failure")
+
+	BaristaScriptParseCache.clear_source_override("res://tests/foreign_iface_fail_owner.barista")
+	BaristaScriptParseCache.clear_script_cache()
+
+	# --- BODY phase: interface is clean; typed assign in function body fails owner BODY. ---
+	var body_owner := _src_class("ForeignBodyFailOwner extends Node\nfunc bad() -> void:\n\tvar x: int = \"nope\"\n")
+	BaristaScriptParseCache.set_source_override("res://tests/foreign_body_fail_owner.barista", body_owner)
+
+	var body_dependent := _src_class("ForeignBodyFailDependent extends \"res://tests/foreign_body_fail_owner.barista\"\nfunc ok() -> void:\n\tpass\n")
+	var body_report: Dictionary = probe.analyze_source(body_dependent, "res://tests/foreign_body_fail_dependent.barista")
+	_expect(failures, body_report.get("valid", true) == false, "cross-file owner BODY failure invalidates dependent")
+	var body_fail_count := 0
+	var body_plain_iface := 0
+	for message in body_report.get("errors", PackedStringArray()):
+		if "Could not resolve class" in message and "ForeignBodyFailOwner" in message:
+			if "declared in" in message:
+				body_fail_count += 1
+			else:
+				body_plain_iface += 1
+	_expect(failures, body_fail_count >= 1, "dependent surfaces class-phase BODY failure for owner")
+	_expect(failures, body_fail_count == 1, "single dependent does not spam duplicate BODY class-phase failures")
+	_expect(failures, body_plain_iface == 0, "BODY-only owner failure does not emit INTERFACE class replay")
+
+	var body_dependent_two := _src_class("ForeignBodyFailDependentTwo extends \"res://tests/foreign_body_fail_owner.barista\"\nfunc ok() -> void:\n\tpass\n")
+	var body_report_two: Dictionary = probe.analyze_source(body_dependent_two, "res://tests/foreign_body_fail_dependent_two.barista")
+	_expect(failures, body_report_two.get("valid", true) == false, "second BODY dependent also sees owner failure")
+	var body_fail_count_two := 0
+	for message in body_report_two.get("errors", PackedStringArray()):
+		if "Could not resolve class" in message and "ForeignBodyFailOwner" in message and "declared in" in message:
+			body_fail_count_two += 1
+	_expect(failures, body_fail_count_two == 1, "second BODY dependent replays class failure once")
+
+	BaristaScriptParseCache.clear_source_override("res://tests/foreign_body_fail_owner.barista")
+
+	# Soft CycleA/CycleB registration path remains unchanged after class-phase replay wiring.
+	BaristaScriptParseCache.clear_script_cache()
+	BaristaScriptParseCache.set_source_override("res://tests/cycle_a.barista", _src_class("CycleA extends Node\n"))
+	BaristaScriptParseCache.set_source_override("res://tests/cycle_b.barista", _src_class("CycleB extends Node\n"))
+	var a := BaristaScriptParseCache.get_parser("res://tests/cycle_a.barista", Status.EMPTY, "res://tests/cycle_b.barista")
+	var b := BaristaScriptParseCache.get_parser("res://tests/cycle_b.barista", Status.EMPTY, "res://tests/cycle_a.barista")
+	_expect(failures, a.valid and b.valid, "CycleA/CycleB edges still recordable at EMPTY after class-phase replay")
+	var raised_a := BaristaScriptParseCache.get_parser("res://tests/cycle_a.barista", Status.FULLY_SOLVED, "")
+	var raised_b := BaristaScriptParseCache.get_parser("res://tests/cycle_b.barista", Status.FULLY_SOLVED, "")
+	_expect(failures, raised_a.valid and raised_b.valid, "CycleA/CycleB raise still completes without deadlock after class-phase replay")
+	BaristaScriptParseCache.clear_source_overrides()
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var ok_source := _src_class("ForeignClassPhaseValid extends Node\nconst ok: int = 1\nfunc use() -> int:\n\treturn ok\n")
+	var validate_report: Dictionary = probe.validate_source(ok_source, "res://tests/foreign_class_phase_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "foreign class-phase replay suite remains valid under validate()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate must not mutate declaration index for foreign class-phase replay")
