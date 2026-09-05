@@ -21,7 +21,8 @@
 /*  (real BSConformanceRegistry::ScopedVisibility) for external SCRIPT    */
 /*  member + class-phase INTERFACE/BODY failure replay;                   */
 /*  ConformanceVisibility can_see BFS; resolve_conformances registers via */
-/*  try_replace_file_conformances + ScopedInFlightReplacement;            */
+/*  try_replace_file_conformances + ScopedInFlightReplacement +           */
+/*  loaded_dependency_closure load-graph publish;                         */
 /*  find_conformance_witness + find_hidden_conformance_witness +           */
 /*  reduce_call member-miss / hidden-witness fallback;                    */
 /*  reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→     */
@@ -358,6 +359,14 @@ public:
 	};
 
 	ConformanceVisibility conformance_visibility;
+
+	/**
+	 * The files this one loads, as `raise_declared_conformance_dependencies()` walked them.
+	 * Published with this file's conformances / bindings so another file, judging its own
+	 * declarations later, can still see the load edge that licenses comparing them — an edge
+	 * its own directional Visibility cannot show it. Foundry `loaded_dependency_closure` @ c9d5e35.
+	 */
+	HashSet<String> loaded_dependency_closure;
 
 	/**
 	 * Hard fork of Foundry `FSAnalyzer::ForeignAnalyzerVisibilityScope` (@ c9d5e35,
@@ -699,6 +708,13 @@ private:
 			BSParser::FunctionNode *p_required_function, const TraitMethodImplementation &p_implementation,
 			const HashMap<StringName, BSParser::DataType> &p_trait_substitution = HashMap<StringName, BSParser::DataType>());
 	void resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class);
+	/**
+	 * Foundry raise_declared_conformance_dependencies @ c9d5e35: walk this file's load
+	 * closure (direct deps always; transitive when this file declares extend/uses), raise
+	 * trait-declaring dependencies to INTERFACE_SOLVED, and fill `loaded_dependency_closure`
+	 * for publish with try_replace.
+	 */
+	void raise_declared_conformance_dependencies();
 	/** Foundry resolve_conformances: validate + register into BSConformanceRegistry. */
 	void resolve_conformances(BSParser::ClassNode *p_class);
 	/**

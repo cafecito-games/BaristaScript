@@ -74,8 +74,9 @@ public:
 
 	/**
 	 * Drive ClassTraitBinding publish + CHAIN_COHERENCE rejection when a Conformance
-	 * contradicts a visible uses-binding on the same script chain. Returns Dictionary
-	 * of bool checks (Foundry native_chain_coherence / trait-binding starter @ c9d5e35).
+	 * contradicts a visible uses-binding on the same script chain, plus reverse
+	 * load-edge licensing when Visibility cannot reach the other file (Foundry
+	 * native_chain_coherence / p_loaded_files @ c9d5e35).
 	 */
 	godot::Dictionary class_trait_binding_chain_coherence() const;
 };

@@ -22,8 +22,9 @@
 /*  find_witness_location + declaring parse tree;                        */
 /*  find_hidden_conformance_witness reports Visibility-hidden witnesses. */
 /*  ClassTraitBinding / RecordedTypeArgument publish + uses-binding      */
-/*  chain coherence (Foundry @ c9d5e35). Full p_loaded_files load graph, */
-/*  runtime Function* witnesses remain residual under #60.               */
+/*  chain coherence + loaded_dependency_closure load-graph publish       */
+/*  (Foundry @ c9d5e35). Runtime Function* witnesses remain residual     */
+/*  under #60.                                                           */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -305,7 +306,108 @@ static String _chain_conflict_message(const String &p_trait_label, const String 
 			p_trait_label, p_conflicting_target, location);
 }
 
+// Answering "declares a `uses` at all" is the smallest question that can be answered here and can never
+// be narrower than what collection records, so the prescan cannot skip a file whose bindings would have
+// mattered. Over-answering only raises a file whose recorded bindings then turn out to be empty, which
+// costs an interface resolution and states nothing.
+static bool _declares_class_trait_use(const BSParser::ClassNode *p_class) {
+	if (p_class == nullptr) {
+		return false;
+	}
+	// Only a class binds a trait for receivers; a trait declaration has none of its own.
+	if (!p_class->is_trait && !p_class->used_traits.is_empty()) {
+		return true;
+	}
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::CLASS && _declares_class_trait_use(member.m_class)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 } // namespace
+
+void BSAnalyzer::raise_declared_conformance_dependencies() {
+	// A conformance takes effect when its declaring file is loaded, and `preload`/`extends` load a file
+	// for the whole script, not from the statement they appear on. Register everything this file declares it
+	// loads, up front.
+	//
+	// Only files that actually declare conformances are raised, so this stays a no-op for the vast
+	// majority of dependencies. `raise_status()` advances a parser's status before running each phase, so
+	// a cycle re-entering the same file returns instead of recursing.
+	//
+	// This file's own conformances are also checked for coherence against what its dependencies bind, and
+	// a dependency binds a trait through a plain `uses` clause as much as through an `extend`. A class's
+	// `uses` registers nothing until that file reaches conformance registration, so a dependency that
+	// only binds is raised too — but only on behalf of a file that has an `extend` to judge, so an
+	// ordinary file never pulls its dependencies' interfaces forward for a comparison it will not make.
+	//
+	// Loading composes: a file two hops away is loaded by this one exactly as a direct dependency is, and
+	// binds the chains this file's declarations sit on just the same. The walk therefore follows the
+	// whole load closure rather than stopping at a direct dependency that happens to declare nothing
+	// itself. `visited` is what terminates it, since the load graph may contain cycles.
+	//
+	// Both kinds of declaration need that whole closure. The set accumulated here is published with what
+	// this file declares, and it is the only record of the load edge that licenses comparing this file's
+	// declarations against a contradicting one whose own visibility cannot reach back here — a file
+	// declaring nothing but `uses` is one end of such an edge as much as a file declaring `extend` is. A
+	// file that declares neither publishes nothing for an edge to license, so it keeps the cheap one-hop
+	// walk and pulls no dependency of a dependency in.
+	if (parser == nullptr) {
+		loaded_dependency_closure.clear();
+		return;
+	}
+	BSParser::ClassNode *head = parser->get_tree();
+	const bool declares_conformances = head != nullptr && !head->conformances.is_empty();
+	const bool declares_a_trait_chain = declares_conformances || _declares_class_trait_use(head);
+	String extension = "barista";
+	if (BaristaScriptLanguage::get_singleton() != nullptr) {
+		extension = BaristaScriptLanguage::get_singleton()->_get_extension();
+	}
+	List<String> frontier = parser->get_dependencies();
+	HashSet<String> visited;
+	visited.insert(parser->script_path);
+	loaded_dependency_closure.clear();
+	while (!frontier.is_empty()) {
+		const String dependency_path = frontier.front()->get();
+		frontier.pop_front();
+		if (dependency_path.get_extension() != extension || visited.has(dependency_path)) {
+			continue;
+		}
+		visited.insert(dependency_path);
+		loaded_dependency_closure.insert(dependency_path);
+		Ref<BSParserRef> dependency_ref = parser->get_depended_parser_for(dependency_path);
+		if (dependency_ref.is_null()) {
+			Error err = OK;
+			dependency_ref = BSCache::get_parser(dependency_path, BSParserRef::PARSED, err, parser->script_path);
+			if (err != OK || dependency_ref.is_null()) {
+				continue;
+			}
+		} else if (dependency_ref->raise_status(BSParserRef::PARSED) != OK) {
+			continue;
+		}
+		const BSParser *dependency_parser = dependency_ref->get_parser();
+		if (dependency_parser == nullptr || dependency_parser->get_tree() == nullptr) {
+			continue;
+		}
+		if (declares_a_trait_chain) {
+			const List<String> nested = dependency_parser->get_dependencies();
+			for (const List<String>::Element *E = nested.front(); E; E = E->next()) {
+				if (!visited.has(E->get())) {
+					frontier.push_back(E->get());
+				}
+			}
+		}
+		BSParser::ClassNode *dep_head = dependency_parser->get_tree();
+		if (dep_head->conformances.is_empty() &&
+				!(declares_conformances && _declares_class_trait_use(dep_head))) {
+			continue;
+		}
+		dependency_ref->raise_status(BSParserRef::INTERFACE_SOLVED);
+	}
+}
 
 void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class) {
 	if (p_function == nullptr) {
@@ -973,7 +1075,8 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 		if (registry != nullptr && !source_file.is_empty()) {
 			const BSConformanceRegistry::RegistrationResult result =
 					registry->try_replace_file_conformances(source_file,
-							Vector<BSConformanceRegistry::Conformance>(), trait_bindings);
+							Vector<BSConformanceRegistry::Conformance>(), trait_bindings,
+							loaded_dependency_closure);
 			for (int i = 0; i < result.binding_conflicts.size(); i++) {
 				const BSConformanceRegistry::BindingConflict &conflict = result.binding_conflicts[i];
 				push_error(_chain_conflict_message(conflict.trait_label, conflict.conflicting_target_label,
@@ -1144,7 +1247,8 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 	}
 
 	const BSConformanceRegistry::RegistrationResult result =
-			registry->try_replace_file_conformances(source_file, valid_entries, trait_bindings);
+			registry->try_replace_file_conformances(source_file, valid_entries, trait_bindings,
+					loaded_dependency_closure);
 	for (int i = 0; i < result.binding_conflicts.size(); i++) {
 		const BSConformanceRegistry::BindingConflict &conflict = result.binding_conflicts[i];
 		push_error(_chain_conflict_message(conflict.trait_label, conflict.conflicting_target_label,
