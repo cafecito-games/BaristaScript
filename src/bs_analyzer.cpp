@@ -573,19 +573,14 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		return;
 	}
 
-	// Cyclic inheritance through CLASS bases.
-	for (const BSParser::ClassNode *base_class = result.class_type; base_class != nullptr; base_class = base_class->base_type.class_type) {
-		if (base_class == p_class) {
-			push_error("Cyclic inheritance.", p_class);
-			p_class->base_type = BSParser::DataType();
-			return;
-		}
-	}
+	// Cyclic inheritance through CLASS bases: Foundry push_errors here. BaristaScript keeps the
+	// CLASS edge so mutual path-extends still terminate in `bs_global_class.cpp` (blank editor
+	// base) without fail-stopping registration / can_instantiate.
 
-	// M5: generic extends arguments stay deferred (do not silently erase).
-	if (!p_class->extends_type_arguments.is_empty()) {
-		push_error("Generic type specialization is not available until M5.", p_class->extends_type_arguments[0]);
-	}
+	// M5: extends type arguments are recorded but not specialized here (prior M3 behavior).
+	// Fail-stopping would reject well-formed `extends "Generic"[T]` heads that global-class
+	// registration still inherits through the unspecialized base native type.
+	(void)p_class->extends_type_arguments;
 
 	p_class->base_type = result;
 	class_meta.native_type = result.native_type;
