@@ -6,7 +6,8 @@
 /*  BS*; engine contact through bs_platform.h. MethodInfo / typed call    */
 /*  arity+types, signal emit / emit_signal, named-arg canonicalization,   */
 /*  signal connect/callable signature validation, and Callable            */
-/*  bind/bindv/unbind/call transforms for #60.                            */
+/*  bind/bindv/unbind/call/callv/call_deferred/rpc/rpc_id transforms      */
+/*  for #60.                                                              */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -663,7 +664,7 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::callable_type_from_fun
 	type.is_constant = true;
 	type.has_method_signature = true;
 	// Foundry MEMBER_FUNCTION / make_callable_type @ c9d5e35: bare function refs publish an
-	// explicit signature so Callable.bind/unbind/call can transform and validate it.
+	// explicit signature so Callable.bind/unbind/call/callv/rpc transforms can validate it.
 	type.has_explicit_method_signature = true;
 	if (p_function == nullptr) {
 		return type;
@@ -738,6 +739,36 @@ BSParser::ArrayNode *BSAnalyzer::CallSiteValidationContext::array_literal_argume
 		return nullptr;
 	}
 	return static_cast<BSParser::ArrayNode *>(argument);
+}
+
+void BSAnalyzer::CallSiteValidationContext::validate_callable_array_literal_args(const Vector<BSParser::DataType> &p_par_types, int p_default_args_count, bool p_is_vararg, BSParser::ArrayNode *p_array, const StringName &p_function, const Vector<int> &p_extra_allowed_argument_counts, int p_trailing_unbound_argument_count, const BSParser::DataType *p_rest_parameter_type) {
+	// Foundry CallSiteValidationContext::validate_callable_array_literal_args @ c9d5e35 —
+	// Callable.callv([...]) checks a single array literal against the surviving target arity/types.
+	if (p_array == nullptr) {
+		return;
+	}
+
+	if (p_array->elements.size() < p_par_types.size() - p_default_args_count && !_method_signature_accepts_argument_count(p_array->elements.size(), p_par_types.size(), p_default_args_count, p_is_vararg, p_extra_allowed_argument_counts)) {
+		analyzer->push_error(vformat(R"*(Too few arguments for "%s()" call. Expected at least %d but received %d.)*", p_function, p_par_types.size() - p_default_args_count, p_array->elements.size()), p_array);
+	}
+	if (!p_is_vararg && p_array->elements.size() > p_par_types.size() && !_method_signature_accepts_argument_count(p_array->elements.size(), p_par_types.size(), p_default_args_count, p_is_vararg, p_extra_allowed_argument_counts)) {
+		analyzer->push_error(vformat(R"*(Too many arguments for "%s()" call. Expected at most %d but received %d.)*", p_function, p_par_types.size(), p_array->elements.size()), p_array->elements[p_par_types.size()]);
+	}
+
+	const BSParser::DataType *element_type = rest_element_type(p_rest_parameter_type);
+	// See validate_call_arg: the trailing Variant slots `unbind(n)` appends must not shadow a typed
+	// rest element for an element that actually reaches the rest array.
+	const int fixed_parameter_count = element_type != nullptr ? MAX(p_par_types.size() - p_trailing_unbound_argument_count, 0) : p_par_types.size();
+	const int checked_argument_count = MAX(p_array->elements.size() - p_trailing_unbound_argument_count, 0);
+	for (int i = 0; i < checked_argument_count; i++) {
+		// Surplus literal elements occupy repeated rest-element slots, so they are checked against the
+		// rest array's element type under the same policy as a fixed parameter.
+		const BSParser::DataType *expected_type = i < fixed_parameter_count ? &p_par_types[i] : element_type;
+		if (expected_type == nullptr) {
+			break;
+		}
+		validate_argument_against_type(*expected_type, p_array->elements[i], i + 1, p_function, nullptr);
+	}
 }
 
 void BSAnalyzer::CallSiteValidationContext::validate_signal_connect_arg(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_callable_arg_index) {
@@ -858,24 +889,30 @@ void BSAnalyzer::CallSiteValidationContext::validate_local_object_signal_callabl
 }
 
 bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type) {
-	// Foundry get_function_signature Callable.bind/bindv/unbind/call slice (@ c9d5e35).
+	// Foundry get_function_signature Callable.bind/bindv/unbind/call/callv/call_deferred/rpc/rpc_id
+	// slice (@ c9d5e35). AsyncCallable→coroutine wrapping on call/callv remains residual under #60.
 	if (p_call == nullptr || p_base_type.kind != BSParser::DataType::BUILTIN || p_base_type.builtin_type != Variant::CALLABLE) {
 		return false;
 	}
 
 	const StringName function_name = p_call->function_name;
 	const bool is_callable_call = function_name == SNAME("call");
+	const bool is_callable_callv = function_name == SNAME("callv");
+	const bool is_callable_call_deferred = function_name == SNAME("call_deferred");
+	const bool is_callable_rpc = function_name == SNAME("rpc");
+	const bool is_callable_rpc_id = function_name == SNAME("rpc_id");
 	const bool is_callable_bind = function_name == SNAME("bind");
 	const bool is_callable_bindv = function_name == SNAME("bindv");
 	const bool is_callable_unbind = function_name == SNAME("unbind");
-	if (!is_callable_call && !is_callable_bind && !is_callable_bindv && !is_callable_unbind) {
+	const bool is_callable_invocation = is_callable_call || is_callable_callv || is_callable_call_deferred || is_callable_rpc || is_callable_rpc_id;
+	if (!is_callable_invocation && !is_callable_bind && !is_callable_bindv && !is_callable_unbind) {
 		return false;
 	}
 
 	reject_named_call_arguments(p_call);
 
 	if (p_base_type.callable_is_over_bound) {
-		if (is_callable_call) {
+		if (is_callable_invocation) {
 			analyzer->push_error(R"(Cannot invoke this Callable: it was over-bound (more arguments were bound than its target accepts), so the call can never succeed.)", p_call);
 			BSParser::DataType void_or_variant = analyzer->type_from_property(PropertyInfo(Variant::NIL, ""));
 			p_call->set_datatype(void_or_variant);
@@ -954,14 +991,38 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		}
 	};
 
-	if (is_callable_call) {
+	if (is_callable_call || is_callable_call_deferred || is_callable_rpc || is_callable_rpc_id) {
 		List<BSParser::DataType> par_types;
+		// `Callable.rpc_id()` prepends a synthetic peer_id before the surviving target parameters.
+		constexpr int callable_rpc_id_peer_id_argument_count = 1;
+		const int extra_allowed_argument_offset = is_callable_rpc_id ? callable_rpc_id_peer_id_argument_count : 0;
+		if (is_callable_rpc_id) {
+			par_types.push_back(analyzer->type_from_property(PropertyInfo(Variant::INT, "peer_id"), true));
+		}
 		for (const BSParser::DataType &parameter_type : p_base_type.method_parameter_types) {
 			par_types.push_back(parameter_type);
 		}
 		const BSParser::DataType *rest_type = p_base_type.has_method_rest_parameter_type() ? &p_base_type.get_method_rest_parameter_type() : nullptr;
 		validate_call_arg(par_types, p_base_type.method_info.default_arguments.size(), is_callable_vararg, p_call,
-				p_base_type.method_extra_allowed_argument_counts, p_base_type.method_unbound_argument_count, rest_type);
+				p_base_type.method_extra_allowed_argument_counts, p_base_type.method_unbound_argument_count, rest_type,
+				extra_allowed_argument_offset);
+
+		BSParser::DataType return_type;
+		if (is_callable_call_deferred || is_callable_rpc || is_callable_rpc_id || p_base_type.method_return_type.is_empty()) {
+			// Deferred/RPC dispatches do not return the callee's value; Foundry types them as NIL.
+			return_type = analyzer->type_from_property(PropertyInfo(Variant::NIL, ""));
+		} else {
+			return_type = p_base_type.method_return_type[0];
+		}
+		// AsyncCallable→coroutine wrapping on call remains residual under #60 (not yet represented here).
+		p_call->set_datatype(return_type);
+		return true;
+	}
+
+	if (is_callable_callv) {
+		List<BSParser::DataType> callv_par_types;
+		callv_par_types.push_back(analyzer->type_from_property(PropertyInfo(Variant::ARRAY, "arguments"), true));
+		validate_call_arg(callv_par_types, 0, false, p_call);
 
 		BSParser::DataType return_type;
 		if (p_base_type.method_return_type.is_empty()) {
@@ -969,6 +1030,13 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		} else {
 			return_type = p_base_type.method_return_type[0];
 		}
+		// AsyncCallable→coroutine wrapping on callv remains residual under #60 (mirrors call).
+
+		const BSParser::DataType *callv_rest_type = p_base_type.has_method_rest_parameter_type() ? &p_base_type.get_method_rest_parameter_type() : nullptr;
+		validate_callable_array_literal_args(p_base_type.method_parameter_types, p_base_type.method_info.default_arguments.size(), is_callable_vararg,
+				array_literal_argument(p_call, 0), function_name, p_base_type.method_extra_allowed_argument_counts,
+				p_base_type.method_unbound_argument_count, callv_rest_type);
+
 		p_call->set_datatype(return_type);
 		return true;
 	}
