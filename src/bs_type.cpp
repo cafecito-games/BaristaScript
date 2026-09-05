@@ -2,6 +2,7 @@
 /*  bs_type.cpp                                                           */
 /*                                                                        */
 /*  Hard fork of Foundry fs_type.cpp @ c9d5e35 (D1-trimmed).              */
+/*  Union sources require every alternative to satisfy the target.        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -163,10 +164,51 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 		return Result(is_invariant_equal(p_target, p_source), false, false);
 	}
 
+	// Foundry FSTypeCompatibility::check @ c9d5e35: a union *source* satisfies a target only when
+	// every alternative does. The runtime carries no tag, so a target that accepts only some
+	// alternatives would accept the wrong value at the boundary. Source-UNION is decided before
+	// target-UNION so Number→Number / int|String→int|String self-assign recurse through the
+	// target-UNION branch per alternative rather than falling through to invariant equality.
+	if (p_source.kind == BSParser::DataType::UNION) {
+		Result result(false, false, false);
+		Options member_options = p_options;
+		member_options.constant_source_value = nullptr;
+		for (int i = 0; i < p_source.union_members.size(); i++) {
+			// Nullability was hoisted onto the union during normalization; put it back on each
+			// alternative before it faces the target's own null rules.
+			BSParser::DataType source_member = p_source.union_members[i];
+			source_member.is_nullable = p_source.is_nullable;
+			const Result member_result = check(p_target, source_member, member_options);
+			if (!member_result.compatible) {
+				return result;
+			}
+			if (p_target.kind != BSParser::DataType::UNION && member_result.uses_implicit_conversion &&
+					(source_member.kind != BSParser::DataType::BUILTIN ||
+							p_target.builtin_type != source_member.builtin_type)) {
+				// The value is one untyped slot at runtime, so a per-alternative carrier change
+				// cannot be emitted for it. Width-only / same-carrier conversions are fine under
+				// D1 (int/float are distinct carriers, so Number→float stays rejected).
+				return result;
+			}
+			result.uses_implicit_conversion = result.uses_implicit_conversion || member_result.uses_implicit_conversion;
+		}
+		result.compatible = true;
+		// A union erases to an untyped value, so reaching a typed slot always costs a runtime check.
+		result.requires_runtime_check = true;
+		return result;
+	}
+
 	if (p_target.kind == BSParser::DataType::UNION) {
+		// A union target accepts a source that satisfies any one of its alternatives.
 		for (int i = 0; i < p_target.union_members.size(); i++) {
-			Result member = check(p_target.union_members[i], p_source, p_options);
+			BSParser::DataType target_member = p_target.union_members[i];
+			target_member.is_nullable = p_target.is_nullable;
+			Result member = check(target_member, p_source, p_options);
 			if (member.compatible) {
+				// Mirror Foundry: an alternative reached by conversion still needs a runtime store check.
+				if (member.uses_implicit_conversion) {
+					member.requires_runtime_check = true;
+				}
 				return member;
 			}
 		}
@@ -202,6 +244,16 @@ bool BSTypeCompatibility::is_invariant_equal(const BSParser::DataType &p_a, cons
 	}
 	for (int i = 0; i < p_a.type_arguments.size(); i++) {
 		if (!is_invariant_equal(p_a.type_arguments[i], p_b.type_arguments[i])) {
+			return false;
+		}
+	}
+	// Foundry _datatype_invariant_equal @ c9d5e35: union members are canonically ordered, so
+	// identity is positional member-for-member.
+	if (p_a.union_members.size() != p_b.union_members.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_a.union_members.size(); i++) {
+		if (!is_invariant_equal(p_a.union_members[i], p_b.union_members[i])) {
 			return false;
 		}
 	}

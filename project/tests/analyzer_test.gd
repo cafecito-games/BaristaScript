@@ -43,6 +43,7 @@ func _init() -> void:
 	_test_trait_requirements_and_conformance_witness(failures)
 	_test_flow_narrowing(failures)
 	_test_builtin_annotation_resolve(failures)
+	_test_union_union_assignability(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1556,3 +1557,51 @@ func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:
 	var mismatch := "class_name BuiltinStringNameMismatch extends Node\nfunc take() -> void:\n\tvar _n: StringName = 123\n"
 	var mismatch_report: Dictionary = probe.analyze_source(mismatch, "res://tests/builtin_string_name_mismatch.barista")
 	_expect(failures, mismatch_report.get("valid", true) == false, "int → StringName annotation assign remains invalid")
+
+
+func _test_union_union_assignability(failures: PackedStringArray) -> void:
+	# Foundry FSTypeCompatibility source-UNION @ c9d5e35 (#89 residual): every alternative of a
+	# union source must satisfy the target. Number→Number / written union self-assign are the AC.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var number_self := "class_name NumberToNumberAssign extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = n\n"
+	var number_self_report: Dictionary = probe.analyze_source(number_self, "res://tests/number_to_number_assign.barista")
+	_expect(failures, number_self_report.get("valid", false) == true, "Number → Number union self-assign is valid")
+
+	var written_self := "class_name WrittenUnionSelfAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar _x: int | String = v\n"
+	var written_self_report: Dictionary = probe.analyze_source(written_self, "res://tests/written_union_self_assign.barista")
+	_expect(failures, written_self_report.get("valid", false) == true, "int|String → int|String self-assign is valid")
+
+	# Opposite spelling still works: source-UNION checks each alt against the target set.
+	var reordered := "class_name WrittenUnionReorderAssign extends Node\nfunc take(v: String | int) -> void:\n\tvar _x: int | String = v\n"
+	var reordered_report: Dictionary = probe.analyze_source(reordered, "res://tests/written_union_reorder_assign.barista")
+	_expect(failures, reordered_report.get("valid", false) == true, "String|int → int|String reorder assign is valid")
+
+	var number_from_written := "class_name WrittenToNumberAssign extends Node\nfunc take(v: int | float) -> void:\n\tvar _x: Number = v\n"
+	var number_from_written_report: Dictionary = probe.analyze_source(number_from_written, "res://tests/written_to_number_assign.barista")
+	_expect(failures, number_from_written_report.get("valid", false) == true, "int|float → Number assign is valid")
+
+	# Partial coverage stays invalid: a String alternative cannot enter a String-only slot.
+	var partial := "class_name UnionPartialAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar _s: String = v\n"
+	var partial_report: Dictionary = probe.analyze_source(partial, "res://tests/union_partial_assign.barista")
+	_expect(failures, partial_report.get("valid", true) == false, "int|String → String without narrowing is invalid")
+
+	# Carrier-changing per-alternative conversion cannot be emitted for an erased union source.
+	var number_to_float := "class_name NumberToFloatAssign extends Node\nfunc take(n: Number) -> void:\n\tvar _f: float = n\n"
+	var number_to_float_report: Dictionary = probe.analyze_source(number_to_float, "res://tests/number_to_float_assign.barista")
+	_expect(failures, number_to_float_report.get("valid", true) == false, "Number → float carrier change stays invalid")
+
+	# Concrete → union target still selects an alternative (pre-existing target-UNION path).
+	var int_to_number := "class_name IntToNumberAssign extends Node\nfunc take(n: int) -> void:\n\tvar _x: Number = n\n"
+	var int_to_number_report: Dictionary = probe.analyze_source(int_to_number, "res://tests/int_to_number_assign.barista")
+	_expect(failures, int_to_number_report.get("valid", false) == true, "int → Number still selects a union alternative")
+
+	# Opt-in declaration-index mutation unchanged: analyze / validate stay read-only.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(number_self, "res://tests/number_to_number_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "Number→Number remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(number_self, "res://tests/number_to_number_is_valid.barista"),
+		"Number→Number remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for Number→Number")
