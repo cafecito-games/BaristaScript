@@ -919,7 +919,7 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 			for (int w = 0; w < conformance->witnesses.size(); w++) {
 				BSParser::FunctionNode *witness = conformance->witnesses[w];
 				if (witness != nullptr && witness->identifier != nullptr) {
-					entry.witnesses.insert(witness->identifier->name);
+					entry.witnesses.insert(witness->identifier->name, true);
 				}
 			}
 			for (int identity_index = 0; identity_index < identity_nodes.size(); identity_index++) {
@@ -987,10 +987,19 @@ BSParser::FunctionNode *BSAnalyzer::find_conformance_witness(const BSParser::Dat
 		BSParser::ClassNode *declaring_class = nullptr;
 		if (parser != nullptr && declaring_file == parser->script_path) {
 			declaring_class = parser->get_tree();
+		} else if (parser != nullptr) {
+			// Keep the declaring parser alive for this analysis via depended_parsers
+			// (Foundry dependency_parser_access), then raise to INTERFACE_SOLVED.
+			Ref<BSParserRef> declaring_ref = parser->get_depended_parser_for(declaring_file);
+			if (declaring_ref.is_valid()) {
+				const Error raise_err = declaring_ref->raise_status(BSParserRef::INTERFACE_SOLVED);
+				if (raise_err == OK && declaring_ref->get_parser() != nullptr) {
+					declaring_class = declaring_ref->get_parser()->get_tree();
+				}
+			}
 		} else {
 			Error err = OK;
-			const Ref<BSParserRef> declaring_ref = BSCache::get_parser(declaring_file, BSParserRef::INTERFACE_SOLVED, err,
-					parser != nullptr ? parser->script_path : String());
+			const Ref<BSParserRef> declaring_ref = BSCache::get_parser(declaring_file, BSParserRef::INTERFACE_SOLVED, err);
 			if (declaring_ref.is_valid() && err == OK && declaring_ref->get_parser() != nullptr) {
 				declaring_class = declaring_ref->get_parser()->get_tree();
 			}

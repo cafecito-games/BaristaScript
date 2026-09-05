@@ -32,11 +32,11 @@ class BSConformanceRegistry {
 public:
 	/**
 	 * Method-name keys for witnesses on one (target, trait) entry. Foundry stores
-	 * `FunctionNode *` values; Barista stores names only so lookups never
+	 * `FunctionNode *` values; Barista stores `true` placeholders so lookups never
 	 * dereference borrowed pointers across reloads. `find_conformance_witness`
 	 * re-finds live nodes from the declaring parse tree via conformance_index.
 	 */
-	using WitnessMap = HashSet<StringName>;
+	using WitnessMap = HashMap<StringName, bool>;
 
 	/**
 	 * One declaration-side conformance entry. RecordedTypeArgument coherence and
