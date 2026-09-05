@@ -1915,6 +1915,24 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						return;
 					}
 				}
+				// Foundry get_function_signature apply_conformance_witness @ c9d5e35: after the
+				// target's own CLASS / native surface misses, fall back to a retroactive witness.
+				// Instance witnesses need a receiver (reject on meta-type / class handles).
+				{
+					BSParser::DataType witness_base = base_type;
+					if (is_self && current_class != nullptr &&
+							(witness_base.kind == BSParser::DataType::UNRESOLVED ||
+									witness_base.kind == BSParser::DataType::VARIANT ||
+									!witness_base.is_set())) {
+						witness_base = current_class->get_datatype();
+					}
+					BSParser::FunctionNode *witness = find_conformance_witness(witness_base, p_call->function_name);
+					if (witness != nullptr && (witness->is_static || !witness_base.is_meta_type)) {
+						validate_local_call(p_call, witness);
+						p_call->is_noreturn = witness->is_noreturn;
+						return;
+					}
+				}
 			}
 		}
 	}
@@ -1954,6 +1972,16 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					// Foundry treats bare identifier callees as self for unused-signal accounting.
 					mark_implicit_signal_usage(p_call, true);
 					p_call->set_datatype(type_from_property(method_info.return_val));
+					return;
+				}
+			}
+			// Foundry apply_conformance_witness on self after local + native miss.
+			{
+				const BSParser::DataType self_type = current_class->get_datatype();
+				BSParser::FunctionNode *witness = find_conformance_witness(self_type, fname);
+				if (witness != nullptr && (witness->is_static || !self_type.is_meta_type)) {
+					validate_local_call(p_call, witness);
+					p_call->is_noreturn = witness->is_noreturn;
 					return;
 				}
 			}

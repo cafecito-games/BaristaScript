@@ -9,9 +9,11 @@
 /*  Non-generic trait method signature matching (async/static/arity/     */
 /*  params/returns/rest + Self reify + MethodInfo). ConformanceVisibility*/
 /*  can_see BFS. resolve_conformances publishes validated entries via    */
-/*  try_replace_file_conformances under ScopedInFlightReplacement.       */
-/*  ClassTraitBinding / RecordedTypeArgument / witness maps / chain      */
-/*  coherence remain residual under #60.                                 */
+/*  try_replace under ScopedInFlight (witness method-name keys).         */
+/*  find_conformance_witness re-resolves live FunctionNodes via          */
+/*  find_witness_location + declaring parse tree. ClassTraitBinding /    */
+/*  RecordedTypeArgument / runtime Function* / chain coherence remain    */
+/*  residual under #60.                                                  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -913,6 +915,13 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 			entry.target_label = bs_class_or_trait_diagnostic_name(target);
 			entry.source_file = source_file;
 			entry.conformance_index = conformance_index;
+			// Store witness method-name keys only — never borrow FunctionNode* across reloads.
+			for (int w = 0; w < conformance->witnesses.size(); w++) {
+				BSParser::FunctionNode *witness = conformance->witnesses[w];
+				if (witness != nullptr && witness->identifier != nullptr) {
+					entry.witnesses.insert(witness->identifier->name, true);
+				}
+			}
 			for (int identity_index = 0; identity_index < identity_nodes.size(); identity_index++) {
 				const StringName identity = bs_trait_identity_name(identity_nodes[identity_index]);
 				if (identity == StringName()) {
@@ -955,6 +964,90 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 					conformance);
 		}
 	}
+}
+
+BSParser::FunctionNode *BSAnalyzer::find_conformance_witness(const BSParser::DataType &p_target_type, const StringName &p_method) {
+	if (p_method == StringName()) {
+		return nullptr;
+	}
+	const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	if (registry == nullptr) {
+		return nullptr;
+	}
+
+	// Registry witness entries store method-name keys only. Re-find the live FunctionNode from
+	// a parse tree this analysis holds (own file or INTERFACE_SOLVED dependency).
+	auto witness_for_target = [&](const String &p_target_fqcn) -> BSParser::FunctionNode * {
+		String declaring_file;
+		int conformance_index = -1;
+		if (!registry->find_witness_location(p_target_fqcn, p_method, declaring_file, conformance_index)) {
+			return nullptr;
+		}
+
+		BSParser::ClassNode *declaring_class = nullptr;
+		if (parser != nullptr && declaring_file == parser->script_path) {
+			declaring_class = parser->get_tree();
+		} else if (parser != nullptr) {
+			// Keep the declaring parser alive for this analysis via depended_parsers
+			// (Foundry dependency_parser_access), then raise to INTERFACE_SOLVED.
+			Ref<BSParserRef> declaring_ref = parser->get_depended_parser_for(declaring_file);
+			if (declaring_ref.is_valid()) {
+				const Error raise_err = declaring_ref->raise_status(BSParserRef::INTERFACE_SOLVED);
+				if (raise_err == OK && declaring_ref->get_parser() != nullptr) {
+					declaring_class = declaring_ref->get_parser()->get_tree();
+				}
+			}
+		} else {
+			Error err = OK;
+			const Ref<BSParserRef> declaring_ref = BSCache::get_parser(declaring_file, BSParserRef::INTERFACE_SOLVED, err);
+			if (declaring_ref.is_valid() && err == OK && declaring_ref->get_parser() != nullptr) {
+				declaring_class = declaring_ref->get_parser()->get_tree();
+			}
+		}
+		if (declaring_class == nullptr || conformance_index < 0 ||
+				conformance_index >= declaring_class->conformances.size()) {
+			return nullptr;
+		}
+
+		const BSParser::ConformanceNode *conformance = declaring_class->conformances[conformance_index];
+		if (conformance == nullptr) {
+			return nullptr;
+		}
+		for (int w = 0; w < conformance->witnesses.size(); w++) {
+			BSParser::FunctionNode *witness = conformance->witnesses[w];
+			if (witness != nullptr && witness->identifier != nullptr && witness->identifier->name == p_method) {
+				return witness;
+			}
+		}
+		return nullptr;
+	};
+
+	// Native engine class: walk the inheritance chain (Foundry find_native_witness_function reach).
+	if (p_target_type.kind == BSParser::DataType::NATIVE) {
+		for (StringName cursor = p_target_type.native_type; cursor != StringName(); cursor = ClassDB::get_parent_class(cursor)) {
+			BSParser::FunctionNode *witness = witness_for_target(String(cursor));
+			if (witness != nullptr) {
+				return witness;
+			}
+		}
+		return nullptr;
+	}
+	if (p_target_type.kind == BSParser::DataType::BUILTIN) {
+		return witness_for_target(String(Variant::get_type_name(p_target_type.builtin_type)));
+	}
+
+	// Exact FQCN match only — aliases must not cross class boundaries. Walk script bases so a
+	// witness on a base stays reachable through a derived type.
+	for (const BSParser::ClassNode *cursor = p_target_type.class_type; cursor != nullptr; cursor = cursor->base_type.class_type) {
+		BSParser::FunctionNode *witness = witness_for_target(cursor->fqcn);
+		if (witness != nullptr) {
+			return witness;
+		}
+	}
+	if (p_target_type.class_type == nullptr && !p_target_type.script_path.is_empty()) {
+		return witness_for_target(p_target_type.script_path);
+	}
+	return nullptr;
 }
 
 void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {

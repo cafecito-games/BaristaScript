@@ -65,6 +65,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("scoped_visibility_nest_restore"), &BaristaScriptAnalyzerProbe::scoped_visibility_nest_restore);
 	ClassDB::bind_method(D_METHOD("conformance_registry_registration"),
 			&BaristaScriptAnalyzerProbe::conformance_registry_registration);
+	ClassDB::bind_method(D_METHOD("conformance_witness_lookup"),
+			&BaristaScriptAnalyzerProbe::conformance_witness_lookup);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -409,6 +411,264 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration(
 	registry->clear_file(viewer_path);
 	registry->clear_file(unrelated_path);
 	registry->clear_file(dep_on_declaring);
+	BSCache::clear_source_override(dep_path);
+	BSCache::clear_source_override(unrelated_path);
+
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::conformance_witness_lookup() const {
+	godot::Dictionary result;
+
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	ERR_FAIL_COND_V(registry == nullptr, result);
+
+	const String declaring_path = "res://tests/wit_declare.barista";
+	const String native_path = "res://tests/wit_native.barista";
+	const String native_arity_path = "res://tests/wit_native_arity.barista";
+	const String class_arity_path = "res://tests/wit_class_arity.barista";
+	const String viewer_path = "res://tests/wit_viewer.barista";
+	const String dep_path = "res://tests/wit_dep.barista";
+	const String unrelated_path = "res://tests/wit_unrelated.barista";
+	const String dep_on_declaring = "res://tests/wit_dep_on_decl.barista";
+
+	registry->clear_file(declaring_path);
+	registry->clear_file(native_path);
+	registry->clear_file(native_arity_path);
+	registry->clear_file(class_arity_path);
+	registry->clear_file(viewer_path);
+	registry->clear_file(dep_path);
+	registry->clear_file(unrelated_path);
+	registry->clear_file(dep_on_declaring);
+
+	// Same-file CLASS target: call witness via self (class_name type annotations are not
+	// same-file-resolvable for parameters; self carries the CLASS datatype).
+	const String declaring_source =
+			"class_name WitTarget extends Node\n"
+			"\n"
+			"trait WitGreeter:\n"
+			"\tabstract func greet() -> String\n"
+			"\n"
+			"extend WitTarget uses WitGreeter:\n"
+			"\tfunc greet() -> String:\n"
+			"\t\treturn \"hi\"\n"
+			"\n"
+			"func call_witness() -> String:\n"
+			"\treturn self.greet()\n";
+	{
+		BSCache::set_source_override(declaring_path, declaring_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(declaring_source, declaring_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		godot::PackedStringArray errors;
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			errors.push_back(pe.message);
+		}
+		result["same_file_analyze_ok"] = err == OK && errors.is_empty();
+		result["same_file_errors"] = errors;
+	}
+
+	const Vector<BSConformanceRegistry::Conformance> registered =
+			registry->get_file_conformances(declaring_path);
+	result["registered_count"] = registered.size();
+	StringName lookup_trait;
+	String lookup_target;
+	bool has_greet_witness = false;
+	int conformance_index = -1;
+	if (!registered.is_empty()) {
+		lookup_trait = registered[0].trait_name;
+		lookup_target = registered[0].target_fqcn;
+		conformance_index = registered[0].conformance_index;
+		has_greet_witness = registered[0].witnesses.has(SNAME("greet"));
+	}
+	result["has_greet_witness_key"] = has_greet_witness;
+	result["lookup_target"] = lookup_target;
+	result["lookup_trait"] = String(lookup_trait);
+	result["registered_conformance_index"] = conformance_index;
+
+	String found_file;
+	int found_index = -1;
+	const bool found_location = !lookup_target.is_empty() &&
+			registry->find_witness_location(lookup_target, SNAME("greet"), found_file, found_index);
+	result["find_witness_location_ok"] = found_location && found_file == declaring_path &&
+			found_index == conformance_index;
+
+	// Arity miss proves the CLASS witness signature was applied (VARIANT miss would not check).
+	const String class_arity_source =
+			"class_name WitArityTarget extends Node\n"
+			"\n"
+			"trait WitArityGreeter:\n"
+			"\tabstract func greet() -> String\n"
+			"\n"
+			"extend WitArityTarget uses WitArityGreeter:\n"
+			"\tfunc greet() -> String:\n"
+			"\t\treturn \"hi\"\n"
+			"\n"
+			"func call_witness() -> void:\n"
+			"\tself.greet(1)\n";
+	{
+		BSCache::set_source_override(class_arity_path, class_arity_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(class_arity_source, class_arity_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		bool saw_arity = false;
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			if (pe.message.contains("Too many arguments") && pe.message.contains("greet()")) {
+				saw_arity = true;
+			}
+		}
+		result["class_arity_checks_witness"] = saw_arity;
+	}
+	BSCache::clear_source_override(class_arity_path);
+	registry->clear_file(class_arity_path);
+
+	// Native Node target: typed receiver + call / arity.
+	const String native_source =
+			"trait WitNativeGreeter:\n"
+			"\tabstract func wit_greet() -> String\n"
+			"\n"
+			"extend Node uses WitNativeGreeter:\n"
+			"\tfunc wit_greet() -> String:\n"
+			"\t\treturn \"hi\"\n"
+			"\n"
+			"func use(n: Node) -> String:\n"
+			"\treturn n.wit_greet()\n";
+	{
+		BSCache::set_source_override(native_path, native_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(native_source, native_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		result["native_analyze_ok"] = err == OK && parser.get_errors().is_empty();
+	}
+	BSCache::clear_source_override(native_path);
+
+	const String native_arity_source =
+			"trait WitNativeArity:\n"
+			"\tabstract func wit_greet() -> String\n"
+			"\n"
+			"extend Node uses WitNativeArity:\n"
+			"\tfunc wit_greet() -> String:\n"
+			"\t\treturn \"hi\"\n"
+			"\n"
+			"func use(n: Node) -> void:\n"
+			"\tn.wit_greet(1)\n";
+	{
+		BSCache::set_source_override(native_arity_path, native_arity_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(native_arity_source, native_arity_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		bool saw_arity = false;
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			if (pe.message.contains("Too many arguments") && pe.message.contains("wit_greet()")) {
+				saw_arity = true;
+			}
+		}
+		result["native_arity_checks_witness"] = saw_arity;
+	}
+	BSCache::clear_source_override(native_arity_path);
+	registry->clear_file(native_arity_path);
+	registry->clear_file(native_path);
+
+	// Unrelated viewer under ConformanceVisibility must not see the CLASS witness location.
+	// Re-ensure declaring registration is present (cleared native files only above).
+	{
+		BSCache::set_source_override(declaring_path, declaring_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(declaring_source, declaring_path, false);
+		if (err == OK) {
+			analyzer.analyze();
+		}
+	}
+	const Vector<BSConformanceRegistry::Conformance> refreshed =
+			registry->get_file_conformances(declaring_path);
+	if (!refreshed.is_empty()) {
+		lookup_trait = refreshed[0].trait_name;
+		lookup_target = refreshed[0].target_fqcn;
+	}
+
+	BSCache::set_source_override(dep_path, "class_name WitDep extends Node\n");
+	BSCache::set_source_override(unrelated_path, "class_name WitUnrelated extends Node\n");
+	const String viewer_source = vformat("class_name WitViewer extends \"%s\"\n", dep_path);
+	{
+		BSCache::set_source_override(viewer_path, viewer_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		const Error err = parser.parse(viewer_source, viewer_path, false);
+		result["viewer_parse_ok"] = err == OK;
+		if (err == OK) {
+			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
+			String hidden_file;
+			int hidden_index = -1;
+			result["viewer_hides_witness_location"] = lookup_target.is_empty() ||
+					!registry->find_witness_location(lookup_target, SNAME("greet"), hidden_file, hidden_index);
+			result["viewer_cannot_see_declaring"] =
+					!analyzer.conformance_visibility.can_see(declaring_path);
+		}
+	}
+	BSCache::clear_source_override(viewer_path);
+
+	const String dep_on_declaring_source = vformat(
+			"class_name WitDepOnDecl extends Node\nconst _link = preload(\"%s\")\n", declaring_path);
+	{
+		BSCache::set_source_override(declaring_path, declaring_source);
+		BSCache::set_source_override(dep_on_declaring, dep_on_declaring_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		const Error err = parser.parse(dep_on_declaring_source, dep_on_declaring, false);
+		result["dep_parse_ok"] = err == OK;
+		if (err == OK) {
+			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
+			String seen_file;
+			int seen_index = -1;
+			result["dep_sees_witness_location"] = !lookup_target.is_empty() &&
+					registry->find_witness_location(lookup_target, SNAME("greet"), seen_file, seen_index) &&
+					seen_file == declaring_path;
+		}
+	}
+	BSCache::clear_source_override(dep_on_declaring);
+
+	// Reanalysis without conformances clears witness keys.
+	const String cleared_source = "class_name WitCleared extends Node\n";
+	{
+		BSCache::set_source_override(declaring_path, cleared_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(cleared_source, declaring_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		result["reanalyze_clear_ok"] = err == OK && parser.get_errors().is_empty();
+	}
+	BSCache::clear_source_override(declaring_path);
+	String cleared_file;
+	int cleared_index = -1;
+	result["cleared_witness_location"] = lookup_target.is_empty() ||
+			!registry->find_witness_location(lookup_target, SNAME("greet"), cleared_file, cleared_index);
+	result["cleared_file_empty"] = registry->get_file_conformances(declaring_path).is_empty();
+
+	registry->clear_file(declaring_path);
+	registry->clear_file(native_path);
+	registry->clear_file(native_arity_path);
+	registry->clear_file(class_arity_path);
+	registry->clear_file(viewer_path);
+	registry->clear_file(dep_path);
+	registry->clear_file(unrelated_path);
+	registry->clear_file(dep_on_declaring);
+	BSCache::clear_source_override(declaring_path);
+	BSCache::clear_source_override(native_path);
 	BSCache::clear_source_override(dep_path);
 	BSCache::clear_source_override(unrelated_path);
 

@@ -2,9 +2,9 @@
 /*  bs_conformance_registry.cpp                                           */
 /*                                                                        */
 /*  Hard fork of Foundry fs_conformance_registry.cpp @ c9d5e35. Visibility*/
-/*  stack + declaration store with atomic try_replace_file_conformances. */
-/*  ClassTraitBinding / RecordedTypeArgument / runtime witnesses remain  */
-/*  residual under #60.                                                   */
+/*  stack + declaration store with atomic try_replace_file_conformances  */
+/*  + find_witness_location (method-name keys). ClassTraitBinding /      */
+/*  RecordedTypeArgument / runtime Function* witnesses remain residual.  */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -268,6 +268,31 @@ Vector<BSConformanceRegistry::Conformance> BSConformanceRegistry::get_file_confo
 	std::lock_guard<std::mutex> lock(mutex);
 	const Vector<Conformance> *entries = conformances_by_file.getptr(p_source_file);
 	return entries != nullptr ? *entries : Vector<Conformance>();
+}
+
+bool BSConformanceRegistry::find_witness_location(const String &p_target_fqcn, const StringName &p_method,
+		String &r_source_file, int &r_conformance_index) const {
+	r_source_file = String();
+	r_conformance_index = -1;
+	if (p_target_fqcn.is_empty() || p_method == StringName()) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(mutex);
+	for (const KeyValue<String, Vector<Conformance>> &file_entry : conformances_by_file) {
+		if (!_is_visible(file_entry.key)) {
+			continue;
+		}
+		for (const Conformance &conformance : file_entry.value) {
+			if (conformance.conformance_index < 0 || conformance.target_fqcn != p_target_fqcn ||
+					!conformance.witnesses.has(p_method)) {
+				continue;
+			}
+			r_source_file = conformance.source_file;
+			r_conformance_index = conformance.conformance_index;
+			return true;
+		}
+	}
+	return false;
 }
 
 BSConformanceRegistry::BSConformanceRegistry() {

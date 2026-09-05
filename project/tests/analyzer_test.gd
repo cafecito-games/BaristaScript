@@ -62,6 +62,7 @@ func _init() -> void:
 	_test_foreign_class_phase_failure_replay(failures)
 	_test_conformance_scoped_visibility(failures)
 	_test_conformance_registry_registration(failures)
+	_test_conformance_witness_lookup(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -3084,4 +3085,49 @@ func _test_conformance_registry_registration(failures: PackedStringArray) -> voi
 		_src_class("RegIndexGuard extends Node\n"), "res://tests/reg_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"registry registration probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_conformance_witness_lookup(failures: PackedStringArray) -> void:
+	# Foundry find_witness_location + find_conformance_witness member-miss fallback (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.conformance_witness_lookup()
+
+	_expect(failures, report.get("same_file_analyze_ok", false) == true,
+		"same-file CLASS self.greet() witness call analyzes")
+	_expect(failures, int(report.get("registered_count", 0)) >= 1, "registry stores Conformance with witnesses")
+	_expect(failures, report.get("has_greet_witness_key", false) == true,
+		"registered Conformance stores greet witness method-name key")
+	_expect(failures, report.get("find_witness_location_ok", false) == true,
+		"find_witness_location returns declaring file + conformance_index")
+	_expect(failures, report.get("class_arity_checks_witness", false) == true,
+		"CLASS witness signature applied (arity diagnostic on self.greet(1))")
+
+	_expect(failures, report.get("native_analyze_ok", false) == true,
+		"native Node extend witness call analyzes")
+	_expect(failures, report.get("native_arity_checks_witness", false) == true,
+		"NATIVE witness signature applied (arity diagnostic on wit_greet(1))")
+
+	_expect(failures, report.get("viewer_parse_ok", false) == true, "unrelated viewer parse ok")
+	_expect(failures, report.get("viewer_hides_witness_location", false) == true,
+		"ConformanceVisibility hides find_witness_location for unrelated declaring file")
+	_expect(failures, report.get("viewer_cannot_see_declaring", false) == true,
+		"unrelated viewer cannot_see declaring file")
+
+	_expect(failures, report.get("dep_parse_ok", false) == true, "dependency-of-declaring parse ok")
+	_expect(failures, report.get("dep_sees_witness_location", false) == true,
+		"preload dependency Visibility sees find_witness_location")
+
+	_expect(failures, report.get("reanalyze_clear_ok", false) == true, "empty reanalysis ok")
+	_expect(failures, report.get("cleared_witness_location", false) == true,
+		"empty reanalysis clears find_witness_location")
+	_expect(failures, report.get("cleared_file_empty", false) == true,
+		"empty reanalysis clears file conformances")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("WitIndexGuard extends Node\n"), "res://tests/wit_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"witness lookup probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
