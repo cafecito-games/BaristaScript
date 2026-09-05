@@ -65,6 +65,12 @@ public:
 	 * call resolution via find_conformance_witness. Returns Dictionary of bool checks.
 	 */
 	godot::Dictionary conformance_witness_lookup() const;
+
+	/**
+	 * Drive find_hidden_witness_declaration + find_hidden_conformance_witness diagnostic
+	 * on a viewer that does not load the declaring file. Returns Dictionary of bool checks.
+	 */
+	godot::Dictionary conformance_hidden_witness() const;
 };
 
 } // namespace barista_script

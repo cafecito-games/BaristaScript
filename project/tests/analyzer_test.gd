@@ -63,6 +63,7 @@ func _init() -> void:
 	_test_conformance_scoped_visibility(failures)
 	_test_conformance_registry_registration(failures)
 	_test_conformance_witness_lookup(failures)
+	_test_conformance_hidden_witness(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -3130,4 +3131,52 @@ func _test_conformance_witness_lookup(failures: PackedStringArray) -> void:
 		_src_class("WitIndexGuard extends Node\n"), "res://tests/wit_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"witness lookup probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_conformance_hidden_witness(failures: PackedStringArray) -> void:
+	# Foundry find_hidden_witness_declaration + hidden-conformance diagnostic (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.conformance_hidden_witness()
+
+	_expect(failures, report.get("declaring_analyze_ok", false) == true,
+		"builtin String extend declaring file analyzes")
+	_expect(failures, int(report.get("registered_count", 0)) >= 1, "registry stores hidden-witness Conformance")
+	_expect(failures, report.get("has_hid_mark_key", false) == true,
+		"registered Conformance stores hid_mark witness method-name key")
+	_expect(failures, report.get("visible_find_witness_location", false) == true,
+		"with no Visibility, find_witness_location finds declaring file")
+	_expect(failures, report.get("no_visibility_hides_nothing", false) == true,
+		"with no Visibility, find_hidden_witness_declaration is empty")
+
+	_expect(failures, report.get("viewer_parse_ok", false) == true, "unrelated viewer parse ok")
+	_expect(failures, report.get("viewer_analyze_failed", false) == true,
+		"unrelated viewer must not silently succeed on hidden witness call")
+	_expect(failures, report.get("viewer_hidden_diagnostic", false) == true,
+		"viewer surfaces Foundry hidden-witness diagnostic (method + trait + file)")
+	_expect(failures, report.get("viewer_finds_hidden_declaration", false) == true,
+		"ConformanceVisibility find_hidden_witness_declaration reports declaring file + trait")
+	_expect(failures, report.get("viewer_hides_witness_location", false) == true,
+		"ConformanceVisibility hides find_witness_location for unrelated viewer")
+
+	_expect(failures, report.get("dep_analyze_ok", false) == true,
+		"extends dependency of declaring file still resolves witness call")
+
+	_expect(failures, report.get("final_declaring_analyze_ok", false) == true,
+		"final CLASS same-file extend declaring file analyzes")
+	_expect(failures, report.get("final_has_greet_key", false) == true,
+		"final CLASS Conformance stores hid_greet witness method-name key")
+	_expect(failures, report.get("final_viewer_parse_ok", false) == true,
+		"final CLASS unrelated viewer parse ok")
+	_expect(failures, report.get("final_viewer_finds_hidden", false) == true,
+		"final CLASS ConformanceVisibility find_hidden_witness_declaration reports declaring file")
+	_expect(failures, report.get("final_viewer_hides_location", false) == true,
+		"final CLASS ConformanceVisibility hides find_witness_location")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("HidIndexGuard extends Node\n"), "res://tests/hid_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"hidden-witness probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()

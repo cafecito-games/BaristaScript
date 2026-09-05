@@ -3,8 +3,9 @@
 /*                                                                        */
 /*  Hard fork of Foundry fs_conformance_registry.cpp @ c9d5e35. Visibility*/
 /*  stack + declaration store with atomic try_replace_file_conformances  */
-/*  + find_witness_location (method-name keys). ClassTraitBinding /      */
-/*  RecordedTypeArgument / runtime Function* witnesses remain residual.  */
+/*  + find_witness_location / find_hidden_witness_declaration            */
+/*  (method-name keys). ClassTraitBinding / RecordedTypeArgument /       */
+/*  runtime Function* witnesses remain residual.                         */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -289,6 +290,30 @@ bool BSConformanceRegistry::find_witness_location(const String &p_target_fqcn, c
 			}
 			r_source_file = conformance.source_file;
 			r_conformance_index = conformance.conformance_index;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool BSConformanceRegistry::find_hidden_witness_declaration(const String &p_target_fqcn, const StringName &p_method,
+		String &r_source_file, StringName &r_trait_name) const {
+	r_source_file = String();
+	r_trait_name = StringName();
+	if (p_target_fqcn.is_empty() || p_method == StringName()) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(mutex);
+	for (const KeyValue<String, Vector<Conformance>> &file_entry : conformances_by_file) {
+		if (_is_visible(file_entry.key)) {
+			continue;
+		}
+		for (const Conformance &conformance : file_entry.value) {
+			if (conformance.target_fqcn != p_target_fqcn || !conformance.witnesses.has(p_method)) {
+				continue;
+			}
+			r_source_file = conformance.source_file;
+			r_trait_name = conformance.trait_name;
 			return true;
 		}
 	}

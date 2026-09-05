@@ -1932,6 +1932,23 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						p_call->is_noreturn = witness->is_noreturn;
 						return;
 					}
+					// Foundry unresolved-call path @ c9d5e35: a hidden (not visible) witness is
+					// rejected with a concrete diagnostic instead of a silent member-miss.
+					if (!p_call->is_super) {
+						String hidden_conformance_source;
+						StringName hidden_conformance_trait;
+						if (find_hidden_conformance_witness(witness_base, p_call->function_name,
+									hidden_conformance_source, hidden_conformance_trait)) {
+							push_error(vformat(R"*(Cannot call "%s()" on "%s": it is supplied by the retroactive conformance to trait "%s" declared in "%s", which this file does not load. Import that file's namespace, or preload it.)*",
+											   p_call->function_name, witness_base.to_string(), hidden_conformance_trait,
+											   bs_diagnostic_file_reference(hidden_conformance_source)),
+									p_call->callee != nullptr ? p_call->callee : static_cast<const BSParser::Node *>(p_call));
+							BSParser::DataType call_type;
+							call_type.kind = BSParser::DataType::VARIANT;
+							p_call->set_datatype(call_type);
+							return;
+						}
+					}
 				}
 			}
 		}
@@ -1983,6 +2000,21 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					validate_local_call(p_call, witness);
 					p_call->is_noreturn = witness->is_noreturn;
 					return;
+				}
+				if (!p_call->is_super) {
+					String hidden_conformance_source;
+					StringName hidden_conformance_trait;
+					if (find_hidden_conformance_witness(self_type, fname, hidden_conformance_source,
+								hidden_conformance_trait)) {
+						push_error(vformat(R"*(Cannot call "%s()" on "%s": it is supplied by the retroactive conformance to trait "%s" declared in "%s", which this file does not load. Import that file's namespace, or preload it.)*",
+										   fname, self_type.to_string(), hidden_conformance_trait,
+										   bs_diagnostic_file_reference(hidden_conformance_source)),
+								p_call->callee != nullptr ? p_call->callee : static_cast<const BSParser::Node *>(p_call));
+						BSParser::DataType call_type;
+						call_type.kind = BSParser::DataType::VARIANT;
+						p_call->set_datatype(call_type);
+						return;
+					}
 				}
 			}
 		}

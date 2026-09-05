@@ -11,9 +11,10 @@
 /*  can_see BFS. resolve_conformances publishes validated entries via    */
 /*  try_replace under ScopedInFlight (witness method-name keys).         */
 /*  find_conformance_witness re-resolves live FunctionNodes via          */
-/*  find_witness_location + declaring parse tree. ClassTraitBinding /    */
-/*  RecordedTypeArgument / runtime Function* / chain coherence remain    */
-/*  residual under #60.                                                  */
+/*  find_witness_location + declaring parse tree;                        */
+/*  find_hidden_conformance_witness reports Visibility-hidden witnesses. */
+/*  ClassTraitBinding / RecordedTypeArgument / runtime Function* / chain */
+/*  coherence remain residual under #60.                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -1048,6 +1049,78 @@ BSParser::FunctionNode *BSAnalyzer::find_conformance_witness(const BSParser::Dat
 		return witness_for_target(p_target_type.script_path);
 	}
 	return nullptr;
+}
+
+// A type parameter stands for whatever satisfies its bound, and a conformance declared on the bound
+// is reachable through every such value, so both witness questions are answered against the bound.
+// Only a class bound is substituted — a builtin bound would otherwise reach the builtin arm of the
+// hidden-witness gate and newly diagnose calls the builtin's own member resolution already handles.
+static BSParser::DataType _conformance_target_through_type_parameter(const BSParser::DataType &p_type) {
+	if (p_type.kind == BSParser::DataType::TYPE_PARAMETER && !p_type.type_parameter_bound.is_empty() &&
+			p_type.type_parameter_bound[0].kind == BSParser::DataType::CLASS) {
+		return p_type.type_parameter_bound[0];
+	}
+	return p_type;
+}
+
+bool BSAnalyzer::reachable_conformance_supplies_method(const BSParser::DataType &p_target_type, const StringName &p_method) {
+	const BSParser::DataType target_type = _conformance_target_through_type_parameter(p_target_type);
+	if (p_method == StringName()) {
+		return false;
+	}
+	const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	if (registry == nullptr) {
+		return false;
+	}
+
+	// Walk the base chain: a conformance on a base stays reachable through a derived type.
+	for (const BSParser::ClassNode *cursor = target_type.class_type; cursor != nullptr; cursor = cursor->base_type.class_type) {
+		String witness_source;
+		int witness_conformance_index = -1;
+		if (registry->find_witness_location(cursor->fqcn, p_method, witness_source, witness_conformance_index)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool BSAnalyzer::find_hidden_conformance_witness(const BSParser::DataType &p_target_type, const StringName &p_method,
+		String &r_source_file, StringName &r_trait_name) {
+	const BSParser::DataType target_type = _conformance_target_through_type_parameter(p_target_type);
+	r_source_file = String();
+	r_trait_name = StringName();
+	if (p_method == StringName()) {
+		return false;
+	}
+	const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	if (registry == nullptr) {
+		return false;
+	}
+
+	// Only a receiver whose runtime type is exactly its static type is diagnosed. An unresolved
+	// method on an open type is legal and merely unsafe: a subtype may declare the method normally.
+	// A builtin has no subtypes, and neither does a `final` class.
+	const bool is_builtin_receiver = target_type.kind == BSParser::DataType::BUILTIN;
+	if (!is_builtin_receiver && (target_type.class_type == nullptr || !target_type.class_type->is_final)) {
+		return false;
+	}
+
+	if (is_builtin_receiver) {
+		return registry->find_hidden_witness_declaration(String(Variant::get_type_name(target_type.builtin_type)),
+				p_method, r_source_file, r_trait_name);
+	}
+
+	// A conformance this file *can* reach means the call has a well-defined meaning — leave it
+	// alone. Only a name that no reachable conformance supplies is reported.
+	if (reachable_conformance_supplies_method(target_type, p_method)) {
+		return false;
+	}
+	for (const BSParser::ClassNode *cursor = target_type.class_type; cursor != nullptr; cursor = cursor->base_type.class_type) {
+		if (registry->find_hidden_witness_declaration(cursor->fqcn, p_method, r_source_file, r_trait_name)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {
