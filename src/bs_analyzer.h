@@ -22,6 +22,7 @@
 /*  contextual `.Case` match / `is` qualification (#60),                  */
 /*  expression-position `.Case` construction for assign/return (#60),     */
 /*  array/dict/cast/ternary `.Case` consumer finalization (#60),          */
+/*  tagged-union / plain-enum / bool match exhaustiveness (#60),          */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -338,9 +339,22 @@ private:
 	/**
 	 * Foundry resolve_match_pattern @ c9d5e35: LITERAL / EXPRESSION / WILDCARD / BIND /
 	 * ENUM_CASE / ARRAY / DICTIONARY / TUPLE / REST, including contextual `.Case` match /
-	 * `is` qualification. Tagged-union exhaustiveness remains follow-up under #60.
+	 * `is` qualification. Exhaustiveness is computed by check_match_exhaustiveness.
 	 */
 	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type = nullptr, bool p_subject_errored = false);
+
+	/** What one match pattern proves about a tagged-union subject's case set (Foundry @ c9d5e35). */
+	enum TaggedUnionPatternCoverage {
+		TAGGED_UNION_PATTERN_COVERS_NOTHING,
+		TAGGED_UNION_PATTERN_COVERS_CASE,
+		TAGGED_UNION_PATTERN_COVERS_NULL,
+		TAGGED_UNION_PATTERN_COVERAGE_UNPROVABLE,
+	};
+
+	static TaggedUnionPatternCoverage tagged_union_pattern_coverage(const BSParser::PatternNode *p_pattern, const BSParser::DataType &p_match_type, int64_t &r_covered_tag);
+	static bool match_branch_always_matches(const BSParser::MatchBranchNode *p_branch);
+	bool collect_uncovered_tagged_union_cases(const BSParser::MatchNode *p_match, const BSParser::DataType &p_match_type, Vector<String> &r_uncovered) const;
+	bool collect_uncovered_domain_values(const BSParser::MatchNode *p_match, const BSParser::DataType &p_match_type, const HashMap<StringName, int64_t> &p_domain_values, Vector<String> &r_uncovered) const;
 	/** Foundry resolve_match_case_pattern @ c9d5e35: `Message.Move(x, _)` / `.Move(x, _)` payload typing. */
 	void resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type, bool p_subject_errored = false);
 	/**
@@ -389,6 +403,7 @@ private:
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);
 	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee);
+	/** Foundry check_match_exhaustiveness @ c9d5e35: bool / tagged-union / plain-enum coverage. */
 	void check_match_exhaustiveness(BSParser::MatchNode *p_match);
 	bool suite_has_return(const BSParser::SuiteNode *p_suite) const;
 	/** True when a RETURN statement appears on some path (excludes `@noreturn` calls). */

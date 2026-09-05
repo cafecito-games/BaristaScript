@@ -47,6 +47,7 @@ func _init() -> void:
 	_test_union_store_carrier_select(failures)
 	_test_enum_case_match_and_case_binds(failures)
 	_test_contextual_case_shorthand(failures)
+	_test_tagged_union_match_exhaustiveness(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1967,3 +1968,72 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 		"contextual cast construction remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for contextual case")
+
+
+func _test_tagged_union_match_exhaustiveness(failures: PackedStringArray) -> void:
+	# Foundry check_match_exhaustiveness tagged-union / plain-enum slice @ c9d5e35 (#60).
+	# Warning apply runs in finalize; a flow-finality return error can exit analyze before that,
+	# so NON_EXHAUSTIVE fixtures use void bodies (same pattern as Foundry's match-finality tests).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
+	ProjectSettings.set_setting("debug/barista_script/warnings/non_exhaustive_match", 1) # WARN
+	ProjectSettings.set_setting("debug/barista_script/warnings/open_enum_match_without_default", 1) # WARN
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	var incomplete := _src_class("TaggedMatchIncomplete extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\tpass\n")
+	var incomplete_report: Dictionary = probe.validate_source(incomplete, "res://tests/tagged_match_incomplete.barista", true)
+	_expect(failures, incomplete_report.get("valid", false) == true, "non-exhaustive tagged-union void match stays valid (warning-only)")
+	var saw_non_exhaustive := false
+	var saw_quit_uncovered := false
+	for warn in incomplete_report.get("warnings", []):
+		if "NON_EXHAUSTIVE_MATCH" in str(warn.get("string_code", "")):
+			saw_non_exhaustive = true
+		if "Quit" in str(warn.get("message", "")):
+			saw_quit_uncovered = true
+	_expect(failures, saw_non_exhaustive, "tagged-union match emits NON_EXHAUSTIVE_MATCH")
+	_expect(failures, saw_quit_uncovered, "NON_EXHAUSTIVE_MATCH lists uncovered Quit case")
+
+	# covers_subject_domain false keeps value-returning matches fail-closed for flow finality.
+	var incomplete_ret := _src_class("TaggedMatchIncompleteRet extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\treturn dx + dy\n")
+	var incomplete_ret_report: Dictionary = probe.analyze_source(incomplete_ret, "res://tests/tagged_match_incomplete_ret.barista")
+	_expect(failures, incomplete_ret_report.get("valid", true) == false, "non-exhaustive tagged-union match / missing return is invalid")
+	var saw_flow := false
+	for message in incomplete_ret_report.get("errors", PackedStringArray()):
+		if "Not all code paths return a value" in message:
+			saw_flow = true
+	_expect(failures, saw_flow, "non-covering tagged-union match fails return-path flow finality")
+
+	var exhaustive := _src_class("TaggedMatchOk extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\tMessage.Move(dx, dy):\n\t\t\treturn dx + dy\n\t\tMessage.Quit:\n\t\t\treturn 0\n")
+	var exhaustive_report: Dictionary = probe.analyze_source(exhaustive, "res://tests/tagged_match_ok.barista")
+	_expect(failures, exhaustive_report.get("valid", false) == true, "exhaustive tagged-union match with returns is valid")
+	var saw_exhaustive_warn := false
+	for warn in exhaustive_report.get("warnings", []):
+		if "NON_EXHAUSTIVE_MATCH" in str(warn.get("string_code", "")):
+			saw_exhaustive_warn = true
+	_expect(failures, not saw_exhaustive_warn, "exhaustive tagged-union match has no NON_EXHAUSTIVE_MATCH")
+
+	var contextual_ok := _src_class("TaggedMatchContextualOk extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(msg: Message) -> int:\n\tmatch msg:\n\t\t.Move(dx):\n\t\t\treturn dx\n\t\t.Quit:\n\t\t\treturn 0\n")
+	var contextual_ok_report: Dictionary = probe.analyze_source(contextual_ok, "res://tests/tagged_match_contextual_ok.barista")
+	_expect(failures, contextual_ok_report.get("valid", false) == true, "exhaustive contextual .Case match is valid")
+
+	var plain_enum := _src_class("PlainEnumMatch extends Node\nenum Level:\n\tLow = 1\n\tHigh = 2\nfunc handle(level: Level) -> void:\n\tmatch level:\n\t\tLevel.Low:\n\t\t\tpass\n\t\tLevel.High:\n\t\t\tpass\n")
+	var plain_enum_report: Dictionary = probe.validate_source(plain_enum, "res://tests/plain_enum_match.barista", true)
+	_expect(failures, plain_enum_report.get("valid", false) == true, "plain-enum match stays valid (warning-only)")
+	var saw_open_enum := false
+	for warn in plain_enum_report.get("warnings", []):
+		if "OPEN_ENUM_MATCH_WITHOUT_DEFAULT" in str(warn.get("string_code", "")):
+			saw_open_enum = true
+	_expect(failures, saw_open_enum, "plain enum match emits OPEN_ENUM_MATCH_WITHOUT_DEFAULT")
+
+	var bool_ok := _src_class("BoolMatchStillOk extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\t\tfalse:\n\t\t\treturn 0\n")
+	var bool_ok_report: Dictionary = probe.analyze_source(bool_ok, "res://tests/bool_match_still_ok.barista")
+	_expect(failures, bool_ok_report.get("valid", false) == true, "exhaustive bool match remains valid after exhaustiveness port")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(exhaustive, "res://tests/tagged_match_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "exhaustive tagged match remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(exhaustive, "res://tests/tagged_match_is_valid.barista"),
+		"exhaustive tagged match remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for tagged exhaustiveness")

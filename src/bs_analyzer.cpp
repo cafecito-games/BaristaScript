@@ -1044,6 +1044,16 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			p_identifier->set_datatype(call_site_validation.callable_type_from_function(member.function));
 			return;
 		}
+		if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
+			// Foundry reduce_identifier ENUM meta @ c9d5e35: bare enum name is the meta type so
+			// `Message.Quit` can fold through reduce_subscript for match exhaustiveness.
+			const BSParser::DataType enum_meta = lookup_local_enum_meta_type(p_identifier->name, p_identifier);
+			if (enum_meta.is_set()) {
+				p_identifier->set_datatype(enum_meta);
+				p_identifier->is_constant = true;
+				return;
+			}
+		}
 	}
 	// Foundry surface: flattened trait members are visible on the implementer (#60).
 	if (current_class != nullptr) {
@@ -1290,6 +1300,37 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 	}
 	reduce_expression(p_subscript->base);
 	if (p_subscript->is_attribute) {
+		// Foundry reduce_subscript ENUM meta case fold @ c9d5e35: `Message.Quit` / plain
+		// `Level.Low` are constant values (tagged-union `[tag]` singleton or INT ordinal).
+		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr) {
+			const BSParser::DataType base_type = p_subscript->base->get_datatype();
+			const StringName case_name = p_subscript->attribute->name;
+			if (base_type.kind == BSParser::DataType::ENUM && base_type.is_meta_type && base_type.enum_values.has(case_name)) {
+				BSParser::DataType case_type = type_from_metatype(base_type);
+				if (base_type.is_tagged_union) {
+					if (base_type.get_enum_case_payload(case_name) != nullptr) {
+						case_type.is_pseudo_type = true;
+						case_type.enum_case_name = case_name;
+						p_subscript->attribute->set_datatype(case_type);
+						p_subscript->set_datatype(case_type);
+						push_error(vformat(R"*(Enum case "%s.%s" carries a payload and must be constructed, e.g. "%s.%s(...)".)*",
+										   base_type.enum_type, case_name, base_type.enum_type, case_name),
+								p_subscript);
+						return;
+					}
+					p_subscript->attribute->set_datatype(case_type);
+					p_subscript->set_datatype(case_type);
+					p_subscript->is_constant = true;
+					p_subscript->reduced_value = _tagged_union_case_singleton(base_type.enum_values[case_name]);
+					return;
+				}
+				p_subscript->attribute->set_datatype(case_type);
+				p_subscript->set_datatype(case_type);
+				p_subscript->is_constant = true;
+				p_subscript->reduced_value = base_type.enum_values[case_name];
+				return;
+			}
+		}
 		// Bind `self.<member>` and same-class `ClassName.<static>` so flow finality can see
 		// MEMBER_VARIABLE / STATIC_VARIABLE on the attribute (Foundry resolve_subscript @ c9d5e35).
 		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr && current_class != nullptr &&
@@ -2618,78 +2659,293 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class) {
 	current_class = previous;
 }
 
+bool BSAnalyzer::match_branch_always_matches(const BSParser::MatchBranchNode *p_branch) {
+	if (p_branch == nullptr || p_branch->guard_body != nullptr) {
+		return false; // A guard can fail, so the branch is not guaranteed to run.
+	}
+	for (int i = 0; i < p_branch->patterns.size(); i++) {
+		const BSParser::PatternNode *pattern = p_branch->patterns[i];
+		// Only the type-test shape is consulted here. A tuple pattern can also be irrefutable, but
+		// whether that closes a match's no-match path is a separate question from this one.
+		if (pattern != nullptr && pattern->is_subject_type_test && pattern->is_irrefutable) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void BSAnalyzer::check_match_exhaustiveness(BSParser::MatchNode *p_match) {
-	if (p_match == nullptr || p_match->test == nullptr) {
+	if (p_match == nullptr) {
 		return;
 	}
 	p_match->covers_subject_domain = false;
 	p_match->subject_domain_name = String();
 	p_match->uncovered_domain_values = String();
+	p_match->uncovered_case_names.clear();
+	p_match->uncovered_includes_null = false;
+	p_match->subject_domain_is_open_enum = false;
 
+	if (p_match->test == nullptr) {
+		return; // Parse error: `match` with no test expression.
+	}
+	const BSParser::DataType &match_type = p_match->test->get_datatype();
+	if (!match_type.is_set()) {
+		return; // Type unknown; cannot classify the domain.
+	}
+
+	// A branch counts as a default with an unguarded wildcard/bind pattern, or with a same-subject type
+	// test that accepts the subject's whole domain. The parser already clears `has_wildcard` when a
+	// guard is present.
 	bool has_default = false;
 	for (int i = 0; i < p_match->branches.size(); i++) {
 		BSParser::MatchBranchNode *branch = p_match->branches[i];
-		if (branch != nullptr && branch->has_wildcard) {
+		if (branch != nullptr && (branch->has_wildcard || match_branch_always_matches(branch))) {
 			has_default = true;
 			break;
 		}
 	}
+
+	// A branch that always matches leaves no fallthrough whatever the subject's domain looks like, so
+	// this settles coverage before the domain is classified.
 	if (has_default) {
 		p_match->covers_subject_domain = true;
 		return;
 	}
 
-	const BSParser::DataType match_type = p_match->test->get_datatype();
-	if (match_type.kind == BSParser::DataType::BUILTIN && match_type.builtin_type == Variant::BOOL) {
-		HashSet<bool> covered;
-		for (int i = 0; i < p_match->branches.size(); i++) {
-			BSParser::MatchBranchNode *branch = p_match->branches[i];
-			if (branch == nullptr) {
-				continue;
-			}
-			for (int p = 0; p < branch->patterns.size(); p++) {
-				BSParser::PatternNode *pattern = branch->patterns[p];
-				if (pattern == nullptr) {
-					continue;
-				}
-				if (pattern->pattern_type == BSParser::PatternNode::PT_LITERAL && pattern->literal != nullptr &&
-						pattern->literal->value.get_type() == Variant::BOOL) {
-					covered.insert(bool(pattern->literal->value));
-				} else if (pattern->pattern_type == BSParser::PatternNode::PT_EXPRESSION && pattern->expression != nullptr &&
-						pattern->expression->is_constant && pattern->expression->reduced_value.get_type() == Variant::BOOL) {
-					covered.insert(bool(pattern->expression->reduced_value));
-				}
-			}
-		}
-		Vector<String> unhandled;
-		if (!covered.has(false)) {
-			unhandled.push_back("false");
-		}
-		if (!covered.has(true)) {
-			unhandled.push_back("true");
-		}
-		p_match->subject_domain_name = "bool";
-		if (unhandled.is_empty()) {
-			p_match->covers_subject_domain = true;
-			return;
-		}
-		PackedStringArray uncovered_packed;
-		for (int u = 0; u < unhandled.size(); u++) {
-			uncovered_packed.push_back(unhandled[u]);
-		}
-		p_match->uncovered_domain_values = String(", ").join(uncovered_packed);
+	// Classify the matched type's domain.
+	// `domain_values` maps each value's display name to its integer value.
+	// Iteration order follows insertion order (Godot HashMap), i.e. enum
+	// declaration order, so the unhandled list is deterministic.
+	// A plain enum is an open domain rather than a finite one: its declared members name values, but
+	// the integer carrier accepts undeclared values, so no set of value patterns closes the match.
+	const bool is_tagged_union = match_type.is_tagged_union_type();
+	const bool is_plain_enum = match_type.kind == BSParser::DataType::ENUM && !match_type.is_tagged_union;
+	bool is_finite_domain = is_tagged_union;
+	HashMap<StringName, int64_t> domain_values;
+	String type_name;
+	if (is_tagged_union) {
+		type_name = match_type.enum_type;
+	} else if (is_plain_enum) {
+		domain_values = match_type.enum_values;
+		type_name = match_type.enum_type;
+	} else if (match_type.kind == BSParser::DataType::BUILTIN && match_type.builtin_type == Variant::BOOL) {
+		is_finite_domain = true;
+		domain_values[SNAME("false")] = 0;
+		domain_values[SNAME("true")] = 1;
+		type_name = "bool";
+	}
+
+	if (!is_finite_domain && !is_plain_enum) {
 #ifdef DEBUG_ENABLED
-		Vector<String> symbols;
-		symbols.push_back("bool");
-		symbols.push_back(p_match->uncovered_domain_values);
-		push_warning(p_match, BSWarning::NON_EXHAUSTIVE_MATCH, symbols);
+		push_warning(p_match, BSWarning::MATCH_WITHOUT_DEFAULT);
 #endif
 		return;
 	}
 
+	if (is_plain_enum) {
+		p_match->subject_domain_name = type_name;
+		p_match->subject_domain_is_open_enum = true;
+	}
+
+	Vector<String> unhandled;
+	const bool coverage_is_provable = is_tagged_union
+			? collect_uncovered_tagged_union_cases(p_match, match_type, unhandled)
+			: collect_uncovered_domain_values(p_match, match_type, domain_values, unhandled);
+	if (coverage_is_provable) {
+		p_match->subject_domain_name = type_name;
+		p_match->covers_subject_domain = is_finite_domain && unhandled.is_empty();
+	}
+
+	const bool has_unhandled_values = coverage_is_provable && !unhandled.is_empty();
 #ifdef DEBUG_ENABLED
-	push_warning(p_match, BSWarning::MATCH_WITHOUT_DEFAULT);
+	// A plain enum without a catch-all always leaves undeclared carrier values unhandled, so it owns a
+	// diagnostic of its own whether or not declared members are missing too.
+	if (is_plain_enum && !has_unhandled_values) {
+		Vector<String> symbols;
+		symbols.push_back(type_name);
+		symbols.push_back(String());
+		push_warning(p_match, BSWarning::OPEN_ENUM_MATCH_WITHOUT_DEFAULT, symbols);
+	}
 #endif
+	if (!has_unhandled_values) {
+		return; // Coverage is settled, or could not be determined and the match stays non-covering.
+	}
+
+	// Structured coverage is published for tagged unions only, where each uncovered entry is a case
+	// name (or the `null` value of a nullable subject) that tooling can turn back into a pattern.
+	if (is_tagged_union) {
+		for (int u = 0; u < unhandled.size(); u++) {
+			const String &value = unhandled[u];
+			if (match_type.is_nullable && value == "null") {
+				p_match->uncovered_includes_null = true;
+			} else {
+				p_match->uncovered_case_names.push_back(StringName(value));
+			}
+		}
+	}
+
+	PackedStringArray uncovered_packed;
+	for (int u = 0; u < unhandled.size(); u++) {
+		uncovered_packed.push_back(unhandled[u]);
+	}
+	p_match->uncovered_domain_values = String(", ").join(uncovered_packed);
+#ifdef DEBUG_ENABLED
+	Vector<String> symbols;
+	symbols.push_back(type_name);
+	symbols.push_back(p_match->uncovered_domain_values);
+	push_warning(p_match, is_plain_enum ? BSWarning::OPEN_ENUM_MATCH_WITHOUT_DEFAULT : BSWarning::NON_EXHAUSTIVE_MATCH, symbols);
+#endif
+}
+
+bool BSAnalyzer::collect_uncovered_domain_values(const BSParser::MatchNode *p_match, const BSParser::DataType &p_match_type, const HashMap<StringName, int64_t> &p_domain_values, Vector<String> &r_uncovered) const {
+	if (p_match == nullptr || p_domain_values.is_empty()) {
+		return false; // Nothing to check; claim no coverage.
+	}
+
+	// `match` compares typeof() before value, so only same-typed constants can
+	// cover a value at runtime: INT for enums, BOOL for the bool domain.
+	const Variant::Type expected_type = p_match_type.kind == BSParser::DataType::ENUM ? Variant::INT : Variant::BOOL;
+
+	// For nullable types, `null` (`Variant::NIL`) is a valid runtime value that
+	// no enum integer or bool constant can cover, so it must be handled by an
+	// explicit `null` pattern (or a wildcard) to be exhaustive.
+	const bool domain_includes_null = p_match_type.is_nullable;
+
+	bool null_covered = false;
+	HashSet<int64_t> covered_values;
+	for (int b = 0; b < p_match->branches.size(); b++) {
+		const BSParser::MatchBranchNode *branch = p_match->branches[b];
+		if (branch == nullptr || branch->guard_body != nullptr) {
+			continue; // Guard may fail; does not guarantee coverage.
+		}
+		for (int p = 0; p < branch->patterns.size(); p++) {
+			const BSParser::PatternNode *pattern = branch->patterns[p];
+			if (pattern == nullptr) {
+				continue;
+			}
+			const BSParser::ExpressionNode *value_node = nullptr;
+			if (pattern->pattern_type == BSParser::PatternNode::PT_LITERAL) {
+				value_node = pattern->literal;
+			} else if (pattern->pattern_type == BSParser::PatternNode::PT_EXPRESSION) {
+				value_node = pattern->expression;
+			} else {
+				// Array/dictionary patterns cannot cover enum integers or bool values.
+				continue;
+			}
+
+			if (value_node == nullptr || !value_node->is_constant) {
+				return false; // Non-constant pattern: cannot prove coverage; bail out.
+			}
+			if (value_node->reduced_value.get_type() != expected_type) {
+				// A `null` pattern covers the nullable domain's `null` value.
+				if (domain_includes_null && value_node->reduced_value.get_type() == Variant::NIL) {
+					null_covered = true;
+				}
+				// A different-typed constant can never match this domain at
+				// runtime (match compares typeof() first), so it covers nothing.
+				continue;
+			}
+			covered_values.insert((int64_t)value_node->reduced_value);
+		}
+	}
+
+	for (const KeyValue<StringName, int64_t> &E : p_domain_values) {
+		if (!covered_values.has(E.value)) {
+			r_uncovered.push_back(String(E.key));
+		}
+	}
+	if (domain_includes_null && !null_covered) {
+		r_uncovered.push_back("null");
+	}
+	return true;
+}
+
+BSAnalyzer::TaggedUnionPatternCoverage BSAnalyzer::tagged_union_pattern_coverage(const BSParser::PatternNode *p_pattern, const BSParser::DataType &p_match_type, int64_t &r_covered_tag) {
+	if (p_pattern == nullptr) {
+		return TAGGED_UNION_PATTERN_COVERS_NOTHING;
+	}
+
+	if (p_pattern->pattern_type == BSParser::PatternNode::PT_ENUM_CASE) {
+		const BSParser::DataType &case_type = p_pattern->case_datatype;
+		if (!p_pattern->case_payload_is_irrefutable || case_type.enum_type != p_match_type.enum_type) {
+			return TAGGED_UNION_PATTERN_COVERS_NOTHING; // A refutable payload pattern proves nothing about the case.
+		}
+		const int64_t *tag = case_type.enum_values.getptr(case_type.enum_case_name);
+		if (tag == nullptr) {
+			return TAGGED_UNION_PATTERN_COVERS_NOTHING;
+		}
+		r_covered_tag = *tag;
+		return TAGGED_UNION_PATTERN_COVERS_CASE;
+	}
+
+	const BSParser::ExpressionNode *value_node = nullptr;
+	if (p_pattern->pattern_type == BSParser::PatternNode::PT_LITERAL) {
+		value_node = p_pattern->literal;
+	} else if (p_pattern->pattern_type == BSParser::PatternNode::PT_EXPRESSION) {
+		value_node = p_pattern->expression;
+	} else {
+		return TAGGED_UNION_PATTERN_COVERS_NOTHING; // Array, dictionary and tuple patterns cannot cover a whole case.
+	}
+
+	if (value_node == nullptr || !value_node->is_constant) {
+		return TAGGED_UNION_PATTERN_COVERAGE_UNPROVABLE;
+	}
+	if (value_node->reduced_value.get_type() == Variant::NIL) {
+		return TAGGED_UNION_PATTERN_COVERS_NULL;
+	}
+	// A payload-less case folds to its read-only `[tag]` singleton, which is the only constant
+	// that can cover a case at runtime.
+	const BSParser::DataType &value_type = value_node->get_datatype();
+	if (value_node->reduced_value.get_type() != Variant::ARRAY || !value_type.is_tagged_union_type() || value_type.enum_type != p_match_type.enum_type) {
+		return TAGGED_UNION_PATTERN_COVERS_NOTHING;
+	}
+	const Array value = value_node->reduced_value;
+	if (value.size() != 1 || value[0].get_type() != Variant::INT) {
+		return TAGGED_UNION_PATTERN_COVERS_NOTHING;
+	}
+	r_covered_tag = (int64_t)value[0];
+	return TAGGED_UNION_PATTERN_COVERS_CASE;
+}
+
+bool BSAnalyzer::collect_uncovered_tagged_union_cases(const BSParser::MatchNode *p_match, const BSParser::DataType &p_match_type, Vector<String> &r_uncovered) const {
+	if (p_match == nullptr || p_match_type.enum_values.is_empty()) {
+		return false;
+	}
+
+	HashSet<int64_t> covered_tags;
+	bool null_covered = false;
+	for (int b = 0; b < p_match->branches.size(); b++) {
+		const BSParser::MatchBranchNode *branch = p_match->branches[b];
+		if (branch == nullptr || branch->guard_body != nullptr) {
+			continue; // Guard may fail; does not guarantee coverage.
+		}
+		for (int p = 0; p < branch->patterns.size(); p++) {
+			const BSParser::PatternNode *pattern = branch->patterns[p];
+			int64_t covered_tag = 0;
+			switch (tagged_union_pattern_coverage(pattern, p_match_type, covered_tag)) {
+				case TAGGED_UNION_PATTERN_COVERS_CASE:
+					covered_tags.insert(covered_tag);
+					break;
+				case TAGGED_UNION_PATTERN_COVERS_NULL:
+					null_covered = true;
+					break;
+				case TAGGED_UNION_PATTERN_COVERAGE_UNPROVABLE:
+					return false; // Non-constant pattern: cannot prove coverage; bail out.
+				case TAGGED_UNION_PATTERN_COVERS_NOTHING:
+					break;
+			}
+		}
+	}
+
+	for (const KeyValue<StringName, int64_t> &E : p_match_type.enum_values) {
+		if (!covered_tags.has(E.value)) {
+			r_uncovered.push_back(String(E.key));
+		}
+	}
+	if (p_match_type.is_nullable && !null_covered) {
+		r_uncovered.push_back("null");
+	}
+	return true;
 }
 
 bool BSAnalyzer::node_terminates(const BSParser::Node *p_node) const {
