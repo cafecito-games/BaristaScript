@@ -13,7 +13,7 @@
 /*  recording and dependent replay (#60 residual after #118), Coroutine[T]*/
 /*  annotation decode in datatype_from_type_node (#60 residual), direct   */
 /*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
-/*  Non-generic SelfFieldLeg for enum Self payload fields (#60 residual). */
+/*  Non-generic SelfFieldLeg + Self-contract RETURN assign/return (#60). */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -1785,6 +1785,18 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	p_identifier->set_datatype(type);
 }
 
+// Forward decls for Self-contract helpers defined later in this TU (Foundry @ c9d5e35).
+namespace {
+bool _is_self_type_parameter(const BSParser::DataType &p_type);
+BSParser::DataType _self_type_for_class(BSParser::ClassNode *p_class);
+BSParser::DataType _self_type_parameter_from_bound(const BSParser::DataType &p_bound);
+BSParser::DataType _self_type_parameter_for_class(BSParser::ClassNode *p_class);
+bool _datatype_contains_self_type_parameter(const BSParser::DataType &p_type);
+BSParser::DataType _substitute_self_type_parameter(const BSParser::DataType &p_type, const BSParser::DataType &p_self_type);
+bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value);
+bool _self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type);
+} // namespace
+
 void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee) {
 	if (p_call == nullptr || p_callee == nullptr) {
 		return;
@@ -1806,6 +1818,16 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 		set_local_call_return_type();
 		return;
 	}
+	// Foundry get_function_signature @ c9d5e35: parameter-position Self is an exact receiver
+	// contract for ordinary instance calls. Stamp before validate_call_arg so PARAMETER admission
+	// and identity gates see the provenance; returns keep the frame Self without the stamp.
+	const bool parameter_self_is_receiver_contract = !p_callee->is_static;
+	BSParser::DataType parameter_self_type;
+	if (parameter_self_is_receiver_contract && current_class != nullptr) {
+		parameter_self_type = _self_type_parameter_from_bound(_self_type_for_class(current_class));
+		parameter_self_type.is_receiver_self_contract = true;
+	}
+
 	List<BSParser::DataType> par_types;
 	int default_arg_count = 0;
 	for (int i = 0; i < p_callee->parameters.size(); i++) {
@@ -1814,7 +1836,12 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 			par_types.push_back(BSParser::DataType());
 			continue;
 		}
-		par_types.push_back(parameter->get_datatype());
+		BSParser::DataType par_type = parameter->get_datatype();
+		if (parameter_self_is_receiver_contract && parameter_self_type.is_set() &&
+				_datatype_contains_self_type_parameter(par_type)) {
+			par_type = _substitute_self_type_parameter(par_type, parameter_self_type);
+		}
+		par_types.push_back(par_type);
 	}
 	// Defaults must be trailing; count only the trailing run so arity matches Foundry.
 	for (int i = p_callee->parameters.size() - 1; i >= 0; i--) {
@@ -1832,6 +1859,10 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	BSParser::DataType rest_storage;
 	if (p_callee->is_vararg() && p_callee->rest_parameter != nullptr) {
 		rest_storage = p_callee->rest_parameter->get_datatype();
+		if (parameter_self_is_receiver_contract && parameter_self_type.is_set() &&
+				_datatype_contains_self_type_parameter(rest_storage)) {
+			rest_storage = _substitute_self_type_parameter(rest_storage, parameter_self_type);
+		}
 		rest_type = &rest_storage;
 	}
 	call_site_validation.validate_call_arg(par_types, default_arg_count, p_callee->is_vararg(), p_call, Vector<int>(), 0, rest_type);
@@ -1963,8 +1994,17 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					native_type = current_class->base_type.native_type;
 				}
 				// CLASS inheritance member methods before native fallback (Foundry @ c9d5e35).
+				// `@Self`-typed receivers (expression `self`, Self-typed locals) resolve against the bound class.
+				BSParser::ClassNode *method_owner = nullptr;
 				if (base_type.kind == BSParser::DataType::CLASS && base_type.class_type != nullptr) {
-					BSParser::FunctionNode *callee = find_class_function(base_type.class_type, p_call->function_name);
+					method_owner = base_type.class_type;
+				} else if (base_type.kind == BSParser::DataType::TYPE_PARAMETER &&
+						base_type.type_parameter_name == SNAME("@Self") && !base_type.type_parameter_bound.is_empty() &&
+						base_type.type_parameter_bound[0].kind == BSParser::DataType::CLASS) {
+					method_owner = base_type.type_parameter_bound[0].class_type;
+				}
+				if (method_owner != nullptr) {
+					BSParser::FunctionNode *callee = find_class_function(method_owner, p_call->function_name);
 					if (callee != nullptr) {
 						validate_local_call(p_call, callee);
 						p_call->is_noreturn = callee->is_noreturn;
@@ -2001,7 +2041,13 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				// Instance witnesses need a receiver (reject on meta-type / class handles).
 				{
 					BSParser::DataType witness_base = base_type;
-					if (is_self && current_class != nullptr &&
+					// Expression `self` is `@Self`; witness lookup keys on the bound CLASS/NATIVE.
+					if (witness_base.kind == BSParser::DataType::TYPE_PARAMETER &&
+							witness_base.type_parameter_name == SNAME("@Self") &&
+							!witness_base.type_parameter_bound.is_empty()) {
+						witness_base = witness_base.type_parameter_bound[0];
+						witness_base.is_meta_type = false;
+					} else if (is_self && current_class != nullptr &&
 							(witness_base.kind == BSParser::DataType::UNRESOLVED ||
 									witness_base.kind == BSParser::DataType::VARIANT ||
 									!witness_base.is_set())) {
@@ -3079,17 +3125,19 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 
 namespace {
 
-// Foundry Self / SelfFieldLeg helpers @ c9d5e35 (non-generic enum-payload slice).
+// Foundry Self / Self-contract helpers @ c9d5e35 (enum SelfFieldLeg + RETURN assign/return).
+// Generalized from the #127 enum-payload slice so assignable / return / assignment sites share
+// the same Self admission rules rather than enum-only copies.
 
-bool _enum_self_is_self_type_parameter(const BSParser::DataType &p_type) {
+bool _is_self_type_parameter(const BSParser::DataType &p_type) {
 	return p_type.kind == BSParser::DataType::TYPE_PARAMETER && p_type.type_parameter_name == SNAME("@Self");
 }
 
-bool _enum_self_is_bare_self_value_parameter(const BSParser::DataType &p_type) {
-	return _enum_self_is_self_type_parameter(p_type) && !p_type.is_type_handle_annotation;
+bool _is_bare_self_value_parameter(const BSParser::DataType &p_type) {
+	return _is_self_type_parameter(p_type) && !p_type.is_type_handle_annotation;
 }
 
-BSParser::DataType _enum_self_type_for_class(BSParser::ClassNode *p_class) {
+BSParser::DataType _self_type_for_class(BSParser::ClassNode *p_class) {
 	BSParser::DataType self_type;
 	if (p_class == nullptr) {
 		return self_type;
@@ -3108,14 +3156,14 @@ BSParser::DataType _enum_self_type_for_class(BSParser::ClassNode *p_class) {
 	return self_type;
 }
 
-BSParser::DataType _enum_self_type_parameter_from_bound(const BSParser::DataType &p_bound) {
+BSParser::DataType _self_type_parameter_from_bound(const BSParser::DataType &p_bound) {
 	BSParser::DataType self_type;
 	self_type.kind = BSParser::DataType::TYPE_PARAMETER;
 	self_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 	self_type.type_parameter_name = SNAME("@Self");
 	self_type.type_parameter_scope = BSParser::DataType::TYPE_PARAMETER_CLASS;
 	self_type.type_parameter_index = -1;
-	if (_enum_self_is_bare_self_value_parameter(p_bound)) {
+	if (_is_bare_self_value_parameter(p_bound)) {
 		if (!p_bound.type_parameter_bound.is_empty()) {
 			self_type.type_parameter_bound.push_back(p_bound.type_parameter_bound[0]);
 		}
@@ -3127,48 +3175,75 @@ BSParser::DataType _enum_self_type_parameter_from_bound(const BSParser::DataType
 	return self_type;
 }
 
-BSParser::DataType _enum_self_type_parameter_for_class(BSParser::ClassNode *p_class) {
-	return _enum_self_type_parameter_from_bound(_enum_self_type_for_class(p_class));
+BSParser::DataType _self_type_parameter_for_class(BSParser::ClassNode *p_class) {
+	return _self_type_parameter_from_bound(_self_type_for_class(p_class));
 }
 
-bool _enum_datatype_contains_self_type_parameter(const BSParser::DataType &p_type) {
-	if (_enum_self_is_self_type_parameter(p_type)) {
+bool _datatype_contains_self_type_parameter(const BSParser::DataType &p_type) {
+	if (_is_self_type_parameter(p_type)) {
 		return true;
 	}
 	for (const BSParser::DataType &element : p_type.container_element_types) {
-		if (_enum_datatype_contains_self_type_parameter(element)) {
+		if (_datatype_contains_self_type_parameter(element)) {
 			return true;
 		}
 	}
 	for (const BSParser::DataType &argument : p_type.type_arguments) {
-		if (_enum_datatype_contains_self_type_parameter(argument)) {
+		if (_datatype_contains_self_type_parameter(argument)) {
 			return true;
 		}
 	}
 	for (const BSParser::DataType &parameter_type : p_type.method_parameter_types) {
-		if (_enum_datatype_contains_self_type_parameter(parameter_type)) {
+		if (_datatype_contains_self_type_parameter(parameter_type)) {
 			return true;
 		}
 	}
 	for (const BSParser::DataType &return_type : p_type.method_return_type) {
-		if (_enum_datatype_contains_self_type_parameter(return_type)) {
+		if (_datatype_contains_self_type_parameter(return_type)) {
 			return true;
 		}
 	}
 	for (const BSParser::DataType &rest_parameter_type : p_type.method_rest_parameter_type) {
-		if (_enum_datatype_contains_self_type_parameter(rest_parameter_type)) {
+		if (_datatype_contains_self_type_parameter(rest_parameter_type)) {
 			return true;
 		}
 	}
 	for (const BSParser::DataType &member : p_type.union_members) {
-		if (_enum_datatype_contains_self_type_parameter(member)) {
+		if (_datatype_contains_self_type_parameter(member)) {
 			return true;
 		}
 	}
 	return false;
 }
 
-BSParser::DataType _enum_substitute_self_type_parameter(const BSParser::DataType &p_type, const BSParser::DataType &p_self_type) {
+void _clear_receiver_self_contract(BSParser::DataType &r_type) {
+	// Foundry clear_receiver_self_contract @ c9d5e35 (fs_analyzer_call_validation.cpp): strip the
+	// receiver-contract stamp when a signature is captured into a Callable where no call site can
+	// decide identity. Walk mirrors every slot identity admission reads.
+	r_type.is_receiver_self_contract = false;
+	for (int i = 0; i < r_type.container_element_types.size(); i++) {
+		_clear_receiver_self_contract(r_type.container_element_types.write[i]);
+	}
+	for (int i = 0; i < r_type.type_arguments.size(); i++) {
+		BSParser::DataType type_argument = r_type.type_arguments[i];
+		_clear_receiver_self_contract(type_argument);
+		r_type.set_type_argument(i, type_argument);
+	}
+	for (int i = 0; i < r_type.method_parameter_types.size(); i++) {
+		_clear_receiver_self_contract(r_type.method_parameter_types.write[i]);
+	}
+	for (int i = 0; i < r_type.method_return_type.size(); i++) {
+		_clear_receiver_self_contract(r_type.method_return_type.write[i]);
+	}
+	for (int i = 0; i < r_type.method_rest_parameter_type.size(); i++) {
+		_clear_receiver_self_contract(r_type.method_rest_parameter_type.write[i]);
+	}
+	for (int i = 0; i < r_type.union_members.size(); i++) {
+		_clear_receiver_self_contract(r_type.union_members.write[i]);
+	}
+}
+
+BSParser::DataType _substitute_self_type_parameter(const BSParser::DataType &p_type, const BSParser::DataType &p_self_type) {
 	if (!p_self_type.is_set()) {
 		return p_type;
 	}
@@ -3177,8 +3252,8 @@ BSParser::DataType _enum_substitute_self_type_parameter(const BSParser::DataType
 	return BSParser::DataType::substitute(p_type, bindings);
 }
 
-BSParser::DataType _enum_substitute_self_type_parameter_with_bounds(const BSParser::DataType &p_type) {
-	if (_enum_self_is_self_type_parameter(p_type)) {
+BSParser::DataType _substitute_self_type_parameter_with_bounds(const BSParser::DataType &p_type) {
+	if (_is_self_type_parameter(p_type)) {
 		if (p_type.type_parameter_bound.is_empty()) {
 			return p_type;
 		}
@@ -3194,31 +3269,31 @@ BSParser::DataType _enum_substitute_self_type_parameter_with_bounds(const BSPars
 	}
 	BSParser::DataType result = p_type;
 	for (int i = 0; i < result.container_element_types.size(); i++) {
-		result.container_element_types.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.container_element_types[i]);
+		result.container_element_types.write[i] = _substitute_self_type_parameter_with_bounds(result.container_element_types[i]);
 	}
 	for (int i = 0; i < result.type_arguments.size(); i++) {
-		result.set_type_argument(i, _enum_substitute_self_type_parameter_with_bounds(result.type_arguments[i]));
+		result.set_type_argument(i, _substitute_self_type_parameter_with_bounds(result.type_arguments[i]));
 	}
 	for (int i = 0; i < result.method_parameter_types.size(); i++) {
-		result.method_parameter_types.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.method_parameter_types[i]);
+		result.method_parameter_types.write[i] = _substitute_self_type_parameter_with_bounds(result.method_parameter_types[i]);
 	}
 	for (int i = 0; i < result.method_return_type.size(); i++) {
-		result.method_return_type.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.method_return_type[i]);
+		result.method_return_type.write[i] = _substitute_self_type_parameter_with_bounds(result.method_return_type[i]);
 	}
 	for (int i = 0; i < result.method_rest_parameter_type.size(); i++) {
-		result.method_rest_parameter_type.write[i] = _enum_substitute_self_type_parameter_with_bounds(result.method_rest_parameter_type[i]);
+		result.method_rest_parameter_type.write[i] = _substitute_self_type_parameter_with_bounds(result.method_rest_parameter_type[i]);
 	}
 	if (result.kind == BSParser::DataType::UNION) {
 		Vector<BSParser::DataType> substituted_members;
 		for (const BSParser::DataType &member : result.union_members) {
-			substituted_members.push_back(_enum_substitute_self_type_parameter_with_bounds(member));
+			substituted_members.push_back(_substitute_self_type_parameter_with_bounds(member));
 		}
 		result.union_members = substituted_members;
 	}
 	return result;
 }
 
-BSParser::DataType _enum_type_handle_represented_type(const BSParser::DataType &p_type) {
+BSParser::DataType _type_handle_represented_type(const BSParser::DataType &p_type) {
 	BSParser::DataType represented_type = p_type;
 	represented_type.is_type_handle_annotation = false;
 	represented_type.is_meta_type = false;
@@ -3228,37 +3303,103 @@ BSParser::DataType _enum_type_handle_represented_type(const BSParser::DataType &
 	return represented_type;
 }
 
-bool _enum_type_handle_source_is_handle(const BSParser::DataType &p_type) {
+bool _type_handle_source_is_handle(const BSParser::DataType &p_type) {
 	return p_type.is_meta_type || p_type.is_type_handle_annotation;
 }
 
-bool _enum_datatype_represents_final_class(const BSParser::DataType &p_type) {
+bool _datatype_represents_final_class(const BSParser::DataType &p_type) {
 	return p_type.kind == BSParser::DataType::CLASS && p_type.class_type != nullptr && p_type.class_type->is_final;
 }
 
-bool _enum_datatype_self_bindings_are_final(const BSParser::DataType &p_type) {
-	if (_enum_self_is_self_type_parameter(p_type)) {
-		return !p_type.type_parameter_bound.is_empty() && _enum_datatype_represents_final_class(p_type.type_parameter_bound[0]);
+bool _datatype_self_bindings_are_final(const BSParser::DataType &p_type) {
+	if (_is_self_type_parameter(p_type)) {
+		return !p_type.type_parameter_bound.is_empty() && _datatype_represents_final_class(p_type.type_parameter_bound[0]);
 	}
 	for (const BSParser::DataType &element : p_type.container_element_types) {
-		if (!_enum_datatype_self_bindings_are_final(element)) {
+		if (!_datatype_self_bindings_are_final(element)) {
 			return false;
 		}
 	}
 	for (const BSParser::DataType &argument : p_type.type_arguments) {
-		if (!_enum_datatype_self_bindings_are_final(argument)) {
+		if (!_datatype_self_bindings_are_final(argument)) {
 			return false;
 		}
 	}
 	for (const BSParser::DataType &member : p_type.union_members) {
-		if (!_enum_datatype_self_bindings_are_final(member)) {
+		if (!_datatype_self_bindings_are_final(member)) {
 			return false;
 		}
 	}
 	return true;
 }
 
-bool _enum_expression_is_same_reference(const BSParser::ExpressionNode *p_left, const BSParser::ExpressionNode *p_right) {
+// Foundry _datatype_alpha_equal / _datatype_strict_identity_equal (non-generic Self slice): operator==
+// already ignores receiver-contract provenance; deep callable-signature richness remains #60.
+bool _datatype_alpha_equal(const BSParser::DataType &p_a, const BSParser::DataType &p_b) {
+	return p_a == p_b;
+}
+
+bool _datatype_strict_identity_equal(const BSParser::DataType &p_a, const BSParser::DataType &p_b) {
+	return p_a == p_b && p_a.is_nullable == p_b.is_nullable &&
+			p_a.is_meta_type == p_b.is_meta_type &&
+			p_a.is_type_handle_annotation == p_b.is_type_handle_annotation;
+}
+
+bool _datatype_matches_analyzer_substituted_self(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_actual_type) {
+	// Container-literal Self substitution markers remain a #60 residual beyond bare Self RETURN.
+	(void)p_expected_type;
+	(void)p_actual_type;
+	return false;
+}
+
+bool _datatype_matches_self_return_contract(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_result_type) {
+	if (p_expected_type.is_nullable &&
+			p_result_type.kind == BSParser::DataType::BUILTIN &&
+			p_result_type.builtin_type == Variant::NIL) {
+		return true;
+	}
+	const BSParser::DataType expected_type = _substitute_self_type_parameter_with_bounds(p_expected_type);
+	if (expected_type.is_type_handle_annotation) {
+		if (!_type_handle_source_is_handle(p_result_type)) {
+			return false;
+		}
+		const BSParser::DataType result_handle_type = _type_handle_represented_type(p_result_type);
+		if (_datatype_strict_identity_equal(_type_handle_represented_type(p_expected_type), result_handle_type)) {
+			return true;
+		}
+		const BSParser::DataType expected_handle_type = _type_handle_represented_type(expected_type);
+		if (_datatype_contains_self_type_parameter(p_expected_type) && !_datatype_self_bindings_are_final(p_expected_type)) {
+			return false;
+		}
+		return _datatype_strict_identity_equal(expected_handle_type, result_handle_type);
+	}
+	if (_datatype_alpha_equal(p_result_type, p_expected_type)) {
+		return true;
+	}
+	if (_datatype_matches_analyzer_substituted_self(p_expected_type, p_result_type)) {
+		return true;
+	}
+	if (p_expected_type.is_nullable) {
+		BSParser::DataType non_nullable_expected = p_expected_type;
+		non_nullable_expected.is_nullable = false;
+		if (_datatype_alpha_equal(p_result_type, non_nullable_expected)) {
+			return true;
+		}
+	}
+	if (_datatype_contains_self_type_parameter(p_expected_type) && _datatype_self_bindings_are_final(p_expected_type)) {
+		if (_datatype_strict_identity_equal(p_result_type, expected_type)) {
+			return true;
+		}
+		if (expected_type.is_nullable) {
+			BSParser::DataType non_nullable_expected = expected_type;
+			non_nullable_expected.is_nullable = false;
+			return _datatype_strict_identity_equal(p_result_type, non_nullable_expected);
+		}
+	}
+	return false;
+}
+
+bool _expression_is_same_reference(const BSParser::ExpressionNode *p_left, const BSParser::ExpressionNode *p_right) {
 	if (p_left == nullptr || p_right == nullptr || p_left->type != p_right->type) {
 		return false;
 	}
@@ -3273,7 +3414,7 @@ bool _enum_expression_is_same_reference(const BSParser::ExpressionNode *p_left, 
 	return false;
 }
 
-bool _enum_call_argument_is_same_receiver(const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) {
+bool _call_argument_is_same_receiver(const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) {
 	if (p_call == nullptr || p_argument == nullptr) {
 		return false;
 	}
@@ -3317,12 +3458,32 @@ bool _enum_call_argument_is_same_receiver(const BSParser::CallNode *p_call, cons
 		if (!union_subscript->is_attribute || union_subscript->base == nullptr) {
 			return false;
 		}
-		return _enum_expression_is_same_reference(union_subscript->base, p_argument);
+		return _expression_is_same_reference(union_subscript->base, p_argument);
 	}
-	return _enum_expression_is_same_reference(subscript->base, p_argument);
+	return _expression_is_same_reference(subscript->base, p_argument);
 }
 
-bool _enum_datatype_matches_self_parameter_contract_exact(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type) {
+BSParser::DataType _self_contract_comparable_callable_argument(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type) {
+	// Foundry callable arity rewrite for Self-contract comparison. Non-callable values pass through.
+	if (!p_expected_type.has_method_signature || !p_argument_type.has_method_signature ||
+			(p_argument_type.method_info.flags & METHOD_FLAG_VARARG) == 0) {
+		return p_argument_type;
+	}
+	if ((p_expected_type.method_info.flags & METHOD_FLAG_VARARG) == 0) {
+		BSParser::DataType result = p_argument_type;
+		result.method_info.flags &= ~METHOD_FLAG_VARARG;
+		result.clear_method_rest_parameter_type();
+		return result;
+	}
+	if (p_expected_type.method_rest_parameter_type.size() == 1 && p_argument_type.method_rest_parameter_type.is_empty()) {
+		BSParser::DataType result = p_argument_type;
+		result.set_method_rest_parameter_type(p_expected_type.method_rest_parameter_type[0]);
+		return result;
+	}
+	return p_argument_type;
+}
+
+bool _datatype_matches_self_parameter_contract_exact(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type) {
 	if (p_expected_type == p_argument_type) {
 		return true;
 	}
@@ -3333,13 +3494,13 @@ bool _enum_datatype_matches_self_parameter_contract_exact(const BSParser::DataTy
 			return true;
 		}
 	}
-	const BSParser::DataType expected_type = _enum_substitute_self_type_parameter_with_bounds(p_expected_type);
+	const BSParser::DataType expected_type = _substitute_self_type_parameter_with_bounds(p_expected_type);
 	if (expected_type.is_nullable &&
 			p_argument_type.kind == BSParser::DataType::BUILTIN &&
 			p_argument_type.builtin_type == Variant::NIL) {
 		return true;
 	}
-	if (!_enum_datatype_self_bindings_are_final(p_expected_type)) {
+	if (!_datatype_self_bindings_are_final(p_expected_type)) {
 		return false;
 	}
 	if (expected_type == p_argument_type) {
@@ -3353,30 +3514,27 @@ bool _enum_datatype_matches_self_parameter_contract_exact(const BSParser::DataTy
 	return false;
 }
 
-bool _enum_self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call);
+bool _self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call);
 
-bool _enum_self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) {
+bool _self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) {
 	if (p_expected_type.kind == BSParser::DataType::UNION) {
 		for (const BSParser::DataType &member : p_expected_type.union_members) {
-			if (!_enum_datatype_contains_self_type_parameter(member)) {
+			if (!_datatype_contains_self_type_parameter(member)) {
 				continue;
 			}
 			BSParser::DataType alternative = member;
 			alternative.is_nullable = p_expected_type.is_nullable;
-			if (_enum_self_parameter_contract_admits_argument_type(alternative, p_argument_type, p_call, p_argument) ||
-					_enum_self_parameter_satisfied_by_receiver_identity(alternative, p_argument, p_call)) {
+			if (_self_parameter_contract_admits_argument_type(alternative, p_argument_type, p_call, p_argument) ||
+					_self_parameter_satisfied_by_receiver_identity(alternative, p_argument, p_call)) {
 				return true;
 			}
 		}
 		return false;
 	}
-	if (!_enum_datatype_matches_self_parameter_contract_exact(p_expected_type, p_argument_type)) {
+	if (!_datatype_matches_self_parameter_contract_exact(p_expected_type, p_argument_type)) {
 		return false;
 	}
-	// A Self-typed argument into a receiver contract still needs the call to run on the frame's
-	// own receiver (or identity, asked separately). Concrete / final-bound admissions need no
-	// further gate once exact match succeeded.
-	if (_enum_self_is_bare_self_value_parameter(p_argument_type) || p_argument_type.is_substituted_self) {
+	if (_is_bare_self_value_parameter(p_argument_type) || p_argument_type.is_substituted_self) {
 		if (p_expected_type.is_receiver_self_contract) {
 			return p_call == nullptr || p_call->receiver_is_current_self;
 		}
@@ -3384,25 +3542,25 @@ bool _enum_self_parameter_contract_admits_argument_type(const BSParser::DataType
 	return true;
 }
 
-bool _enum_self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) {
+bool _self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) {
 	if (p_call == nullptr || p_argument == nullptr) {
 		return false;
 	}
 	if (p_expected_type.kind == BSParser::DataType::UNION) {
 		for (const BSParser::DataType &member : p_expected_type.union_members) {
-			if (!_enum_datatype_contains_self_type_parameter(member)) {
+			if (!_datatype_contains_self_type_parameter(member)) {
 				continue;
 			}
 			BSParser::DataType alternative = member;
 			alternative.is_nullable = p_expected_type.is_nullable;
-			if (_enum_self_parameter_satisfied_by_receiver_identity(alternative, p_argument, p_call)) {
+			if (_self_parameter_satisfied_by_receiver_identity(alternative, p_argument, p_call)) {
 				return true;
 			}
 		}
 		return false;
 	}
-	if (_enum_self_is_bare_self_value_parameter(p_expected_type)) {
-		return p_expected_type.is_receiver_self_contract && _enum_call_argument_is_same_receiver(p_call, p_argument);
+	if (_is_bare_self_value_parameter(p_expected_type)) {
+		return p_expected_type.is_receiver_self_contract && _call_argument_is_same_receiver(p_call, p_argument);
 	}
 	if (p_expected_type.kind != BSParser::DataType::TUPLE || p_expected_type.tuple_name != StringName() ||
 			p_argument->type != BSParser::Node::TUPLE_LITERAL) {
@@ -3419,11 +3577,11 @@ bool _enum_self_parameter_satisfied_by_receiver_identity(const BSParser::DataTyp
 			return false;
 		}
 		const BSParser::DataType element_type = element->get_datatype();
-		if (_enum_datatype_contains_self_type_parameter(expected_element)) {
-			if (_enum_self_parameter_contract_admits_argument_type(expected_element, element_type, p_call, element)) {
+		if (_datatype_contains_self_type_parameter(expected_element)) {
+			if (_self_parameter_contract_admits_argument_type(expected_element, element_type, p_call, element)) {
 				continue;
 			}
-			if (!_enum_self_parameter_satisfied_by_receiver_identity(expected_element, element, p_call)) {
+			if (!_self_parameter_satisfied_by_receiver_identity(expected_element, element, p_call)) {
 				return false;
 			}
 			continue;
@@ -3441,6 +3599,71 @@ bool _enum_self_parameter_satisfied_by_receiver_identity(const BSParser::DataTyp
 				expected_element.builtin_type != element_type.builtin_type) {
 			return false;
 		}
+	}
+	return true;
+}
+
+bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value);
+
+bool _self_contract_union_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value) {
+	if (p_value_type.kind == BSParser::DataType::UNION) {
+		for (const BSParser::DataType &value_member : p_value_type.union_members) {
+			BSParser::DataType value_alternative = value_member;
+			value_alternative.is_nullable = p_value_type.is_nullable;
+			if (!_self_contract_union_admits_value_type(p_expected_type, value_alternative, p_kind, p_call, p_value_source, nullptr)) {
+				return false;
+			}
+		}
+		if (r_matched_value != nullptr) {
+			*r_matched_value = p_value_type;
+		}
+		return true;
+	}
+
+	for (const BSParser::DataType &member : p_expected_type.union_members) {
+		if (!_datatype_contains_self_type_parameter(member)) {
+			continue;
+		}
+		BSParser::DataType alternative = member;
+		alternative.is_nullable = p_expected_type.is_nullable;
+		const bool admitted = p_kind == BSAnalyzer::SelfContractKind::PARAMETER
+				? _self_parameter_contract_admits_argument_type(alternative, p_value_type, p_call, p_value_source)
+				: _self_contract_admits_value_type(alternative, p_value_type, p_kind, p_value_source, r_matched_value);
+		if (admitted) {
+			if (r_matched_value != nullptr) {
+				*r_matched_value = p_value_type;
+			}
+			return true;
+		}
+	}
+	// Self-free union members: ordinary compatibility (Foundry self_free_union_members_admit_value residual
+	// beyond bare Self RETURN — fall through to reject when no Self alternative admitted).
+	return false;
+}
+
+bool _self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type) {
+	// Foundry self_contract_admits_gradual_value: only UNION destinations. Full gradual undecidable /
+	// erased-parameter refusal remains #60 residual.
+	(void)p_value_type;
+	return p_expected_type.kind == BSParser::DataType::UNION;
+}
+
+bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value) {
+	(void)p_value_source;
+	if (p_expected_type.kind == BSParser::DataType::UNION) {
+		return _self_contract_union_admits_value_type(p_expected_type, p_value_type, p_kind, nullptr, p_value_source, r_matched_value);
+	}
+	BSParser::DataType matched_value = _self_contract_comparable_callable_argument(p_expected_type, p_value_type);
+	const auto matches_exactly = [&](const BSParser::DataType &p_candidate) {
+		return p_kind == BSAnalyzer::SelfContractKind::PARAMETER
+				? _datatype_matches_self_parameter_contract_exact(p_expected_type, p_candidate)
+				: _datatype_matches_self_return_contract(p_expected_type, p_candidate);
+	};
+	if (!matches_exactly(matched_value)) {
+		return false;
+	}
+	if (r_matched_value != nullptr) {
+		*r_matched_value = matched_value;
 	}
 	return true;
 }
@@ -3517,7 +3740,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	} else if (union_base_expression != nullptr) {
 		union_base_type = union_base_expression->get_datatype();
 		if (union_base_type.is_set() && (union_base_type.is_meta_type || union_base_type.is_type_handle_annotation) &&
-				_enum_self_is_self_type_parameter(union_base_type)) {
+				_is_self_type_parameter(union_base_type)) {
 			self_field_leg = !static_context && current_class != nullptr
 					? SelfFieldLeg::FRAME_RECEIVER
 					: SelfFieldLeg::LITERAL_SELF;
@@ -3530,7 +3753,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 			const BSParser::DataType *bound_step = &union_base_type;
 			while (bound_step->kind == BSParser::DataType::TYPE_PARAMETER && !bound_step->type_parameter_bound.is_empty()) {
 				const BSParser::DataType &bound = bound_step->type_parameter_bound[0];
-				if (_enum_type_handle_source_is_handle(bound)) {
+				if (_type_handle_source_is_handle(bound)) {
 					names_a_handle = true;
 					break;
 				}
@@ -3551,42 +3774,42 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	}
 
 	const auto payload_field_type_for_spelling = [&](const BSParser::DataType &p_field_type) -> BSParser::DataType {
-		if (!_enum_datatype_contains_self_type_parameter(p_field_type)) {
+		if (!_datatype_contains_self_type_parameter(p_field_type)) {
 			return p_field_type;
 		}
 		switch (self_field_leg) {
 			case SelfFieldLeg::FRAME_RECEIVER: {
-				BSParser::DataType receiver_self = _enum_self_type_parameter_from_bound(_enum_self_type_for_class(current_class));
+				BSParser::DataType receiver_self = _self_type_parameter_from_bound(_self_type_for_class(current_class));
 				receiver_self.is_receiver_self_contract = true;
-				return _enum_substitute_self_type_parameter(p_field_type, receiver_self);
+				return _substitute_self_type_parameter(p_field_type, receiver_self);
 			}
 			case SelfFieldLeg::BASE_RECEIVER: {
-				BSParser::DataType receiver_self = _enum_self_type_parameter_from_bound(union_base_type);
+				BSParser::DataType receiver_self = _self_type_parameter_from_bound(union_base_type);
 				receiver_self.is_receiver_self_contract = true;
-				return _enum_substitute_self_type_parameter(p_field_type, receiver_self);
+				return _substitute_self_type_parameter(p_field_type, receiver_self);
 			}
 			case SelfFieldLeg::EXACT_HANDLE: {
-				BSParser::DataType represented_type = _enum_type_handle_represented_type(union_base_type);
+				BSParser::DataType represented_type = _type_handle_represented_type(union_base_type);
 				if (!represented_type.is_set()) {
 					return p_field_type;
 				}
-				return _enum_substitute_self_type_parameter(p_field_type, represented_type);
+				return _substitute_self_type_parameter(p_field_type, represented_type);
 			}
 			case SelfFieldLeg::LITERAL_SELF: {
 				if (current_class == nullptr) {
 					return p_field_type;
 				}
-				BSParser::DataType frame_self = _enum_self_type_parameter_for_class(current_class);
-				return _enum_substitute_self_type_parameter(p_field_type, frame_self);
+				BSParser::DataType frame_self = _self_type_parameter_for_class(current_class);
+				return _substitute_self_type_parameter(p_field_type, frame_self);
 			}
 			case SelfFieldLeg::EXACT_DECLARING:
 				break;
 		}
 		if (declaring_class == nullptr) {
-			return _enum_substitute_self_type_parameter_with_bounds(p_field_type);
+			return _substitute_self_type_parameter_with_bounds(p_field_type);
 		}
-		BSParser::DataType declaring_self = _enum_self_type_for_class(declaring_class);
-		return _enum_substitute_self_type_parameter(p_field_type, declaring_self);
+		BSParser::DataType declaring_self = _self_type_for_class(declaring_class);
+		return _substitute_self_type_parameter(p_field_type, declaring_self);
 	};
 
 	BSParser::DataType case_value_type = type_from_metatype(p_enum_meta_type);
@@ -3615,9 +3838,9 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 			payload_is_bakeable = false;
 			continue;
 		}
-		if (_enum_datatype_contains_self_type_parameter(field_type)) {
-			if (!_enum_self_parameter_contract_admits_argument_type(field_type, argument_type, p_call, argument) &&
-					!_enum_self_parameter_satisfied_by_receiver_identity(field_type, argument, p_call)) {
+		if (_datatype_contains_self_type_parameter(field_type)) {
+			if (!_self_parameter_contract_admits_argument_type(field_type, argument_type, p_call, argument) &&
+					!_self_parameter_satisfied_by_receiver_identity(field_type, argument, p_call)) {
 				push_error(vformat(R"*(Invalid argument %d for enum case "%s.%s": should be "%s" but is "%s".)*",
 								   i + 1, p_enum_meta_type.enum_type, case_name, field_type.to_string(), argument_type.to_string()) +
 								BSParser::DataType::same_rendered_name_clause(field_type, "payload field's type", argument_type, "argument"),
@@ -3687,6 +3910,26 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	}
 
 	p_call->set_datatype(case_value_type);
+}
+
+bool BSAnalyzer::datatype_contains_self_type_parameter(const BSParser::DataType &p_type) const {
+	return _datatype_contains_self_type_parameter(p_type);
+}
+
+bool BSAnalyzer::self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source) const {
+	return _self_contract_admits_value_type(p_expected_type, p_value_type, p_kind, p_value_source, nullptr);
+}
+
+bool BSAnalyzer::self_contract_admits_gradual_value(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type) const {
+	return _self_contract_admits_gradual_value(p_expected_type, p_value_type);
+}
+
+bool BSAnalyzer::self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) const {
+	return _self_parameter_contract_admits_argument_type(p_expected_type, p_argument_type, p_call, p_argument);
+}
+
+bool BSAnalyzer::self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) const {
+	return _self_parameter_satisfied_by_receiver_identity(p_expected_type, p_argument, p_call);
 }
 
 bool BSAnalyzer::resolve_contextual_enum_case(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
@@ -3832,9 +4075,11 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			reduce_type_test(static_cast<BSParser::TypeTestNode *>(p_expression));
 			break;
 		case BSParser::Node::SELF: {
+			// Foundry reduce_self @ c9d5e35: expression `self` is the frame's `@Self` type parameter
+			// so RETURN-kind Self-contract admission (assign / return) matches Self-typed values.
 			BSParser::SelfNode *self_node = static_cast<BSParser::SelfNode *>(p_expression);
 			if (current_class != nullptr) {
-				self_node->set_datatype(current_class->get_datatype());
+				self_node->set_datatype(_self_type_parameter_for_class(current_class));
 			}
 			self_node->reduced = true;
 		} break;
@@ -3947,6 +4192,25 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 					}
 				}
 				assignment->set_datatype(op_type);
+
+				// Foundry reduce_assignment Self-contract RETURN gate @ c9d5e35.
+				if (!assignee_type.is_variant() && assignee_type.is_set() &&
+						_datatype_contains_self_type_parameter(assignee_type)) {
+					const bool value_is_gradual = op_type.is_variant() || !op_type.is_hard_type();
+					if ((value_is_gradual
+										? !_self_contract_admits_gradual_value(assignee_type, op_type)
+										: !_self_contract_admits_value_type(assignee_type, op_type, BSAnalyzer::SelfContractKind::RETURN, assignment->assigned_value, nullptr))) {
+						mark_node_unsafe(assignment);
+						push_error(vformat(R"(Value of type "%s" cannot be assigned to a variable of type "%s".)",
+										   assigned_value_type.to_string(),
+										   assignee_type.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type"),
+								assignment->assigned_value);
+					} else if (value_is_gradual || op_type.is_variant()) {
+						mark_node_unsafe(assignment);
+						assignment->use_conversion_assign = true;
+					}
+				}
 			}
 		} break;
 		default:
@@ -3980,17 +4244,34 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				mark_coroutine_handle_capture(variable->initializer, declared);
 			}
 			if (declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
-				BSTypeCompatibility::Options options;
-				options.allow_implicit_conversion = true;
-				options.strict_dynamic = strict_dynamic_checks;
-				options.strict_null = strict_null_checks;
-				if (variable->initializer->is_constant) {
-					options.constant_source_value = &variable->initializer->reduced_value;
-				}
-				if (!BSTypeCompatibility::check(declared, variable->initializer->get_datatype(), options).compatible) {
-					push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-									   variable->initializer->get_datatype().to_string(), declared.to_string()),
-							variable);
+				const BSParser::DataType initializer_type = variable->initializer->get_datatype();
+				// Foundry assignable Self-contract RETURN gate @ c9d5e35.
+				if (_datatype_contains_self_type_parameter(declared)) {
+					const bool value_is_gradual = initializer_type.is_variant() || !initializer_type.is_hard_type();
+					if ((value_is_gradual
+										? !_self_contract_admits_gradual_value(declared, initializer_type)
+										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, variable->initializer, nullptr))) {
+						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
+										   initializer_type.to_string(), declared.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+								variable->initializer);
+					} else if (value_is_gradual || initializer_type.is_variant()) {
+						mark_node_unsafe(variable->initializer);
+						variable->use_conversion_assign = true;
+					}
+				} else {
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = true;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					if (variable->initializer->is_constant) {
+						options.constant_source_value = &variable->initializer->reduced_value;
+					}
+					if (!BSTypeCompatibility::check(declared, initializer_type, options).compatible) {
+						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
+										   initializer_type.to_string(), declared.to_string()),
+								variable);
+					}
 				}
 			}
 		} break;
@@ -4016,17 +4297,30 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				}
 			}
 			if (declared.is_set() && !declared.is_variant() && constant->initializer != nullptr && constant->initializer->get_datatype().is_set()) {
-				BSTypeCompatibility::Options options;
-				options.allow_implicit_conversion = true;
-				options.strict_dynamic = strict_dynamic_checks;
-				options.strict_null = strict_null_checks;
-				if (constant->initializer->is_constant) {
-					options.constant_source_value = &constant->initializer->reduced_value;
-				}
-				if (!BSTypeCompatibility::check(declared, constant->initializer->get_datatype(), options).compatible) {
-					push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-									   constant->initializer->get_datatype().to_string(), declared.to_string()),
-							constant);
+				const BSParser::DataType initializer_type = constant->initializer->get_datatype();
+				if (_datatype_contains_self_type_parameter(declared)) {
+					const bool value_is_gradual = initializer_type.is_variant() || !initializer_type.is_hard_type();
+					if ((value_is_gradual
+										? !_self_contract_admits_gradual_value(declared, initializer_type)
+										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, constant->initializer, nullptr))) {
+						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+										   initializer_type.to_string(), declared.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+								constant->initializer);
+					}
+				} else {
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = true;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					if (constant->initializer->is_constant) {
+						options.constant_source_value = &constant->initializer->reduced_value;
+					}
+					if (!BSTypeCompatibility::check(declared, initializer_type, options).compatible) {
+						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+										   initializer_type.to_string(), declared.to_string()),
+								constant);
+					}
 				}
 			}
 		} break;
@@ -4042,6 +4336,45 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				qualify_contextual_enum_case_consumer(ret->return_value, expected_return);
 				if (expected_return.is_set()) {
 					mark_coroutine_handle_capture(ret->return_value, expected_return);
+				}
+				// Foundry resolve_return Self-contract RETURN gate @ c9d5e35.
+				// Static frames substitute Self to the declaring class (concrete), matching
+				// get_function_signature's static substitution; instance frames keep the contract.
+				const bool preserve_self_contract = current_class != nullptr && current_function != nullptr &&
+						!current_function->is_abstract && !current_function->is_static &&
+						expected_return.is_set() && !expected_return.is_variant() &&
+						_datatype_contains_self_type_parameter(expected_return);
+				if (preserve_self_contract) {
+					const BSParser::DataType result = ret->return_value->get_datatype();
+					const bool value_is_gradual = result.is_variant() || !result.is_hard_type();
+					if ((value_is_gradual
+										? !_self_contract_admits_gradual_value(expected_return, result)
+										: !_self_contract_admits_value_type(expected_return, result, BSAnalyzer::SelfContractKind::RETURN, ret->return_value, nullptr))) {
+						push_error(vformat(R"(Cannot return value of type "%s" because the function return type is "%s".)",
+										   result.to_string(),
+										   expected_return.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(result, "returned value", expected_return, "return type"),
+								ret);
+					} else if (value_is_gradual || result.is_variant()) {
+						mark_node_unsafe(ret);
+					}
+				} else if (expected_return.is_set() && !expected_return.is_variant() &&
+						_datatype_contains_self_type_parameter(expected_return) &&
+						current_function != nullptr && current_function->is_static) {
+					const BSParser::DataType compatibility_expected =
+							_substitute_self_type_parameter(expected_return, _self_type_for_class(current_class));
+					const BSParser::DataType result = ret->return_value->get_datatype();
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = true;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					if (!BSTypeCompatibility::check(compatibility_expected, result, options).compatible) {
+						push_error(vformat(R"(Cannot return value of type "%s" because the function return type is "%s".)",
+										   result.to_string(),
+										   expected_return.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(result, "returned value", expected_return, "return type"),
+								ret);
+					}
 				}
 			}
 		} break;

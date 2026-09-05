@@ -66,6 +66,7 @@ func _init() -> void:
 	_test_conformance_hidden_witness(failures)
 	_test_self_type_parameter_compat(failures)
 	_test_enum_self_payload_field_leg(failures)
+	_test_self_contract_assign_return(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -3292,4 +3293,67 @@ func _test_enum_self_payload_field_leg(failures: PackedStringArray) -> void:
 		_src_class("EnumSelfIndexGuard extends Node\n"), "res://tests/enum_self_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"enum Self payload probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_self_contract_assign_return(failures: PackedStringArray) -> void:
+	# Foundry self_contract_admits_value_type RETURN @ c9d5e35 (#60 residual).
+	# Assignable initializer / return / assignment admit same-receiver / Self-typed values;
+	# reject unrelated class. Gradual-union residual deferred.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Self parameter → local Self → return Self (admit self / Self-typed value).
+	var roundtrip := _src_class("SelfContractRoundtrip extends Node\nfunc echo(value: Self) -> Self:\n\tvar tmp: Self = value\n\ttmp = self\n\treturn tmp\n")
+	var roundtrip_report: Dictionary = probe.analyze_source(roundtrip, "res://tests/self_contract_roundtrip.barista")
+	_expect(failures, roundtrip_report.get("valid", false) == true, "Self assign/return admits Self-typed value and self")
+
+	# Unrelated class into Self local / return / assignment rejected.
+	var foreign := _src_class("SelfContractForeign extends Node\nfunc bad(other: SelfContractForeign) -> Self:\n\tvar tmp: Self = other\n\ttmp = other\n\treturn other\n")
+	var foreign_report: Dictionary = probe.analyze_source(foreign, "res://tests/self_contract_foreign.barista")
+	_expect(failures, foreign_report.get("valid", true) == false, "Self assign/return rejects unrelated same-class instance")
+	var saw_assign := false
+	var saw_return := false
+	for message in foreign_report.get("errors", PackedStringArray()):
+		if "Cannot assign a value of type" in message or 'cannot be assigned to a variable of type "Self"' in message:
+			saw_assign = true
+		if "Cannot return value of type" in message:
+			saw_return = true
+	_expect(failures, saw_assign, "foreign Self local/assignment diagnostic")
+	_expect(failures, saw_return, "foreign Self return diagnostic")
+
+	# Member typed Self: admit self / Self param; reject foreign.
+	var member_ok := _src_class("SelfContractMemberOk extends Node\nvar holder: Self\nfunc store(value: Self) -> void:\n\tholder = value\n\tholder = self\n")
+	var member_ok_report: Dictionary = probe.analyze_source(member_ok, "res://tests/self_contract_member_ok.barista")
+	_expect(failures, member_ok_report.get("valid", false) == true, "Self member assignment admits Self / self")
+
+	var member_bad := _src_class("SelfContractMemberBad extends Node\nvar holder: Self\nfunc store(other: SelfContractMemberBad) -> void:\n\tholder = other\n")
+	var member_bad_report: Dictionary = probe.analyze_source(member_bad, "res://tests/self_contract_member_bad.barista")
+	_expect(failures, member_bad_report.get("valid", true) == false, "Self member assignment rejects foreign same-class instance")
+
+	# Call-site Self parameter: admit self / receiver identity; reject foreign.
+	var call_ok := _src_class("SelfContractCallOk extends Node\nfunc take(value: Self) -> void:\n\tpass\nfunc use() -> void:\n\ttake(self)\n\tself.take(self)\n")
+	var call_ok_report: Dictionary = probe.analyze_source(call_ok, "res://tests/self_contract_call_ok.barista")
+	_expect(failures, call_ok_report.get("valid", false) == true, "Self parameter call admits self")
+
+	var call_bad := _src_class("SelfContractCallBad extends Node\nfunc take(value: Self) -> void:\n\tpass\nfunc use(other: SelfContractCallBad) -> void:\n\ttake(other)\n")
+	var call_bad_report: Dictionary = probe.analyze_source(call_bad, "res://tests/self_contract_call_bad.barista")
+	_expect(failures, call_bad_report.get("valid", true) == false, "Self parameter call rejects foreign same-class instance")
+
+	# final class: Self RETURN admits declaring-class value.
+	var final_ok := "final " + _kw_class_name() + " SelfContractFinal extends Node\nfunc echo(value: SelfContractFinal) -> Self:\n\tvar tmp: Self = value\n\treturn value\n"
+	var final_ok_report: Dictionary = probe.analyze_source(final_ok, "res://tests/self_contract_final.barista")
+	_expect(failures, final_ok_report.get("valid", false) == true, "final class Self assign/return admits declaring-class value")
+
+	# Existing enum Self payload fixtures still covered by sibling suite; spot-check frame admits.
+	var enum_ok := _src_class("SelfContractEnumStillOk extends Node\nenum Message:\n\tAttach(owner: Self)\nfunc construct() -> void:\n\tvar made := Message.Attach(self)\n")
+	var enum_ok_report: Dictionary = probe.analyze_source(enum_ok, "res://tests/self_contract_enum_still_ok.barista")
+	_expect(failures, enum_ok_report.get("valid", false) == true, "enum Self payload still admits self after RETURN wiring")
+
+	# Declaration-index stays opt-in under analyze probes.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("SelfContractIndexGuard extends Node\n"), "res://tests/self_contract_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"Self-contract assign/return probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
