@@ -1792,21 +1792,21 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 			saw_match_arity = true
 	_expect(failures, saw_match_arity, "contextual ENUM_CASE payload arity diagnostic")
 
-	var match_unknown := _src_class("CtxMatchUnknown extends Node\nenum Message:\n\tQuit\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\t.Nope:\n\t\t\tpass\n")
+	var match_unknown := _src_class("CtxMatchUnknown extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\t.Nope:\n\t\t\tpass\n")
 	var match_unknown_report: Dictionary = probe.analyze_source(match_unknown, "res://tests/ctx_match_unknown.barista")
 	_expect(failures, match_unknown_report.get("valid", true) == false, "unknown contextual case is invalid")
 	var saw_unknown := false
 	for message in match_unknown_report.get("errors", PackedStringArray()):
-		if "has no case" in message and "Nope" in message:
+		if 'Tagged union "Message" has no case "Nope"' in message:
 			saw_unknown = true
 	_expect(failures, saw_unknown, "unknown contextual case diagnostic")
 
-	var match_bad_subject := _src_class("CtxMatchBadSubject extends Node\nenum Message:\n\tQuit\nfunc handle(n: int) -> void:\n\tmatch n:\n\t\t.Quit:\n\t\t\tpass\n")
+	var match_bad_subject := _src_class("CtxMatchBadSubject extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(n: int) -> void:\n\tmatch n:\n\t\t.Quit:\n\t\t\tpass\n")
 	var match_bad_subject_report: Dictionary = probe.analyze_source(match_bad_subject, "res://tests/ctx_match_bad_subject.barista")
 	_expect(failures, match_bad_subject_report.get("valid", true) == false, "contextual case on non-union subject is invalid")
 	var saw_bad_subject := false
 	for message in match_bad_subject_report.get("errors", PackedStringArray()):
-		if "needs a tagged-union match subject" in message:
+		if "needs a tagged-union match subject" in message and 'type "int"' in message:
 			saw_bad_subject = true
 	_expect(failures, saw_bad_subject, "non-union subject contextual shorthand diagnostic")
 
@@ -1823,12 +1823,12 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 			saw_is_arity = true
 	_expect(failures, saw_is_arity, "contextual is-case payload arity diagnostic")
 
-	var is_bad_operand := _src_class("CtxIsBadOperand extends Node\nenum Message:\n\tQuit\nfunc handle(n: int) -> void:\n\tif n is .Quit:\n\t\tpass\n")
+	var is_bad_operand := _src_class("CtxIsBadOperand extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(n: int) -> void:\n\tif n is .Quit:\n\t\tpass\n")
 	var is_bad_operand_report: Dictionary = probe.analyze_source(is_bad_operand, "res://tests/ctx_is_bad_operand.barista")
 	_expect(failures, is_bad_operand_report.get("valid", true) == false, "is .Quit on non-union operand is invalid")
 	var saw_bad_operand := false
 	for message in is_bad_operand_report.get("errors", PackedStringArray()):
-		if 'needs a tagged-union "is" operand' in message:
+		if 'needs a tagged-union "is" operand' in message and 'type "int"' in message:
 			saw_bad_operand = true
 	_expect(failures, saw_bad_operand, "non-union is-operand contextual shorthand diagnostic")
 
