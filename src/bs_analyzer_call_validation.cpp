@@ -5,7 +5,8 @@
 /*  validation.cpp` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6. FS* ->    */
 /*  BS*; engine contact through bs_platform.h. MethodInfo / typed call    */
 /*  arity+types, signal emit / emit_signal, named-arg canonicalization,   */
-/*  and signal connect/callable signature validation for #60.             */
+/*  signal connect/callable signature validation, and Callable            */
+/*  bind/bindv/unbind/call transforms for #60.                            */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -661,6 +662,9 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::callable_type_from_fun
 	type.builtin_type = Variant::CALLABLE;
 	type.is_constant = true;
 	type.has_method_signature = true;
+	// Foundry MEMBER_FUNCTION / make_callable_type @ c9d5e35: bare function refs publish an
+	// explicit signature so Callable.bind/unbind/call can transform and validate it.
+	type.has_explicit_method_signature = true;
 	if (p_function == nullptr) {
 		return type;
 	}
@@ -681,6 +685,59 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::callable_type_from_fun
 	}
 	type.method_return_type.push_back(p_function->get_datatype());
 	return type;
+}
+
+BSParser::DataType BSAnalyzer::CallSiteValidationContext::plain_callable_type() const {
+	return analyzer->type_from_property(PropertyInfo(Variant::CALLABLE, ""));
+}
+
+BSParser::DataType BSAnalyzer::CallSiteValidationContext::over_bound_callable_type(const BSParser::DataType &p_source_callable_type) const {
+	// Binding more arguments than a fixed-arity target accepts produces a callable that cannot be
+	// invoked successfully. There is no precise signature to describe it, so return a signatureless
+	// callable that still carries the source's async marker (bind()/unbind() preserve async-ness).
+	BSParser::DataType callable_type = plain_callable_type();
+	callable_type.signature_is_async = p_source_callable_type.signature_is_async;
+	callable_type.callable_is_over_bound = true;
+	return callable_type;
+}
+
+BSParser::DataType BSAnalyzer::CallSiteValidationContext::transformed_callable_type(const BSParser::DataType &p_source_callable_type, const Vector<BSParser::DataType> &p_parameter_types, int p_default_arg_count, bool p_is_vararg) const {
+	BSParser::DataType callable_type = p_source_callable_type;
+	callable_type.kind = BSParser::DataType::BUILTIN;
+	callable_type.builtin_type = Variant::CALLABLE;
+	callable_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	callable_type.has_method_signature = true;
+	callable_type.has_explicit_method_signature = true;
+	callable_type.method_parameter_types = p_parameter_types;
+	callable_type.method_extra_allowed_argument_counts.clear();
+	callable_type.method_unbound_argument_count = 0;
+	callable_type.callable_is_over_bound = false;
+	callable_type.method_info.arguments.clear();
+	for (int i = 0; i < p_parameter_types.size(); i++) {
+		callable_type.method_info.arguments.push_back(p_parameter_types[i].to_property_info("arg" + itos(i + 1)));
+	}
+	callable_type.method_info.default_arguments.clear();
+	callable_type.method_info.default_arguments.resize(p_default_arg_count);
+	if (p_is_vararg) {
+		callable_type.method_info.flags |= METHOD_FLAG_VARARG;
+	} else {
+		callable_type.method_info.flags &= ~uint32_t(METHOD_FLAG_VARARG);
+	}
+	if (!callable_type.method_return_type.is_empty()) {
+		callable_type.method_info.return_val = callable_type.method_return_type[0].to_property_info("");
+	}
+	return callable_type;
+}
+
+BSParser::ArrayNode *BSAnalyzer::CallSiteValidationContext::array_literal_argument(const BSParser::CallNode *p_call, int p_argument_index) const {
+	if (p_call == nullptr || p_argument_index < 0 || p_argument_index >= p_call->arguments.size()) {
+		return nullptr;
+	}
+	BSParser::ExpressionNode *argument = p_call->arguments[p_argument_index];
+	if (argument == nullptr || argument->type != BSParser::Node::ARRAY) {
+		return nullptr;
+	}
+	return static_cast<BSParser::ArrayNode *>(argument);
 }
 
 void BSAnalyzer::CallSiteValidationContext::validate_signal_connect_arg(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_callable_arg_index) {
@@ -798,6 +855,260 @@ void BSAnalyzer::CallSiteValidationContext::validate_local_object_signal_callabl
 	}
 
 	validate_signal_connect_arg(signal_type, p_call, 1);
+}
+
+bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type) {
+	// Foundry get_function_signature Callable.bind/bindv/unbind/call slice (@ c9d5e35).
+	if (p_call == nullptr || p_base_type.kind != BSParser::DataType::BUILTIN || p_base_type.builtin_type != Variant::CALLABLE) {
+		return false;
+	}
+
+	const StringName function_name = p_call->function_name;
+	const bool is_callable_call = function_name == SNAME("call");
+	const bool is_callable_bind = function_name == SNAME("bind");
+	const bool is_callable_bindv = function_name == SNAME("bindv");
+	const bool is_callable_unbind = function_name == SNAME("unbind");
+	if (!is_callable_call && !is_callable_bind && !is_callable_bindv && !is_callable_unbind) {
+		return false;
+	}
+
+	reject_named_call_arguments(p_call);
+
+	if (p_base_type.callable_is_over_bound) {
+		if (is_callable_call) {
+			analyzer->push_error(R"(Cannot invoke this Callable: it was over-bound (more arguments were bound than its target accepts), so the call can never succeed.)", p_call);
+			BSParser::DataType void_or_variant = analyzer->type_from_property(PropertyInfo(Variant::NIL, ""));
+			p_call->set_datatype(void_or_variant);
+			return true;
+		}
+		if (is_callable_bind || is_callable_bindv || is_callable_unbind) {
+			// bind()/bindv()/unbind() keep producing an over-bound callable so a later invocation is still flagged.
+			p_call->set_datatype(over_bound_callable_type(p_base_type));
+			return true;
+		}
+		return false;
+	}
+
+	if (!p_base_type.has_explicit_method_signature) {
+		return false;
+	}
+
+	const bool is_callable_vararg = (p_base_type.method_info.flags & METHOD_FLAG_VARARG) != 0;
+
+	auto bound_argument_conflicts_with = [&](const BSParser::ExpressionNode *p_argument, const BSParser::DataType &p_expected_type) -> bool {
+		if (p_argument == nullptr || !p_expected_type.is_hard_type() || p_expected_type.is_variant()) {
+			return false;
+		}
+		const BSParser::DataType argument_type = p_argument->get_datatype();
+		if (argument_type.is_variant() || !argument_type.is_hard_type()) {
+			return analyzer->strict_dynamic_checks && argument_type.is_variant();
+		}
+		return !BSTypeCompatibility::is_compatible(p_expected_type, argument_type, true);
+	};
+
+	auto bound_arguments_reaching_target = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments) -> int {
+		return MAX(p_bound_arguments.size() - p_base_type.method_unbound_argument_count, 0);
+	};
+
+	auto default_survival_for_bind = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments,
+											 int p_checked_bind_start, int p_remaining_argument_count,
+											 int &r_result_default_arg_count, Vector<int> &r_extra_allowed_argument_counts) {
+		r_result_default_arg_count = 0;
+		const int max_shift = MIN(int(p_base_type.method_info.default_arguments.size()), p_checked_bind_start);
+		const int reaching_bound_argument_count = bound_arguments_reaching_target(p_bound_arguments);
+		for (int shift = 1; shift <= max_shift; shift++) {
+			const int shifted_start = p_checked_bind_start - shift;
+			bool bound_arguments_fit_shift = true;
+			for (int i = 0; i < reaching_bound_argument_count && bound_arguments_fit_shift; i++) {
+				bound_arguments_fit_shift = !bound_argument_conflicts_with(
+						p_bound_arguments[i], p_base_type.method_parameter_types[shifted_start + i]);
+			}
+			if (!bound_arguments_fit_shift) {
+				continue;
+			}
+			if (shift == r_result_default_arg_count + 1) {
+				r_result_default_arg_count = shift;
+			} else {
+				r_extra_allowed_argument_counts.push_back(p_remaining_argument_count - shift);
+			}
+		}
+	};
+
+	auto preserve_extra_allowed_argument_counts = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments, BSParser::DataType &r_return_type) {
+		for (int extra_allowed_argument_count : p_base_type.method_extra_allowed_argument_counts) {
+			const int remaining_argument_count = extra_allowed_argument_count - p_bound_arguments.size();
+			if (remaining_argument_count < 0 || extra_allowed_argument_count > p_base_type.method_parameter_types.size()) {
+				continue;
+			}
+			bool bound_arguments_fit_extra_arity = true;
+			for (int i = 0; i < p_bound_arguments.size() && bound_arguments_fit_extra_arity; i++) {
+				bound_arguments_fit_extra_arity = !bound_argument_conflicts_with(
+						p_bound_arguments[i], p_base_type.method_parameter_types[remaining_argument_count + i]);
+			}
+			if (bound_arguments_fit_extra_arity) {
+				r_return_type.method_extra_allowed_argument_counts.push_back(remaining_argument_count);
+			}
+		}
+	};
+
+	if (is_callable_call) {
+		List<BSParser::DataType> par_types;
+		for (const BSParser::DataType &parameter_type : p_base_type.method_parameter_types) {
+			par_types.push_back(parameter_type);
+		}
+		const BSParser::DataType *rest_type = p_base_type.has_method_rest_parameter_type() ? &p_base_type.get_method_rest_parameter_type() : nullptr;
+		validate_call_arg(par_types, p_base_type.method_info.default_arguments.size(), is_callable_vararg, p_call,
+				p_base_type.method_extra_allowed_argument_counts, p_base_type.method_unbound_argument_count, rest_type);
+
+		BSParser::DataType return_type;
+		if (p_base_type.method_return_type.is_empty()) {
+			return_type = analyzer->type_from_property(PropertyInfo(Variant::NIL, ""));
+		} else {
+			return_type = p_base_type.method_return_type[0];
+		}
+		p_call->set_datatype(return_type);
+		return true;
+	}
+
+	if (is_callable_bind) {
+		List<BSParser::DataType> bind_par_types;
+		BSParser::DataType return_type = plain_callable_type();
+		return_type.signature_is_async = p_base_type.signature_is_async;
+
+		if (!is_callable_vararg) {
+			const int bind_argument_count = p_call->arguments.size();
+			const int callable_argument_count = p_base_type.method_parameter_types.size();
+			const int checked_bind_argument_count = MIN(bind_argument_count, callable_argument_count);
+			const int checked_bind_start = callable_argument_count - checked_bind_argument_count;
+
+			for (int i = 0; i < checked_bind_argument_count; i++) {
+				bind_par_types.push_back(p_base_type.method_parameter_types[checked_bind_start + i]);
+			}
+			// Callable.bind() is variadic: accept any number of bound arguments without an arity error.
+			validate_call_arg(bind_par_types, 0, true, p_call);
+
+			if (bind_argument_count > callable_argument_count) {
+				return_type = over_bound_callable_type(p_base_type);
+			} else {
+				Vector<BSParser::DataType> remaining_parameter_types;
+				const int remaining_argument_count = callable_argument_count - bind_argument_count;
+				for (int i = 0; i < remaining_argument_count; i++) {
+					remaining_parameter_types.push_back(p_base_type.method_parameter_types[i]);
+				}
+
+				Vector<const BSParser::ExpressionNode *> bound_arguments;
+				for (BSParser::ExpressionNode *argument : p_call->arguments) {
+					bound_arguments.push_back(argument);
+				}
+
+				int remaining_default_arg_count = 0;
+				Vector<int> default_survival_extra_argument_counts;
+				default_survival_for_bind(bound_arguments, checked_bind_start, remaining_argument_count,
+						remaining_default_arg_count, default_survival_extra_argument_counts);
+
+				return_type = transformed_callable_type(p_base_type, remaining_parameter_types, remaining_default_arg_count, false);
+				for (int extra_allowed_argument_count : default_survival_extra_argument_counts) {
+					return_type.method_extra_allowed_argument_counts.push_back(extra_allowed_argument_count);
+				}
+				preserve_extra_allowed_argument_counts(bound_arguments, return_type);
+			}
+		} else {
+			// Variadic Callable.bind richness (preserve_fixed_vararg_callable) remains follow-up under #60.
+			validate_call_arg(List<BSParser::DataType>(), 0, true, p_call);
+			return_type = plain_callable_type();
+			return_type.signature_is_async = p_base_type.signature_is_async;
+		}
+
+		p_call->set_datatype(return_type);
+		return true;
+	}
+
+	if (is_callable_bindv) {
+		List<BSParser::DataType> bindv_par_types;
+		bindv_par_types.push_back(analyzer->type_from_property(PropertyInfo(Variant::ARRAY, "arguments"), true));
+		validate_call_arg(bindv_par_types, 0, false, p_call);
+
+		BSParser::DataType return_type = plain_callable_type();
+		return_type.signature_is_async = p_base_type.signature_is_async;
+
+		BSParser::ArrayNode *bind_array = array_literal_argument(p_call, 0);
+		if (!is_callable_vararg && bind_array != nullptr) {
+			const int bind_argument_count = bind_array->elements.size();
+			const int callable_argument_count = p_base_type.method_parameter_types.size();
+			const int checked_bind_argument_count = MIN(bind_argument_count, callable_argument_count);
+			const int checked_bind_start = callable_argument_count - checked_bind_argument_count;
+
+			for (int i = 0; i < checked_bind_argument_count; i++) {
+				validate_argument_against_type(p_base_type.method_parameter_types[checked_bind_start + i],
+						bind_array->elements[i], i + 1, function_name, p_call);
+			}
+
+			if (bind_argument_count > callable_argument_count) {
+				return_type = over_bound_callable_type(p_base_type);
+			} else {
+				Vector<BSParser::DataType> remaining_parameter_types;
+				const int remaining_argument_count = callable_argument_count - bind_argument_count;
+				for (int i = 0; i < remaining_argument_count; i++) {
+					remaining_parameter_types.push_back(p_base_type.method_parameter_types[i]);
+				}
+
+				Vector<const BSParser::ExpressionNode *> bound_arguments;
+				for (BSParser::ExpressionNode *element : bind_array->elements) {
+					bound_arguments.push_back(element);
+				}
+
+				int remaining_default_arg_count = 0;
+				Vector<int> default_survival_extra_argument_counts;
+				default_survival_for_bind(bound_arguments, checked_bind_start, remaining_argument_count,
+						remaining_default_arg_count, default_survival_extra_argument_counts);
+
+				return_type = transformed_callable_type(p_base_type, remaining_parameter_types, remaining_default_arg_count, false);
+				for (int extra_allowed_argument_count : default_survival_extra_argument_counts) {
+					return_type.method_extra_allowed_argument_counts.push_back(extra_allowed_argument_count);
+				}
+				preserve_extra_allowed_argument_counts(bound_arguments, return_type);
+			}
+		}
+
+		p_call->set_datatype(return_type);
+		return true;
+	}
+
+	if (is_callable_unbind) {
+		List<BSParser::DataType> unbind_par_types;
+		unbind_par_types.push_back(analyzer->type_from_property(PropertyInfo(Variant::INT, "argcount"), true));
+		validate_call_arg(unbind_par_types, 0, false, p_call);
+
+		BSParser::DataType return_type = plain_callable_type();
+		return_type.signature_is_async = p_base_type.signature_is_async;
+
+		if (p_call->arguments.size() == 1) {
+			const BSParser::ExpressionNode *unbind_count_arg = p_call->arguments[0];
+			if (unbind_count_arg != nullptr && unbind_count_arg->is_constant && unbind_count_arg->reduced_value.get_type() == Variant::INT) {
+				const int64_t unbind_argument_count = unbind_count_arg->reduced_value;
+				if (unbind_argument_count <= 0) {
+					analyzer->push_error("Amount of \"unbind()\" arguments must be 1 or greater.", unbind_count_arg);
+				} else {
+					const int unbind_count = int(unbind_argument_count);
+					Vector<BSParser::DataType> expanded_parameter_types = p_base_type.method_parameter_types;
+					const BSParser::DataType variant_type = analyzer->type_from_property(PropertyInfo(Variant::NIL, ""), true);
+					for (int i = 0; i < unbind_count; i++) {
+						expanded_parameter_types.push_back(variant_type);
+					}
+					return_type = transformed_callable_type(p_base_type, expanded_parameter_types, p_base_type.method_info.default_arguments.size(), is_callable_vararg);
+					return_type.method_unbound_argument_count = p_base_type.method_unbound_argument_count + unbind_count;
+					for (int extra_allowed_argument_count : p_base_type.method_extra_allowed_argument_counts) {
+						return_type.method_extra_allowed_argument_counts.push_back(extra_allowed_argument_count + unbind_count);
+					}
+				}
+			}
+		}
+
+		p_call->set_datatype(return_type);
+		return true;
+	}
+
+	return false;
 }
 
 } // namespace barista_script

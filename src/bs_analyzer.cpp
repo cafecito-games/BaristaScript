@@ -11,7 +11,9 @@
 /*  witness starter (#60 conformance TU), ENUM_CASE / case-bind /         */
 /*  container match pattern depth (#60), contextual `.Case` match / `is`  */
 /*  qualification (#60), expression-position `.Case` assign/return (#60), */
-/*  array/dict/cast/ternary consumer `.Case` finalization (#60).          */
+/*  array/dict/cast/ternary consumer `.Case` finalization (#60),          */
+/*  tagged-union match exhaustiveness (#60), Callable.bind/unbind/call    */
+/*  signature transforms (#60).                                           */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -1199,6 +1201,14 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call) {
 						void_type.builtin_type = Variant::BOOL;
 					}
 					p_call->set_datatype(void_type);
+					return;
+				}
+			}
+
+			// Foundry @ c9d5e35: typed Callable.bind / bindv / unbind / call signature transforms.
+			if (subscript->base != nullptr && p_call->function_name != StringName()) {
+				const BSParser::DataType base_type = subscript->base->get_datatype();
+				if (call_site_validation.try_type_callable_method_call(p_call, base_type)) {
 					return;
 				}
 			}
