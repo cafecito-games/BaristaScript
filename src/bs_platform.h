@@ -338,6 +338,23 @@ struct BSCompression {
 };
 
 /**
+ * Core `Variant::get_validated_operator_evaluator` / `get_operator_return_type` are absent from
+ * godot-cpp. `BSVariantOperators` recreates them via `variant_get_ptr_operator_evaluator` +
+ * `Variant::evaluate` (implemented in `bs_platform_shims.cpp`) so analyzer `get_operation_type`
+ * does not reach the GDExtension loader alone.
+ */
+struct BSVariantOperators {
+	/** True when core would return a non-null ValidatedOperatorEvaluator for the triple. */
+	static bool has_validated_evaluator(Variant::Operator p_op, Variant::Type p_a, Variant::Type p_b);
+	/**
+	 * Return type of a validated operator, recovered by evaluating default operands. Division and
+	 * modulo use non-zero numeric defaults so value-domain failure is not mistaken for a missing
+	 * evaluator (validity itself comes from `has_validated_evaluator`).
+	 */
+	static Variant::Type get_return_type(Variant::Operator p_op, Variant::Type p_a, Variant::Type p_b);
+};
+
+/**
  * D1 gives BaristaScript one integer type, so Foundry's `NumericType` and the numeric tower built
  * on it are deleted rather than ported. Nothing here defines the type; the identifier is redirected
  * to one that does not exist, so any surviving reference -- including a pointer or a reference,

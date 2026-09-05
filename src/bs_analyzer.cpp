@@ -7,7 +7,7 @@
 /*  unused surface, ENUM_CASE / `.Case` / exhaustiveness, Callable.bind,  */
 /*  pending-warning finalize, trait conformance (#60), same-file extends  */
 /*  + CLASS inheritance member walk, cycle-safe walks (#110), lambda      */
-/*  capture flow-narrowing mark/clear + compound-assign restore (#60).    */
+/*  capture + compound-assign restore, get_operation_type (#60).          */
 
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -40,7 +40,20 @@ Variant _tagged_union_case_singleton(int64_t p_tag) {
 }
 
 String _operator_name(Variant::Operator p_op) {
+	// Mirrors core Variant::get_operator_name (@ c9d5e35) for diagnostics.
 	switch (p_op) {
+		case Variant::OP_EQUAL:
+			return "==";
+		case Variant::OP_NOT_EQUAL:
+			return "!=";
+		case Variant::OP_LESS:
+			return "<";
+		case Variant::OP_LESS_EQUAL:
+			return "<=";
+		case Variant::OP_GREATER:
+			return ">";
+		case Variant::OP_GREATER_EQUAL:
+			return ">=";
 		case Variant::OP_ADD:
 			return "+";
 		case Variant::OP_SUBTRACT:
@@ -49,14 +62,36 @@ String _operator_name(Variant::Operator p_op) {
 			return "*";
 		case Variant::OP_DIVIDE:
 			return "/";
-		case Variant::OP_MODULE:
-			return "%";
-		case Variant::OP_POWER:
-			return "**";
 		case Variant::OP_NEGATE:
 			return "-";
 		case Variant::OP_POSITIVE:
 			return "+";
+		case Variant::OP_MODULE:
+			return "%";
+		case Variant::OP_POWER:
+			return "**";
+		case Variant::OP_SHIFT_LEFT:
+			return "<<";
+		case Variant::OP_SHIFT_RIGHT:
+			return ">>";
+		case Variant::OP_BIT_AND:
+			return "&";
+		case Variant::OP_BIT_OR:
+			return "|";
+		case Variant::OP_BIT_XOR:
+			return "^";
+		case Variant::OP_BIT_NEGATE:
+			return "~";
+		case Variant::OP_AND:
+			return "and";
+		case Variant::OP_OR:
+			return "or";
+		case Variant::OP_XOR:
+			return "xor";
+		case Variant::OP_NOT:
+			return "not";
+		case Variant::OP_IN:
+			return "in";
 		default:
 			return String::num_int64((int64_t)p_op);
 	}
@@ -154,7 +189,21 @@ void BSAnalyzer::mark_phase(AnalyzerPhase p_phase) {
 
 void BSAnalyzer::push_error(const String &p_message, const BSParser::Node *p_origin) {
 	ERR_FAIL_NULL(parser);
+	mark_node_unsafe(p_origin);
 	parser->push_error(p_message, p_origin);
+}
+
+void BSAnalyzer::mark_node_unsafe(const BSParser::Node *p_node) {
+#ifdef DEBUG_ENABLED
+	if (parser == nullptr || p_node == nullptr) {
+		return;
+	}
+	for (int i = p_node->start_line; i <= p_node->end_line; i++) {
+		parser->unsafe_lines.insert(i);
+	}
+#else
+	(void)p_node;
+#endif
 }
 
 #ifdef DEBUG_ENABLED
@@ -974,6 +1023,211 @@ Error BSAnalyzer::run_phase_interface_and_member_surface() {
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
 
+// --- Foundry get_operation_type helpers (@ c9d5e35, fs_analyzer.cpp ~17999+) ---
+// Hard fork: FS*→BS*; D1 deletes mixed INT/UINT carrier-widening + numeric_type stamping.
+
+static BSParser::DataType _operation_type_for_operand_pair(Variant::Operator p_operation, const BSParser::DataType &p_a, const BSParser::DataType &p_b, bool &r_valid) {
+	if (p_operation == Variant::OP_AND || p_operation == Variant::OP_OR) {
+		// Those work for any type of argument and always return a boolean.
+		// They don't use the Variant operator since they have short-circuit semantics.
+		r_valid = true;
+		BSParser::DataType result;
+		result.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+		result.kind = BSParser::DataType::BUILTIN;
+		result.builtin_type = Variant::BOOL;
+		return result;
+	}
+
+	Variant::Type a_type = p_a.builtin_type;
+	Variant::Type b_type = p_b.builtin_type;
+
+	// A tagged-union value is a read-only `[tag, payload...]` Array, so it is never an integer.
+	if (p_a.kind == BSParser::DataType::ENUM) {
+		if (p_a.is_meta_type) {
+			a_type = Variant::DICTIONARY;
+		} else {
+			a_type = p_a.is_tagged_union ? Variant::ARRAY : Variant::INT;
+		}
+	}
+	if (p_b.kind == BSParser::DataType::ENUM) {
+		if (p_b.is_meta_type) {
+			b_type = Variant::DICTIONARY;
+		} else {
+			b_type = p_b.is_tagged_union ? Variant::ARRAY : Variant::INT;
+		}
+	}
+
+	// The Array erasure is a representation detail, not part of the union's surface: only identity
+	// comparison is meaningful on a case value. Concatenation, containment, and the other Array
+	// operators would otherwise leak through and silently produce a plain Array.
+	if ((p_a.is_tagged_union_type() && !p_a.is_meta_type) || (p_b.is_tagged_union_type() && !p_b.is_meta_type)) {
+		if (p_operation != Variant::OP_EQUAL && p_operation != Variant::OP_NOT_EQUAL) {
+			r_valid = !(p_a.is_hard_type() && p_b.is_hard_type());
+			BSParser::DataType invalid;
+			invalid.kind = BSParser::DataType::VARIANT;
+			return invalid;
+		}
+	}
+
+	BSParser::DataType result;
+	bool hard_operation = p_a.is_hard_type() && p_b.is_hard_type();
+
+	if (p_operation == Variant::OP_ADD && a_type == Variant::ARRAY && b_type == Variant::ARRAY) {
+		if (p_a.has_container_element_type(0) && p_b.has_container_element_type(0)) {
+			if (p_a.get_container_element_type(0) == p_b.get_container_element_type(0)) {
+				r_valid = true;
+				result = p_a;
+				result.type_source = hard_operation ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
+				return result;
+			}
+
+			r_valid = false;
+			result.kind = BSParser::DataType::BUILTIN;
+			result.builtin_type = Variant::ARRAY;
+			result.type_source = hard_operation ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
+			return result;
+		}
+	}
+
+	// D1: Foundry's mixed INT/UINT carrier-widening arm (FSNumericOps / NumericType) is deleted.
+	const bool validated = BSVariantOperators::has_validated_evaluator(p_operation, a_type, b_type);
+
+	if (validated) {
+		r_valid = true;
+		result.type_source = hard_operation ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
+		result.kind = BSParser::DataType::BUILTIN;
+		result.builtin_type = BSVariantOperators::get_return_type(p_operation, a_type, b_type);
+	} else {
+		r_valid = !hard_operation;
+		result.kind = BSParser::DataType::VARIANT;
+	}
+
+	return result;
+}
+
+static void _collect_operand_alternatives(const BSParser::DataType &p_type, Vector<BSParser::DataType> &r_alternatives) {
+	if (!p_type.is_nullable && !p_type.is_meta_type) {
+		if (p_type.kind == BSParser::DataType::UNION) {
+			r_alternatives = p_type.union_members;
+			return;
+		}
+		if (p_type.kind == BSParser::DataType::TYPE_PARAMETER && p_type.type_parameter_bound.size() == 1) {
+			const BSParser::DataType &bound = p_type.type_parameter_bound[0];
+			if (bound.kind == BSParser::DataType::UNION && !bound.is_nullable) {
+				r_alternatives = bound.union_members;
+				return;
+			}
+		}
+	}
+	r_alternatives.push_back(p_type);
+}
+
+static bool _operation_is_checked_set_wise(Variant::Operator p_operation) {
+	return p_operation != Variant::OP_EQUAL && p_operation != Variant::OP_NOT_EQUAL;
+}
+
+static bool _needs_set_wise_operation(Variant::Operator p_operation, const Vector<BSParser::DataType> &p_a_alternatives, const Vector<BSParser::DataType> &p_b_alternatives) {
+	return _operation_is_checked_set_wise(p_operation) && (p_a_alternatives.size() > 1 || p_b_alternatives.size() > 1);
+}
+
+static bool _find_unsupported_operand_pair(Variant::Operator p_operation, const BSParser::DataType &p_a, const BSParser::DataType &p_b, BSParser::DataType &r_a_alternative, BSParser::DataType &r_b_alternative) {
+	Vector<BSParser::DataType> a_alternatives;
+	Vector<BSParser::DataType> b_alternatives;
+	_collect_operand_alternatives(p_a, a_alternatives);
+	_collect_operand_alternatives(p_b, b_alternatives);
+	if (!_needs_set_wise_operation(p_operation, a_alternatives, b_alternatives)) {
+		return false;
+	}
+
+	for (const BSParser::DataType &a_alternative : a_alternatives) {
+		for (const BSParser::DataType &b_alternative : b_alternatives) {
+			bool pair_valid = false;
+			_operation_type_for_operand_pair(p_operation, a_alternative, b_alternative, pair_valid);
+			if (!pair_valid) {
+				r_a_alternative = a_alternative;
+				r_b_alternative = b_alternative;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static String _make_set_operation_error(const BSParser::DataType &p_a, const BSParser::DataType &p_b,
+		const BSParser::DataType &p_a_alternative, const BSParser::DataType &p_b_alternative,
+		Variant::Operator p_operation, const String &p_pair_error) {
+	if (p_pair_error.is_empty()) {
+		return vformat(R"(Operands "%s" and "%s" allow the combination "%s" and "%s", which the "%s" operator has no result for. Narrow both operands with a type test, or convert them explicitly.)",
+				p_a.to_string_diagnostic(), p_b.to_string_diagnostic(),
+				p_a_alternative.to_string_diagnostic(), p_b_alternative.to_string_diagnostic(),
+				_operator_name(p_operation));
+	}
+	return vformat(R"(Operands "%s" and "%s" allow a combination the "%s" operator has no result for. %s Narrow both operands with a type test first.)",
+			p_a.to_string_diagnostic(), p_b.to_string_diagnostic(),
+			_operator_name(p_operation), p_pair_error);
+}
+
+BSParser::DataType BSAnalyzer::get_operation_type(Variant::Operator p_operation, const BSParser::DataType &p_a, bool &r_valid, const BSParser::Node *p_source) {
+	// Unary version.
+	BSParser::DataType nil_type;
+	nil_type.builtin_type = Variant::NIL;
+	nil_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+	return get_operation_type(p_operation, p_a, nil_type, r_valid, p_source);
+}
+
+BSParser::DataType BSAnalyzer::get_operation_type(Variant::Operator p_operation, const BSParser::DataType &p_a, const BSParser::DataType &p_b, bool &r_valid, const BSParser::Node *p_source) {
+	(void)p_source;
+	Vector<BSParser::DataType> a_alternatives;
+	Vector<BSParser::DataType> b_alternatives;
+	_collect_operand_alternatives(p_a, a_alternatives);
+	_collect_operand_alternatives(p_b, b_alternatives);
+	if (!_needs_set_wise_operation(p_operation, a_alternatives, b_alternatives)) {
+		return _operation_type_for_operand_pair(p_operation, p_a, p_b, r_valid);
+	}
+
+	// Set-wise checking: the operation is valid only when every permitted combination has a result,
+	// and its type is the normalized union of those results, which collapses to a single type when
+	// they all agree. A combination with no result is reported by the caller, which names the pair.
+	const bool hard_operation = p_a.is_hard_type() && p_b.is_hard_type();
+	Vector<BSParser::DataType> results;
+	for (const BSParser::DataType &a_alternative : a_alternatives) {
+		for (const BSParser::DataType &b_alternative : b_alternatives) {
+			bool pair_valid = false;
+			BSParser::DataType pair_result = _operation_type_for_operand_pair(p_operation, a_alternative, b_alternative, pair_valid);
+			if (!pair_valid) {
+				r_valid = false;
+				BSParser::DataType invalid;
+				invalid.kind = BSParser::DataType::VARIANT;
+				return invalid;
+			}
+			if (pair_result.is_variant()) {
+				// One unconstrained combination makes the whole result unconstrained; a union holding
+				// `Variant` would claim more than the operation proves.
+				r_valid = true;
+				BSParser::DataType dynamic_result;
+				dynamic_result.kind = BSParser::DataType::VARIANT;
+				return dynamic_result;
+			}
+			// Members are recorded as written types: `DataType::operator==`, which the normalizer
+			// deduplicates with, treats an inferred type as equal to every other type.
+			pair_result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			results.push_back(pair_result);
+		}
+	}
+
+	if (results.is_empty()) {
+		r_valid = false;
+		BSParser::DataType invalid;
+		invalid.kind = BSParser::DataType::VARIANT;
+		return invalid;
+	}
+
+	r_valid = true;
+	BSParser::DataType result = BSParser::DataType::make_union(results);
+	result.type_source = hard_operation ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
+	return result;
+}
+
 void BSAnalyzer::reduce_literal(BSParser::LiteralNode *p_literal) {
 	if (p_literal == nullptr) {
 		return;
@@ -989,30 +1243,47 @@ void BSAnalyzer::reduce_unary_op(BSParser::UnaryOpNode *p_unary_op) {
 		return;
 	}
 	reduce_expression(p_unary_op->operand);
-	if (!p_unary_op->operand->is_constant) {
-		BSParser::DataType operand_type = p_unary_op->operand->get_datatype();
-		p_unary_op->set_datatype(operand_type);
+	BSParser::DataType operand_type = p_unary_op->operand->get_datatype();
+
+	if (p_unary_op->operand->is_constant) {
+		p_unary_op->is_constant = true;
+		p_unary_op->reduced = true;
+		String overflow_error;
+		Variant checked;
+		if (p_unary_op->variant_op == Variant::OP_NEGATE &&
+				_checked_int_binary(Variant::OP_NEGATE, p_unary_op->operand->reduced_value, Variant(), checked, overflow_error)) {
+			p_unary_op->reduced_value = checked;
+		} else if (p_unary_op->variant_op == Variant::OP_NEGATE && !overflow_error.is_empty()) {
+			push_error(overflow_error, p_unary_op);
+			p_unary_op->reduced_value = 0;
+		} else {
+			bool valid = false;
+			Variant::evaluate(p_unary_op->variant_op, p_unary_op->operand->reduced_value, Variant(), p_unary_op->reduced_value, valid);
+			if (!valid) {
+				push_error(vformat(R"(Invalid operand for unary operator "%s".)", _operator_name(p_unary_op->variant_op)), p_unary_op);
+				p_unary_op->reduced_value = Variant();
+			}
+		}
+		p_unary_op->set_datatype(type_from_variant(p_unary_op->reduced_value));
 		return;
 	}
-	p_unary_op->is_constant = true;
-	p_unary_op->reduced = true;
-	String overflow_error;
-	Variant checked;
-	if (p_unary_op->variant_op == Variant::OP_NEGATE &&
-			_checked_int_binary(Variant::OP_NEGATE, p_unary_op->operand->reduced_value, Variant(), checked, overflow_error)) {
-		p_unary_op->reduced_value = checked;
-	} else if (p_unary_op->variant_op == Variant::OP_NEGATE && !overflow_error.is_empty()) {
-		push_error(overflow_error, p_unary_op);
-		p_unary_op->reduced_value = 0;
+
+	BSParser::DataType result;
+	if (operand_type.is_variant()) {
+		result.kind = BSParser::DataType::VARIANT;
+		if (strict_dynamic_checks) {
+			push_error(vformat(R"*(Cannot use dynamic operand for unary "%s" operator in strict dynamic mode.)*", _operator_name(p_unary_op->variant_op)), p_unary_op);
+		} else {
+			mark_node_unsafe(p_unary_op);
+		}
 	} else {
 		bool valid = false;
-		Variant::evaluate(p_unary_op->variant_op, p_unary_op->operand->reduced_value, Variant(), p_unary_op->reduced_value, valid);
+		result = get_operation_type(p_unary_op->variant_op, operand_type, valid, p_unary_op);
 		if (!valid) {
-			push_error(vformat(R"(Invalid operand for unary operator "%s".)", _operator_name(p_unary_op->variant_op)), p_unary_op);
-			p_unary_op->reduced_value = Variant();
+			push_error(vformat(R"(Invalid operand of type "%s" for unary operator "%s".)", operand_type.to_string(), _operator_name(p_unary_op->variant_op)), p_unary_op);
 		}
 	}
-	p_unary_op->set_datatype(type_from_variant(p_unary_op->reduced_value));
+	p_unary_op->set_datatype(result);
 }
 
 void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
@@ -1024,57 +1295,95 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 	if (p_binary_op->left_operand == nullptr || p_binary_op->right_operand == nullptr) {
 		return;
 	}
-	if (!(p_binary_op->left_operand->is_constant && p_binary_op->right_operand->is_constant)) {
-		BSParser::DataType left = p_binary_op->left_operand->get_datatype();
-		BSParser::DataType right = p_binary_op->right_operand->get_datatype();
-		if (left.is_set() && right.is_set() && left.kind == BSParser::DataType::BUILTIN && right.kind == BSParser::DataType::BUILTIN) {
-			if (left.builtin_type == Variant::INT && right.builtin_type == Variant::INT) {
-				BSParser::DataType result = type_from_variant(0);
-				result.is_constant = false;
-				p_binary_op->set_datatype(result);
-#ifdef DEBUG_ENABLED
-				if (p_binary_op->variant_op == Variant::OP_DIVIDE) {
-					push_warning(p_binary_op, BSWarning::INTEGER_DIVISION);
-				}
-#endif
-			} else if (left.builtin_type == Variant::FLOAT || right.builtin_type == Variant::FLOAT) {
-				BSParser::DataType result = type_from_variant(0.0);
-				result.is_constant = false;
-				p_binary_op->set_datatype(result);
-			}
-		}
+
+	BSParser::DataType left_type = p_binary_op->left_operand->get_datatype();
+	BSParser::DataType right_type = p_binary_op->right_operand->get_datatype();
+	if (!left_type.is_set() || !right_type.is_set()) {
 		return;
 	}
 
-	p_binary_op->is_constant = true;
-	p_binary_op->reduced = true;
-	String overflow_error;
-	Variant checked;
-	if (_checked_int_binary(p_binary_op->variant_op, p_binary_op->left_operand->reduced_value, p_binary_op->right_operand->reduced_value, checked, overflow_error)) {
-		p_binary_op->reduced_value = checked;
-	} else if (!overflow_error.is_empty()) {
-		push_error(overflow_error, p_binary_op);
-		p_binary_op->reduced_value = 0;
-	} else {
-		bool valid = false;
-		Variant::evaluate(p_binary_op->variant_op, p_binary_op->left_operand->reduced_value, p_binary_op->right_operand->reduced_value, p_binary_op->reduced_value, valid);
-		if (!valid) {
-			push_error(vformat(R"(Invalid operands to operator %s, %s and %s.)",
-							   _operator_name(p_binary_op->variant_op),
-							   Variant::get_type_name(p_binary_op->left_operand->reduced_value.get_type()),
-							   Variant::get_type_name(p_binary_op->right_operand->reduced_value.get_type())),
-					p_binary_op);
-			p_binary_op->reduced_value = Variant();
-		}
-	}
 #ifdef DEBUG_ENABLED
 	if (p_binary_op->variant_op == Variant::OP_DIVIDE &&
-			p_binary_op->left_operand->reduced_value.get_type() == Variant::INT &&
-			p_binary_op->right_operand->reduced_value.get_type() == Variant::INT) {
+			(left_type.builtin_type == Variant::INT ||
+					left_type.builtin_type == Variant::VECTOR2I ||
+					left_type.builtin_type == Variant::VECTOR3I ||
+					left_type.builtin_type == Variant::VECTOR4I) &&
+			(right_type.builtin_type == Variant::INT ||
+					right_type.builtin_type == left_type.builtin_type)) {
 		push_warning(p_binary_op, BSWarning::INTEGER_DIVISION);
 	}
 #endif
-	p_binary_op->set_datatype(type_from_variant(p_binary_op->reduced_value));
+
+	if (p_binary_op->left_operand->is_constant && p_binary_op->right_operand->is_constant) {
+		p_binary_op->is_constant = true;
+		p_binary_op->reduced = true;
+		String overflow_error;
+		Variant checked;
+		if (_checked_int_binary(p_binary_op->variant_op, p_binary_op->left_operand->reduced_value, p_binary_op->right_operand->reduced_value, checked, overflow_error)) {
+			p_binary_op->reduced_value = checked;
+		} else if (!overflow_error.is_empty()) {
+			push_error(overflow_error, p_binary_op);
+			p_binary_op->reduced_value = 0;
+		} else {
+			bool valid = false;
+			Variant::evaluate(p_binary_op->variant_op, p_binary_op->left_operand->reduced_value, p_binary_op->right_operand->reduced_value, p_binary_op->reduced_value, valid);
+			if (!valid) {
+				push_error(vformat(R"(Invalid operands to operator %s, %s and %s.)",
+								   _operator_name(p_binary_op->variant_op),
+								   Variant::get_type_name(p_binary_op->left_operand->reduced_value.get_type()),
+								   Variant::get_type_name(p_binary_op->right_operand->reduced_value.get_type())),
+						p_binary_op);
+				p_binary_op->reduced_value = Variant();
+			}
+		}
+		p_binary_op->set_datatype(type_from_variant(p_binary_op->reduced_value));
+		return;
+	}
+
+	BSParser::DataType result;
+	if ((p_binary_op->variant_op == Variant::OP_EQUAL || p_binary_op->variant_op == Variant::OP_NOT_EQUAL) &&
+			((left_type.kind == BSParser::DataType::BUILTIN && left_type.builtin_type == Variant::NIL) ||
+					(right_type.kind == BSParser::DataType::BUILTIN && right_type.builtin_type == Variant::NIL))) {
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		result.kind = BSParser::DataType::BUILTIN;
+		result.builtin_type = Variant::BOOL;
+	} else if (p_binary_op->variant_op == Variant::OP_MODULE && left_type.builtin_type == Variant::STRING) {
+		result.type_source = left_type.type_source;
+		result.kind = BSParser::DataType::BUILTIN;
+		result.builtin_type = Variant::STRING;
+	} else if (left_type.is_variant() || right_type.is_variant()) {
+		result.kind = BSParser::DataType::VARIANT;
+		if (strict_dynamic_checks) {
+			push_error(vformat(R"*(Cannot use dynamic operand for "%s" operator in strict dynamic mode.)*", _operator_name(p_binary_op->variant_op)), p_binary_op);
+		} else {
+			mark_node_unsafe(p_binary_op);
+		}
+	} else if (p_binary_op->variant_op < Variant::OP_MAX) {
+		bool valid = false;
+		result = get_operation_type(p_binary_op->variant_op, left_type, right_type, valid, p_binary_op);
+		if (!valid) {
+			const BSParser::DataType &union_type = left_type.is_tagged_union_type() && !left_type.is_meta_type ? left_type : right_type;
+			BSParser::DataType left_alternative;
+			BSParser::DataType right_alternative;
+			if (union_type.is_tagged_union_type() && !union_type.is_meta_type) {
+				push_error(vformat(R"*(Operator "%s" is not available on tagged union "%s"; its cases carry payloads, so its values are not integers. Match on the case first.)*",
+								   _operator_name(p_binary_op->variant_op), union_type.enum_type),
+						p_binary_op);
+			} else if (_find_unsupported_operand_pair(p_binary_op->variant_op, left_type, right_type, left_alternative, right_alternative)) {
+				push_error(_make_set_operation_error(left_type, right_type, left_alternative, right_alternative,
+								   p_binary_op->variant_op, String()),
+						p_binary_op);
+			} else {
+				push_error(vformat(R"(Invalid operands "%s" and "%s" for "%s" operator.)", left_type.to_string(), right_type.to_string(), _operator_name(p_binary_op->variant_op)), p_binary_op);
+			}
+		} else if (!result.is_hard_type()) {
+			mark_node_unsafe(p_binary_op);
+		}
+	} else {
+		ERR_PRINT("Parser bug: unknown binary operation.");
+	}
+
+	p_binary_op->set_datatype(result);
 }
 
 void BSAnalyzer::maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier) {
@@ -2604,30 +2913,42 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				qualify_contextual_enum_case_consumer(assignment->assigned_value, assignment->assignee->get_datatype());
 			}
 			if (assignment->assigned_value != nullptr) {
-				BSParser::DataType result_type = assignment->assigned_value->get_datatype();
-				// Thin compound left-operand use: when a narrowed read was stashed, prefer that
-				// width for the assignment expression type on matching hard builtins (full
-				// get_operation_type remains #60 follow-up).
-				if (has_compound_assignment_narrowed_read_type && assignment->operation != BSParser::AssignmentNode::OP_NONE &&
+				BSParser::DataType assignee_type;
+				if (assignment->assignee != nullptr) {
+					assignee_type = assignment->assignee->get_datatype();
+				}
+				BSParser::DataType assigned_value_type = assignment->assigned_value->get_datatype();
+				bool compatible = true;
+				BSParser::DataType op_type = assigned_value_type;
+				// Foundry reduce_assignment compound path @ c9d5e35: left operand is the stashed
+				// narrowed read when present, else the (restored) assignee type.
+				if (assignment->operation != BSParser::AssignmentNode::OP_NONE && !op_type.is_variant() &&
 						assignment->variant_op != Variant::OP_MAX) {
-					const BSParser::DataType &left = compound_assignment_narrowed_read_type;
-					const BSParser::DataType &right = assignment->assigned_value->get_datatype();
-					if (left.is_set() && right.is_set() && left.kind == BSParser::DataType::BUILTIN &&
-							right.kind == BSParser::DataType::BUILTIN) {
-						if (left.builtin_type == Variant::INT && right.builtin_type == Variant::INT) {
-							result_type = type_from_variant(0);
-							result_type.is_constant = false;
-						} else if (left.builtin_type == Variant::FLOAT || right.builtin_type == Variant::FLOAT) {
-							result_type = type_from_variant(0.0);
-							result_type.is_constant = false;
-						} else if (left.builtin_type == Variant::STRING && right.builtin_type == Variant::STRING &&
-								assignment->variant_op == Variant::OP_ADD) {
-							result_type = left;
-							result_type.is_constant = false;
+					const BSParser::DataType &compound_operand_type = has_compound_assignment_narrowed_read_type
+							? compound_assignment_narrowed_read_type
+							: assignee_type;
+					op_type = get_operation_type(assignment->variant_op, compound_operand_type, assigned_value_type, compatible, assignment->assigned_value);
+
+					if (assignee_type.is_variant()) {
+						mark_node_unsafe(assignment);
+					} else if (!compatible) {
+						mark_node_unsafe(assignment);
+						if (assigned_value_type.is_variant()) {
+							assignment->use_conversion_assign = true;
+						} else {
+							BSParser::DataType assignee_alternative;
+							BSParser::DataType assigned_alternative;
+							if (_find_unsupported_operand_pair(assignment->variant_op, compound_operand_type, assigned_value_type, assignee_alternative, assigned_alternative)) {
+								push_error(_make_set_operation_error(compound_operand_type, assigned_value_type,
+												   assignee_alternative, assigned_alternative, assignment->variant_op, String()),
+										assignment);
+							} else {
+								push_error(vformat(R"(Invalid operands "%s" and "%s" for assignment operator.)", assignee_type.to_string(), assigned_value_type.to_string()), assignment);
+							}
 						}
 					}
 				}
-				assignment->set_datatype(result_type);
+				assignment->set_datatype(op_type);
 			}
 		} break;
 		default:

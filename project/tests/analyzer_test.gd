@@ -43,6 +43,7 @@ func _init() -> void:
 	_test_trait_requirements_and_conformance_witness(failures)
 	_test_flow_narrowing(failures)
 	_test_lambda_capture_and_compound_narrowing(failures)
+	_test_get_operation_type(failures)
 	_test_builtin_annotation_resolve(failures)
 	_test_union_union_assignability(failures)
 	_test_union_store_carrier_select(failures)
@@ -1585,6 +1586,68 @@ func _test_lambda_capture_and_compound_narrowing(failures: PackedStringArray) ->
 
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_get_operation_type(failures: PackedStringArray) -> void:
+	# Foundry get_operation_type @ c9d5e35: set-wise union enumeration, hard-type operators,
+	# unary result typing, and compound left-operand use of narrowed reads.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	# Unary `not` yields bool (thin path previously copied the operand type).
+	var unary_not := _src_class("UnaryNotBoolResult extends Node\nfunc take(v: int) -> void:\n\tvar b: bool = not v\n")
+	var unary_not_report: Dictionary = probe.analyze_source(unary_not, "res://tests/unary_not_bool_result.barista")
+	_expect(failures, unary_not_report.get("valid", false) == true, "unary not on int types as bool")
+
+	# Hard incompatible binary operands.
+	var hard_invalid := _src_class("HardInvalidBinaryAdd extends Node\nfunc test() -> void:\n\tvar _x = \"a\" + 1\n")
+	var hard_invalid_report: Dictionary = probe.analyze_source(hard_invalid, "res://tests/hard_invalid_binary_add.barista")
+	_expect(failures, hard_invalid_report.get("valid", true) == false, "String + int is invalid")
+	var saw_hard := false
+	for message in hard_invalid_report.get("errors", PackedStringArray()):
+		if str(message).find("Invalid operands") >= 0 or str(message).find("\"+\"") >= 0:
+			saw_hard = true
+			break
+	_expect(failures, saw_hard, "String + int names the operator / operands")
+
+	# Set-wise: int|String + int admits String+int, which has no result.
+	var union_add := _src_class("UnionSetWiseAddReject extends Node\nfunc take(v: int | String) -> void:\n\tvar _x = v + 1\n")
+	var union_add_report: Dictionary = probe.analyze_source(union_add, "res://tests/union_set_wise_add_reject.barista")
+	_expect(failures, union_add_report.get("valid", true) == false, "int|String + int rejected set-wise")
+	var saw_set := false
+	for message in union_add_report.get("errors", PackedStringArray()):
+		if str(message).find("allow the combination") >= 0 or str(message).find("no result for") >= 0:
+			saw_set = true
+			break
+	_expect(failures, saw_set, "set-wise rejection names the unsupported combination")
+
+	# Equality is not checked set-wise: int|String == int stays valid.
+	var union_eq := _src_class("UnionEqualityOk extends Node\nfunc take(v: int | String) -> bool:\n\treturn v == 1\n")
+	var union_eq_report: Dictionary = probe.analyze_source(union_eq, "res://tests/union_equality_ok.barista")
+	_expect(failures, union_eq_report.get("valid", false) == true, "int|String == int is valid (equality not set-wise)")
+
+	# Compound without narrowing: same set-wise rejection as binary +.
+	var compound_union := _src_class("CompoundUnionSetWiseReject extends Node\nfunc take(v: int | String) -> void:\n\tv += 1\n")
+	var compound_union_report: Dictionary = probe.analyze_source(compound_union, "res://tests/compound_union_set_wise_reject.barista")
+	_expect(failures, compound_union_report.get("valid", true) == false, "compound += on int|String without narrowing is invalid")
+
+	# Compound under `is String` with += 1: narrowed left is String, op invalid.
+	var compound_string := _src_class("CompoundStringPlusIntReject extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tv += 1\n")
+	var compound_string_report: Dictionary = probe.analyze_source(compound_string, "res://tests/compound_string_plus_int_reject.barista")
+	_expect(failures, compound_string_report.get("valid", true) == false, "compound += 1 after `is String` is invalid")
+
+	# Invalid compound on hard builtins remains invalid.
+	var compound_hard := _src_class("CompoundHardInvalid extends Node\nfunc test() -> void:\n\tvar s: String = \"a\"\n\ts += 1\n")
+	var compound_hard_report: Dictionary = probe.analyze_source(compound_hard, "res://tests/compound_hard_invalid.barista")
+	_expect(failures, compound_hard_report.get("valid", true) == false, "String += int remains invalid")
+
+	# Typed Array concatenation: matching element types succeed; mismatched fail.
+	var array_add_ok := _src_class("TypedArrayAddOk extends Node\nfunc test() -> void:\n\tvar a: Array[int] = [1]\n\tvar b: Array[int] = [2]\n\tvar _c: Array[int] = a + b\n")
+	var array_add_ok_report: Dictionary = probe.analyze_source(array_add_ok, "res://tests/typed_array_add_ok.barista")
+	_expect(failures, array_add_ok_report.get("valid", false) == true, "Array[int] + Array[int] is valid")
+
+	var array_add_bad := _src_class("TypedArrayAddMismatch extends Node\nfunc test() -> void:\n\tvar a: Array[int] = [1]\n\tvar b: Array[String] = [\"x\"]\n\tvar _c = a + b\n")
+	var array_add_bad_report: Dictionary = probe.analyze_source(array_add_bad, "res://tests/typed_array_add_mismatch.barista")
+	_expect(failures, array_add_bad_report.get("valid", true) == false, "Array[int] + Array[String] is invalid")
 
 
 func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:

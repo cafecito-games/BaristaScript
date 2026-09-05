@@ -7,7 +7,8 @@
 /*  CallSiteValidationContext / connect-callable; unused surface; ENUM_CASE*/
 /*  / `.Case` / exhaustiveness; Callable.bind/unbind/call/callv/rpc;      */
 /*  pending-warning finalize on flow-finality early exit; trait           */
-/*  conformance witness (#60).                                            */
+/*  conformance witness; get_operation_type for binary/unary/compound     */
+/*  (#60).                                                                */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -107,8 +108,9 @@ public:
 	 * implementers, plus if/while/assert null-check and `is` type-test flow
 	 * narrowing for locals/parameters (including ENUM_CASE arms once
 	 * `case_datatype` is published). Lambda capture mark/clear and
-	 * compound-assignment narrowed-read restore are wired in `bs_analyzer.cpp`
-	 * (@ c9d5e35); remaining flow TU depth stays under #60.
+	 * compound-assignment narrowed-read restore + get_operation_type compound
+	 * left-operand typing are wired in `bs_analyzer.cpp` (@ c9d5e35); remaining
+	 * flow TU depth stays under #60.
 	 */
 	class FlowFinalityContext {
 		BSAnalyzer *analyzer = nullptr;
@@ -343,6 +345,15 @@ private:
 	void reduce_literal(BSParser::LiteralNode *p_literal);
 	void reduce_unary_op(BSParser::UnaryOpNode *p_unary_op);
 	void reduce_binary_op(BSParser::BinaryOpNode *p_binary_op);
+	/**
+	 * Hard fork of Foundry `FSAnalyzer::get_operation_type` (@ c9d5e35, `fs_analyzer.cpp`).
+	 * Unary overload forwards through a NIL right operand. D1 drops the mixed INT/UINT carrier-
+	 * widening arm and numeric_type stamping; set-wise union enumeration and tagged-union identity
+	 * rules are preserved. Engine contact via `BSVariantOperators` / `Variant::evaluate`.
+	 */
+	BSParser::DataType get_operation_type(Variant::Operator p_operation, const BSParser::DataType &p_a, const BSParser::DataType &p_b, bool &r_valid, const BSParser::Node *p_source);
+	BSParser::DataType get_operation_type(Variant::Operator p_operation, const BSParser::DataType &p_a, bool &r_valid, const BSParser::Node *p_source);
+	void mark_node_unsafe(const BSParser::Node *p_node);
 	void reduce_identifier(BSParser::IdentifierNode *p_identifier);
 	/** Foundry reduce_identifier lambda capture walk (@ c9d5e35) after a capturable local bind. */
 	void maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier);
