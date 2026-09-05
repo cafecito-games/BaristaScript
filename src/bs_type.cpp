@@ -5,6 +5,9 @@
 /*  Union sources require every alternative to satisfy the target.        */
 /*  Target-UNION uses two-pass select + numeric store-carrier gate.       */
 /*  Coroutine[T] assignability matches phantom results invariantly.       */
+/*  TYPE_PARAMETER / @Self assignability arms (identity, undecidable     */
+/*  target, erased-source runtime check). Free-T undecidable laundering  */
+/*  remains M5 residual until method/class type parameters are live.     */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -15,6 +18,34 @@
 namespace barista_script {
 
 namespace {
+
+// Foundry _is_erased_type_parameter @ c9d5e35: a method-scope parameter is chosen per call and
+// erased to Variant, so no check exists or can be emitted for a slot declared with it.
+bool _is_erased_type_parameter(const BSParser::DataType &p_type) {
+	return p_type.kind == BSParser::DataType::TYPE_PARAMETER &&
+			p_type.type_parameter_scope == BSParser::DataType::TYPE_PARAMETER_METHOD;
+}
+
+// Foundry _is_type_parameter_bounded_by_final_class @ c9d5e35: a parameter bounded by a `final`
+// class denotes exactly that class — no subtype of the bound can exist.
+bool _is_type_parameter_bounded_by_final_class(const BSParser::DataType &p_type) {
+	return p_type.kind == BSParser::DataType::TYPE_PARAMETER && p_type.type_parameter_bound.size() == 1 &&
+			p_type.type_parameter_bound[0].kind == BSParser::DataType::CLASS &&
+			p_type.type_parameter_bound[0].class_type != nullptr &&
+			p_type.type_parameter_bound[0].class_type->is_final;
+}
+
+// Foundry _is_undecidable_type_parameter_target @ c9d5e35: a method-scope parameter is always
+// undecidable; a class-scope one is undecidable only without a receiver. `@Self` is excluded — it
+// denotes the class the frame runs against (static frames included) and is never a laundering target.
+bool _is_undecidable_type_parameter_target(const BSParser::DataType &p_type, const BSTypeCompatibility::Options &p_options) {
+	if (_is_erased_type_parameter(p_type)) {
+		return true;
+	}
+	return !p_options.receiver_is_available && p_type.kind == BSParser::DataType::TYPE_PARAMETER &&
+			p_type.type_parameter_scope == BSParser::DataType::TYPE_PARAMETER_CLASS &&
+			p_type.type_parameter_name != SNAME("@Self");
+}
 
 // Foundry _union_store_converts_carrier @ c9d5e35 (D1-trimmed): a UNION slot has no carrier of its
 // own, so an alternative reached only by converting the value is admitted only where the store can
@@ -95,6 +126,25 @@ BSNumericConversion::Conversion BSNumericConversion::classify(const BSParser::Da
 
 BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType &p_target, const BSParser::DataType &p_source) {
 	return check(p_target, p_source, Options());
+}
+
+bool BSTypeCompatibility::resolve_final_class_bound(const BSParser::DataType &p_type, BSParser::DataType &r_resolved) {
+	// Foundry resolve_final_class_bound @ c9d5e35: `@Self` denotes the class a frame runs against
+	// and has its own lowering everywhere; it is never resolved through a declared bound.
+	if (p_type.type_parameter_name == SNAME("@Self") || !_is_type_parameter_bounded_by_final_class(p_type)) {
+		return false;
+	}
+	BSParser::DataType resolved = p_type.type_parameter_bound[0];
+	resolved.type_source = p_type.type_source;
+	// Wrappers the parameter itself declared survive resolution: `T?` resolves to `Label?` and
+	// `Type[T]` to a class handle for `Label`, so the resolved shape lowers exactly as the position
+	// demanded. The bound's own wrappers survive as well, so the two are combined.
+	resolved.is_nullable = resolved.is_nullable || p_type.is_nullable;
+	resolved.is_meta_type = resolved.is_meta_type || p_type.is_meta_type;
+	resolved.is_type_handle_annotation = resolved.is_type_handle_annotation || p_type.is_type_handle_annotation;
+	resolved.is_coroutine = resolved.is_coroutine || p_type.is_coroutine;
+	r_resolved = resolved;
+	return true;
 }
 
 BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const Options &p_options) {
@@ -213,6 +263,47 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 			result.compatible = element_result.compatible;
 			result.requires_runtime_check = element_result.requires_runtime_check;
 			result.uses_implicit_conversion = element_result.uses_implicit_conversion;
+		}
+		return result;
+	}
+
+	// Foundry FSTypeCompatibility::check @ c9d5e35 (~1090): TYPE_PARAMETER / @Self assignability.
+	// Must run before CLASS/NATIVE/SCRIPT so a TYPE_PARAMETER source into a concrete destination is
+	// not rejected by the kind gate below. Free method/class type parameters remain M5-deferred in
+	// Barista; the undecidable-target arms are ported so `@Self` keeps Foundry identity / exclusion
+	// rules now, and free-`T` laundering refusal lights up once M5 specialization is live.
+	if (p_target.kind == BSParser::DataType::TYPE_PARAMETER || p_source.kind == BSParser::DataType::TYPE_PARAMETER) {
+		Result result(false, false, false);
+		// Type parameters are erased to Variant at runtime, so the two directions are not symmetric.
+		if (p_target.kind == BSParser::DataType::TYPE_PARAMETER && p_source.kind == BSParser::DataType::TYPE_PARAMETER) {
+			// Two handles are statically compatible only when they denote the same parameter.
+			// Nullability is deliberately excluded from this identity comparison so `T` widens to `T?`
+			// the same way `Node` widens to `Node?`. The unsafe direction (`T?` into `T`) is already
+			// rejected by the strict-null gate above, which runs before this branch.
+			BSParser::DataType target_identity = p_target;
+			BSParser::DataType source_identity = p_source;
+			target_identity.is_nullable = false;
+			source_identity.is_nullable = false;
+			result.compatible = target_identity == source_identity;
+		} else if (_is_undecidable_type_parameter_target(p_target, p_options) && _is_type_parameter_bounded_by_final_class(p_target)) {
+			// The parameter denotes exactly its bound, so the assignment is decided against the bound
+			// like any other concrete destination.
+			return check(p_target.type_parameter_bound[0], p_source, p_options);
+		} else if (_is_undecidable_type_parameter_target(p_target, p_options)) {
+			// A type-parameter destination has nothing to test a value against and no check is emitted
+			// for the assignment. Accepting a concrete value here would launder it into a `T` slot
+			// untested, so only a value already known to be `T` satisfies one.
+			// Residual (M5): free class/method type parameters are not yet analyzable in Barista;
+			// once they are, this arm refuses undecidable free-`T` destinations under
+			// `receiver_is_available = false` (static frame) / method-scope erasure.
+			result.compatible = false;
+		} else {
+			// A type parameter as the source is the downcast shape: the destination is a concrete
+			// type the runtime can still name, and the erased value carries what a type test needs.
+			// A decidable TYPE_PARAMETER destination (`@Self`, or a class-scope param with a receiver)
+			// takes the same arm — the store / Self contract layers decide further exactness.
+			result.compatible = true;
+			result.requires_runtime_check = true;
 		}
 		return result;
 	}
