@@ -23,6 +23,7 @@
 /*  expression-position `.Case` construction for assign/return (#60),     */
 /*  array/dict/cast/ternary `.Case` consumer finalization (#60),          */
 /*  tagged-union / plain-enum / bool match exhaustiveness (#60),          */
+/*  Callable.bind / bindv / unbind / call signature transforms (#60),     */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -56,8 +57,9 @@ public:
 	 * Hard fork of Foundry `FSAnalyzer::CallSiteValidationContext` (@ c9d5e35,
 	 * `fs_analyzer_call_validation.cpp`). Ports MethodInfo / typed-parameter
 	 * call arity+type checks, signal emit / emit_signal payload validation,
-	 * named-arg canonicalization, and signal connect/callable signature checks.
-	 * Generic inference and Callable bind/unbind richness remain follow-up under #60.
+	 * named-arg canonicalization, signal connect/callable signature checks,
+	 * and Callable.bind / bindv / unbind / call signature transforms.
+	 * Generic inference richness remains follow-up under #60.
 	 */
 	class CallSiteValidationContext {
 	public:
@@ -82,6 +84,18 @@ public:
 
 		bool callable_signature_from_type(const BSParser::DataType &p_callable_type, Vector<BSParser::DataType> &r_par_types, int &r_default_arg_count, bool &r_is_vararg) const;
 		BSParser::DataType callable_type_from_function(const BSParser::FunctionNode *p_function) const;
+
+		/** Foundry plain_callable_type / over_bound_callable_type / transformed_callable_type @ c9d5e35. */
+		BSParser::DataType plain_callable_type() const;
+		BSParser::DataType over_bound_callable_type(const BSParser::DataType &p_source_callable_type) const;
+		BSParser::DataType transformed_callable_type(const BSParser::DataType &p_source_callable_type, const Vector<BSParser::DataType> &p_parameter_types, int p_default_arg_count, bool p_is_vararg) const;
+		BSParser::ArrayNode *array_literal_argument(const BSParser::CallNode *p_call, int p_argument_index) const;
+		/**
+		 * Foundry get_function_signature Callable.bind/bindv/unbind/call slice (@ c9d5e35).
+		 * When `p_call` is a typed-Callable attribute call, validates args and types the result.
+		 * Returns true when the call was handled (including over-bound invocation errors).
+		 */
+		bool try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type);
 
 		BSParser::DataType explicit_signal_type_from_info(const MethodInfo &p_info) const;
 		BSParser::DataType explicit_signal_type_from_node(const BSParser::SignalNode *p_signal, const BSParser::DataType &p_receiver_type, const BSParser::ClassNode *p_declaring_class) const;

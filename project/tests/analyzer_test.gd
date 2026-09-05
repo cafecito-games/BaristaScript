@@ -48,6 +48,7 @@ func _init() -> void:
 	_test_enum_case_match_and_case_binds(failures)
 	_test_contextual_case_shorthand(failures)
 	_test_tagged_union_match_exhaustiveness(failures)
+	_test_callable_bind_unbind(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -2037,3 +2038,69 @@ func _test_tagged_union_match_exhaustiveness(failures: PackedStringArray) -> voi
 		"exhaustive tagged match remains valid under is_semantically_valid()")
 	_expect(failures, index.get_record_count() == before,
 		"analyze/validate/is_valid must not mutate declaration index for tagged exhaustiveness")
+
+func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
+	# Foundry Callable.bind / bindv / unbind / call transforms @ c9d5e35 (#60).
+	# Bare function refs publish explicit Callable signatures; bind/unbind reshape them.
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var bind_type_bad := _src_class("CallableBindTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _bound := one.bind(\"not an int\")\n")
+	var bind_type_bad_report: Dictionary = probe.analyze_source(bind_type_bad, "res://tests/callable_bind_type_bad.barista")
+	_expect(failures, bind_type_bad_report.get("valid", true) == false, "bind String where int expected is invalid")
+	var saw_bind_type := false
+	for message in bind_type_bad_report.get("errors", PackedStringArray()):
+		if 'argument 1 should be "int"' in message or 'should be "int" but is "String"' in message:
+			saw_bind_type = true
+	_expect(failures, saw_bind_type, "bind argument type mismatch diagnostic")
+
+	var bind_call_ok := _src_class("CallableBindCallOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> int:\n\treturn add.bind(5).call(2)\n")
+	var bind_call_ok_report: Dictionary = probe.analyze_source(bind_call_ok, "res://tests/callable_bind_call_ok.barista")
+	_expect(failures, bind_call_ok_report.get("valid", false) == true, "bind then call with remaining arity is valid")
+
+	var bind_call_arity := _src_class("CallableBindCallArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.bind(5).call()\n")
+	var bind_call_arity_report: Dictionary = probe.analyze_source(bind_call_arity, "res://tests/callable_bind_call_arity.barista")
+	_expect(failures, bind_call_arity_report.get("valid", true) == false, "bound call missing remaining arg is invalid")
+	var saw_too_few := false
+	for message in bind_call_arity_report.get("errors", PackedStringArray()):
+		if "Too few arguments for \"call()\" call" in message:
+			saw_too_few = true
+	_expect(failures, saw_too_few, "bound call too-few-arguments diagnostic")
+
+	var over_bound := _src_class("CallableOverBound extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).call()\n")
+	var over_bound_report: Dictionary = probe.analyze_source(over_bound, "res://tests/callable_over_bound.barista")
+	_expect(failures, over_bound_report.get("valid", true) == false, "over-bound callable invocation is invalid")
+	var saw_over_bound := false
+	for message in over_bound_report.get("errors", PackedStringArray()):
+		if "over-bound" in message:
+			saw_over_bound = true
+	_expect(failures, saw_over_bound, "over-bound invocation diagnostic")
+
+	var unbind_bad := _src_class("CallableUnbindBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _u := one.unbind(0)\n")
+	var unbind_bad_report: Dictionary = probe.analyze_source(unbind_bad, "res://tests/callable_unbind_bad.barista")
+	_expect(failures, unbind_bad_report.get("valid", true) == false, "unbind(0) is invalid")
+	var saw_unbind := false
+	for message in unbind_bad_report.get("errors", PackedStringArray()):
+		if 'Amount of "unbind()" arguments must be 1 or greater' in message:
+			saw_unbind = true
+	_expect(failures, saw_unbind, "unbind count diagnostic")
+
+	var unbind_ok := _src_class("CallableUnbindOk extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> int:\n\treturn one.unbind(1).call(9, 1)\n")
+	var unbind_ok_report: Dictionary = probe.analyze_source(unbind_ok, "res://tests/callable_unbind_ok.barista")
+	_expect(failures, unbind_ok_report.get("valid", false) == true, "unbind(1) then call with unbound trailing slot is valid")
+
+	var bindv_type_bad := _src_class("CallableBindvTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _bound := one.bindv([\"not an int\"])\n")
+	var bindv_type_bad_report: Dictionary = probe.analyze_source(bindv_type_bad, "res://tests/callable_bindv_type_bad.barista")
+	_expect(failures, bindv_type_bad_report.get("valid", true) == false, "bindv String where int expected is invalid")
+
+	var default_survival := _src_class("CallableBindDefaultSurvival extends Node\nfunc add_with_default(p: int, q: int, s: int = 1) -> int:\n\treturn p + q + s\nfunc test() -> int:\n\treturn add_with_default.bind(5).call(2)\n")
+	var default_survival_report: Dictionary = probe.analyze_source(default_survival, "res://tests/callable_bind_default_survival.barista")
+	_expect(failures, default_survival_report.get("valid", false) == true, "bind preserves trailing default survival arity")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var validate_report: Dictionary = probe.validate_source(bind_call_ok, "res://tests/callable_bind_validate.barista", true)
+	_expect(failures, validate_report.get("valid", false) == true, "callable bind remains valid under validate()")
+	_expect(failures, probe.is_semantically_valid(bind_call_ok, "res://tests/callable_bind_is_valid.barista"),
+		"callable bind remains valid under is_semantically_valid()")
+	_expect(failures, index.get_record_count() == before,
+		"analyze/validate/is_valid must not mutate declaration index for callable bind")
