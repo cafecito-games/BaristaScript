@@ -42,6 +42,7 @@ func _init() -> void:
 	_test_unused_class_members_and_signals(failures)
 	_test_trait_requirements_and_conformance_witness(failures)
 	_test_flow_narrowing(failures)
+	_test_builtin_annotation_resolve(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -1506,3 +1507,52 @@ func _test_flow_narrowing(failures: PackedStringArray) -> void:
 
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:
+	# Foundry datatype_from_type_node @ c9d5e35: user-facing builtins beyond int/float/bool/String
+	# resolve through get_builtin_type (StringName / Callable / bare Array / NodePath / …).
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var string_name_ok := "class_name BuiltinStringNameAnnot extends Node\nfunc take(n: StringName) -> void:\n\tvar _x: StringName = n\n"
+	var string_name_report: Dictionary = probe.analyze_source(string_name_ok, "res://tests/builtin_string_name_annot.barista")
+	_expect(failures, string_name_report.get("valid", false) == true, "StringName annotation resolves as builtin")
+
+	var node_path_ok := "class_name BuiltinNodePathAnnot extends Node\nfunc take(p: NodePath) -> void:\n\tvar _x: NodePath = p\n"
+	var node_path_report: Dictionary = probe.analyze_source(node_path_ok, "res://tests/builtin_node_path_annot.barista")
+	_expect(failures, node_path_report.get("valid", false) == true, "NodePath annotation resolves as builtin")
+
+	var bare_array_ok := "class_name BuiltinBareArrayAnnot extends Node\nfunc take(a: Array) -> void:\n\tvar _x: Array = a\n"
+	var bare_array_report: Dictionary = probe.analyze_source(bare_array_ok, "res://tests/builtin_bare_array_annot.barista")
+	_expect(failures, bare_array_report.get("valid", false) == true, "bare Array annotation resolves as builtin")
+
+	var callable_ok := "class_name BuiltinCallableAnnot extends Node\nfunc take(c: Callable) -> void:\n\tvar _x: Callable = c\n"
+	var callable_report: Dictionary = probe.analyze_source(callable_ok, "res://tests/builtin_callable_annot.barista")
+	_expect(failures, callable_report.get("valid", false) == true, "bare Callable annotation resolves as builtin")
+
+	var callable_sig_ok := "class_name BuiltinCallableSigAnnot extends Node\nfunc take(c: Callable[[int], void]) -> void:\n\tvar _x: Callable[[int], void] = c\n"
+	var callable_sig_report: Dictionary = probe.analyze_source(callable_sig_ok, "res://tests/builtin_callable_sig_annot.barista")
+	_expect(failures, callable_sig_report.get("valid", false) == true, "Callable[[int], void] signature annotation resolves")
+
+	var signal_ok := "class_name BuiltinSignalAnnot extends Node\nfunc take(s: Signal) -> void:\n\tvar _x: Signal = s\n"
+	var signal_report: Dictionary = probe.analyze_source(signal_ok, "res://tests/builtin_signal_annot.barista")
+	_expect(failures, signal_report.get("valid", false) == true, "bare Signal annotation resolves as builtin")
+
+	var number_ok := "class_name BuiltinNumberAnnot extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = 1\n"
+	var number_report: Dictionary = probe.analyze_source(number_ok, "res://tests/builtin_number_annot.barista")
+	_expect(failures, number_report.get("valid", false) == true, "Number annotation resolves as int|float union")
+
+	# Still reject unknown spellings; prove the failure is not a blanket Variant fallthrough.
+	var unknown := "class_name BuiltinUnknownAnnot extends Node\nfunc take(x: NotARealType) -> void:\n\tpass\n"
+	var unknown_report: Dictionary = probe.analyze_source(unknown, "res://tests/builtin_unknown_annot.barista")
+	_expect(failures, unknown_report.get("valid", true) == false, "unknown type annotation remains invalid")
+	var saw_unknown := false
+	for message in unknown_report.get("errors", PackedStringArray()):
+		if 'Could not find type "NotARealType"' in message:
+			saw_unknown = true
+	_expect(failures, saw_unknown, "unknown type keeps Could not find type diagnostic")
+
+	# Assignability still enforced once the annotation resolves.
+	var mismatch := "class_name BuiltinStringNameMismatch extends Node\nfunc take() -> void:\n\tvar _n: StringName = 123\n"
+	var mismatch_report: Dictionary = probe.analyze_source(mismatch, "res://tests/builtin_string_name_mismatch.barista")
+	_expect(failures, mismatch_report.get("valid", true) == false, "int → StringName annotation assign remains invalid")

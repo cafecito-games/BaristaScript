@@ -501,7 +501,11 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 	if (p_type_node->type_chain.is_empty()) {
-		result.kind = BSParser::DataType::VARIANT;
+		// Foundry datatype_from_type_node @ c9d5e35: `void` parses as an empty type_chain and
+		// lowers to BUILTIN/NIL (not VARIANT), including Callable[[...], void] return slots.
+		result.kind = BSParser::DataType::BUILTIN;
+		result.builtin_type = Variant::NIL;
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 		return result;
 	}
 	if (!p_type_node->container_types.is_empty() || !p_type_node->type_argument_expressions.is_empty()) {
@@ -523,21 +527,84 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 
 	StringName name = p_type_node->type_chain[0]->name;
 	if (p_type_node->type_chain.size() == 1) {
-		if (name == SNAME("int")) {
+		if (name == BSParser::get_number_type_name()) {
+			// Foundry @ c9d5e35: `Number` is the closed int|float union at builtin precedence.
+			result = BSParser::make_number_type();
+			result.is_nullable = p_type_node->is_nullable;
+			return result;
+		}
+
+		// Foundry get_builtin_data_type / datatype_from_type_node @ c9d5e35: every Variant
+		// builtin spelling (StringName, Callable, bare Array, NodePath, …) resolves here.
+		// Nested builtin enums remain follow-up (godot-cpp lacks Variant::has_enum).
+		const bool is_async_callable = name == SNAME("AsyncCallable");
+		const Variant::Type builtin_type = is_async_callable ? Variant::CALLABLE : BSParser::get_builtin_type(name);
+		if (builtin_type < Variant::VARIANT_MAX || is_async_callable) {
 			result.kind = BSParser::DataType::BUILTIN;
-			result.builtin_type = Variant::INT;
-		} else if (name == SNAME("float")) {
-			result.kind = BSParser::DataType::BUILTIN;
-			result.builtin_type = Variant::FLOAT;
-		} else if (name == SNAME("bool")) {
-			result.kind = BSParser::DataType::BUILTIN;
-			result.builtin_type = Variant::BOOL;
-		} else if (name == SNAME("String") || name == SNAME("string")) {
+			result.builtin_type = builtin_type;
+			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			result.is_nullable = p_type_node->is_nullable;
+
+			if (builtin_type == Variant::CALLABLE || builtin_type == Variant::SIGNAL) {
+				result.signature_is_async = is_async_callable || p_type_node->signature_is_async;
+				if (p_type_node->has_signature) {
+					result.has_method_signature = true;
+					result.has_explicit_method_signature = true;
+					MethodInfo method_info;
+					for (int i = 0; i < p_type_node->signature_parameter_types.size(); i++) {
+						BSParser::DataType parameter_type = datatype_from_type_node(p_type_node->signature_parameter_types[i]);
+						parameter_type.is_constant = false;
+						result.method_parameter_types.push_back(parameter_type);
+						method_info.arguments.push_back(parameter_type.to_property_info(""));
+					}
+					if (builtin_type == Variant::CALLABLE && p_type_node->signature_rest_parameter_type != nullptr) {
+						BSParser::DataType rest_type = datatype_from_type_node(p_type_node->signature_rest_parameter_type);
+						if (rest_type.is_set() && rest_type.is_hard_type()) {
+							if (rest_type.kind != BSParser::DataType::BUILTIN || rest_type.builtin_type != Variant::ARRAY) {
+								push_error(vformat(R"(The Callable rest parameter type must be "Array", but "%s" is specified.)", rest_type.to_string()),
+										p_type_node->signature_rest_parameter_type);
+							} else {
+								method_info.flags |= METHOD_FLAG_VARARG;
+								if (BSTypeCompatibility::rest_parameter_type_is_narrowing(rest_type)) {
+									rest_type.is_constant = false;
+									result.set_method_rest_parameter_type(rest_type);
+								}
+							}
+						}
+					}
+					if (builtin_type == Variant::CALLABLE) {
+						BSParser::DataType return_type;
+						if (p_type_node->signature_return_type != nullptr) {
+							return_type = datatype_from_type_node(p_type_node->signature_return_type);
+						} else {
+							return_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+							return_type.kind = BSParser::DataType::BUILTIN;
+							return_type.builtin_type = Variant::NIL;
+						}
+						result.method_return_type.push_back(return_type);
+						method_info.return_val = return_type.to_property_info("");
+					}
+					result.method_info = method_info;
+				}
+			}
+			return result;
+		}
+
+		// Legacy lowercase alias kept for source that still spells `string`.
+		if (name == SNAME("string")) {
 			result.kind = BSParser::DataType::BUILTIN;
 			result.builtin_type = Variant::STRING;
-		} else if (name == SNAME("Variant") || name == SNAME("void")) {
+			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			return result;
+		}
+
+		if (name == SNAME("Variant")) {
 			result.kind = BSParser::DataType::VARIANT;
-		} else if (name == SNAME("Self") && current_class != nullptr) {
+			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			return result;
+		}
+
+		if (name == SNAME("Self") && current_class != nullptr) {
 			// Foundry datatype_from_type_node @ c9d5e35: Self lowers to @Self bound by the
 			// declaring class so trait signature matching can reify it to the implementer.
 			if (!p_type_node->container_types.is_empty()) {

@@ -9,6 +9,7 @@
 /*  CallSiteValidationContext MethodInfo / signal emit / named-arg /      */
 /*  connect-callable (#60 call TU),                                       */
 /*  unused private/signal + built-in annotation resolve (#60 surface),    */
+/*  user-facing builtin type annotations via get_builtin_type (#60),      */
 /*  trait requirement / conformance witness + non-generic signature match */
 /*  (#60 conformance TU).                                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
