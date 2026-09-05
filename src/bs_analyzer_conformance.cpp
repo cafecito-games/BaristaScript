@@ -22,7 +22,8 @@
 /*  find_witness_location + declaring parse tree;                        */
 /*  find_hidden_conformance_witness reports Visibility-hidden witnesses. */
 /*  ClassTraitBinding / RecordedTypeArgument publish + uses-binding      */
-/*  chain coherence + loaded_dependency_closure load-graph publish       */
+/*  chain coherence + loaded_dependency_closure load-graph publish +     */
+/*  same-file / cross-file WITNESS_COLLISION early diagnostics           */
 /*  (Foundry @ c9d5e35). Runtime Function* witnesses remain residual     */
 /*  under #60.                                                           */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -1092,6 +1093,9 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 	BSConformanceRegistry::ScopedInFlightReplacement in_flight_replacement(source_file);
 
 	HashMap<String, int> seen_membership_conformances;
+	// Track witness method names per target key within this file to reject same-target witness
+	// collisions across different trait conformances.
+	HashMap<String, HashMap<StringName, StringName>> seen_witnesses_by_target;
 	Vector<BSConformanceRegistry::Conformance> valid_entries;
 	HashSet<int> reported_declarations;
 	HashMap<StringName, String> identity_labels;
@@ -1123,6 +1127,7 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 			target_keys.push_back(target_type.script_path);
 		}
 
+		const String target_key = target->fqcn;
 		const StringName target_native_base = target->is_native_conformance_shim
 				? StringName(target->fqcn)
 				: _terminal_native_class(target);
@@ -1130,6 +1135,10 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				target->is_native_conformance_shim || target->is_builtin_conformance_shim
 				? Vector<String>()
 				: _script_ancestor_keys(target);
+
+		bool conformance_witness_checked = false;
+		bool conformance_witness_collision = false;
+		StringName witness_trait_label;
 
 		for (int i = 0; i < conformance->traits.size(); i++) {
 			BSParser::ClassNode::TraitUse &trait_use = conformance->traits.write[i];
@@ -1191,6 +1200,49 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				continue;
 			}
 
+			if (!conformance_witness_checked) {
+				conformance_witness_checked = true;
+				HashMap<StringName, StringName> &seen_witnesses = seen_witnesses_by_target[target_key];
+				for (int w = 0; w < conformance->witnesses.size(); w++) {
+					BSParser::FunctionNode *witness = conformance->witnesses[w];
+					if (witness == nullptr || witness->identifier == nullptr) {
+						continue;
+					}
+					const StringName witness_name = witness->identifier->name;
+					if (witness_name == StringName()) {
+						continue;
+					}
+
+					const StringName *existing_trait = seen_witnesses.getptr(witness_name);
+					if (existing_trait != nullptr) {
+						push_error(vformat(R"*(Class "%s" already provides a witness for method "%s()" through its conformance to trait "%s" in this file.)*",
+										   bs_class_or_trait_diagnostic_name(target), witness_name, String(*existing_trait)),
+								conformance);
+						conformance_witness_collision = true;
+						reported_declarations.insert(conformance_index);
+						continue;
+					}
+
+					if (registry != nullptr) {
+						StringName other_trait;
+						const String other_witness_source =
+								registry->get_witness_source(target_key, witness_name, other_trait);
+						if (!other_witness_source.is_empty() && other_witness_source != source_file) {
+							push_error(vformat(R"*(Class "%s" already has a witness for method "%s()" via a conformance in "%s".)*",
+											   bs_class_or_trait_diagnostic_name(target), witness_name,
+											   bs_diagnostic_file_reference(other_witness_source)),
+									conformance);
+							conformance_witness_collision = true;
+							reported_declarations.insert(conformance_index);
+							continue;
+						}
+					}
+				}
+			}
+			if (conformance_witness_collision) {
+				continue;
+			}
+
 			if (!validate_conformance(conformance, target, trait)) {
 				continue;
 			}
@@ -1239,6 +1291,20 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				seen_membership_conformances.insert(pair_key, conformance_index);
 				identity_labels.insert(identity, bs_class_or_trait_diagnostic_name(identity_nodes[identity_index]));
 			}
+			if (witness_trait_label == StringName()) {
+				witness_trait_label = bs_trait_identity_name(trait);
+			}
+		}
+
+		if (witness_trait_label != StringName()) {
+			HashMap<StringName, StringName> &seen_witnesses = seen_witnesses_by_target[target_key];
+			for (int w = 0; w < conformance->witnesses.size(); w++) {
+				BSParser::FunctionNode *witness = conformance->witnesses[w];
+				if (witness != nullptr && witness->identifier != nullptr &&
+						witness->identifier->name != StringName()) {
+					seen_witnesses.insert(witness->identifier->name, witness_trait_label);
+				}
+			}
 		}
 	}
 
@@ -1270,6 +1336,11 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 		if (conflict.kind == BSConformanceRegistry::RegistrationConflict::DUPLICATE_MEMBERSHIP) {
 			push_error(vformat(R"(Class "%s" already conforms to trait "%s" via a conformance in %s.)",
 							   conflict.target_label, String(conflict.trait_name),
+							   _conflict_location(conflict.conflicting_source_file, source_file)),
+					conformance);
+		} else if (conflict.kind == BSConformanceRegistry::RegistrationConflict::WITNESS_COLLISION) {
+			push_error(vformat(R"*(Class "%s" already has a witness for method "%s()" via a conformance in %s.)*",
+							   conflict.target_label, conflict.method_name,
 							   _conflict_location(conflict.conflicting_source_file, source_file)),
 					conformance);
 		} else if (conflict.kind == BSConformanceRegistry::RegistrationConflict::CHAIN_COHERENCE) {

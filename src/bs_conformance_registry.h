@@ -5,7 +5,8 @@
 /*  Visibility / ScopedVisibility / ScopedInFlightReplacement +          */
 /*  declaration store with atomic try_replace_file_conformances +        */
 /*  witness method-name keys / find_witness_location /                   */
-/*  find_hidden_witness_declaration + RecordedTypeArgument /             */
+/*  find_hidden_witness_declaration / get_witness_source +               */
+/*  WITNESS_COLLISION arbitration + RecordedTypeArgument /               */
 /*  ClassTraitBinding chain-coherence against uses bindings +            */
 /*  p_loaded_files load-graph licensing + declaration-side               */
 /*  get_recorded_trait_arguments / get_native_recorded_trait_arguments / */
@@ -148,7 +149,6 @@ public:
 	struct RegistrationConflict {
 		enum Kind : uint8_t {
 			DUPLICATE_MEMBERSHIP,
-			// Reserved for follow-up witness ports under #60.
 			WITNESS_COLLISION,
 			CHAIN_COHERENCE,
 		};
@@ -213,6 +213,13 @@ private:
 
 	/** Callers must hold `mutex`. */
 	bool _candidate_conflicts(const Conformance &p_candidate, const String &p_source_file,
+			const Vector<const Conformance *> &p_view, RegistrationConflict &r_conflict) const;
+
+	/**
+	 * Same-target witness method-name collision against `p_view`. Program-wide: not gated
+	 * by Visibility. Callers must hold `mutex`. Foundry `_declaration_witnesses_collide`.
+	 */
+	bool _declaration_witnesses_collide(const Conformance &p_candidate,
 			const Vector<const Conformance *> &p_view, RegistrationConflict &r_conflict) const;
 
 	bool _candidate_conflicts_with_trait_binding(const Conformance &p_candidate, const String &p_source_file,
@@ -293,6 +300,15 @@ public:
 	String get_conformance_source(const String &p_target_key, const StringName &p_trait_name) const;
 	Vector<Conformance> get_file_conformances(const String &p_source_file) const;
 	Vector<ClassTraitBinding> get_file_trait_bindings(const String &p_source_file) const;
+
+	/**
+	 * Declaring file of a witness for `(p_target_key, p_method)` anywhere in the
+	 * store (not Visibility-filtered — witness collision is program-wide). Sets
+	 * `r_trait_name` to the colliding entry's trait identity. Empty when none.
+	 * Foundry `get_witness_source` @ c9d5e35.
+	 */
+	String get_witness_source(const String &p_target_key, const StringName &p_method,
+			StringName &r_trait_name) const;
 
 	/**
 	 * Locates the visible conformance that supplies a witness for `p_method` on

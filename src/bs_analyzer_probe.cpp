@@ -77,6 +77,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::recorded_trait_arguments_query);
 	ClassDB::bind_method(D_METHOD("trait_target_assignability"),
 			&BaristaScriptAnalyzerProbe::trait_target_assignability);
+	ClassDB::bind_method(D_METHOD("witness_collision_arbitration"),
+			&BaristaScriptAnalyzerProbe::witness_collision_arbitration);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -560,6 +562,9 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_witness_lookup() const
 		result["native_analyze_ok"] = err == OK && parser.get_errors().is_empty();
 	}
 	BSCache::clear_source_override(native_path);
+	// Drop the Node witness before the arity fixture: WITNESS_COLLISION is program-wide, so a
+	// second file re-supplying wit_greet() for Node would be rejected instead of arity-checked.
+	registry->clear_file(native_path);
 
 	const String native_arity_source =
 			"trait WitNativeArity:\n"
@@ -1552,6 +1557,199 @@ godot::Dictionary BaristaScriptAnalyzerProbe::trait_target_assignability() const
 	registry->clear_file(empty_file);
 	registry->clear_file(native_file);
 	registry->clear_file(builtin_file);
+
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::witness_collision_arbitration() const {
+	godot::Dictionary result;
+
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	ERR_FAIL_COND_V(registry == nullptr, result);
+
+	const String same_file_path = "res://tests/wc_same_file.barista";
+	const String first_file = "res://tests/wc_cross_first.barista";
+	const String second_file = "res://tests/wc_cross_second.barista";
+	const String ok_file = "res://tests/wc_distinct_ok.barista";
+	const String registry_first = "res://tests/wc_reg_first.barista";
+	const String registry_second = "res://tests/wc_reg_second.barista";
+
+	registry->clear_file(same_file_path);
+	registry->clear_file(first_file);
+	registry->clear_file(second_file);
+	registry->clear_file(ok_file);
+	registry->clear_file(registry_first);
+	registry->clear_file(registry_second);
+
+	auto error_contains = [](const godot::PackedStringArray &p_errors, const String &p_needle) -> bool {
+		for (int i = 0; i < p_errors.size(); i++) {
+			if (String(p_errors[i]).contains(p_needle)) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	auto analyze = [](const String &p_path, const String &p_source, godot::PackedStringArray &r_errors) -> Error {
+		r_errors.clear();
+		BSCache::set_source_override(p_path, p_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(p_source, p_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		for (const BSParser::ParserError &pe : parser.get_errors()) {
+			r_errors.push_back(pe.message);
+		}
+		return err;
+	};
+
+	// Same-file: two traits, same witness method name on one target.
+	{
+		const String source =
+				"class_name WcSameTarget extends Node\n"
+				"\n"
+				"trait WcTraitA:\n"
+				"\tabstract func wc_label() -> String\n"
+				"\n"
+				"trait WcTraitB:\n"
+				"\tabstract func wc_label() -> String\n"
+				"\n"
+				"extend WcSameTarget uses WcTraitA:\n"
+				"\tfunc wc_label() -> String:\n"
+				"\t\treturn \"a\"\n"
+				"\n"
+				"extend WcSameTarget uses WcTraitB:\n"
+				"\tfunc wc_label() -> String:\n"
+				"\t\treturn \"b\"\n";
+		godot::PackedStringArray errors;
+		analyze(same_file_path, source, errors);
+		result["same_file_collision_diagnostic"] =
+				error_contains(errors, "already provides a witness for method \"wc_label()\"");
+		bool second_registered = false;
+		const Vector<BSConformanceRegistry::Conformance> entries =
+				registry->get_file_conformances(same_file_path);
+		for (const BSConformanceRegistry::Conformance &entry : entries) {
+			if (entry.conformance_index == 1) {
+				second_registered = true;
+			}
+		}
+		result["same_file_first_registered"] = !entries.is_empty();
+		result["same_file_second_rejected"] = !second_registered;
+		BSCache::clear_source_override(same_file_path);
+		registry->clear_file(same_file_path);
+	}
+
+	// Cross-file: second file's witness collides with first's published witness on native Node.
+	{
+		const String first_source =
+				"trait WcCrossTraitA:\n"
+				"\tabstract func wc_mark() -> String\n"
+				"\n"
+				"extend Node uses WcCrossTraitA:\n"
+				"\tfunc wc_mark() -> String:\n"
+				"\t\treturn \"a\"\n";
+		godot::PackedStringArray first_errors;
+		analyze(first_file, first_source, first_errors);
+		result["cross_first_ok"] = first_errors.is_empty() &&
+				!registry->get_file_conformances(first_file).is_empty();
+
+		StringName other_trait;
+		const String witness_source =
+				registry->get_witness_source("Node", SNAME("wc_mark"), other_trait);
+		result["get_witness_source_first"] = witness_source == first_file;
+
+		const String second_source =
+				"trait WcCrossTraitB:\n"
+				"\tabstract func wc_mark() -> String\n"
+				"\n"
+				"extend Node uses WcCrossTraitB:\n"
+				"\tfunc wc_mark() -> String:\n"
+				"\t\treturn \"b\"\n";
+		godot::PackedStringArray second_errors;
+		analyze(second_file, second_source, second_errors);
+		result["cross_file_collision_diagnostic"] =
+				error_contains(second_errors, "already has a witness for method \"wc_mark()\"");
+		result["cross_second_store_empty"] = registry->get_file_conformances(second_file).is_empty();
+
+		BSCache::clear_source_override(first_file);
+		BSCache::clear_source_override(second_file);
+		registry->clear_file(first_file);
+		registry->clear_file(second_file);
+	}
+
+	// Non-colliding: distinct witness method names on the same target.
+	{
+		const String source =
+				"class_name WcOkTarget extends Node\n"
+				"\n"
+				"trait WcOkTraitA:\n"
+				"\tabstract func wc_alpha() -> String\n"
+				"\n"
+				"trait WcOkTraitB:\n"
+				"\tabstract func wc_beta() -> String\n"
+				"\n"
+				"extend WcOkTarget uses WcOkTraitA:\n"
+				"\tfunc wc_alpha() -> String:\n"
+				"\t\treturn \"a\"\n"
+				"\n"
+				"extend WcOkTarget uses WcOkTraitB:\n"
+				"\tfunc wc_beta() -> String:\n"
+				"\t\treturn \"b\"\n";
+		godot::PackedStringArray errors;
+		analyze(ok_file, source, errors);
+		const Vector<BSConformanceRegistry::Conformance> entries = registry->get_file_conformances(ok_file);
+		result["distinct_ok_analyze"] = errors.is_empty();
+		result["distinct_ok_registered"] = entries.size() >= 2;
+		BSCache::clear_source_override(ok_file);
+		registry->clear_file(ok_file);
+	}
+
+	// Registry-authoritative WITNESS_COLLISION via try_replace (Foundry concurrent witness test).
+	{
+		BSConformanceRegistry::Conformance first;
+		first.target_keys.push_back("WcRegTarget");
+		first.target_fqcn = "WcRegTarget";
+		first.target_label = "WcRegTarget";
+		first.trait_name = SNAME("WcRegTraitA");
+		first.source_file = registry_first;
+		first.conformance_index = 0;
+		first.witnesses.insert(SNAME("wc_reg_label"), true);
+
+		BSConformanceRegistry::Conformance second;
+		second.target_keys.push_back("WcRegTarget");
+		second.target_fqcn = "WcRegTarget";
+		second.target_label = "WcRegTarget";
+		second.trait_name = SNAME("WcRegTraitB");
+		second.source_file = registry_second;
+		second.conformance_index = 0;
+		second.witnesses.insert(SNAME("wc_reg_label"), true);
+
+		Vector<BSConformanceRegistry::Conformance> first_candidates;
+		first_candidates.push_back(first);
+		const BSConformanceRegistry::RegistrationResult first_result =
+				registry->try_replace_file_conformances(registry_first, first_candidates);
+		result["registry_first_ok"] = first_result.conflicts.is_empty() && first_result.registered_count == 1;
+
+		Vector<BSConformanceRegistry::Conformance> second_candidates;
+		second_candidates.push_back(second);
+		const BSConformanceRegistry::RegistrationResult second_result =
+				registry->try_replace_file_conformances(registry_second, second_candidates);
+		bool saw_witness = false;
+		for (int i = 0; i < second_result.conflicts.size(); i++) {
+			if (second_result.conflicts[i].kind == BSConformanceRegistry::RegistrationConflict::WITNESS_COLLISION &&
+					second_result.conflicts[i].method_name == SNAME("wc_reg_label")) {
+				saw_witness = true;
+			}
+		}
+		result["registry_witness_collision"] = saw_witness;
+		result["registry_second_rejected"] = second_result.registered_count == 0 &&
+				registry->get_file_conformances(registry_second).is_empty();
+
+		registry->clear_file(registry_first);
+		registry->clear_file(registry_second);
+	}
 
 	return result;
 }
