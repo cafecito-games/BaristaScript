@@ -22,7 +22,8 @@
 /*  member + class-phase INTERFACE/BODY failure replay;                   */
 /*  ConformanceVisibility can_see BFS; resolve_conformances registers via */
 /*  try_replace_file_conformances + ScopedInFlightReplacement;            */
-/*  find_conformance_witness + reduce_call member-miss fallback;          */
+/*  find_conformance_witness + find_hidden_conformance_witness +           */
+/*  reduce_call member-miss / hidden-witness fallback;                    */
 /*  reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→     */
 /*  coroutine wrap; Coroutine[T] annotation decode; direct async-call wrap*/
 /*  + mark_coroutine_handle_capture (#60 residual).                       */
@@ -679,6 +680,18 @@ private:
 	 * the live FunctionNode in the declaring parse tree (never dereference stored pointers).
 	 */
 	BSParser::FunctionNode *find_conformance_witness(const BSParser::DataType &p_target_type, const StringName &p_method);
+	/**
+	 * Foundry reachable_conformance_supplies_method @ c9d5e35: true when a visible
+	 * retroactive conformance supplies `p_method` on `p_target_type`'s base chain.
+	 */
+	bool reachable_conformance_supplies_method(const BSParser::DataType &p_target_type, const StringName &p_method);
+	/**
+	 * Foundry find_hidden_conformance_witness @ c9d5e35: true when a hidden (not visible)
+	 * retroactive conformance supplies `p_method` for a closed receiver (builtin or final
+	 * class), reporting declaring file + trait for the diagnostic.
+	 */
+	bool find_hidden_conformance_witness(const BSParser::DataType &p_target_type, const StringName &p_method,
+			String &r_source_file, StringName &r_trait_name);
 	BSParser::ClassNode *resolve_conformance_target(BSParser::ConformanceNode *p_conformance, BSParser::DataType &r_target_type);
 	BSParser::ClassNode *resolve_native_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_native_type);
 	BSParser::ClassNode *resolve_builtin_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_builtin_type);

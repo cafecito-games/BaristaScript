@@ -4,7 +4,8 @@
 /*  Hard fork of Foundry fs_conformance_registry.h @ c9d5e35. Starter:   */
 /*  Visibility / ScopedVisibility / ScopedInFlightReplacement +          */
 /*  declaration store with atomic try_replace_file_conformances +        */
-/*  witness method-name keys / find_witness_location. ClassTraitBinding / */
+/*  witness method-name keys / find_witness_location /                   */
+/*  find_hidden_witness_declaration. ClassTraitBinding /                 */
 /*  RecordedTypeArgument coherence / runtime Function* witnesses remain  */
 /*  residual under #60.                                                   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
@@ -177,6 +178,15 @@ public:
 	 */
 	bool find_witness_location(const String &p_target_fqcn, const StringName &p_method,
 			String &r_source_file, int &r_conformance_index) const;
+
+	/**
+	 * The declaring file and trait of a witness for `(p_target_fqcn, p_method)` that
+	 * the installed Visibility *hides*. Inverse of `find_witness_location`: reports
+	 * conformances a caller must not type-check against, so an unresolved call can
+	 * be rejected with the reason. Matches on the exact FQCN.
+	 */
+	bool find_hidden_witness_declaration(const String &p_target_fqcn, const StringName &p_method,
+			String &r_source_file, StringName &r_trait_name) const;
 
 #ifdef DEBUG_ENABLED
 	/** Test surface for ScopedVisibility / in-flight hiding (wraps `_is_visible`). */
