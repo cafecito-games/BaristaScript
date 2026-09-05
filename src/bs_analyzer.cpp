@@ -1504,14 +1504,30 @@ void BSAnalyzer::resolve_match(BSParser::MatchNode *p_match) {
 		return;
 	}
 	// Foundry resolve_match @ c9d5e35 (match-branch narrowing slice).
+	// A subject that failed to resolve still carries the Variant fallback its reduction left
+	// behind, which reads exactly like a written-out Variant. The error delta is what tells the
+	// two apart, so a contextual shorthand arm does not report the subject's failure a second
+	// time per arm.
+	const int errors_before_subject = parser != nullptr ? parser->get_errors().size() : 0;
 	reduce_expression(p_match->test);
+	bool subject_errored = parser != nullptr && parser->get_errors().size() > errors_before_subject;
+	// Barista's reduce_identifier still leaves unresolved names as silent Variant (full Foundry
+	// not-declared coverage is residual under #60). An UNDEFINED_SOURCE match subject is still a
+	// failed subject, so report it once here and suppress per-arm Variant cascades.
+	if (!subject_errored && p_match->test != nullptr && p_match->test->type == BSParser::Node::IDENTIFIER) {
+		const BSParser::IdentifierNode *subject = static_cast<const BSParser::IdentifierNode *>(p_match->test);
+		if (subject->source == BSParser::IdentifierNode::UNDEFINED_SOURCE) {
+			push_error(vformat(R"(Identifier "%s" not declared in the current scope.)", subject->name), p_match->test);
+			subject_errored = true;
+		}
+	}
 	for (int i = 0; i < p_match->branches.size(); i++) {
-		resolve_match_branch(p_match->branches[i], p_match->test);
+		resolve_match_branch(p_match->branches[i], p_match->test, subject_errored);
 	}
 	check_match_exhaustiveness(p_match);
 }
 
-void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test) {
+void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test, bool p_subject_errored) {
 	if (p_match_branch == nullptr) {
 		return;
 	}
@@ -1524,7 +1540,7 @@ void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch,
 	}
 
 	for (int i = 0; i < p_match_branch->patterns.size(); i++) {
-		resolve_match_pattern(p_match_branch->patterns[i], p_match_test);
+		resolve_match_pattern(p_match_branch->patterns[i], p_match_test, nullptr, p_subject_errored);
 	}
 
 	HashMap<const BSParser::Node *, BSParser::DataType> previous_flow_narrowed_types(flow_finality.get_flow_narrowed_types());
@@ -1537,7 +1553,7 @@ void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch,
 	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
 }
 
-void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type) {
+void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type, bool p_subject_errored) {
 	if (p_match_pattern == nullptr) {
 		return;
 	}
@@ -1565,7 +1581,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 				BSParser::ExpressionNode *expr = p_match_pattern->expression;
 				// `.Quit`: a payload-less contextual case arrives as an expression pattern and
 				// takes its union from the match subject (Foundry @ c9d5e35).
-				if (resolve_contextual_case_value_pattern(expr, has_match_test_type ? &match_test_type : nullptr)) {
+				if (resolve_contextual_case_value_pattern(expr, has_match_test_type ? &match_test_type : nullptr, p_subject_errored)) {
 					result = expr->get_datatype();
 					break;
 				}
@@ -1628,7 +1644,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 					element_type = match_test_type.get_container_element_type(0);
 					element_type_ptr = &element_type;
 				}
-				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr);
+				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr, p_subject_errored);
 			}
 			result = p_match_pattern->get_datatype();
 			break;
@@ -1648,7 +1664,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 						value_type = match_test_type.get_container_element_type(1);
 						value_type_ptr = &value_type;
 					}
-					resolve_match_pattern(p_match_pattern->dictionary[i].value_pattern, nullptr, value_type_ptr);
+					resolve_match_pattern(p_match_pattern->dictionary[i].value_pattern, nullptr, value_type_ptr, p_subject_errored);
 				}
 			}
 			result = p_match_pattern->get_datatype();
@@ -1667,7 +1683,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 					element_type = match_test_type.get_container_element_type(i);
 					element_type_ptr = &element_type;
 				}
-				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr);
+				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr, p_subject_errored);
 				all_irrefutable = all_irrefutable && p_match_pattern->array[i] != nullptr && p_match_pattern->array[i]->is_irrefutable;
 			}
 			p_match_pattern->is_irrefutable = all_irrefutable && subject_is_tuple && !match_test_type.is_nullable &&
@@ -1675,7 +1691,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 			result = p_match_pattern->get_datatype();
 		} break;
 		case BSParser::PatternNode::PT_ENUM_CASE:
-			resolve_match_case_pattern(p_match_pattern, has_match_test_type ? &match_test_type : nullptr);
+			resolve_match_case_pattern(p_match_pattern, has_match_test_type ? &match_test_type : nullptr, p_subject_errored);
 			result = p_match_pattern->case_datatype;
 			break;
 		case BSParser::PatternNode::PT_REST:
@@ -1686,7 +1702,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 	p_match_pattern->set_datatype(result);
 }
 
-void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type) {
+void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type, bool p_subject_errored) {
 	if (p_match_pattern == nullptr) {
 		return;
 	}
@@ -1699,7 +1715,7 @@ void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_patte
 				: StringName();
 		BSParser::DataType case_meta_type;
 		case_type_failed = case_name == StringName() ||
-				!resolve_contextual_case_pattern_type(case_name, p_match_test_type, "match subject", p_match_pattern, case_meta_type);
+				!resolve_contextual_case_pattern_type(case_name, p_match_test_type, "match subject", p_match_pattern, case_meta_type, p_subject_errored);
 		if (!case_type_failed) {
 			// Publish the subject-supplied union on the head, as the qualified spelling does.
 			p_match_pattern->case_type->set_datatype(case_meta_type);
@@ -1743,7 +1759,7 @@ void BSAnalyzer::resolve_match_case_pattern(BSParser::PatternNode *p_match_patte
 			field_type = payload->field_types[i];
 			field_type_ptr = &field_type;
 		}
-		resolve_match_pattern(p_match_pattern->array[i], nullptr, field_type_ptr);
+		resolve_match_pattern(p_match_pattern->array[i], nullptr, field_type_ptr, p_subject_errored);
 		all_irrefutable = all_irrefutable && p_match_pattern->array[i] != nullptr && p_match_pattern->array[i]->is_irrefutable;
 	}
 	p_match_pattern->is_irrefutable = false;

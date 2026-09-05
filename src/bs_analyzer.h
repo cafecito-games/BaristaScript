@@ -311,16 +311,22 @@ private:
 	void analyze_if(BSParser::IfNode *p_if);
 	/** Foundry resolve_match @ c9d5e35 (match-branch narrowing slice): patterns + per-arm narrowing. */
 	void resolve_match(BSParser::MatchNode *p_match);
-	void resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test);
+	/**
+	 * Foundry resolve_match_branch @ c9d5e35: `p_subject_errored` says the subject expression's
+	 * own reduction already reported why its type is unknown. The fallback type it left behind
+	 * is indistinguishable from a written-out Variant, so the flag keeps a contextual shorthand
+	 * from reporting that same failure once per arm.
+	 */
+	void resolve_match_branch(BSParser::MatchBranchNode *p_match_branch, BSParser::ExpressionNode *p_match_test, bool p_subject_errored = false);
 	/**
 	 * Foundry resolve_match_pattern @ c9d5e35: LITERAL / EXPRESSION / WILDCARD / BIND /
 	 * ENUM_CASE / ARRAY / DICTIONARY / TUPLE / REST, including contextual `.Case` match /
 	 * `is` qualification. Tagged-union exhaustiveness and expression-position construction
 	 * remain follow-up under #60.
 	 */
-	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type = nullptr);
+	void resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type = nullptr, bool p_subject_errored = false);
 	/** Foundry resolve_match_case_pattern @ c9d5e35: `Message.Move(x, _)` / `.Move(x, _)` payload typing. */
-	void resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type);
+	void resolve_match_case_pattern(BSParser::PatternNode *p_match_pattern, const BSParser::DataType *p_match_test_type, bool p_subject_errored = false);
 	/**
 	 * Foundry tagged_union_metatype_from_expected_type @ c9d5e35: invert type_from_metatype
 	 * for a tagged-union value type so a contextual shorthand can publish the subject's union.

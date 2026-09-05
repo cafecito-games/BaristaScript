@@ -1832,6 +1832,35 @@ func _test_contextual_case_shorthand(failures: PackedStringArray) -> void:
 			saw_bad_operand = true
 	_expect(failures, saw_bad_operand, "non-union is-operand contextual shorthand diagnostic")
 
+	# Foundry contextual_tagged_union_pattern_undeclared_subject @ c9d5e35: subject error delta
+	# suppresses per-arm "needs a tagged-union match subject… Variant" cascades.
+	var match_missing := _src_class("CtxMatchMissingSubject extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle() -> void:\n\tmatch missing_ident:\n\t\t.Quit:\n\t\t\tpass\n\t\t.Move(x):\n\t\t\tpass\n")
+	var match_missing_report: Dictionary = probe.analyze_source(match_missing, "res://tests/ctx_match_missing_subject.barista")
+	_expect(failures, match_missing_report.get("valid", true) == false, "match missing_ident with contextual arms is invalid")
+	var saw_missing_ident := false
+	var cascade_count := 0
+	for message in match_missing_report.get("errors", PackedStringArray()):
+		if 'Identifier "missing_ident" not declared in the current scope.' in message:
+			saw_missing_ident = true
+		if "needs a tagged-union match subject" in message:
+			cascade_count += 1
+	_expect(failures, saw_missing_ident, "match missing_ident subject diagnostic present")
+	_expect(failures, cascade_count == 0, "failed match subject must not cascade per-arm Variant tagged-union diagnostics")
+
+	# Optional nits: bare payload `.Move` value pattern; happy-path `is .Quit`.
+	var match_bare_payload := _src_class("CtxMatchBarePayload extends Node\nenum Message:\n\tMove(x: int, y: int)\n\tQuit\nfunc handle(msg: Message) -> void:\n\tmatch msg:\n\t\t.Move:\n\t\t\tpass\n")
+	var match_bare_payload_report: Dictionary = probe.analyze_source(match_bare_payload, "res://tests/ctx_match_bare_payload.barista")
+	_expect(failures, match_bare_payload_report.get("valid", true) == false, "bare .Move value pattern is invalid")
+	var saw_bare_payload := false
+	for message in match_bare_payload_report.get("errors", PackedStringArray()):
+		if 'Case "Move" carries a payload, so it is matched with payload patterns' in message:
+			saw_bare_payload = true
+	_expect(failures, saw_bare_payload, "bare .Move payload-form diagnostic")
+
+	var is_quit_ok := _src_class("CtxIsQuitOk extends Node\nenum Message:\n\tMove(x: int)\n\tQuit\nfunc handle(msg: Message) -> bool:\n\treturn msg is .Quit\n")
+	var is_quit_ok_report: Dictionary = probe.analyze_source(is_quit_ok, "res://tests/ctx_is_quit_ok.barista")
+	_expect(failures, is_quit_ok_report.get("valid", false) == true, "is .Quit contextual tag test is valid")
+
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
 	var validate_report: Dictionary = probe.validate_source(match_payload, "res://tests/ctx_match_validate.barista", true)
