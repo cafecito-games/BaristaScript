@@ -1,31 +1,12 @@
 /**************************************************************************/
 /*  bs_analyzer.h                                                         */
 /*                                                                        */
-/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
-/*  This file is part of BaristaScript, a Godot GDExtension.              */
-/*  SPDX-License-Identifier: MIT                                          */
-/**************************************************************************/
-
-/**************************************************************************/
-/*  bs_analyzer.h                                                         */
-/*                                                                        */
-/*  M3 analyzer port seam (issue #43 / #57 / #60). Staged resolve_*        */
-/*  mirror Foundry FSAnalyzer @ c9d5e35. Inheritance, interface, body     */
-/*  fold (#49), declaration commit (#52/#58), call/match/flow (#61),      */
-/*  local + member/static final definite assignment (#60 flow TU),        */
-/*  if/while/assert null-check + `is` type-test flow narrowing starter,   */
-/*  CallSiteValidationContext MethodInfo / signal emit / named-arg /      */
-/*  connect-callable (#60 call TU),                                       */
-/*  unused private/signal + built-in annotation resolve (#60 surface),    */
-/*  user-facing builtin type annotations via get_builtin_type (#60),      */
-/*  ENUM_CASE / case-bind / container match pattern depth (#60),           */
-/*  contextual `.Case` match / `is` qualification (#60),                  */
-/*  expression-position `.Case` construction for assign/return (#60),     */
-/*  array/dict/cast/ternary `.Case` consumer finalization (#60),          */
-/*  tagged-union / plain-enum / bool match exhaustiveness (#60),          */
-/*  Callable.bind / bindv / unbind / call signature transforms (#60),     */
-/*  trait requirement / conformance witness + non-generic signature match */
-/*  (#60 conformance TU).                                                 */
+/*  M3 analyzer port seam (issue #43/#57/#60) @ Foundry c9d5e35. Staged    */
+/*  resolve_*; inheritance/interface/body fold (#49); declaration commit  */
+/*  (#52/#58); call/match/flow (#61); final DA + null/`is` narrowing;     */
+/*  CallSiteValidationContext / connect-callable; unused surface; ENUM_CASE*/
+/*  / `.Case` / exhaustiveness; Callable.bind/unbind/call; trait          */
+/*  conformance witness (#60).                                            */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
