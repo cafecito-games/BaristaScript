@@ -71,6 +71,13 @@ public:
 	 * on a viewer that does not load the declaring file. Returns Dictionary of bool checks.
 	 */
 	godot::Dictionary conformance_hidden_witness() const;
+
+	/**
+	 * Drive ClassTraitBinding publish + CHAIN_COHERENCE rejection when a Conformance
+	 * contradicts a visible uses-binding on the same script chain. Returns Dictionary
+	 * of bool checks (Foundry native_chain_coherence / trait-binding starter @ c9d5e35).
+	 */
+	godot::Dictionary class_trait_binding_chain_coherence() const;
 };
 
 } // namespace barista_script

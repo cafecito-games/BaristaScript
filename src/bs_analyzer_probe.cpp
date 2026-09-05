@@ -70,6 +70,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::conformance_witness_lookup);
 	ClassDB::bind_method(D_METHOD("conformance_hidden_witness"),
 			&BaristaScriptAnalyzerProbe::conformance_hidden_witness);
+	ClassDB::bind_method(D_METHOD("class_trait_binding_chain_coherence"),
+			&BaristaScriptAnalyzerProbe::class_trait_binding_chain_coherence);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -902,6 +904,125 @@ godot::Dictionary BaristaScriptAnalyzerProbe::conformance_hidden_witness() const
 	BSCache::clear_source_override(viewer_path);
 	BSCache::clear_source_override(dep_path);
 	BSCache::clear_source_override(target_path);
+
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::class_trait_binding_chain_coherence() const {
+	godot::Dictionary result;
+
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	ERR_FAIL_COND_V(registry == nullptr, result);
+
+	const String binding_file = "res://tests/ctb_binding.barista";
+	const String conformance_file = "res://tests/ctb_conform.barista";
+	const String agree_file = "res://tests/ctb_agree.barista";
+
+	registry->clear_file(binding_file);
+	registry->clear_file(conformance_file);
+	registry->clear_file(agree_file);
+
+	auto builtin_args = [](Variant::Type p_type) -> Vector<BSConformanceRegistry::RecordedTypeArgument> {
+		BSConformanceRegistry::RecordedTypeArgument argument;
+		argument.kind = BSConformanceRegistry::RecordedTypeArgument::BUILTIN;
+		argument.builtin_type = p_type;
+		Vector<BSConformanceRegistry::RecordedTypeArgument> arguments;
+		arguments.push_back(argument);
+		return arguments;
+	};
+
+	// Green path: publish a class-uses binding and confirm it is stored.
+	BSConformanceRegistry::ClassTraitBinding binding;
+	binding.target_fqcn = "res://tests/ctb_parent.barista";
+	binding.target_label = "CtbParent";
+	binding.target_native_base = SNAME("Node");
+	binding.trait_name = SNAME("CtbStorage");
+	binding.trait_label = "CtbStorage";
+	binding.trait_type_arguments = builtin_args(Variant::INT);
+	binding.source_file = binding_file;
+
+	Vector<BSConformanceRegistry::ClassTraitBinding> bindings;
+	bindings.push_back(binding);
+
+	const BSConformanceRegistry::RegistrationResult publish =
+			registry->try_replace_file_conformances(binding_file,
+					Vector<BSConformanceRegistry::Conformance>(), bindings);
+	result["publish_ok"] = publish.conflicts.is_empty() && publish.binding_conflicts.is_empty();
+	result["publish_registered_count"] = publish.registered_count;
+	const Vector<BSConformanceRegistry::ClassTraitBinding> stored =
+			registry->get_file_trait_bindings(binding_file);
+	result["binding_stored"] = stored.size() == 1 && stored[0].trait_name == SNAME("CtbStorage") &&
+			stored[0].trait_type_arguments.size() == 1 &&
+			stored[0].trait_type_arguments[0].kind == BSConformanceRegistry::RecordedTypeArgument::BUILTIN &&
+			stored[0].trait_type_arguments[0].builtin_type == Variant::INT;
+
+	// Matching args on a descendant Conformance must not reject.
+	BSConformanceRegistry::Conformance agree;
+	agree.target_keys.push_back("res://tests/ctb_child.barista");
+	agree.target_fqcn = "res://tests/ctb_child.barista";
+	agree.target_script_path = "res://tests/ctb_child.barista";
+	agree.target_is_root_class = true;
+	agree.trait_name = SNAME("CtbStorage");
+	agree.trait_type_arguments = builtin_args(Variant::INT);
+	agree.target_native_base = SNAME("Node");
+	agree.target_script_ancestor_fqcns.push_back("res://tests/ctb_parent.barista");
+	agree.target_label = "CtbChild";
+	agree.source_file = agree_file;
+	agree.conformance_index = 0;
+
+	Vector<BSConformanceRegistry::Conformance> agree_candidates;
+	agree_candidates.push_back(agree);
+	const BSConformanceRegistry::RegistrationResult agree_result =
+			registry->try_replace_file_conformances(agree_file, agree_candidates);
+	result["agree_registered_count"] = agree_result.registered_count;
+	result["agree_no_chain_conflict"] = agree_result.conflicts.is_empty();
+
+	// Conflicting args on the same chain must yield CHAIN_COHERENCE and reject the declaration.
+	BSConformanceRegistry::Conformance conflict_entry;
+	conflict_entry.target_keys.push_back("res://tests/ctb_other_child.barista");
+	conflict_entry.target_fqcn = "res://tests/ctb_other_child.barista";
+	conflict_entry.target_script_path = "res://tests/ctb_other_child.barista";
+	conflict_entry.target_is_root_class = true;
+	conflict_entry.trait_name = SNAME("CtbStorage");
+	conflict_entry.trait_type_arguments = builtin_args(Variant::STRING);
+	conflict_entry.target_native_base = SNAME("Node");
+	conflict_entry.target_script_ancestor_fqcns.push_back("res://tests/ctb_parent.barista");
+	conflict_entry.target_label = "CtbOtherChild";
+	conflict_entry.source_file = conformance_file;
+	conflict_entry.conformance_index = 0;
+
+	Vector<BSConformanceRegistry::Conformance> conflict_candidates;
+	conflict_candidates.push_back(conflict_entry);
+	const BSConformanceRegistry::RegistrationResult conflict_result =
+			registry->try_replace_file_conformances(conformance_file, conflict_candidates);
+	result["conflict_registered_count"] = conflict_result.registered_count;
+	bool saw_chain = false;
+	for (int i = 0; i < conflict_result.conflicts.size(); i++) {
+		if (conflict_result.conflicts[i].kind == BSConformanceRegistry::RegistrationConflict::CHAIN_COHERENCE) {
+			saw_chain = true;
+			result["conflict_index"] = conflict_result.conflicts[i].conformance_index;
+			result["conflict_conflicting_label"] = conflict_result.conflicts[i].conflicting_target_label;
+			result["conflict_conflicting_file"] = conflict_result.conflicts[i].conflicting_source_file;
+			break;
+		}
+	}
+	result["conflict_chain_coherence"] = saw_chain;
+	result["conflict_rejected"] = conflict_result.registered_count == 0 && saw_chain;
+	result["conflict_store_empty"] = registry->get_file_conformances(conformance_file).is_empty();
+
+	// reduce_type_argument round-trip for a builtin.
+	BSParser::DataType int_type;
+	int_type.kind = BSParser::DataType::BUILTIN;
+	int_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	int_type.builtin_type = Variant::INT;
+	const BSConformanceRegistry::RecordedTypeArgument reduced =
+			BSConformanceRegistry::reduce_type_argument(int_type);
+	result["reduce_builtin_ok"] = reduced.kind == BSConformanceRegistry::RecordedTypeArgument::BUILTIN &&
+			reduced.builtin_type == Variant::INT;
+
+	registry->clear_file(binding_file);
+	registry->clear_file(conformance_file);
+	registry->clear_file(agree_file);
 
 	return result;
 }

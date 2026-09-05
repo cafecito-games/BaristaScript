@@ -1,6 +1,14 @@
 /**************************************************************************/
 /*  bs_analyzer_conformance.cpp                                           */
 /*                                                                        */
+/*  Copyright (c) 2026-present Cafecito Games LLC.                        */
+/*  This file is part of BaristaScript, a Godot GDExtension.              */
+/*  SPDX-License-Identifier: MIT                                          */
+/**************************************************************************/
+
+/**************************************************************************/
+/*  bs_analyzer_conformance.cpp                                           */
+/*                                                                        */
 /*  Hard fork of Foundry `modules/foundry_script/fs_analyzer_conformance   */
 /*  .cpp` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 (plus               */
 /*  validate_trait_requirements / find_trait_implementation /             */
@@ -13,8 +21,9 @@
 /*  find_conformance_witness re-resolves live FunctionNodes via          */
 /*  find_witness_location + declaring parse tree;                        */
 /*  find_hidden_conformance_witness reports Visibility-hidden witnesses. */
-/*  ClassTraitBinding / RecordedTypeArgument / runtime Function* / chain */
-/*  coherence remain residual under #60.                                 */
+/*  ClassTraitBinding / RecordedTypeArgument publish + uses-binding      */
+/*  chain coherence (Foundry @ c9d5e35). Full p_loaded_files load graph, */
+/*  runtime Function* witnesses remain residual under #60.               */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -34,6 +43,9 @@
 namespace barista_script {
 
 namespace {
+
+// Mirrors Variant::MAX_RECURSION_DEPTH (1024).
+static constexpr int TYPE_WALK_MAX_DEPTH = 1024;
 
 const BSParser::Node *_trait_use_source(const BSParser::ClassNode::TraitUse &p_trait_use,
 		const BSParser::ClassNode *p_owner) {
@@ -121,6 +133,176 @@ BSParser::DataType _substitute_type_parameters_and_self(const BSParser::DataType
 	HashMap<StringName, BSParser::DataType> self_bindings;
 	self_bindings.insert(SNAME("@Self"), p_self_type);
 	return BSParser::DataType::substitute(substituted, self_bindings);
+}
+
+static Vector<BSConformanceRegistry::RecordedTypeArgument> _recorded_conformance_trait_arguments(
+		const BSParser::ClassNode *p_direct_trait,
+		const Vector<BSParser::DataType> &p_conformance_arguments,
+		const HashMap<StringName, BSParser::DataType> &p_direct_bindings,
+		const BSParser::ClassNode *p_identity_trait,
+		const BSParser::ClassNode *p_target) {
+	Vector<BSParser::DataType> resolved;
+	if (!bs_project_conformance_trait_arguments(p_direct_trait, p_conformance_arguments, p_direct_bindings,
+				p_identity_trait, p_target, resolved)) {
+		return Vector<BSConformanceRegistry::RecordedTypeArgument>();
+	}
+
+	Vector<BSConformanceRegistry::RecordedTypeArgument> arguments;
+	arguments.resize(resolved.size());
+	for (int i = 0; i < resolved.size(); i++) {
+		arguments.write[i] = BSConformanceRegistry::reduce_type_argument(resolved[i]);
+	}
+	return arguments;
+}
+
+static StringName _terminal_native_class(const BSParser::ClassNode *p_class) {
+	const BSParser::ClassNode *current = p_class;
+	int depth = 0;
+	while (current != nullptr) {
+		if (unlikely(depth++ > TYPE_WALK_MAX_DEPTH)) {
+			return StringName();
+		}
+		const BSParser::DataType &base = current->base_type;
+		if (base.kind == BSParser::DataType::CLASS) {
+			current = base.class_type;
+		} else if (base.kind == BSParser::DataType::SCRIPT && base.script_type.is_valid()) {
+			return base.script_type->get_instance_base_type();
+		} else if (base.kind == BSParser::DataType::NATIVE) {
+			return base.native_type;
+		} else {
+			return StringName();
+		}
+	}
+	return StringName();
+}
+
+static Vector<String> _script_ancestor_keys(const BSParser::ClassNode *p_class) {
+	Vector<String> keys;
+	if (p_class == nullptr) {
+		return keys;
+	}
+	int depth = 0;
+	BSParser::DataType current = p_class->base_type;
+	while (depth++ <= TYPE_WALK_MAX_DEPTH) {
+		if (current.kind == BSParser::DataType::CLASS && current.class_type != nullptr) {
+			if (!current.class_type->fqcn.is_empty()) {
+				keys.push_back(current.class_type->fqcn);
+			}
+			current = current.class_type->base_type;
+			continue;
+		}
+		if (current.kind == BSParser::DataType::SCRIPT) {
+			if (!current.script_path.is_empty()) {
+				keys.push_back(current.script_path);
+			}
+			if (current.script_type.is_valid()) {
+				const StringName global_name = current.script_type->get_global_name();
+				if (global_name != StringName()) {
+					keys.push_back(String(global_name));
+				}
+			}
+		}
+		break;
+	}
+	return keys;
+}
+
+static Vector<BSConformanceRegistry::RecordedTypeArgument> _recorded_class_trait_arguments(
+		const BSParser::ClassNode *p_class, const BSParser::ClassNode *p_identity_trait) {
+	Vector<BSConformanceRegistry::RecordedTypeArgument> arguments;
+	if (p_class == nullptr || p_identity_trait == nullptr || p_identity_trait->type_parameters.is_empty()) {
+		return arguments;
+	}
+	const HashMap<StringName, BSParser::DataType> bindings =
+			bs_trait_type_argument_bindings(p_class, p_identity_trait);
+	if (bindings.is_empty()) {
+		return arguments;
+	}
+	for (int i = 0; i < p_identity_trait->type_parameters.size(); i++) {
+		const BSParser::TypeParameterNode *type_parameter = p_identity_trait->type_parameters[i];
+		BSParser::DataType argument;
+		if (type_parameter != nullptr && type_parameter->identifier != nullptr) {
+			const BSParser::DataType *bound = bindings.getptr(type_parameter->identifier->name);
+			if (bound != nullptr) {
+				argument = *bound;
+			}
+		}
+		arguments.push_back(BSConformanceRegistry::reduce_type_argument(
+				bs_reify_self_in_trait_argument(p_class, argument)));
+	}
+	return arguments;
+}
+
+static void _collect_declared_classes(const BSParser::ClassNode *p_class,
+		Vector<const BSParser::ClassNode *> &r_classes) {
+	if (p_class == nullptr) {
+		return;
+	}
+	r_classes.push_back(p_class);
+	for (int i = 0; i < p_class->members.size(); i++) {
+		const BSParser::ClassNode::Member &member = p_class->members[i];
+		if (member.type == BSParser::ClassNode::Member::CLASS) {
+			_collect_declared_classes(member.m_class, r_classes);
+		}
+	}
+}
+
+static Vector<BSConformanceRegistry::ClassTraitBinding> _collect_class_trait_bindings(
+		const BSParser::ClassNode *p_head, const String &p_source_file) {
+	Vector<BSConformanceRegistry::ClassTraitBinding> bindings;
+	Vector<const BSParser::ClassNode *> declared_classes;
+	_collect_declared_classes(p_head, declared_classes);
+	for (int i = 0; i < declared_classes.size(); i++) {
+		const BSParser::ClassNode *declared = declared_classes[i];
+		if (declared->is_trait || declared->is_native_conformance_shim || declared->is_builtin_conformance_shim ||
+				!declared->resolved_trait_uses || declared->fqcn.is_empty() || declared->resolved_traits.is_empty()) {
+			continue;
+		}
+		const StringName native_base = _terminal_native_class(declared);
+		const Vector<String> ancestor_keys = _script_ancestor_keys(declared);
+		HashSet<StringName> recorded_identities;
+		for (int t = 0; t < declared->resolved_traits.size(); t++) {
+			BSParser::ClassNode *applied_trait = declared->resolved_traits[t];
+			const Vector<BSParser::ClassNode *> identity_nodes = bs_trait_identity_closure_nodes(applied_trait);
+			for (int n = 0; n < identity_nodes.size(); n++) {
+				BSParser::ClassNode *identity_node = identity_nodes[n];
+				const StringName identity = bs_trait_identity_name(identity_node);
+				if (identity == StringName() || recorded_identities.has(identity)) {
+					continue;
+				}
+				const Vector<BSConformanceRegistry::RecordedTypeArgument> arguments =
+						_recorded_class_trait_arguments(declared, identity_node);
+				if (arguments.is_empty()) {
+					continue;
+				}
+				recorded_identities.insert(identity);
+				BSConformanceRegistry::ClassTraitBinding binding;
+				binding.target_fqcn = declared->fqcn;
+				binding.target_label = bs_class_or_trait_diagnostic_name(declared);
+				binding.target_native_base = native_base;
+				binding.target_script_ancestor_fqcns = ancestor_keys;
+				binding.trait_name = identity;
+				binding.trait_label = bs_class_or_trait_diagnostic_name(identity_node);
+				binding.trait_type_arguments = arguments;
+				binding.source_file = p_source_file;
+				bindings.push_back(binding);
+			}
+		}
+	}
+	return bindings;
+}
+
+static String _conflict_location(const String &p_conflicting_source, const String &p_analyzed_file) {
+	return p_conflicting_source == p_analyzed_file
+			? String("this file")
+			: vformat(R"("%s")", bs_diagnostic_file_reference(p_conflicting_source));
+}
+
+static String _chain_conflict_message(const String &p_trait_label, const String &p_conflicting_target,
+		const String &p_conflicting_source, const String &p_analyzed_file) {
+	const String location = _conflict_location(p_conflicting_source, p_analyzed_file);
+	return vformat(R"(Trait "%s" is already applied with different type arguments by the conformance for "%s" in %s; conformances on one inheritance chain must apply it with the same type arguments.)",
+			p_trait_label, p_conflicting_target, location);
 }
 
 } // namespace
@@ -781,11 +963,23 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 	const String source_file = parser != nullptr ? parser->script_path : String();
 	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
 
-	// Re-analysis replaces this file's previously-registered conformances wholesale. Empty
-	// candidates still publish so stale entries clear; ClassTraitBinding publish is residual #60.
+	BSParser::ClassNode *head = parser != nullptr ? parser->get_tree() : p_class;
+	const Vector<BSConformanceRegistry::ClassTraitBinding> trait_bindings =
+			_collect_class_trait_bindings(head, source_file);
+
+	// Re-analysis replaces this file's previously-registered conformances + class-uses
+	// bindings wholesale. Empty candidates still publish so stale entries clear.
 	if (p_class == nullptr || p_class->conformances.is_empty()) {
 		if (registry != nullptr && !source_file.is_empty()) {
-			registry->try_replace_file_conformances(source_file, Vector<BSConformanceRegistry::Conformance>());
+			const BSConformanceRegistry::RegistrationResult result =
+					registry->try_replace_file_conformances(source_file,
+							Vector<BSConformanceRegistry::Conformance>(), trait_bindings);
+			for (int i = 0; i < result.binding_conflicts.size(); i++) {
+				const BSConformanceRegistry::BindingConflict &conflict = result.binding_conflicts[i];
+				push_error(_chain_conflict_message(conflict.trait_label, conflict.conflicting_target_label,
+								   conflict.conflicting_source_file, source_file),
+						head);
+			}
 		}
 		return;
 	}
@@ -797,8 +991,8 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 	HashMap<String, int> seen_membership_conformances;
 	Vector<BSConformanceRegistry::Conformance> valid_entries;
 	HashSet<int> reported_declarations;
+	HashMap<StringName, String> identity_labels;
 
-	BSParser::ClassNode *head = parser != nullptr ? parser->get_tree() : p_class;
 	for (int conformance_index = 0; conformance_index < p_class->conformances.size(); conformance_index++) {
 		BSParser::ConformanceNode *conformance = p_class->conformances[conformance_index];
 		if (conformance == nullptr) {
@@ -826,6 +1020,14 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 			target_keys.push_back(target_type.script_path);
 		}
 
+		const StringName target_native_base = target->is_native_conformance_shim
+				? StringName(target->fqcn)
+				: _terminal_native_class(target);
+		const Vector<String> target_script_ancestors =
+				target->is_native_conformance_shim || target->is_builtin_conformance_shim
+				? Vector<String>()
+				: _script_ancestor_keys(target);
+
 		for (int i = 0; i < conformance->traits.size(); i++) {
 			BSParser::ClassNode::TraitUse &trait_use = conformance->traits.write[i];
 			BSParser::ClassNode *trait = resolve_conformance_trait_use(head, trait_use, conformance);
@@ -849,25 +1051,7 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				continue;
 			}
 
-			// Direct trait + already-resolved supertraits (Foundry identity closure without a new port).
-			Vector<BSParser::ClassNode *> identity_nodes;
-			identity_nodes.push_back(trait);
-			for (int t = 0; t < trait->resolved_traits.size(); t++) {
-				BSParser::ClassNode *supertrait = trait->resolved_traits[t];
-				if (supertrait == nullptr) {
-					continue;
-				}
-				bool already = false;
-				for (int j = 0; j < identity_nodes.size(); j++) {
-					if (identity_nodes[j] == supertrait) {
-						already = true;
-						break;
-					}
-				}
-				if (!already) {
-					identity_nodes.push_back(supertrait);
-				}
-			}
+			Vector<BSParser::ClassNode *> identity_nodes = bs_trait_identity_closure_nodes(trait);
 
 			bool membership_conflict = false;
 			for (int identity_index = 0; identity_index < identity_nodes.size(); identity_index++) {
@@ -908,21 +1092,23 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				continue;
 			}
 
-			BSConformanceRegistry::Conformance entry;
-			entry.target_keys = target_keys;
-			entry.target_fqcn = target->fqcn;
-			entry.target_script_path = target_type.script_path;
-			entry.target_is_root_class = target->outer == nullptr;
-			entry.target_label = bs_class_or_trait_diagnostic_name(target);
-			entry.source_file = source_file;
-			entry.conformance_index = conformance_index;
-			// Store witness method-name keys only — never borrow FunctionNode* across reloads.
+			const HashMap<StringName, BSParser::DataType> substitution =
+					bs_trait_use_type_argument_bindings(trait, trait_use);
+			Vector<Vector<BSConformanceRegistry::RecordedTypeArgument>> identity_arguments;
+			identity_arguments.resize(identity_nodes.size());
+			for (int identity_index = 0; identity_index < identity_nodes.size(); identity_index++) {
+				identity_arguments.write[identity_index] = _recorded_conformance_trait_arguments(trait,
+						trait_use.resolved_type_arguments, substitution, identity_nodes[identity_index], target);
+			}
+
+			BSConformanceRegistry::WitnessMap witnesses;
 			for (int w = 0; w < conformance->witnesses.size(); w++) {
 				BSParser::FunctionNode *witness = conformance->witnesses[w];
 				if (witness != nullptr && witness->identifier != nullptr) {
-					entry.witnesses.insert(witness->identifier->name, true);
+					witnesses.insert(witness->identifier->name, true);
 				}
 			}
+
 			for (int identity_index = 0; identity_index < identity_nodes.size(); identity_index++) {
 				const StringName identity = bs_trait_identity_name(identity_nodes[identity_index]);
 				if (identity == StringName()) {
@@ -933,9 +1119,22 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				if (existing_conformance != nullptr && *existing_conformance == conformance_index) {
 					continue;
 				}
+				BSConformanceRegistry::Conformance entry;
+				entry.target_keys = target_keys;
+				entry.target_fqcn = target->fqcn;
+				entry.target_script_path = target_type.script_path;
+				entry.target_is_root_class = target->outer == nullptr;
+				entry.target_native_base = target_native_base;
+				entry.target_script_ancestor_fqcns = target_script_ancestors;
 				entry.trait_name = identity;
+				entry.trait_type_arguments = identity_arguments[identity_index];
+				entry.target_label = bs_class_or_trait_diagnostic_name(target);
+				entry.source_file = source_file;
+				entry.conformance_index = conformance_index;
+				entry.witnesses = witnesses;
 				valid_entries.push_back(entry);
 				seen_membership_conformances.insert(pair_key, conformance_index);
+				identity_labels.insert(identity, bs_class_or_trait_diagnostic_name(identity_nodes[identity_index]));
 			}
 		}
 	}
@@ -945,7 +1144,13 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 	}
 
 	const BSConformanceRegistry::RegistrationResult result =
-			registry->try_replace_file_conformances(source_file, valid_entries);
+			registry->try_replace_file_conformances(source_file, valid_entries, trait_bindings);
+	for (int i = 0; i < result.binding_conflicts.size(); i++) {
+		const BSConformanceRegistry::BindingConflict &conflict = result.binding_conflicts[i];
+		push_error(_chain_conflict_message(conflict.trait_label, conflict.conflicting_target_label,
+						   conflict.conflicting_source_file, source_file),
+				head);
+	}
 	for (int i = 0; i < result.conflicts.size(); i++) {
 		const BSConformanceRegistry::RegistrationConflict &conflict = result.conflicts[i];
 		if (reported_declarations.has(conflict.conformance_index)) {
@@ -961,7 +1166,12 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 		if (conflict.kind == BSConformanceRegistry::RegistrationConflict::DUPLICATE_MEMBERSHIP) {
 			push_error(vformat(R"(Class "%s" already conforms to trait "%s" via a conformance in %s.)",
 							   conflict.target_label, String(conflict.trait_name),
-							   bs_diagnostic_file_reference(conflict.conflicting_source_file)),
+							   _conflict_location(conflict.conflicting_source_file, source_file)),
+					conformance);
+		} else if (conflict.kind == BSConformanceRegistry::RegistrationConflict::CHAIN_COHERENCE) {
+			const String *trait_label = identity_labels.getptr(conflict.trait_name);
+			push_error(_chain_conflict_message(trait_label != nullptr ? *trait_label : String(conflict.trait_name),
+							   conflict.conflicting_target_label, conflict.conflicting_source_file, source_file),
 					conformance);
 		}
 	}

@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "bs_conformance_registry.h"
 #include "bs_parser.h"
 #include "bs_platform.h"
 
@@ -101,6 +102,16 @@ public:
 			const BSParser::DataType *p_required_rest_array, bool p_strict_null);
 	static bool rest_parameter_accepts_required_argument(const BSParser::DataType *p_implementation_rest_array,
 			const BSParser::DataType &p_required_argument_type, bool p_strict_null);
+
+	/**
+	 * Foundry recorded_arguments_conflict @ c9d5e35: true only when two flattened
+	 * recorded argument vectors are both confidently identified and disagree.
+	 * Differing arity is an absence of evidence, like an empty vector. D1: no
+	 * NumericType width comparison — builtin carriers alone decide.
+	 */
+	static bool recorded_arguments_conflict(
+			const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_recorded,
+			const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_other);
 };
 
 } // namespace barista_script
