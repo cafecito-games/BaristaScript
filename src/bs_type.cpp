@@ -631,4 +631,90 @@ bool BSTypeCompatibility::rest_parameter_accepts_required_argument(const BSParse
 			.compatible;
 }
 
+namespace {
+
+static bool _recorded_script_identities_intersect(const BSConformanceRegistry::RecordedTypeArgument &p_left,
+		const BSConformanceRegistry::RecordedTypeArgument &p_right) {
+	const String left_identities[] = { p_left.script_fqcn, p_left.script_global_name };
+	const String right_identities[] = { p_right.script_fqcn, p_right.script_global_name };
+	for (const String &left : left_identities) {
+		if (left.is_empty()) {
+			continue;
+		}
+		for (const String &right : right_identities) {
+			if (!right.is_empty() && left == right) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static bool _recorded_arguments_disagree(const BSConformanceRegistry::RecordedTypeArgument &p_left,
+		const BSConformanceRegistry::RecordedTypeArgument &p_right, int p_depth = 0) {
+	using RecordedTypeArgument = BSConformanceRegistry::RecordedTypeArgument;
+	if (unlikely(p_depth > TYPE_WALK_MAX_DEPTH)) {
+		return false;
+	}
+	if (p_left.kind == RecordedTypeArgument::UNKNOWN || p_right.kind == RecordedTypeArgument::UNKNOWN) {
+		return false;
+	}
+	if (p_left.kind != p_right.kind || p_left.is_nullable != p_right.is_nullable) {
+		return true;
+	}
+	switch (p_left.kind) {
+		case RecordedTypeArgument::BUILTIN:
+			// D1: carrier alone; no NumericType width comparison.
+			if (p_left.builtin_type != p_right.builtin_type) {
+				return true;
+			}
+			break;
+		case RecordedTypeArgument::NATIVE_CLASS:
+			if (p_left.native_class != p_right.native_class) {
+				return true;
+			}
+			break;
+		case RecordedTypeArgument::SCRIPT_CLASS:
+			if (!_recorded_script_identities_intersect(p_left, p_right)) {
+				return true;
+			}
+			break;
+		case RecordedTypeArgument::UNKNOWN:
+			break;
+	}
+
+	if (p_left.type_arguments.size() == p_right.type_arguments.size()) {
+		for (int i = 0; i < p_left.type_arguments.size(); i++) {
+			if (_recorded_arguments_disagree(p_left.type_arguments[i], p_right.type_arguments[i], p_depth + 1)) {
+				return true;
+			}
+		}
+	}
+	if (p_left.container_element_types.size() == p_right.container_element_types.size()) {
+		for (int i = 0; i < p_left.container_element_types.size(); i++) {
+			if (_recorded_arguments_disagree(p_left.container_element_types[i], p_right.container_element_types[i],
+						p_depth + 1)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+} // namespace
+
+bool BSTypeCompatibility::recorded_arguments_conflict(
+		const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_recorded,
+		const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_other) {
+	if (p_recorded.size() != p_other.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_recorded.size(); i++) {
+		if (_recorded_arguments_disagree(p_recorded[i], p_other[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
 } // namespace barista_script

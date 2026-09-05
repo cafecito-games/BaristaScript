@@ -64,6 +64,7 @@ func _init() -> void:
 	_test_conformance_registry_registration(failures)
 	_test_conformance_witness_lookup(failures)
 	_test_conformance_hidden_witness(failures)
+	_test_class_trait_binding_chain_coherence(failures)
 	_test_self_type_parameter_compat(failures)
 	_test_enum_self_payload_field_leg(failures)
 	_test_self_contract_assign_return(failures)
@@ -3183,6 +3184,39 @@ func _test_conformance_hidden_witness(failures: PackedStringArray) -> void:
 		_src_class("HidIndexGuard extends Node\n"), "res://tests/hid_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"hidden-witness probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_class_trait_binding_chain_coherence(failures: PackedStringArray) -> void:
+	# Foundry ClassTraitBinding / RecordedTypeArgument starter @ c9d5e35 (#60).
+	# Generic uses remain M5-blocked in source, so the probe drives the registry directly.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.class_trait_binding_chain_coherence()
+
+	_expect(failures, report.get("publish_ok", false) == true, "try_replace publishes ClassTraitBinding without conflict")
+	_expect(failures, report.get("binding_stored", false) == true, "get_file_trait_bindings returns published uses binding")
+	_expect(failures, report.get("reduce_builtin_ok", false) == true, "reduce_type_argument records builtin INT")
+
+	_expect(failures, int(report.get("agree_registered_count", 0)) == 1, "matching chain args register Conformance")
+	_expect(failures, report.get("agree_no_chain_conflict", false) == true,
+		"matching ClassTraitBinding + Conformance args do not CHAIN_COHERENCE")
+
+	_expect(failures, report.get("conflict_chain_coherence", false) == true,
+		"contradicting uses-binding yields RegistrationConflict::CHAIN_COHERENCE")
+	_expect(failures, report.get("conflict_rejected", false) == true,
+		"CHAIN_COHERENCE rejects the whole ConformanceNode declaration")
+	_expect(failures, report.get("conflict_store_empty", false) == true,
+		"rejected Conformance is not stored for the declaring file")
+	_expect(failures, int(report.get("conflict_index", -1)) == 0, "conflict names conformance_index 0")
+	_expect(failures, String(report.get("conflict_conflicting_file", "")) == "res://tests/ctb_binding.barista",
+		"conflict points at the binding declaring file")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("CtbIndexGuard extends Node\n"), "res://tests/ctb_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"class-trait-binding probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
 
 

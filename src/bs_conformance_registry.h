@@ -5,8 +5,10 @@
 /*  Visibility / ScopedVisibility / ScopedInFlightReplacement +          */
 /*  declaration store with atomic try_replace_file_conformances +        */
 /*  witness method-name keys / find_witness_location /                   */
-/*  find_hidden_witness_declaration. ClassTraitBinding /                 */
-/*  RecordedTypeArgument coherence / runtime Function* witnesses remain  */
+/*  find_hidden_witness_declaration + RecordedTypeArgument /             */
+/*  ClassTraitBinding chain-coherence against uses bindings.             */
+/*  Full p_loaded_files load-graph licensing, runtime Function*          */
+/*  witnesses, and native/builtin recorded-argument query APIs remain    */
 /*  residual under #60.                                                   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
@@ -15,6 +17,7 @@
 
 #pragma once
 
+#include "bs_parser.h"
 #include "bs_platform.h"
 
 #include <mutex>
@@ -40,9 +43,35 @@ public:
 	using WitnessMap = HashMap<StringName, bool>;
 
 	/**
-	 * One declaration-side conformance entry. RecordedTypeArgument coherence and
-	 * runtime Function* witnesses remain residual; witness *names* + index are
-	 * enough for visibility-filtered membership and member-miss re-resolve.
+	 * Flattened identity for one type-argument position. Anything this form cannot
+	 * represent with certainty is `UNKNOWN` — an absence of evidence, never a
+	 * wildcard. Foundry `RecordedTypeArgument` @ c9d5e35; D1 omits NumericType.
+	 */
+	struct RecordedTypeArgument {
+		enum Kind : uint8_t {
+			UNKNOWN,
+			BUILTIN,
+			NATIVE_CLASS,
+			SCRIPT_CLASS,
+		};
+		Kind kind = UNKNOWN;
+		bool is_nullable = false;
+		Variant::Type builtin_type = Variant::NIL;
+		StringName native_class;
+		String script_fqcn;
+		String script_global_name;
+		Vector<RecordedTypeArgument> type_arguments;
+		Vector<RecordedTypeArgument> container_element_types;
+	};
+
+	/** Single reduction both sides of a recorded-argument comparison go through. */
+	static RecordedTypeArgument reduce_type_argument(const BSParser::DataType &p_type);
+
+	/**
+	 * One declaration-side conformance entry. Runtime Function* witnesses remain
+	 * residual; witness *names* + index + recorded trait arguments are enough for
+	 * visibility-filtered membership, member-miss re-resolve, and uses-binding
+	 * chain coherence.
 	 */
 	struct Conformance {
 		Vector<String> target_keys;
@@ -50,12 +79,33 @@ public:
 		String target_script_path;
 		bool target_is_root_class = true;
 		StringName trait_name;
+		/**
+		 * Arguments this conformance supplied for `trait_name`. Empty when the trait
+		 * is not generic or the declaration supplied none — absence of evidence.
+		 */
+		Vector<RecordedTypeArgument> trait_type_arguments;
 		StringName target_native_base;
 		Vector<String> target_script_ancestor_fqcns;
 		String target_label;
 		String source_file;
 		int conformance_index = -1;
 		WitnessMap witnesses;
+	};
+
+	/**
+	 * One class's own `uses` clause as another file's coherence check needs to see
+	 * it. Registers no membership; only bindings that actually supplied arguments
+	 * are recorded. Foundry `ClassTraitBinding` @ c9d5e35.
+	 */
+	struct ClassTraitBinding {
+		String target_fqcn;
+		String target_label;
+		StringName target_native_base;
+		Vector<String> target_script_ancestor_fqcns;
+		StringName trait_name;
+		String trait_label;
+		Vector<RecordedTypeArgument> trait_type_arguments;
+		String source_file;
 	};
 
 	/** Limits which declaring files a caller is allowed to see. */
@@ -96,7 +146,7 @@ public:
 	struct RegistrationConflict {
 		enum Kind : uint8_t {
 			DUPLICATE_MEMBERSHIP,
-			// Reserved for follow-up witness / chain ports under #60.
+			// Reserved for follow-up witness ports under #60.
 			WITNESS_COLLISION,
 			CHAIN_COHERENCE,
 		};
@@ -110,11 +160,25 @@ public:
 	};
 
 	/**
+	 * Contradiction found for a submitted ClassTraitBinding. Reported, never
+	 * arbitrated: every binding is stored regardless.
+	 */
+	struct BindingConflict {
+		String target_fqcn;
+		String target_label;
+		StringName trait_name;
+		String trait_label;
+		String conflicting_target_label;
+		String conflicting_source_file;
+	};
+
+	/**
 	 * Outcome of one atomic validate-and-replace. `registered_count` is the
 	 * candidate set minus every entry belonging to a rejected declaration.
 	 */
 	struct RegistrationResult {
 		Vector<RegistrationConflict> conflicts;
+		Vector<BindingConflict> binding_conflicts;
 		int registered_count = 0;
 	};
 
@@ -132,12 +196,24 @@ private:
 
 	HashMap<String, Vector<Conformance>> conformances_by_file;
 	HashMap<String, HashMap<StringName, String>> index;
+	HashMap<String, Vector<ClassTraitBinding>> trait_bindings_by_file;
+	// Residual #60: full cross-file load licensing graph. Stubbed empty so `_file_loads`
+	// is always false; `_is_visible` still licenses comparisons when no Visibility is set.
+	HashMap<String, HashSet<String>> loaded_files_by_file;
 
 	void _rebuild_index();
 
 	/** Callers must hold `mutex`. */
-	bool _candidate_conflicts(const Conformance &p_candidate, const Vector<const Conformance *> &p_view,
+	bool _candidate_conflicts(const Conformance &p_candidate, const String &p_source_file,
+			const Vector<const Conformance *> &p_view, RegistrationConflict &r_conflict) const;
+
+	bool _candidate_conflicts_with_trait_binding(const Conformance &p_candidate, const String &p_source_file,
 			RegistrationConflict &r_conflict) const;
+
+	bool _file_loads(const String &p_loader, const String &p_loaded) const;
+
+	bool _binding_conflicts_with_conformance(const ClassTraitBinding &p_binding, const String &p_source_file,
+			const Vector<const Conformance *> &p_view, BindingConflict &r_conflict) const;
 
 public:
 	static BSConformanceRegistry *get_singleton();
@@ -150,12 +226,15 @@ public:
 	 * `p_source_file`'s entries with the ones that survive, under one lock.
 	 *
 	 * Previous entries stay visible to other readers until this commits. An empty
-	 * candidate list clears the file. ClassTraitBinding / chain-coherence /
-	 * witness-collision arbitration remain residual under #60; this slice
-	 * rejects duplicate (target FQCN, trait) membership only.
+	 * candidate list clears the file's conformances. `p_trait_bindings` replaces
+	 * class-`uses` bindings in the same indivisible step. `p_loaded_files` is
+	 * accepted for Foundry signature parity but the load-graph store remains
+	 * residual under #60 (edges are not consulted until that port lands).
 	 */
 	RegistrationResult try_replace_file_conformances(const String &p_source_file,
-			const Vector<Conformance> &p_candidates);
+			const Vector<Conformance> &p_candidates,
+			const Vector<ClassTraitBinding> &p_trait_bindings = Vector<ClassTraitBinding>(),
+			const HashSet<String> &p_loaded_files = HashSet<String>());
 
 	void clear_file(const String &p_source_file);
 	void clear();
@@ -169,6 +248,7 @@ public:
 
 	String get_conformance_source(const String &p_target_key, const StringName &p_trait_name) const;
 	Vector<Conformance> get_file_conformances(const String &p_source_file) const;
+	Vector<ClassTraitBinding> get_file_trait_bindings(const String &p_source_file) const;
 
 	/**
 	 * Locates the visible conformance that supplies a witness for `p_method` on
