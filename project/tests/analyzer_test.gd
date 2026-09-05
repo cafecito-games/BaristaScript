@@ -790,10 +790,20 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	var connect_ok_report: Dictionary = probe.analyze_source(connect_ok, "res://tests/connect_ok.barista")
 	_expect(failures, connect_ok_report.get("valid", false) == true, "matching connect callables are valid")
 
-	# Direct String→StringName assignment at a conversion site (Foundry can_convert_strict bridge).
-	var string_to_string_name := "class_name StringToStringName extends Node\nfunc _ready() -> void:\n\tvar name: StringName = \"registered\"\n\tvar _used: StringName = name\n"
-	var string_name_report: Dictionary = probe.analyze_source(string_to_string_name, "res://tests/string_to_string_name.barista")
-	_expect(failures, string_name_report.get("valid", false) == true, "String assigns to StringName via can_convert_strict")
+	# Another String→StringName MethodInfo site (Node.set_name) proves the bridge is not connect-only.
+	var set_name_ok := "class_name SetNameOk extends Node\nfunc _ready() -> void:\n\tset_name(\"probe\")\n"
+	var set_name_report: Dictionary = probe.analyze_source(set_name_ok, "res://tests/set_name_ok.barista")
+	_expect(failures, set_name_report.get("valid", false) == true, "String passes to StringName MethodInfo via can_convert_strict")
+
+	# Non-convertible args still fail against StringName MethodInfo parameters.
+	var connect_bad_name := "class_name ConnectBadName extends Node\nfunc _ready() -> void:\n\tconnect(123, Callable())\n"
+	var connect_bad_name_report: Dictionary = probe.analyze_source(connect_bad_name, "res://tests/connect_bad_name.barista")
+	_expect(failures, connect_bad_name_report.get("valid", true) == false, "int→StringName connect arg remains invalid")
+	var saw_bad_name := false
+	for message in connect_bad_name_report.get("errors", PackedStringArray()):
+		if "argument 1 should be \"StringName\"" in message and "int" in message:
+			saw_bad_name = true
+	_expect(failures, saw_bad_name, "int→StringName argument diagnostic")
 
 	# D1: float→int still requires a proven constant (or `as`); can_convert_strict must not widen it.
 	var float_to_int := "class_name FloatToIntReject extends Node\nfunc _ready() -> void:\n\tvar value: float = 1.5\n\tvar _narrowed: int = value\n"
