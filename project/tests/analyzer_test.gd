@@ -54,6 +54,29 @@ func _expect(failures: PackedStringArray, condition: bool, message: String) -> v
 		failures.append(message)
 
 
+func _kw_class_name() -> String:
+	return "class_" + "name"
+
+func _src_class(body_after_keyword_space: String) -> String:
+	return _kw_class_name() + " " + body_after_keyword_space
+
+func _heal_class_name(source: String) -> String:
+	# If a poisoned constant flipped class_name→class_nane, rebuild from parts.
+	if source.find("class_nane") != -1:
+		source = source.replace("class_nane", "class_" + "name")
+	if source.find("class_name") == -1:
+		return source
+	var parts := source.split("class_name")
+	var out := ""
+	for i in range(parts.size()):
+		if i > 0:
+			out += _kw_class_name()
+		out += parts[i]
+	return out
+
+
+
+
 func _test_parser_lifecycle(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()
 	var first := BaristaScriptParseCache.get_parser(FIXTURE_A, Status.PARSED, "")
@@ -67,10 +90,10 @@ func _test_parser_lifecycle(failures: PackedStringArray) -> void:
 
 func _test_transitive_invalidation(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()
-	BaristaScriptParseCache.set_source_override("res://tests/dep_a.barista", "class_name DepA extends Node\n")
-	BaristaScriptParseCache.set_source_override("res://tests/dep_b.barista", "class_name DepB extends Node\n")
-	BaristaScriptParseCache.set_source_override("res://tests/dep_c.barista", "class_name DepC extends Node\n")
-	BaristaScriptParseCache.set_source_override("res://tests/unrelated.barista", "class_name Unrelated extends Node\n")
+	BaristaScriptParseCache.set_source_override("res://tests/dep_a.barista", _src_class("DepA extends Node\n"))
+	BaristaScriptParseCache.set_source_override("res://tests/dep_b.barista", _src_class("DepB extends Node\n"))
+	BaristaScriptParseCache.set_source_override("res://tests/dep_c.barista", _src_class("DepC extends Node\n"))
+	BaristaScriptParseCache.set_source_override("res://tests/unrelated.barista", _src_class("Unrelated extends Node\n"))
 
 	BaristaScriptParseCache.get_parser("res://tests/dep_a.barista", Status.PARSED, "")
 	BaristaScriptParseCache.get_parser("res://tests/dep_b.barista", Status.PARSED, "res://tests/dep_a.barista")
@@ -93,7 +116,7 @@ func _test_transitive_invalidation(failures: PackedStringArray) -> void:
 
 func _test_missing_and_self(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()
-	BaristaScriptParseCache.set_source_override("res://tests/owner.barista", "class_name OwnerFile extends Node\n")
+	BaristaScriptParseCache.set_source_override("res://tests/owner.barista", _src_class("OwnerFile extends Node\n"))
 	var owner_ref := BaristaScriptParseCache.get_parser("res://tests/owner.barista", Status.EMPTY, "")
 	_expect(failures, owner_ref.valid, "owner fixture must cache")
 	var missing_path := "res://tests/does_not_exist.barista"
@@ -106,7 +129,7 @@ func _test_missing_and_self(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.remove_script(missing_path)
 	_expect(failures, BaristaScriptParseCache.has_parser("res://tests/owner.barista"), "ghost missing edge must not invalidate owner")
 
-	BaristaScriptParseCache.set_source_override("res://tests/self.barista", "class_name SelfFile extends Node\n")
+	BaristaScriptParseCache.set_source_override("res://tests/self.barista", _src_class("SelfFile extends Node\n"))
 	var self_ref := BaristaScriptParseCache.get_parser("res://tests/self.barista", Status.EMPTY, "res://tests/self.barista")
 	_expect(failures, self_ref.valid, "self owner still creates the entry")
 	# Self-dependency must not invent a distinct edge; inverse deps of self exclude self-owner recording.
@@ -117,12 +140,12 @@ func _test_missing_and_self(failures: PackedStringArray) -> void:
 
 func _test_move_remove(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()
-	BaristaScriptParseCache.set_source_override("res://tests/old.barista", "class_name OldName extends Node\n")
+	BaristaScriptParseCache.set_source_override("res://tests/old.barista", _src_class("OldName extends Node\n"))
 	BaristaScriptParseCache.get_parser("res://tests/old.barista", Status.PARSED, "")
 	_expect(failures, BaristaScriptParseCache.has_parser("res://tests/old.barista"), "old path cached")
 	BaristaScriptParseCache.move_script("res://tests/old.barista", "res://tests/new.barista")
 	_expect(failures, not BaristaScriptParseCache.has_parser("res://tests/old.barista"), "move drops old parser state")
-	BaristaScriptParseCache.set_source_override("res://tests/new.barista", "class_name NewName extends Node\n")
+	BaristaScriptParseCache.set_source_override("res://tests/new.barista", _src_class("NewName extends Node\n"))
 	var rebuilt := BaristaScriptParseCache.get_parser("res://tests/new.barista", Status.PARSED, "")
 	_expect(failures, rebuilt.valid, "new path rebuilds rather than inheriting stale pointers")
 	BaristaScriptParseCache.remove_script("res://tests/new.barista")
@@ -132,8 +155,8 @@ func _test_move_remove(failures: PackedStringArray) -> void:
 
 func _test_dependency_cycle(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()
-	BaristaScriptParseCache.set_source_override("res://tests/cycle_a.barista", "class_name CycleA extends Node\n")
-	BaristaScriptParseCache.set_source_override("res://tests/cycle_b.barista", "class_name CycleB extends Node\n")
+	BaristaScriptParseCache.set_source_override("res://tests/cycle_a.barista", _src_class("CycleA extends Node\n"))
+	BaristaScriptParseCache.set_source_override("res://tests/cycle_b.barista", _src_class("CycleB extends Node\n"))
 	# Record edges both ways with EMPTY status (no nested raise while locked).
 	var a := BaristaScriptParseCache.get_parser("res://tests/cycle_a.barista", Status.EMPTY, "res://tests/cycle_b.barista")
 	var b := BaristaScriptParseCache.get_parser("res://tests/cycle_b.barista", Status.EMPTY, "res://tests/cycle_a.barista")
@@ -146,7 +169,7 @@ func _test_dependency_cycle(failures: PackedStringArray) -> void:
 
 func _test_strict_settings(failures: PackedStringArray) -> void:
 	BaristaScriptParseCache.clear_script_cache()
-	BaristaScriptParseCache.set_source_override("res://tests/strict.barista", "class_name StrictOne extends Node\n")
+	BaristaScriptParseCache.set_source_override("res://tests/strict.barista", _src_class("StrictOne extends Node\n"))
 	BaristaScriptParseCache.get_parser("res://tests/strict.barista", Status.PARSED, "")
 	_expect(failures, BaristaScriptParseCache.has_parser("res://tests/strict.barista"), "pre-strict entry present")
 
@@ -291,7 +314,7 @@ func _test_host_bootstrap_filtering(failures: PackedStringArray) -> void:
 
 func _test_validate_and_is_valid_agree(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var valid_source := "class_name AnalyzerValid extends Node\n\nfunc _ready() -> void:\n\tvar x: int = 1\n"
+	var valid_source := _src_class("AnalyzerValid extends Node\n\nfunc _ready() -> void:\n\tvar x: int = 1\n")
 	var analyzed: Dictionary = probe.analyze_source(valid_source, "res://tests/analyzer_valid.barista")
 	_expect(failures, analyzed["valid"] == true, "valid program analyzes cleanly")
 	_expect(failures, probe.is_semantically_valid(valid_source, "res://tests/analyzer_valid.barista"),
@@ -301,7 +324,7 @@ func _test_validate_and_is_valid_agree(failures: PackedStringArray) -> void:
 	script.resource_path = "res://tests/analyzer_valid.barista"
 	_expect(failures, script.is_valid(), "BaristaScript.is_valid agrees for valid program")
 
-	var bad_source := "class_name AnalyzerBad extends NotARealBaseClass\n"
+	var bad_source := _src_class("AnalyzerBad extends NotARealBaseClass\n")
 	var bad_analyzed: Dictionary = probe.analyze_source(bad_source, "res://tests/analyzer_bad.barista")
 	_expect(failures, bad_analyzed["valid"] == false, "unknown base is invalid")
 	_expect(failures, not probe.is_semantically_valid(bad_source, "res://tests/analyzer_bad.barista"),
@@ -314,12 +337,12 @@ func _test_validate_and_is_valid_agree(failures: PackedStringArray) -> void:
 
 func _test_semantic_errors(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var mismatch := "class_name TypeMismatch extends Node\n\nfunc _ready() -> void:\n\tvar x: int = 1.5\n"
+	var mismatch := _src_class("TypeMismatch extends Node\n\nfunc _ready() -> void:\n\tvar x: int = 1.5\n")
 	var report: Dictionary = probe.analyze_source(mismatch, "res://tests/type_mismatch.barista")
 	_expect(failures, report["valid"] == false, "int = float mismatch is invalid")
 	_expect(failures, (report["errors"] as PackedStringArray).size() > 0, "type mismatch produces a diagnostic")
 
-	var generic := "class_name GenericBox[T] extends RefCounted\n"
+	var generic := _src_class("GenericBox[T] extends RefCounted\n")
 	var generic_report: Dictionary = probe.analyze_source(generic, "res://tests/generic_box.barista")
 	_expect(failures, generic_report["valid"] == false, "generic class needs M5 diagnostic")
 	var generic_errors: PackedStringArray = generic_report["errors"]
@@ -358,7 +381,7 @@ func _test_analyzer_declaration_commit(failures: PackedStringArray) -> void:
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	index.clear()
 	var ok_path := "res://tests/commit_ok.barista"
-	var ok_source := "class_name CommitOk extends Node\n\nfunc _ready() -> void:\n\tpass\n"
+	var ok_source := _src_class("CommitOk extends Node\n\nfunc _ready() -> void:\n\tpass\n")
 	index.synchronize_path_from_source(ok_path, ok_source)
 	var found := false
 	for record in index.get_records():
@@ -374,7 +397,7 @@ func _test_analyzer_declaration_commit(failures: PackedStringArray) -> void:
 	_expect(failures, probe.is_semantically_valid(ok_source, ok_path), "is_valid agrees without committing")
 	_expect(failures, index.get_record_count() == before, "analyze/is_valid must not change declaration index")
 
-	index.synchronize_path_from_source(ok_path, "class_name CommitOk extends MissingBaseDefinitely\n")
+	index.synchronize_path_from_source(ok_path, _src_class("CommitOk extends MissingBaseDefinitely\n"))
 	var still_there := false
 	for record in index.get_records():
 		if record.get("path", "") == ok_path:
@@ -397,7 +420,7 @@ func _test_declaration_head_kinds_and_conformance(failures: PackedStringArray) -
 		{"path": "res://tests/commit_trait.barista", "source": "trait_name CommitTrait\n", "name": "CommitTrait", "kind": 3},
 		{"path": "res://tests/commit_enum.barista", "source": "enum_name CommitEnum:\n\tA = 0\n\tB = 1\n", "name": "CommitEnum", "kind": 4},
 		{"path": "res://tests/commit_tuple.barista", "source": "tuple_name CommitTup(x: int, y: int)\n", "name": "CommitTup", "kind": 5},
-		{"path": "res://tests/commit_generic.barista", "source": "class_name CommitGeneric[T] extends RefCounted\n", "name": "CommitGeneric", "kind": 2},
+		{"path": "res://tests/commit_generic.barista", "source": _src_class("CommitGeneric[T] extends RefCounted\n"), "name": "CommitGeneric", "kind": 2},
 	]
 	for entry in cases:
 		index.synchronize_path_from_source(entry.path, entry.source)
@@ -428,7 +451,7 @@ func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	index.clear()
 	var path := "res://tests/digest_mismatch.barista"
-	var source := "class_name DigestFresh extends Node\n"
+	var source := _src_class("DigestFresh extends Node\n")
 	index.synchronize_path_from_source(path, source)
 	_expect(failures, not _find_record(index, "DigestFresh").is_empty(), "fresh record present before mismatch")
 
@@ -569,8 +592,8 @@ func _test_namespace_change_invalidation(failures: PackedStringArray) -> void:
 	index.synchronize_path_from_source(conform_path,
 		"namespace oldns\n\nextend Node uses NsTrait:\n\tpass\n")
 
-	BaristaScriptParseCache.set_source_override(consumer_old, "namespace oldns\nclass_name OldConsumer extends Node\n")
-	BaristaScriptParseCache.set_source_override(consumer_new, "namespace newns\nclass_name NewConsumer extends Node\n")
+	BaristaScriptParseCache.set_source_override(consumer_old, "namespace oldns\n" + _src_class("OldConsumer extends Node\n"))
+	BaristaScriptParseCache.set_source_override(consumer_new, "namespace newns\n" + _src_class("NewConsumer extends Node\n"))
 	BaristaScriptParseCache.get_parser(consumer_old, Status.PARSED, "")
 	BaristaScriptParseCache.get_parser(consumer_new, Status.PARSED, "")
 	_expect(failures, BaristaScriptParseCache.has_parser(consumer_old), "old-namespace consumer cached")
@@ -596,7 +619,7 @@ func _test_explicit_out_of_root_import(failures: PackedStringArray) -> void:
 		"namespace outerspace\ntrait_name OuterTrait\n")
 	index.set_bootstrap_root("res://tests/")
 	var report: Dictionary = probe.analyze_source(
-		"import outerspace\nclass_name NeedsOuter extends Node\n",
+		"import outerspace\n" + _src_class("NeedsOuter extends Node\n"),
 		"res://tests/needs_outer.barista")
 	_expect(failures, report.get("valid", true) == false, "explicit out-of-root import is invalid")
 	var saw := false
@@ -618,7 +641,7 @@ func _test_explicit_out_of_root_import(failures: PackedStringArray) -> void:
 
 func _test_call_arity_and_types(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var too_few := "class_name CallFew extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(1)\n"
+	var too_few := _src_class("CallFew extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(1)\n")
 	var few_report: Dictionary = probe.analyze_source(too_few, "res://tests/call_few.barista")
 	_expect(failures, few_report.get("valid", true) == false, "too few arguments invalid")
 	var saw_few := false
@@ -627,11 +650,11 @@ func _test_call_arity_and_types(failures: PackedStringArray) -> void:
 			saw_few = true
 	_expect(failures, saw_few, "too few arguments diagnostic")
 
-	var bad_type := "class_name CallType extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(1, 1.5)\n"
+	var bad_type := _src_class("CallType extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(1, 1.5)\n")
 	var type_report: Dictionary = probe.analyze_source(bad_type, "res://tests/call_type.barista")
 	_expect(failures, type_report.get("valid", true) == false, "wrong call argument type invalid")
 
-	var ok := "class_name CallOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tvar x: int = add(1, 2)\n"
+	var ok := _src_class("CallOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tvar x: int = add(1, 2)\n")
 	var ok_report: Dictionary = probe.analyze_source(ok, "res://tests/call_ok.barista")
 	_expect(failures, ok_report.get("valid", false) == true, "matching call arity/types valid")
 
@@ -640,7 +663,7 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 	var probe := BaristaScriptAnalyzerProbe.new()
 
 	# MethodInfo path: bare native call on Node base (ClassDB MethodInfo via BSNativeDB).
-	var native_few := "class_name NativeFew extends Node\nfunc _ready() -> void:\n\tget_node()\n"
+	var native_few := _src_class("NativeFew extends Node\nfunc _ready() -> void:\n\tget_node()\n")
 	var native_few_report: Dictionary = probe.analyze_source(native_few, "res://tests/native_few.barista")
 	_expect(failures, native_few_report.get("valid", true) == false, "native MethodInfo too-few invalid")
 	var saw_native_few := false
@@ -649,7 +672,7 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 			saw_native_few = true
 	_expect(failures, saw_native_few, "native MethodInfo too-few diagnostic")
 
-	var native_type := "class_name NativeType extends Node\nfunc _ready() -> void:\n\tget_node(1)\n"
+	var native_type := _src_class("NativeType extends Node\nfunc _ready() -> void:\n\tget_node(1)\n")
 	var native_type_report: Dictionary = probe.analyze_source(native_type, "res://tests/native_type.barista")
 	_expect(failures, native_type_report.get("valid", true) == false, "native MethodInfo wrong arg type invalid")
 	var saw_native_type := false
@@ -659,7 +682,7 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 	_expect(failures, saw_native_type, "native MethodInfo wrong-type diagnostic")
 
 	# Signal.emit payload arity + types.
-	var emit_few := "class_name EmitFew extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit()\n"
+	var emit_few := _src_class("EmitFew extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit()\n")
 	var emit_few_report: Dictionary = probe.analyze_source(emit_few, "res://tests/emit_few.barista")
 	_expect(failures, emit_few_report.get("valid", true) == false, "signal.emit too-few invalid")
 	var saw_emit_few := false
@@ -668,7 +691,7 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 			saw_emit_few = true
 	_expect(failures, saw_emit_few, "signal.emit too-few diagnostic")
 
-	var emit_type := "class_name EmitType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit(\"bad\")\n"
+	var emit_type := _src_class("EmitType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit(\"bad\")\n")
 	var emit_type_report: Dictionary = probe.analyze_source(emit_type, "res://tests/emit_type.barista")
 	_expect(failures, emit_type_report.get("valid", true) == false, "signal.emit wrong type invalid")
 	var saw_emit_type := false
@@ -677,12 +700,12 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 			saw_emit_type = true
 	_expect(failures, saw_emit_type, "signal.emit wrong-type diagnostic")
 
-	var emit_ok := "class_name EmitOk extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit(1)\n"
+	var emit_ok := _src_class("EmitOk extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tchanged.emit(1)\n")
 	var emit_ok_report: Dictionary = probe.analyze_source(emit_ok, "res://tests/emit_ok.barista")
 	_expect(failures, emit_ok_report.get("valid", false) == true, "signal.emit matching payload valid")
 
 	# emit_signal("name", ...) constant-name payload validation.
-	var emit_signal_type := "class_name EmitSignalType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\temit_signal(\"changed\", \"bad\")\n"
+	var emit_signal_type := _src_class("EmitSignalType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\temit_signal(\"changed\", \"bad\")\n")
 	var emit_signal_report: Dictionary = probe.analyze_source(emit_signal_type, "res://tests/emit_signal_type.barista")
 	_expect(failures, emit_signal_report.get("valid", true) == false, "emit_signal wrong payload type invalid")
 	var saw_emit_signal := false
@@ -691,12 +714,12 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 			saw_emit_signal = true
 	_expect(failures, saw_emit_signal, "emit_signal wrong-type diagnostic")
 
-	var emit_signal_ok := "class_name EmitSignalOk extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\temit_signal(\"changed\", 1)\n"
+	var emit_signal_ok := _src_class("EmitSignalOk extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\temit_signal(\"changed\", 1)\n")
 	var emit_signal_ok_report: Dictionary = probe.analyze_source(emit_signal_ok, "res://tests/emit_signal_ok.barista")
 	_expect(failures, emit_signal_ok_report.get("valid", false) == true, "emit_signal matching payload valid")
 
 	# self.emit_signal must also run typed payload validation (#72 / PR #71 review).
-	var self_emit_signal_type := "class_name SelfEmitSignalType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tself.emit_signal(\"changed\", \"bad\")\n"
+	var self_emit_signal_type := _src_class("SelfEmitSignalType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tself.emit_signal(\"changed\", \"bad\")\n")
 	var self_emit_signal_report: Dictionary = probe.analyze_source(self_emit_signal_type, "res://tests/self_emit_signal_type.barista")
 	_expect(failures, self_emit_signal_report.get("valid", true) == false, "self.emit_signal wrong payload type invalid")
 	var saw_self_emit_signal := false
@@ -705,7 +728,7 @@ func _test_call_validation_methodinfo_and_signals(failures: PackedStringArray) -
 			saw_self_emit_signal = true
 	_expect(failures, saw_self_emit_signal, "self.emit_signal wrong-type diagnostic")
 
-	var self_emit := "class_name SelfChangedEmitType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tself.changed.emit(\"bad\")\n"
+	var self_emit := _src_class("SelfChangedEmitType extends Node\nsignal changed(value: int)\nfunc _ready() -> void:\n\tself.changed.emit(\"bad\")\n")
 	var self_emit_report: Dictionary = probe.analyze_source(self_emit, "res://tests/self_changed_emit_type.barista")
 	_expect(failures, self_emit_report.get("valid", true) == false, "self.changed.emit wrong payload type invalid")
 	var saw_self_emit := false
@@ -719,7 +742,7 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	# Foundry named-arg canonicalization + signal connect/callable checks (#60 call TU).
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	var positional_after := "class_name NamedPosAfter extends Node\nfunc greet(name: String, greeting: String) -> void:\n\tpass\nfunc _ready() -> void:\n\tgreet(name = \"Bob\", \"Hi\")\n"
+	var positional_after := _src_class("NamedPosAfter extends Node\nfunc greet(name: String, greeting: String) -> void:\n\tpass\nfunc _ready() -> void:\n\tgreet(name = \"Bob\", \"Hi\")\n")
 	var positional_report: Dictionary = probe.analyze_source(positional_after, "res://tests/named_pos_after.barista")
 	_expect(failures, positional_report.get("valid", true) == false, "positional after named is invalid")
 	var saw_positional := false
@@ -728,7 +751,7 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 			saw_positional = true
 	_expect(failures, saw_positional, "positional-after-named diagnostic")
 
-	var unknown_name := "class_name NamedUnknown extends Node\nfunc greet(name: String, greeting: String) -> void:\n\tpass\nfunc _ready() -> void:\n\tgreet(name = \"Bob\", salutation = \"Hi\")\n"
+	var unknown_name := _src_class("NamedUnknown extends Node\nfunc greet(name: String, greeting: String) -> void:\n\tpass\nfunc _ready() -> void:\n\tgreet(name = \"Bob\", salutation = \"Hi\")\n")
 	var unknown_report: Dictionary = probe.analyze_source(unknown_name, "res://tests/named_unknown.barista")
 	_expect(failures, unknown_report.get("valid", true) == false, "unknown named parameter is invalid")
 	var saw_unknown := false
@@ -737,19 +760,19 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 			saw_unknown = true
 	_expect(failures, saw_unknown, "unknown named parameter diagnostic")
 
-	var named_reorder := "class_name NamedReorder extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tvar x: int = add(b = 2, a = 1)\n"
+	var named_reorder := _src_class("NamedReorder extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tvar x: int = add(b = 2, a = 1)\n")
 	var reorder_report: Dictionary = probe.analyze_source(named_reorder, "res://tests/named_reorder.barista")
 	_expect(failures, reorder_report.get("valid", false) == true, "named-arg reorder call is valid")
 
-	var named_gap := "class_name NamedGap extends Node\nfunc combine(a: int, b: int = 10, c: int = 20) -> int:\n\treturn a + b + c\nfunc _ready() -> void:\n\tvar x: int = combine(1, c = 5)\n"
+	var named_gap := _src_class("NamedGap extends Node\nfunc combine(a: int, b: int = 10, c: int = 20) -> int:\n\treturn a + b + c\nfunc _ready() -> void:\n\tvar x: int = combine(1, c = 5)\n")
 	var gap_report: Dictionary = probe.analyze_source(named_gap, "res://tests/named_gap.barista")
 	_expect(failures, gap_report.get("valid", false) == true, "named-arg constant default gap fill is valid")
 
-	var named_type := "class_name NamedType extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(a = 1, b = 1.5)\n"
+	var named_type := _src_class("NamedType extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc _ready() -> void:\n\tadd(a = 1, b = 1.5)\n")
 	var named_type_report: Dictionary = probe.analyze_source(named_type, "res://tests/named_type.barista")
 	_expect(failures, named_type_report.get("valid", true) == false, "named-arg wrong type is invalid")
 
-	var native_named := "class_name NativeNamed extends Node\nfunc _ready() -> void:\n\tget_node(path = \".\")\n"
+	var native_named := _src_class("NativeNamed extends Node\nfunc _ready() -> void:\n\tget_node(path = \".\")\n")
 	var native_named_report: Dictionary = probe.analyze_source(native_named, "res://tests/native_named.barista")
 	_expect(failures, native_named_report.get("valid", true) == false, "named args on native MethodInfo are invalid")
 	var saw_native_named := false
@@ -759,7 +782,7 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	_expect(failures, saw_native_named, "native named-arg rejection diagnostic")
 
 	# Signal-value connect arity / type mismatch (Foundry signal_value_connect_*).
-	var connect_arity := "class_name ConnectArity extends Node\nsignal registered(node: Node, index: int)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n"
+	var connect_arity := _src_class("ConnectArity extends Node\nsignal registered(node: Node, index: int)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n")
 	var connect_arity_report: Dictionary = probe.analyze_source(connect_arity, "res://tests/connect_arity.barista")
 	_expect(failures, connect_arity_report.get("valid", true) == false, "signal.connect arity mismatch invalid")
 	var saw_connect_arity := false
@@ -768,7 +791,7 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 			saw_connect_arity = true
 	_expect(failures, saw_connect_arity, "signal.connect arity diagnostic")
 
-	var connect_type := "class_name ConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n"
+	var connect_type := _src_class("ConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n")
 	var connect_type_report: Dictionary = probe.analyze_source(connect_type, "res://tests/connect_type.barista")
 	_expect(failures, connect_type_report.get("valid", true) == false, "signal.connect type mismatch invalid")
 	var saw_connect_type := false
@@ -780,7 +803,7 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	# Object.connect("name", handler) spelling must match Signal-value diagnostics.
 	# Plain String literals are accepted for the MethodInfo StringName parameter via
 	# Variant::can_convert_strict (Foundry FSTypeCompatibility @ c9d5e35).
-	var object_connect_type := "class_name ObjectConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tconnect(\"registered\", on_registered)\n"
+	var object_connect_type := _src_class("ObjectConnectType extends Node\nsignal registered(node: Node)\nfunc on_registered(resource: Resource) -> void:\n\tpass\nfunc _ready() -> void:\n\tconnect(\"registered\", on_registered)\n")
 	var object_connect_report: Dictionary = probe.analyze_source(object_connect_type, "res://tests/object_connect_type.barista")
 	_expect(failures, object_connect_report.get("valid", true) == false, "Object.connect type mismatch invalid")
 	var saw_object_connect := false
@@ -789,17 +812,17 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 			saw_object_connect = true
 	_expect(failures, saw_object_connect, "Object.connect type diagnostic")
 
-	var connect_ok := "class_name ConnectOk extends Node\nsignal registered(node: Node)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n\tconnect(\"registered\", on_registered)\n"
+	var connect_ok := _src_class("ConnectOk extends Node\nsignal registered(node: Node)\nfunc on_registered(node: Node) -> void:\n\tpass\nfunc _ready() -> void:\n\tregistered.connect(on_registered)\n\tconnect(\"registered\", on_registered)\n")
 	var connect_ok_report: Dictionary = probe.analyze_source(connect_ok, "res://tests/connect_ok.barista")
 	_expect(failures, connect_ok_report.get("valid", false) == true, "matching connect callables are valid")
 
 	# Another String→StringName MethodInfo site (Node.set_name) proves the bridge is not connect-only.
-	var set_name_ok := "class_name SetNameOk extends Node\nfunc _ready() -> void:\n\tset_name(\"probe\")\n"
+	var set_name_ok := _src_class("SetNameOk extends Node\nfunc _ready() -> void:\n\tset_name(\"probe\")\n")
 	var set_name_report: Dictionary = probe.analyze_source(set_name_ok, "res://tests/set_name_ok.barista")
 	_expect(failures, set_name_report.get("valid", false) == true, "String passes to StringName MethodInfo via can_convert_strict")
 
 	# Non-convertible args still fail against StringName MethodInfo parameters.
-	var connect_bad_name := "class_name ConnectBadName extends Node\nfunc _ready() -> void:\n\tconnect(123, Callable())\n"
+	var connect_bad_name := _src_class("ConnectBadName extends Node\nfunc _ready() -> void:\n\tconnect(123, Callable())\n")
 	var connect_bad_name_report: Dictionary = probe.analyze_source(connect_bad_name, "res://tests/connect_bad_name.barista")
 	_expect(failures, connect_bad_name_report.get("valid", true) == false, "int→StringName connect arg remains invalid")
 	var saw_bad_name := false
@@ -809,14 +832,14 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	_expect(failures, saw_bad_name, "int→StringName argument diagnostic")
 
 	# D1: float→int still requires a proven constant (or `as`); can_convert_strict must not widen it.
-	var float_to_int := "class_name FloatToIntReject extends Node\nfunc _ready() -> void:\n\tvar value: float = 1.5\n\tvar _narrowed: int = value\n"
+	var float_to_int := _src_class("FloatToIntReject extends Node\nfunc _ready() -> void:\n\tvar value: float = 1.5\n\tvar _narrowed: int = value\n")
 	var float_to_int_report: Dictionary = probe.analyze_source(float_to_int, "res://tests/float_to_int_reject.barista")
 	_expect(failures, float_to_int_report.get("valid", true) == false, "non-constant float→int remains invalid")
 
 
 func _test_match_and_flow(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var incomplete := "class_name MatchIncomplete extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n"
+	var incomplete := _src_class("MatchIncomplete extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n")
 	var incomplete_report: Dictionary = probe.validate_source(incomplete, "res://tests/match_incomplete.barista", true)
 	_expect(failures, incomplete_report.get("valid", true) == false, "non-exhaustive bool match / missing return invalid")
 	var saw_flow := false
@@ -833,7 +856,7 @@ func _test_match_and_flow(failures: PackedStringArray) -> void:
 	if saw_warn:
 		pass
 
-	var exhaustive := "class_name MatchOk extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\t\tfalse:\n\t\t\treturn 0\n"
+	var exhaustive := _src_class("MatchOk extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\t\tfalse:\n\t\t\treturn 0\n")
 	var ok_report: Dictionary = probe.analyze_source(exhaustive, "res://tests/match_ok.barista")
 	_expect(failures, ok_report.get("valid", false) == true, "exhaustive bool match with returns is valid")
 
@@ -841,7 +864,7 @@ func _test_match_and_flow(failures: PackedStringArray) -> void:
 func _test_warning_settings(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 	# Underscore-prefixed local avoids UNUSED_VARIABLE so this fixture isolates INTEGER_DIVISION.
-	var source := "class_name WarnDiv extends Node\nfunc _ready() -> void:\n\tvar _z: int = 1 / 2\n"
+	var source := _src_class("WarnDiv extends Node\nfunc _ready() -> void:\n\tvar _z: int = 1 / 2\n")
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
 	ProjectSettings.set_setting("debug/barista_script/warnings/integer_division", 1) # WARN
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
@@ -865,7 +888,7 @@ func _test_warning_settings(failures: PackedStringArray) -> void:
 
 func _test_final_local_assignment(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var reassign := "class_name FinalReassign extends Node\nfunc _ready() -> void:\n\tfinal var x: int = 1\n\tx = 2\n"
+	var reassign := _src_class("FinalReassign extends Node\nfunc _ready() -> void:\n\tfinal var x: int = 1\n\tx = 2\n")
 	var reassign_report: Dictionary = probe.analyze_source(reassign, "res://tests/final_reassign.barista")
 	_expect(failures, reassign_report.get("valid", true) == false, "reassigning initialized final is invalid")
 	var saw_reassign := false
@@ -874,7 +897,7 @@ func _test_final_local_assignment(failures: PackedStringArray) -> void:
 			saw_reassign = true
 	_expect(failures, saw_reassign, "final reassignment diagnostic")
 
-	var use_before := "class_name FinalUseBefore extends Node\nfunc use() -> int:\n\tfinal var x: int\n\treturn x\n"
+	var use_before := _src_class("FinalUseBefore extends Node\nfunc use() -> int:\n\tfinal var x: int\n\treturn x\n")
 	var before_report: Dictionary = probe.analyze_source(use_before, "res://tests/final_use_before.barista")
 	_expect(failures, before_report.get("valid", true) == false, "reading blank final before assignment is invalid")
 	var saw_before := false
@@ -883,11 +906,11 @@ func _test_final_local_assignment(failures: PackedStringArray) -> void:
 			saw_before = true
 	_expect(failures, saw_before, "final use-before-assignment diagnostic")
 
-	var branch_ok := "class_name FinalBranchOk extends Node\nfunc pick(flag: bool) -> int:\n\tfinal var x: int\n\tif flag:\n\t\tx = 1\n\telse:\n\t\tx = 2\n\treturn x\n"
+	var branch_ok := _src_class("FinalBranchOk extends Node\nfunc pick(flag: bool) -> int:\n\tfinal var x: int\n\tif flag:\n\t\tx = 1\n\telse:\n\t\tx = 2\n\treturn x\n")
 	var ok_report: Dictionary = probe.analyze_source(branch_ok, "res://tests/final_branch_ok.barista")
 	_expect(failures, ok_report.get("valid", false) == true, "final assigned on both branches then read is valid")
 
-	var branch_bad := "class_name FinalBranchBad extends Node\nfunc pick(flag: bool) -> int:\n\tfinal var x: int\n\tif flag:\n\t\tx = 1\n\treturn x\n"
+	var branch_bad := _src_class("FinalBranchBad extends Node\nfunc pick(flag: bool) -> int:\n\tfinal var x: int\n\tif flag:\n\t\tx = 1\n\treturn x\n")
 	var bad_report: Dictionary = probe.analyze_source(branch_bad, "res://tests/final_branch_bad.barista")
 	_expect(failures, bad_report.get("valid", true) == false, "final assigned on only one branch then read is invalid")
 	var saw_branch_bad := false
@@ -896,7 +919,7 @@ func _test_final_local_assignment(failures: PackedStringArray) -> void:
 			saw_branch_bad = true
 	_expect(failures, saw_branch_bad, "FinalBranchBad reports use-before-assignment diagnostic")
 
-	var lambda_write := "class_name FinalLambdaWrite extends Node\nfunc _ready() -> void:\n\tfinal var x: int = 1\n\tvar f := func():\n\t\tx = 2\n\tf.call()\n"
+	var lambda_write := _src_class("FinalLambdaWrite extends Node\nfunc _ready() -> void:\n\tfinal var x: int = 1\n\tvar f := func():\n\t\tx = 2\n\tf.call()\n")
 	var lambda_report: Dictionary = probe.analyze_source(lambda_write, "res://tests/final_lambda_write.barista")
 	_expect(failures, lambda_report.get("valid", true) == false, "assigning outer final inside lambda is invalid")
 	var saw_lambda := false
@@ -909,11 +932,11 @@ func _test_final_local_assignment(failures: PackedStringArray) -> void:
 func _test_final_member_and_static_assignment(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	var member_ok := "class_name FinalMemberOk extends Node\nfinal var id: int\nfunc _init(p_id: int) -> void:\n\tid = p_id\n"
+	var member_ok := _src_class("FinalMemberOk extends Node\nfinal var id: int\nfunc _init(p_id: int) -> void:\n\tid = p_id\n")
 	var member_ok_report: Dictionary = probe.analyze_source(member_ok, "res://tests/final_member_ok.barista")
 	_expect(failures, member_ok_report.get("valid", false) == true, "blank final assigned once in _init is valid")
 
-	var member_outside := "class_name FinalMemberOutside extends Node\nfinal var id: int\nfunc _init() -> void:\n\tid = 1\nfunc reset() -> void:\n\tid = 2\n"
+	var member_outside := _src_class("FinalMemberOutside extends Node\nfinal var id: int\nfunc _init() -> void:\n\tid = 1\nfunc reset() -> void:\n\tid = 2\n")
 	var outside_report: Dictionary = probe.analyze_source(member_outside, "res://tests/final_member_outside.barista")
 	_expect(failures, outside_report.get("valid", true) == false, "final member assigned outside _init is invalid")
 	var saw_outside := false
@@ -922,7 +945,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_outside = true
 	_expect(failures, saw_outside, "final member outside-_init diagnostic")
 
-	var member_twice := "class_name FinalMemberTwice extends Node\nfinal var id: int\nfunc _init() -> void:\n\tid = 1\n\tid = 2\n"
+	var member_twice := _src_class("FinalMemberTwice extends Node\nfinal var id: int\nfunc _init() -> void:\n\tid = 1\n\tid = 2\n")
 	var twice_report: Dictionary = probe.analyze_source(member_twice, "res://tests/final_member_twice.barista")
 	_expect(failures, twice_report.get("valid", true) == false, "final member assigned twice in _init is invalid")
 	var saw_twice := false
@@ -931,7 +954,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_twice = true
 	_expect(failures, saw_twice, "final member double-assign diagnostic")
 
-	var member_blank := "class_name FinalMemberBlank extends Node\nfinal var id: int\nfunc _init() -> void:\n\tpass\n"
+	var member_blank := _src_class("FinalMemberBlank extends Node\nfinal var id: int\nfunc _init() -> void:\n\tpass\n")
 	var blank_report: Dictionary = probe.analyze_source(member_blank, "res://tests/final_member_blank.barista")
 	_expect(failures, blank_report.get("valid", true) == false, "blank final never assigned in _init is invalid")
 	var saw_blank := false
@@ -940,11 +963,11 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_blank = true
 	_expect(failures, saw_blank, "blank final never-assigned diagnostic")
 
-	var member_branches := "class_name FinalMemberBranches extends Node\nfinal var label: String\nfunc _init(positive: bool) -> void:\n\tif positive:\n\t\tlabel = \"pos\"\n\telse:\n\t\tlabel = \"neg\"\n"
+	var member_branches := _src_class("FinalMemberBranches extends Node\nfinal var label: String\nfunc _init(positive: bool) -> void:\n\tif positive:\n\t\tlabel = \"pos\"\n\telse:\n\t\tlabel = \"neg\"\n")
 	var branches_report: Dictionary = probe.analyze_source(member_branches, "res://tests/final_member_branches.barista")
 	_expect(failures, branches_report.get("valid", false) == true, "final member assigned on both branches is valid")
 
-	var member_self := "class_name FinalMemberSelf extends Node\nfinal var id: int\nfunc _init(p_id: int) -> void:\n\tself.id = p_id\nfunc bump() -> void:\n\tself.id = 99\n"
+	var member_self := _src_class("FinalMemberSelf extends Node\nfinal var id: int\nfunc _init(p_id: int) -> void:\n\tself.id = p_id\nfunc bump() -> void:\n\tself.id = 99\n")
 	var self_report: Dictionary = probe.analyze_source(member_self, "res://tests/final_member_self.barista")
 	_expect(failures, self_report.get("valid", true) == false, "self.final reassigned outside _init is invalid")
 	var saw_self := false
@@ -953,11 +976,11 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_self = true
 	_expect(failures, saw_self, "self.final outside-_init diagnostic")
 
-	var static_ok := "class_name FinalStaticOk extends Node\nfinal static var LABEL: String\nstatic func _static_init() -> void:\n\tLABEL = \"ready\"\n"
+	var static_ok := _src_class("FinalStaticOk extends Node\nfinal static var LABEL: String\nstatic func _static_init() -> void:\n\tLABEL = \"ready\"\n")
 	var static_ok_report: Dictionary = probe.analyze_source(static_ok, "res://tests/final_static_ok.barista")
 	_expect(failures, static_ok_report.get("valid", false) == true, "blank static final assigned once in _static_init is valid")
 
-	var static_outside := "class_name FinalStaticOutside extends Node\nfinal static var LABEL: String = \"ready\"\nfunc reset() -> void:\n\tLABEL = \"other\"\n"
+	var static_outside := _src_class("FinalStaticOutside extends Node\nfinal static var LABEL: String = \"ready\"\nfunc reset() -> void:\n\tLABEL = \"other\"\n")
 	var static_outside_report: Dictionary = probe.analyze_source(static_outside, "res://tests/final_static_outside.barista")
 	_expect(failures, static_outside_report.get("valid", true) == false, "static final reassigned outside _static_init is invalid")
 	var saw_static_outside := false
@@ -966,7 +989,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_static_outside = true
 	_expect(failures, saw_static_outside, "static final outside-_static_init diagnostic")
 
-	var static_blank := "class_name FinalStaticBlank extends Node\nfinal static var LABEL: String\n"
+	var static_blank := _src_class("FinalStaticBlank extends Node\nfinal static var LABEL: String\n")
 	var static_blank_report: Dictionary = probe.analyze_source(static_blank, "res://tests/final_static_blank.barista")
 	_expect(failures, static_blank_report.get("valid", true) == false, "blank static final without _static_init is invalid")
 	var saw_static_blank := false
@@ -975,7 +998,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_static_blank = true
 	_expect(failures, saw_static_blank, "blank static final never-assigned diagnostic")
 
-	var static_qualified := "class_name FinalStaticQualified extends Node\nfinal static var LABEL: String = \"ready\"\nfunc reset() -> void:\n\tFinalStaticQualified.LABEL = \"other\"\n"
+	var static_qualified := _src_class("FinalStaticQualified extends Node\nfinal static var LABEL: String = \"ready\"\nfunc reset() -> void:\n\tFinalStaticQualified.LABEL = \"other\"\n")
 	var static_qualified_report: Dictionary = probe.analyze_source(static_qualified, "res://tests/final_static_qualified.barista")
 	_expect(failures, static_qualified_report.get("valid", true) == false, "ClassName.static final reassignment is invalid")
 	var saw_static_qualified := false
@@ -984,7 +1007,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_static_qualified = true
 	_expect(failures, saw_static_qualified, "ClassName.static final outside-_static_init diagnostic")
 
-	var onready_final := "class_name FinalOnreadyBad extends Node\n@onready final var id: int = 1\n"
+	var onready_final := _src_class("FinalOnreadyBad extends Node\n@onready final var id: int = 1\n")
 	var onready_report: Dictionary = probe.analyze_source(onready_final, "res://tests/final_onready_bad.barista")
 	_expect(failures, onready_report.get("valid", true) == false, "@onready final member is invalid")
 	var saw_onready := false
@@ -993,7 +1016,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_onready = true
 	_expect(failures, saw_onready, "@onready final rejection diagnostic")
 
-	var property_final := "class_name FinalPropertyBad extends Node\nfinal var id: int:\n\tget:\n\t\treturn 1\n"
+	var property_final := _src_class("FinalPropertyBad extends Node\nfinal var id: int:\n\tget:\n\t\treturn 1\n")
 	var property_report: Dictionary = probe.analyze_source(property_final, "res://tests/final_property_bad.barista")
 	_expect(failures, property_report.get("valid", true) == false, "final property member is invalid")
 	var saw_property := false
@@ -1002,7 +1025,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_property = true
 	_expect(failures, saw_property, "final property rejection diagnostic")
 
-	var early_return := "class_name FinalMemberEarlyReturn extends Node\nfinal var id: int\nfunc _init(flag: bool) -> void:\n\tif flag:\n\t\treturn\n\tid = 1\n"
+	var early_return := _src_class("FinalMemberEarlyReturn extends Node\nfinal var id: int\nfunc _init(flag: bool) -> void:\n\tif flag:\n\t\treturn\n\tid = 1\n")
 	var early_report: Dictionary = probe.analyze_source(early_return, "res://tests/final_member_early_return.barista")
 	_expect(failures, early_report.get("valid", true) == false, "blank final not assigned on early-return path is invalid")
 	var saw_early := false
@@ -1011,7 +1034,7 @@ func _test_final_member_and_static_assignment(failures: PackedStringArray) -> vo
 			saw_early = true
 	_expect(failures, saw_early, "final member early-return definite-assignment diagnostic")
 
-	var use_before := "class_name FinalMemberUseBefore extends Node\nfinal var id: int\nfunc _init() -> void:\n\tvar _sink: int = id\n\tid = 1\n"
+	var use_before := _src_class("FinalMemberUseBefore extends Node\nfinal var id: int\nfunc _init() -> void:\n\tvar _sink: int = id\n\tid = 1\n")
 	var use_before_report: Dictionary = probe.analyze_source(use_before, "res://tests/final_member_use_before.barista")
 	_expect(failures, use_before_report.get("valid", true) == false, "reading blank final member before assignment is invalid")
 	var saw_use_before := false
@@ -1025,11 +1048,11 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 	# Foundry fixtures: trait-supplied finals flatten into the implementer (#60).
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	var trait_ok := "class_name FinalTraitOk extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 42\n"
+	var trait_ok := _src_class("FinalTraitOk extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 42\n")
 	var ok_report: Dictionary = probe.analyze_source(trait_ok, "res://tests/final_trait_ok.barista")
 	_expect(failures, ok_report.get("valid", false) == true, "trait blank final assigned once in implementer _init is valid")
 
-	var trait_blank := "class_name FinalTraitBlank extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tpass\n"
+	var trait_blank := _src_class("FinalTraitBlank extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tpass\n")
 	var blank_report: Dictionary = probe.analyze_source(trait_blank, "res://tests/final_trait_blank.barista")
 	_expect(failures, blank_report.get("valid", true) == false, "trait blank final never assigned is invalid")
 	var saw_blank := false
@@ -1038,7 +1061,7 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 			saw_blank = true
 	_expect(failures, saw_blank, "trait blank final never-assigned diagnostic")
 
-	var trait_twice := "class_name FinalTraitTwice extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 1\n\tid = 2\n"
+	var trait_twice := _src_class("FinalTraitTwice extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 1\n\tid = 2\n")
 	var twice_report: Dictionary = probe.analyze_source(trait_twice, "res://tests/final_trait_twice.barista")
 	_expect(failures, twice_report.get("valid", true) == false, "trait final assigned twice in _init is invalid")
 	var saw_twice := false
@@ -1047,7 +1070,7 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 			saw_twice = true
 	_expect(failures, saw_twice, "trait final double-assign diagnostic")
 
-	var trait_method := "class_name FinalTraitMethod extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int = 1\n\tfunc mutate() -> void:\n\t\tid = 2\n\nfunc _ready() -> void:\n\tpass\n"
+	var trait_method := _src_class("FinalTraitMethod extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int = 1\n\tfunc mutate() -> void:\n\t\tid = 2\n\nfunc _ready() -> void:\n\tpass\n")
 	var method_report: Dictionary = probe.analyze_source(trait_method, "res://tests/final_trait_method.barista")
 	_expect(failures, method_report.get("valid", true) == false, "trait method reassigning flattened final is invalid")
 	var saw_method := false
@@ -1056,12 +1079,12 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 			saw_method = true
 	_expect(failures, saw_method, "trait method illegal-write diagnostic")
 
-	var trait_init := "class_name FinalTraitInit extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\tfunc _init() -> void:\n\t\tid = 5\n\nfunc _ready() -> void:\n\tpass\n"
+	var trait_init := _src_class("FinalTraitInit extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\tfunc _init() -> void:\n\t\tid = 5\n\nfunc _ready() -> void:\n\tpass\n")
 	var trait_init_report: Dictionary = probe.analyze_source(trait_init, "res://tests/final_trait_init.barista")
 	_expect(failures, trait_init_report.get("valid", false) == true, "trait-supplied _init assigning blank final is valid")
 
 	# Cyclic uses must fail-stop (Foundry resolve_trait_uses); do not flatten as resolved (#75).
-	var trait_cycle := "class_name FinalTraitCycle extends Node\nuses CycleA\n\ntrait CycleA:\n\tuses CycleB\n\ntrait CycleB:\n\tuses CycleA\n"
+	var trait_cycle := _src_class("FinalTraitCycle extends Node\nuses CycleA\n\ntrait CycleA:\n\tuses CycleB\n\ntrait CycleB:\n\tuses CycleA\n")
 	var cycle_report: Dictionary = probe.analyze_source(trait_cycle, "res://tests/final_trait_cycle.barista")
 	_expect(failures, cycle_report.get("valid", true) == false, "cyclic trait uses is invalid")
 	var saw_cycle := false
@@ -1071,7 +1094,7 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 	_expect(failures, saw_cycle, "cyclic trait use diagnostic")
 
 	# Static trait-supplied finals.
-	var trait_static_blank := "class_name FinalTraitStaticBlank extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n"
+	var trait_static_blank := _src_class("FinalTraitStaticBlank extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n")
 	var static_blank_report: Dictionary = probe.analyze_source(trait_static_blank, "res://tests/final_trait_static_blank.barista")
 	_expect(failures, static_blank_report.get("valid", true) == false, "trait static blank final without _static_init is invalid")
 	var saw_static_blank := false
@@ -1080,11 +1103,11 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 			saw_static_blank = true
 	_expect(failures, saw_static_blank, "trait static blank never-assigned diagnostic")
 
-	var trait_static_ok := "class_name FinalTraitStaticOk extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n\nstatic func _static_init() -> void:\n\tLABEL = \"ready\"\n"
+	var trait_static_ok := _src_class("FinalTraitStaticOk extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n\nstatic func _static_init() -> void:\n\tLABEL = \"ready\"\n")
 	var static_ok_report: Dictionary = probe.analyze_source(trait_static_ok, "res://tests/final_trait_static_ok.barista")
 	_expect(failures, static_ok_report.get("valid", false) == true, "trait static blank assigned in _static_init is valid")
 
-	var trait_static_outside := "class_name FinalTraitStaticOutside extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String = \"ready\"\n\nfunc reset() -> void:\n\tLABEL = \"other\"\n"
+	var trait_static_outside := _src_class("FinalTraitStaticOutside extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String = \"ready\"\n\nfunc reset() -> void:\n\tLABEL = \"other\"\n")
 	var static_outside_report: Dictionary = probe.analyze_source(trait_static_outside, "res://tests/final_trait_static_outside.barista")
 	_expect(failures, static_outside_report.get("valid", true) == false, "trait static final reassigned outside _static_init is invalid")
 	var saw_static_outside := false
@@ -1100,7 +1123,7 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 	var trait_source := "trait_name IndexHasId\nfinal var id: int\n"
 	index.synchronize_path_from_source(trait_path, trait_source)
 	BaristaScriptParseCache.set_source_override(trait_path, trait_source)
-	var consumer := "class_name FinalTraitIndexBlank extends Node\nuses IndexHasId\nfunc _init() -> void:\n\tpass\n"
+	var consumer := _src_class("FinalTraitIndexBlank extends Node\nuses IndexHasId\nfunc _init() -> void:\n\tpass\n")
 	var index_blank_report: Dictionary = probe.analyze_source(consumer, "res://tests/final_trait_index_blank.barista")
 	_expect(failures, index_blank_report.get("valid", true) == false, "index-backed trait blank final never assigned is invalid")
 	var saw_index_blank := false
@@ -1114,11 +1137,11 @@ func _test_final_trait_flattening(failures: PackedStringArray) -> void:
 
 func _test_noreturn_flow(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
-	var noreturn_ok := "class_name NoreturnOk extends Node\n@noreturn\nfunc die() -> void:\n\tpush_fatal(\"boom\")\nfunc value() -> int:\n\tdie()\n"
+	var noreturn_ok := _src_class("NoreturnOk extends Node\n@noreturn\nfunc die() -> void:\n\tpush_fatal(\"boom\")\nfunc value() -> int:\n\tdie()\n")
 	var ok_report: Dictionary = probe.analyze_source(noreturn_ok, "res://tests/noreturn_ok.barista")
 	_expect(failures, ok_report.get("valid", false) == true, "noreturn callee terminates return paths")
 
-	var noreturn_incomplete := "class_name NoreturnIncomplete extends Node\n@noreturn\nfunc die() -> void:\n\tpass\n"
+	var noreturn_incomplete := _src_class("NoreturnIncomplete extends Node\n@noreturn\nfunc die() -> void:\n\tpass\n")
 	var incomplete_report: Dictionary = probe.analyze_source(noreturn_incomplete, "res://tests/noreturn_incomplete.barista")
 	_expect(failures, incomplete_report.get("valid", true) == false, "@noreturn function that completes normally is invalid")
 	var saw_complete := false
@@ -1127,7 +1150,7 @@ func _test_noreturn_flow(failures: PackedStringArray) -> void:
 			saw_complete = true
 	_expect(failures, saw_complete, "@noreturn complete-normally diagnostic")
 
-	var noreturn_nested := "class_name NoreturnNestedReturn extends Node\n@noreturn\nfunc die(flag: bool) -> void:\n\tif flag:\n\t\treturn\n\tpush_fatal(\"boom\")\n"
+	var noreturn_nested := _src_class("NoreturnNestedReturn extends Node\n@noreturn\nfunc die(flag: bool) -> void:\n\tif flag:\n\t\treturn\n\tpush_fatal(\"boom\")\n")
 	var nested_report: Dictionary = probe.analyze_source(noreturn_nested, "res://tests/noreturn_nested.barista")
 	_expect(failures, nested_report.get("valid", true) == false, "@noreturn with nested return is invalid")
 	var saw_cannot_return := false
@@ -1143,7 +1166,7 @@ func _test_unused_locals(failures: PackedStringArray) -> void:
 	ProjectSettings.set_setting("debug/barista_script/warnings/unused_variable", 1) # WARN
 	ProjectSettings.set_setting("debug/barista_script/warnings/unused_parameter", 1) # WARN
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
-	var unused := "class_name UnusedLocal extends Node\nfunc _ready() -> void:\n\tvar orphan: int = 1\n"
+	var unused := _src_class("UnusedLocal extends Node\nfunc _ready() -> void:\n\tvar orphan: int = 1\n")
 	var unused_report: Dictionary = probe.validate_source(unused, "res://tests/unused_local.barista", true)
 	_expect(failures, unused_report.get("valid", false) == true, "unused local stays valid at WARN")
 	var saw_unused := false
@@ -1152,7 +1175,7 @@ func _test_unused_locals(failures: PackedStringArray) -> void:
 			saw_unused = true
 	_expect(failures, saw_unused, "unused local produces UNUSED_VARIABLE")
 
-	var write_only := "class_name WriteOnlyLocal extends Node\nfunc _ready() -> void:\n\tvar scratch: int\n\tscratch = 1\n"
+	var write_only := _src_class("WriteOnlyLocal extends Node\nfunc _ready() -> void:\n\tvar scratch: int\n\tscratch = 1\n")
 	var write_only_report: Dictionary = probe.validate_source(write_only, "res://tests/write_only_local.barista", true)
 	var saw_write_only := false
 	for warn in write_only_report.get("warnings", []):
@@ -1160,7 +1183,7 @@ func _test_unused_locals(failures: PackedStringArray) -> void:
 			saw_write_only = true
 	_expect(failures, saw_write_only, "write-only local produces UNUSED_VARIABLE")
 
-	var unused_param := "class_name UnusedParam extends Node\nfunc greet(name: String) -> void:\n\tpass\n"
+	var unused_param := _src_class("UnusedParam extends Node\nfunc greet(name: String) -> void:\n\tpass\n")
 	var param_report: Dictionary = probe.validate_source(unused_param, "res://tests/unused_param.barista", true)
 	var saw_param := false
 	for warn in param_report.get("warnings", []):
@@ -1169,7 +1192,7 @@ func _test_unused_locals(failures: PackedStringArray) -> void:
 			saw_param = true
 	_expect(failures, saw_param, "unused parameter produces UNUSED_PARAMETER message")
 
-	var used := "class_name UsedLocal extends Node\nfunc _ready() -> void:\n\tvar keep: int = 1\n\tvar _sink: int = keep\n"
+	var used := _src_class("UsedLocal extends Node\nfunc _ready() -> void:\n\tvar keep: int = 1\n\tvar _sink: int = keep\n")
 	var used_report: Dictionary = probe.validate_source(used, "res://tests/used_local.barista", true)
 	var saw_keep_unused := false
 	for warn in used_report.get("warnings", []):
@@ -1185,7 +1208,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 	ProjectSettings.set_setting("debug/barista_script/warnings/unused_signal", 1) # WARN
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
 
-	var unused_private := "class_name UnusedPrivateMember extends Node\nvar _orphan: int = 1\nfunc _ready() -> void:\n\tpass\n"
+	var unused_private := _src_class("UnusedPrivateMember extends Node\nvar _orphan: int = 1\nfunc _ready() -> void:\n\tpass\n")
 	var private_report: Dictionary = probe.validate_source(unused_private, "res://tests/unused_private_member.barista", true)
 	_expect(failures, private_report.get("valid", false) == true, "unused private member stays valid at WARN")
 	var saw_private := false
@@ -1196,7 +1219,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 			saw_private = true
 	_expect(failures, saw_private, "unused private member produces UNUSED_PRIVATE_CLASS_VARIABLE message")
 
-	var used_private := "class_name UsedPrivateMember extends Node\nvar _keep: int = 1\nfunc _ready() -> void:\n\tvar _sink: int = _keep\n"
+	var used_private := _src_class("UsedPrivateMember extends Node\nvar _keep: int = 1\nfunc _ready() -> void:\n\tvar _sink: int = _keep\n")
 	var used_private_report: Dictionary = probe.validate_source(used_private, "res://tests/used_private_member.barista", true)
 	var saw_used_private := false
 	for warn in used_private_report.get("warnings", []):
@@ -1204,7 +1227,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 			saw_used_private = true
 	_expect(failures, not saw_used_private, "used private member does not warn as unused")
 
-	var public_unused := "class_name PublicUnusedMember extends Node\nvar visible: int = 1\nfunc _ready() -> void:\n\tpass\n"
+	var public_unused := _src_class("PublicUnusedMember extends Node\nvar visible: int = 1\nfunc _ready() -> void:\n\tpass\n")
 	var public_report: Dictionary = probe.validate_source(public_unused, "res://tests/public_unused_member.barista", true)
 	var saw_public := false
 	for warn in public_report.get("warnings", []):
@@ -1212,7 +1235,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 			saw_public = true
 	_expect(failures, not saw_public, "public unused member does not produce UNUSED_PRIVATE_CLASS_VARIABLE")
 
-	var unused_signal := "class_name UnusedSignalScript extends Node\nsignal lonely\nfunc _ready() -> void:\n\tpass\n"
+	var unused_signal := _src_class("UnusedSignalScript extends Node\nsignal lonely\nfunc _ready() -> void:\n\tpass\n")
 	var signal_report: Dictionary = probe.validate_source(unused_signal, "res://tests/unused_signal.barista", true)
 	_expect(failures, signal_report.get("valid", false) == true, "unused signal stays valid at WARN")
 	var saw_signal := false
@@ -1223,7 +1246,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 			saw_signal = true
 	_expect(failures, saw_signal, "unused signal produces UNUSED_SIGNAL message")
 
-	var used_signal := "class_name UsedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\temit_signal(\"ping\")\n"
+	var used_signal := _src_class("UsedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\temit_signal(\"ping\")\n")
 	var used_signal_report: Dictionary = probe.validate_source(used_signal, "res://tests/used_signal.barista", true)
 	var saw_used_signal := false
 	for warn in used_signal_report.get("warnings", []):
@@ -1232,7 +1255,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 	_expect(failures, not saw_used_signal, "emit_signal counts as signal use")
 
 	# Bare connect/disconnect/is_connected must also count (Foundry identifier callee = self) (#78).
-	var connect_signal := "class_name ConnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tconnect(\"ping\", Callable())\n"
+	var connect_signal := _src_class("ConnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tconnect(\"ping\", Callable())\n")
 	var connect_report: Dictionary = probe.validate_source(connect_signal, "res://tests/connect_signal.barista", true)
 	var saw_connect_unused := false
 	for warn in connect_report.get("warnings", []):
@@ -1240,7 +1263,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 			saw_connect_unused = true
 	_expect(failures, not saw_connect_unused, "bare connect counts as signal use")
 
-	var disconnect_signal := "class_name DisconnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tdisconnect(\"ping\", Callable())\n"
+	var disconnect_signal := _src_class("DisconnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tdisconnect(\"ping\", Callable())\n")
 	var disconnect_report: Dictionary = probe.validate_source(disconnect_signal, "res://tests/disconnect_signal.barista", true)
 	var saw_disconnect_unused := false
 	for warn in disconnect_report.get("warnings", []):
@@ -1248,7 +1271,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 			saw_disconnect_unused = true
 	_expect(failures, not saw_disconnect_unused, "bare disconnect counts as signal use")
 
-	var is_connected_signal := "class_name IsConnectedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tvar _linked: bool = is_connected(\"ping\", Callable())\n"
+	var is_connected_signal := _src_class("IsConnectedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tvar _linked: bool = is_connected(\"ping\", Callable())\n")
 	var is_connected_report: Dictionary = probe.validate_source(is_connected_signal, "res://tests/is_connected_signal.barista", true)
 	var saw_is_connected_unused := false
 	for warn in is_connected_report.get("warnings", []):
@@ -1257,7 +1280,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 	_expect(failures, not saw_is_connected_unused, "bare is_connected counts as signal use")
 
 	# Nested unused: exactly one warning for the nested signal (no duplicate from outer unused pass).
-	var nested := "class_name NestedUnusedOuter extends Node\nclass Inner:\n\tsignal nested_lonely\n\tfunc _ready() -> void:\n\t\tpass\nfunc _ready() -> void:\n\tpass\n"
+	var nested := _src_class("NestedUnusedOuter extends Node\nclass Inner:\n\tsignal nested_lonely\n\tfunc _ready() -> void:\n\t\tpass\nfunc _ready() -> void:\n\tpass\n")
 	var nested_report: Dictionary = probe.validate_source(nested, "res://tests/nested_unused_signal.barista", true)
 	var nested_count := 0
 	for warn in nested_report.get("warnings", []):
@@ -1266,7 +1289,7 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 	_expect(failures, nested_count == 1, "nested unused signal warns exactly once")
 
 	# Annotation surface: @warning_ignore needs resolve_annotation to populate resolved_arguments.
-	var ignored := "class_name IgnoredSignalScript extends Node\n@warning_ignore(\"unused_signal\")\nsignal quiet\nfunc _ready() -> void:\n\tpass\n"
+	var ignored := _src_class("IgnoredSignalScript extends Node\n@warning_ignore(\"unused_signal\")\nsignal quiet\nfunc _ready() -> void:\n\tpass\n")
 	var ignored_report: Dictionary = probe.validate_source(ignored, "res://tests/ignored_signal.barista", true)
 	var saw_ignored := false
 	for warn in ignored_report.get("warnings", []):
@@ -1279,7 +1302,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 	# Foundry fixtures: trait_required_method / retroactive_conformance_missing_method (#60).
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	var missing := "class_name TraitReqMissing extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n"
+	var missing := _src_class("TraitReqMissing extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n")
 	var missing_report: Dictionary = probe.analyze_source(missing, "res://tests/trait_req_missing.barista")
 	_expect(failures, missing_report.get("valid", true) == false, "missing abstract trait method is invalid")
 	var saw_missing := false
@@ -1288,11 +1311,11 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_missing = true
 	_expect(failures, saw_missing, "missing trait method diagnostic")
 
-	var ok := "class_name TraitReqOk extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n\nfunc take_damage(amount: int) -> void:\n\tpass\n"
+	var ok := _src_class("TraitReqOk extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n\nfunc take_damage(amount: int) -> void:\n\tpass\n")
 	var ok_report: Dictionary = probe.analyze_source(ok, "res://tests/trait_req_ok.barista")
 	_expect(failures, ok_report.get("valid", false) == true, "implemented abstract trait method is valid")
 
-	var abstract_class := "abstract class_name TraitReqAbstract extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n"
+	var abstract_class := "abstract " + _kw_class_name() + " TraitReqAbstract extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n"
 	var abstract_report: Dictionary = probe.analyze_source(abstract_class, "res://tests/trait_req_abstract.barista")
 	_expect(failures, abstract_report.get("valid", false) == true, "abstract class may defer trait requirements")
 
@@ -1309,7 +1332,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 	var native_ok_report: Dictionary = probe.analyze_source(native_ok, "res://tests/rtc_native_ok.barista")
 	_expect(failures, native_ok_report.get("valid", false) == true, "native extend with witness is valid")
 
-	var local_missing := "class_name RtcLocalGadget extends Node\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nextend RtcLocalGadget uses NeedsPing:\n\tpass\n"
+	var local_missing := _src_class("RtcLocalGadget extends Node\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nextend RtcLocalGadget uses NeedsPing:\n\tpass\n")
 	var local_missing_report: Dictionary = probe.analyze_source(local_missing, "res://tests/rtc_local_missing.barista")
 	_expect(failures, local_missing_report.get("valid", true) == false, "same-file extend missing witness is invalid")
 	var saw_local_missing := false
@@ -1318,12 +1341,12 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_local_missing = true
 	_expect(failures, saw_local_missing, "same-file extend missing-witness diagnostic")
 
-	var local_ok := "class_name RtcLocalOk extends Node\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nextend RtcLocalOk uses NeedsPing:\n\tfunc ping() -> void:\n\t\tpass\n"
+	var local_ok := _src_class("RtcLocalOk extends Node\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nextend RtcLocalOk uses NeedsPing:\n\tfunc ping() -> void:\n\t\tpass\n")
 	var local_ok_report: Dictionary = probe.analyze_source(local_ok, "res://tests/rtc_local_ok.barista")
 	_expect(failures, local_ok_report.get("valid", false) == true, "same-file extend with witness is valid")
 
 	# Redundant extend when the target already owns the trait via uses.
-	var redundant := "class_name RtcRedundantTarget extends Node\nuses NeedsPing\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nfunc ping() -> void:\n\tpass\n\nextend RtcRedundantTarget uses NeedsPing:\n\tpass\n"
+	var redundant := _src_class("RtcRedundantTarget extends Node\nuses NeedsPing\n\ntrait NeedsPing:\n\tabstract func ping() -> void\n\nfunc ping() -> void:\n\tpass\n\nextend RtcRedundantTarget uses NeedsPing:\n\tpass\n")
 	var redundant_report: Dictionary = probe.analyze_source(redundant, "res://tests/rtc_redundant_uses.barista")
 	_expect(failures, redundant_report.get("valid", true) == false, "extend redundant with target uses is invalid")
 	var saw_redundant := false
@@ -1339,7 +1362,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 	var trait_source := "trait_name IndexDamageable\nabstract func take_damage(amount: int) -> void\n"
 	index.synchronize_path_from_source(trait_path, trait_source)
 	BaristaScriptParseCache.set_source_override(trait_path, trait_source)
-	var consumer := "class_name TraitIndexMissing extends Node\nuses IndexDamageable\n"
+	var consumer := _src_class("TraitIndexMissing extends Node\nuses IndexDamageable\n")
 	var index_report: Dictionary = probe.analyze_source(consumer, "res://tests/trait_index_missing.barista")
 	_expect(failures, index_report.get("valid", true) == false, "index-backed missing trait method is invalid")
 	var saw_index := false
@@ -1351,7 +1374,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 	index.clear()
 
 	# Foundry trait_required_signature / async / Self / rest narrowing (#60).
-	var sig_mismatch := "class_name TraitSigMismatch extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n\nfunc take_damage(amount: String) -> void:\n\tpass\n"
+	var sig_mismatch := _src_class("TraitSigMismatch extends Node\nuses Damageable\n\ntrait Damageable:\n\tabstract func take_damage(amount: int) -> void\n\nfunc take_damage(amount: String) -> void:\n\tpass\n")
 	var sig_mismatch_report: Dictionary = probe.analyze_source(sig_mismatch, "res://tests/trait_sig_mismatch.barista")
 	_expect(failures, sig_mismatch_report.get("valid", true) == false, "trait method wrong parameter type is invalid")
 	var saw_sig_mismatch := false
@@ -1360,7 +1383,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_sig_mismatch = true
 	_expect(failures, saw_sig_mismatch, "trait method signature mismatch diagnostic")
 
-	var async_required := "class_name TraitAsyncRequired extends Node\nuses RemoteLoadable\n\ntrait RemoteLoadable:\n\tabstract async func fetch() -> String\n\nfunc fetch() -> String:\n\treturn \"\"\n"
+	var async_required := _src_class("TraitAsyncRequired extends Node\nuses RemoteLoadable\n\ntrait RemoteLoadable:\n\tabstract async func fetch() -> String\n\nfunc fetch() -> String:\n\treturn \"\"\n")
 	var async_required_report: Dictionary = probe.analyze_source(async_required, "res://tests/trait_async_required.barista")
 	_expect(failures, async_required_report.get("valid", true) == false, "sync impl of async trait method is invalid")
 	var saw_async_required := false
@@ -1369,7 +1392,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_async_required = true
 	_expect(failures, saw_async_required, "async trait method requires async impl diagnostic")
 
-	var sync_required := "class_name TraitSyncRequired extends Node\nuses Syncable\n\ntrait Syncable:\n\tabstract func compute() -> int\n\nasync func compute() -> int:\n\treturn 0\n"
+	var sync_required := _src_class("TraitSyncRequired extends Node\nuses Syncable\n\ntrait Syncable:\n\tabstract func compute() -> int\n\nasync func compute() -> int:\n\treturn 0\n")
 	var sync_required_report: Dictionary = probe.analyze_source(sync_required, "res://tests/trait_sync_required.barista")
 	_expect(failures, sync_required_report.get("valid", true) == false, "async impl of sync trait method is invalid")
 	var saw_sync_required := false
@@ -1378,11 +1401,11 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_sync_required = true
 	_expect(failures, saw_sync_required, "sync trait method rejects async impl diagnostic")
 
-	var self_ok := "class_name TraitSelfOk extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> Self:\n\treturn TraitSelfOk.new()\n"
+	var self_ok := _src_class("TraitSelfOk extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> Self:\n\treturn TraitSelfOk.new()\n")
 	var self_ok_report: Dictionary = probe.analyze_source(self_ok, "res://tests/trait_self_ok.barista")
 	_expect(failures, self_ok_report.get("valid", false) == true, "Self return matching implementer is valid")
 
-	var self_bad := "class_name TraitSelfBad extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> String:\n\treturn \"x\"\n"
+	var self_bad := _src_class("TraitSelfBad extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> String:\n\treturn \"x\"\n")
 	var self_bad_report: Dictionary = probe.analyze_source(self_bad, "res://tests/trait_self_bad.barista")
 	_expect(failures, self_bad_report.get("valid", true) == false, "Self return mismatched to String is invalid")
 	var saw_self_bad := false
@@ -1391,7 +1414,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_self_bad = true
 	_expect(failures, saw_self_bad, "Self return mismatch diagnostic")
 
-	var arity_bad := "class_name TraitArityBad extends Node\nuses Binary\n\ntrait Binary:\n\tabstract func combine(a: int, b: int) -> int\n\nfunc combine(a: int) -> int:\n\treturn a\n"
+	var arity_bad := _src_class("TraitArityBad extends Node\nuses Binary\n\ntrait Binary:\n\tabstract func combine(a: int, b: int) -> int\n\nfunc combine(a: int) -> int:\n\treturn a\n")
 	var arity_bad_report: Dictionary = probe.analyze_source(arity_bad, "res://tests/trait_arity_bad.barista")
 	_expect(failures, arity_bad_report.get("valid", true) == false, "trait method arity mismatch is invalid")
 	var saw_arity := false
@@ -1400,7 +1423,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_arity = true
 	_expect(failures, saw_arity, "trait method arity mismatch diagnostic")
 
-	var rest_narrow := "class_name TraitRestNarrow extends Node\nuses AcceptsNodes\n\ntrait AcceptsNodes:\n\tabstract func accept(...nodes: Array[Node]) -> int\n\nfunc accept(...nodes: Array[String]) -> int:\n\treturn nodes.size()\n"
+	var rest_narrow := _src_class("TraitRestNarrow extends Node\nuses AcceptsNodes\n\ntrait AcceptsNodes:\n\tabstract func accept(...nodes: Array[Node]) -> int\n\nfunc accept(...nodes: Array[String]) -> int:\n\treturn nodes.size()\n")
 	var rest_narrow_report: Dictionary = probe.analyze_source(rest_narrow, "res://tests/trait_rest_narrow.barista")
 	_expect(failures, rest_narrow_report.get("valid", true) == false, "narrower rest tail does not satisfy trait rest requirement")
 	var saw_rest := false
@@ -1410,7 +1433,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 	_expect(failures, saw_rest, "trait rest narrowing diagnostic")
 
 	# Fixed Array/Dictionary element matching (#84 / #83 review): carriers alone are not enough.
-	var array_elem := "class_name TraitArrayElem extends Node\nuses TakesNodes\n\ntrait TakesNodes:\n\tabstract func take(items: Array[Node]) -> void\n\nfunc take(items: Array[String]) -> void:\n\tpass\n"
+	var array_elem := _src_class("TraitArrayElem extends Node\nuses TakesNodes\n\ntrait TakesNodes:\n\tabstract func take(items: Array[Node]) -> void\n\nfunc take(items: Array[String]) -> void:\n\tpass\n")
 	var array_elem_report: Dictionary = probe.analyze_source(array_elem, "res://tests/trait_array_elem.barista")
 	_expect(failures, array_elem_report.get("valid", true) == false, "fixed Array[Node] vs Array[String] param is invalid")
 	var saw_array_elem := false
@@ -1419,7 +1442,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_array_elem = true
 	_expect(failures, saw_array_elem, "fixed Array element mismatch diagnostic")
 
-	var dict_elem := "class_name TraitDictElem extends Node\nuses TakesMap\n\ntrait TakesMap:\n\tabstract func take(items: Dictionary[String, Node]) -> void\n\nfunc take(items: Dictionary[String, String]) -> void:\n\tpass\n"
+	var dict_elem := _src_class("TraitDictElem extends Node\nuses TakesMap\n\ntrait TakesMap:\n\tabstract func take(items: Dictionary[String, Node]) -> void\n\nfunc take(items: Dictionary[String, String]) -> void:\n\tpass\n")
 	var dict_elem_report: Dictionary = probe.analyze_source(dict_elem, "res://tests/trait_dict_elem.barista")
 	_expect(failures, dict_elem_report.get("valid", true) == false, "fixed Dictionary value element mismatch is invalid")
 	var saw_dict_elem := false
@@ -1429,7 +1452,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 	_expect(failures, saw_dict_elem, "fixed Dictionary element mismatch diagnostic")
 
 	# Explicit static-vs-instance (and reverse) signature mismatch (#84 / #83 review).
-	var static_vs_instance := "class_name TraitStaticVsInst extends Node\nuses Factory\n\ntrait Factory:\n\tabstract static func build() -> void\n\nfunc build() -> void:\n\tpass\n"
+	var static_vs_instance := _src_class("TraitStaticVsInst extends Node\nuses Factory\n\ntrait Factory:\n\tabstract static func build() -> void\n\nfunc build() -> void:\n\tpass\n")
 	var static_vs_instance_report: Dictionary = probe.analyze_source(static_vs_instance, "res://tests/trait_static_vs_inst.barista")
 	_expect(failures, static_vs_instance_report.get("valid", true) == false, "instance impl of static trait method is invalid")
 	var saw_static_vs_inst := false
@@ -1438,7 +1461,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_static_vs_inst = true
 	_expect(failures, saw_static_vs_inst, "static-vs-instance signature mismatch diagnostic")
 
-	var instance_vs_static := "class_name TraitInstVsStatic extends Node\nuses Worker\n\ntrait Worker:\n\tabstract func run() -> void\n\nstatic func run() -> void:\n\tpass\n"
+	var instance_vs_static := _src_class("TraitInstVsStatic extends Node\nuses Worker\n\ntrait Worker:\n\tabstract func run() -> void\n\nstatic func run() -> void:\n\tpass\n")
 	var instance_vs_static_report: Dictionary = probe.analyze_source(instance_vs_static, "res://tests/trait_inst_vs_static.barista")
 	_expect(failures, instance_vs_static_report.get("valid", true) == false, "static impl of instance trait method is invalid")
 	var saw_inst_vs_static := false
@@ -1447,7 +1470,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_inst_vs_static = true
 	_expect(failures, saw_inst_vs_static, "instance-vs-static signature mismatch diagnostic")
 
-	var rtc_sig := "class_name RtcSigTarget extends Node\n\ntrait NeedsPing:\n\tabstract func ping(code: int) -> void\n\nextend RtcSigTarget uses NeedsPing:\n\tfunc ping(code: String) -> void:\n\t\tpass\n"
+	var rtc_sig := _src_class("RtcSigTarget extends Node\n\ntrait NeedsPing:\n\tabstract func ping(code: int) -> void\n\nextend RtcSigTarget uses NeedsPing:\n\tfunc ping(code: String) -> void:\n\t\tpass\n")
 	var rtc_sig_report: Dictionary = probe.analyze_source(rtc_sig, "res://tests/rtc_sig_mismatch.barista")
 	_expect(failures, rtc_sig_report.get("valid", true) == false, "extend witness with wrong signature is invalid")
 	var saw_rtc_sig := false
@@ -1456,7 +1479,7 @@ func _test_trait_requirements_and_conformance_witness(failures: PackedStringArra
 			saw_rtc_sig = true
 	_expect(failures, saw_rtc_sig, "extend witness signature mismatch diagnostic")
 
-	var native_sig := "class_name NativeSigBad extends Node\nuses NeedsGetNode\n\ntrait NeedsGetNode:\n\tabstract func get_node(path: int) -> Node\n"
+	var native_sig := _src_class("NativeSigBad extends Node\nuses NeedsGetNode\n\ntrait NeedsGetNode:\n\tabstract func get_node(path: int) -> Node\n")
 	var native_sig_report: Dictionary = probe.analyze_source(native_sig, "res://tests/native_sig_bad.barista")
 	_expect(failures, native_sig_report.get("valid", true) == false, "native MethodInfo wrong signature for trait is invalid")
 	var saw_native_sig := false
@@ -1471,63 +1494,63 @@ func _test_flow_narrowing(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", true)
 
-	var bare_null := "class_name BareNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tvar x: Node = n\n"
+	var bare_null := _src_class("BareNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tvar x: Node = n\n")
 	var bare_null_report: Dictionary = probe.analyze_source(bare_null, "res://tests/bare_nullable_assign.barista")
 	_expect(failures, bare_null_report.get("valid", true) == false, "nullable to non-null assign fails under strict_null")
 
-	var narrowed_null := "class_name NarrowedNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar x: Node = n\n"
+	var narrowed_null := _src_class("NarrowedNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar x: Node = n\n")
 	var narrowed_null_report: Dictionary = probe.analyze_source(narrowed_null, "res://tests/narrowed_nullable_assign.barista")
 	_expect(failures, narrowed_null_report.get("valid", false) == true, "null-check true arm allows Node? → Node")
 
-	var else_null := "class_name ElseNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tpass\n\telse:\n\t\tvar x: Node = n\n"
+	var else_null := _src_class("ElseNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tpass\n\telse:\n\t\tvar x: Node = n\n")
 	var else_null_report: Dictionary = probe.analyze_source(else_null, "res://tests/else_nullable_assign.barista")
 	_expect(failures, else_null_report.get("valid", true) == false, "null-check else arm keeps Node? → Node invalid")
 
-	var assert_null := "class_name AssertNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tassert(n != null)\n\tvar x: Node = n\n"
+	var assert_null := _src_class("AssertNullableAssign extends Node\nfunc take(n: Node?) -> void:\n\tassert(n != null)\n\tvar x: Node = n\n")
 	var assert_null_report: Dictionary = probe.analyze_source(assert_null, "res://tests/assert_nullable_assign.barista")
 	_expect(failures, assert_null_report.get("valid", false) == true, "assert null-check narrows later statements")
 
-	var bare_union := "class_name BareUnionAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar s: String = v\n"
+	var bare_union := _src_class("BareUnionAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar s: String = v\n")
 	var bare_union_report: Dictionary = probe.analyze_source(bare_union, "res://tests/bare_union_assign.barista")
 	_expect(failures, bare_union_report.get("valid", true) == false, "union to String without type test is invalid")
 
-	var narrowed_is := "class_name NarrowedIsAssign extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tvar s: String = v\n"
+	var narrowed_is := _src_class("NarrowedIsAssign extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tvar s: String = v\n")
 	var narrowed_is_report: Dictionary = probe.analyze_source(narrowed_is, "res://tests/narrowed_is_assign.barista")
 	_expect(failures, narrowed_is_report.get("valid", false) == true, "`is String` true arm allows int|String → String")
 
-	var else_is := "class_name ElseIsAssign extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tpass\n\telse:\n\t\tvar i: int = v\n"
+	var else_is := _src_class("ElseIsAssign extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tpass\n\telse:\n\t\tvar i: int = v\n")
 	var else_is_report: Dictionary = probe.analyze_source(else_is, "res://tests/else_is_assign.barista")
 	_expect(failures, else_is_report.get("valid", false) == true, "`is String` else arm subtracts String leaving int")
 
-	var cleared := "class_name ClearedNarrowingAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tn = null\n\t\tvar x: Node = n\n"
+	var cleared := _src_class("ClearedNarrowingAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tn = null\n\t\tvar x: Node = n\n")
 	var cleared_report: Dictionary = probe.analyze_source(cleared, "res://tests/cleared_narrowing_assign.barista")
 	_expect(failures, cleared_report.get("valid", true) == false, "assignment clears prior null-check narrowing")
 
-	var and_narrow := "class_name AndNarrowingAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null and n is Node:\n\t\tvar x: Node = n\n"
+	var and_narrow := _src_class("AndNarrowingAssign extends Node\nfunc take(n: Node?) -> void:\n\tif n != null and n is Node:\n\t\tvar x: Node = n\n")
 	var and_narrow_report: Dictionary = probe.analyze_source(and_narrow, "res://tests/and_narrowing_assign.barista")
 	_expect(failures, and_narrow_report.get("valid", false) == true, "`and` condition applies left-side null-check narrowing")
 
 	# Foundry match-branch flow narrowing (@ c9d5e35): non-null patterns strip nullability;
 	# subject `is T` / bare native type patterns overlay the matched type.
-	var match_null_stripped := "class_name MatchNullStrippedAssign extends Node\nfunc take(n: Node?) -> void:\n\tmatch n:\n\t\tnull:\n\t\t\tpass\n\t\t1:\n\t\t\tvar x: Node = n\n\t\t_:\n\t\t\tpass\n"
+	var match_null_stripped := _src_class("MatchNullStrippedAssign extends Node\nfunc take(n: Node?) -> void:\n\tmatch n:\n\t\tnull:\n\t\t\tpass\n\t\t1:\n\t\t\tvar x: Node = n\n\t\t_:\n\t\t\tpass\n")
 	var match_null_stripped_report: Dictionary = probe.analyze_source(match_null_stripped, "res://tests/match_null_stripped_assign.barista")
 	_expect(failures, match_null_stripped_report.get("valid", false) == true, "match non-null literal arm strips Node? → Node")
 
-	var match_wildcard_keeps_null := "class_name MatchWildcardKeepsNull extends Node\nfunc take(n: Node?) -> void:\n\tmatch n:\n\t\t_:\n\t\t\tvar x: Node = n\n"
+	var match_wildcard_keeps_null := _src_class("MatchWildcardKeepsNull extends Node\nfunc take(n: Node?) -> void:\n\tmatch n:\n\t\t_:\n\t\t\tvar x: Node = n\n")
 	var match_wildcard_keeps_null_report: Dictionary = probe.analyze_source(match_wildcard_keeps_null, "res://tests/match_wildcard_keeps_null.barista")
 	_expect(failures, match_wildcard_keeps_null_report.get("valid", true) == false, "match wildcard arm does not strip nullability")
 
-	var match_is_type := "class_name MatchIsTypeAssign extends Node\nfunc take(v: int | String) -> void:\n\tmatch v:\n\t\tv is String:\n\t\t\tvar s: String = v\n\t\t_:\n\t\t\tpass\n"
+	var match_is_type := _src_class("MatchIsTypeAssign extends Node\nfunc take(v: int | String) -> void:\n\tmatch v:\n\t\tv is String:\n\t\t\tvar s: String = v\n\t\t_:\n\t\t\tpass\n")
 	var match_is_type_report: Dictionary = probe.analyze_source(match_is_type, "res://tests/match_is_type_assign.barista")
 	_expect(failures, match_is_type_report.get("valid", false) == true, "match `v is String` arm allows int|String → String")
 
-	var match_native_type := "class_name MatchNativeTypeAssign extends Node\nfunc take(v: Object?) -> void:\n\tmatch v:\n\t\tnull:\n\t\t\tpass\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n"
+	var match_native_type := _src_class("MatchNativeTypeAssign extends Node\nfunc take(v: Object?) -> void:\n\tmatch v:\n\t\tnull:\n\t\t\tpass\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n")
 	var match_native_type_report: Dictionary = probe.analyze_source(match_native_type, "res://tests/match_native_type_assign.barista")
 	_expect(failures, match_native_type_report.get("valid", false) == true, "match bare Node type pattern narrows Object? → Node")
 
 	# Local/const shadowing a ClassDB name must stay a value pattern (no type overlay).
 	# Use int|String so a mistaken ClassDB promotion would wrongly allow `var x: Node = v`.
-	var match_shadowed_classdb := "class_name MatchShadowedClassDBName extends Node\nfunc take(v: int | String) -> void:\n\tconst Node := 1\n\tmatch v:\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n"
+	var match_shadowed_classdb := _src_class("MatchShadowedClassDBName extends Node\nfunc take(v: int | String) -> void:\n\tconst Node := 1\n\tmatch v:\n\t\tNode:\n\t\t\tvar x: Node = v\n\t\t_:\n\t\t\tpass\n")
 	var match_shadowed_classdb_report: Dictionary = probe.analyze_source(match_shadowed_classdb, "res://tests/match_shadowed_classdb_name.barista")
 	_expect(failures, match_shadowed_classdb_report.get("valid", true) == false, "match local Node shadow stays value pattern (no ClassDB type overlay)")
 
@@ -1540,36 +1563,36 @@ func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:
 	# resolve through get_builtin_type (StringName / Callable / bare Array / NodePath / …).
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	var string_name_ok := "class_name BuiltinStringNameAnnot extends Node\nfunc take(n: StringName) -> void:\n\tvar _x: StringName = n\n"
+	var string_name_ok := _src_class("BuiltinStringNameAnnot extends Node\nfunc take(n: StringName) -> void:\n\tvar _x: StringName = n\n")
 	var string_name_report: Dictionary = probe.analyze_source(string_name_ok, "res://tests/builtin_string_name_annot.barista")
 	_expect(failures, string_name_report.get("valid", false) == true, "StringName annotation resolves as builtin")
 
-	var node_path_ok := "class_name BuiltinNodePathAnnot extends Node\nfunc take(p: NodePath) -> void:\n\tvar _x: NodePath = p\n"
+	var node_path_ok := _src_class("BuiltinNodePathAnnot extends Node\nfunc take(p: NodePath) -> void:\n\tvar _x: NodePath = p\n")
 	var node_path_report: Dictionary = probe.analyze_source(node_path_ok, "res://tests/builtin_node_path_annot.barista")
 	_expect(failures, node_path_report.get("valid", false) == true, "NodePath annotation resolves as builtin")
 
-	var bare_array_ok := "class_name BuiltinBareArrayAnnot extends Node\nfunc take(a: Array) -> void:\n\tvar _x: Array = a\n"
+	var bare_array_ok := _src_class("BuiltinBareArrayAnnot extends Node\nfunc take(a: Array) -> void:\n\tvar _x: Array = a\n")
 	var bare_array_report: Dictionary = probe.analyze_source(bare_array_ok, "res://tests/builtin_bare_array_annot.barista")
 	_expect(failures, bare_array_report.get("valid", false) == true, "bare Array annotation resolves as builtin")
 
-	var callable_ok := "class_name BuiltinCallableAnnot extends Node\nfunc take(c: Callable) -> void:\n\tvar _x: Callable = c\n"
+	var callable_ok := _src_class("BuiltinCallableAnnot extends Node\nfunc take(c: Callable) -> void:\n\tvar _x: Callable = c\n")
 	var callable_report: Dictionary = probe.analyze_source(callable_ok, "res://tests/builtin_callable_annot.barista")
 	_expect(failures, callable_report.get("valid", false) == true, "bare Callable annotation resolves as builtin")
 
-	var callable_sig_ok := "class_name BuiltinCallableSigAnnot extends Node\nfunc take(c: Callable[[int], void]) -> void:\n\tvar _x: Callable[[int], void] = c\n"
+	var callable_sig_ok := _src_class("BuiltinCallableSigAnnot extends Node\nfunc take(c: Callable[[int], void]) -> void:\n\tvar _x: Callable[[int], void] = c\n")
 	var callable_sig_report: Dictionary = probe.analyze_source(callable_sig_ok, "res://tests/builtin_callable_sig_annot.barista")
 	_expect(failures, callable_sig_report.get("valid", false) == true, "Callable[[int], void] signature annotation resolves")
 
-	var signal_ok := "class_name BuiltinSignalAnnot extends Node\nfunc take(s: Signal) -> void:\n\tvar _x: Signal = s\n"
+	var signal_ok := _src_class("BuiltinSignalAnnot extends Node\nfunc take(s: Signal) -> void:\n\tvar _x: Signal = s\n")
 	var signal_report: Dictionary = probe.analyze_source(signal_ok, "res://tests/builtin_signal_annot.barista")
 	_expect(failures, signal_report.get("valid", false) == true, "bare Signal annotation resolves as builtin")
 
-	var number_ok := "class_name BuiltinNumberAnnot extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = 1\n"
+	var number_ok := _src_class("BuiltinNumberAnnot extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = 1\n")
 	var number_report: Dictionary = probe.analyze_source(number_ok, "res://tests/builtin_number_annot.barista")
 	_expect(failures, number_report.get("valid", false) == true, "Number annotation resolves as int|float union")
 
 	# Still reject unknown spellings; prove the failure is not a blanket Variant fallthrough.
-	var unknown := "class_name BuiltinUnknownAnnot extends Node\nfunc take(x: NotARealType) -> void:\n\tpass\n"
+	var unknown := _src_class("BuiltinUnknownAnnot extends Node\nfunc take(x: NotARealType) -> void:\n\tpass\n")
 	var unknown_report: Dictionary = probe.analyze_source(unknown, "res://tests/builtin_unknown_annot.barista")
 	_expect(failures, unknown_report.get("valid", true) == false, "unknown type annotation remains invalid")
 	var saw_unknown := false
@@ -1579,7 +1602,7 @@ func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:
 	_expect(failures, saw_unknown, "unknown type keeps Could not find type diagnostic")
 
 	# Assignability still enforced once the annotation resolves.
-	var mismatch := "class_name BuiltinStringNameMismatch extends Node\nfunc take() -> void:\n\tvar _n: StringName = 123\n"
+	var mismatch := _src_class("BuiltinStringNameMismatch extends Node\nfunc take() -> void:\n\tvar _n: StringName = 123\n")
 	var mismatch_report: Dictionary = probe.analyze_source(mismatch, "res://tests/builtin_string_name_mismatch.barista")
 	_expect(failures, mismatch_report.get("valid", true) == false, "int → StringName annotation assign remains invalid")
 
@@ -1589,35 +1612,35 @@ func _test_union_union_assignability(failures: PackedStringArray) -> void:
 	# union source must satisfy the target. Number→Number / written union self-assign are the AC.
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	var number_self := "class_name NumberToNumberAssign extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = n\n"
+	var number_self := _src_class("NumberToNumberAssign extends Node\nfunc take(n: Number) -> void:\n\tvar _x: Number = n\n")
 	var number_self_report: Dictionary = probe.analyze_source(number_self, "res://tests/number_to_number_assign.barista")
 	_expect(failures, number_self_report.get("valid", false) == true, "Number → Number union self-assign is valid")
 
-	var written_self := "class_name WrittenUnionSelfAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar _x: int | String = v\n"
+	var written_self := _src_class("WrittenUnionSelfAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar _x: int | String = v\n")
 	var written_self_report: Dictionary = probe.analyze_source(written_self, "res://tests/written_union_self_assign.barista")
 	_expect(failures, written_self_report.get("valid", false) == true, "int|String → int|String self-assign is valid")
 
 	# Opposite spelling still works: source-UNION checks each alt against the target set.
-	var reordered := "class_name WrittenUnionReorderAssign extends Node\nfunc take(v: String | int) -> void:\n\tvar _x: int | String = v\n"
+	var reordered := _src_class("WrittenUnionReorderAssign extends Node\nfunc take(v: String | int) -> void:\n\tvar _x: int | String = v\n")
 	var reordered_report: Dictionary = probe.analyze_source(reordered, "res://tests/written_union_reorder_assign.barista")
 	_expect(failures, reordered_report.get("valid", false) == true, "String|int → int|String reorder assign is valid")
 
-	var number_from_written := "class_name WrittenToNumberAssign extends Node\nfunc take(v: int | float) -> void:\n\tvar _x: Number = v\n"
+	var number_from_written := _src_class("WrittenToNumberAssign extends Node\nfunc take(v: int | float) -> void:\n\tvar _x: Number = v\n")
 	var number_from_written_report: Dictionary = probe.analyze_source(number_from_written, "res://tests/written_to_number_assign.barista")
 	_expect(failures, number_from_written_report.get("valid", false) == true, "int|float → Number assign is valid")
 
 	# Partial coverage stays invalid: a String alternative cannot enter a String-only slot.
-	var partial := "class_name UnionPartialAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar _s: String = v\n"
+	var partial := _src_class("UnionPartialAssign extends Node\nfunc take(v: int | String) -> void:\n\tvar _s: String = v\n")
 	var partial_report: Dictionary = probe.analyze_source(partial, "res://tests/union_partial_assign.barista")
 	_expect(failures, partial_report.get("valid", true) == false, "int|String → String without narrowing is invalid")
 
 	# Carrier-changing per-alternative conversion cannot be emitted for an erased union source.
-	var number_to_float := "class_name NumberToFloatAssign extends Node\nfunc take(n: Number) -> void:\n\tvar _f: float = n\n"
+	var number_to_float := _src_class("NumberToFloatAssign extends Node\nfunc take(n: Number) -> void:\n\tvar _f: float = n\n")
 	var number_to_float_report: Dictionary = probe.analyze_source(number_to_float, "res://tests/number_to_float_assign.barista")
 	_expect(failures, number_to_float_report.get("valid", true) == false, "Number → float carrier change stays invalid")
 
 	# Concrete → union target still selects an alternative (pre-existing target-UNION path).
-	var int_to_number := "class_name IntToNumberAssign extends Node\nfunc take(n: int) -> void:\n\tvar _x: Number = n\n"
+	var int_to_number := _src_class("IntToNumberAssign extends Node\nfunc take(n: int) -> void:\n\tvar _x: Number = n\n")
 	var int_to_number_report: Dictionary = probe.analyze_source(int_to_number, "res://tests/int_to_number_assign.barista")
 	_expect(failures, int_to_number_report.get("valid", false) == true, "int → Number still selects a union alternative")
 
@@ -1638,28 +1661,28 @@ func _test_union_store_carrier_select(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 
 	# Exact-path validity: int fits int|float without conversion (selection order not asserted here).
-	var exact_prefers_int := "class_name UnionExactPrefersInt extends Node\nfunc take(n: int) -> void:\n\tvar _x: int | float = n\n"
+	var exact_prefers_int := _src_class("UnionExactPrefersInt extends Node\nfunc take(n: int) -> void:\n\tvar _x: int | float = n\n")
 	var exact_prefers_int_report: Dictionary = probe.analyze_source(exact_prefers_int, "res://tests/union_exact_prefers_int.barista")
 	_expect(failures, exact_prefers_int_report.get("valid", false) == true, "int → int|float exact alternative is valid")
 
 	# Numeric store can convert int→float into a float|String union.
-	var int_to_float_union := "class_name UnionNumericStoreWiden extends Node\nfunc take(n: int) -> void:\n\tvar _x: float | String = n\n"
+	var int_to_float_union := _src_class("UnionNumericStoreWiden extends Node\nfunc take(n: int) -> void:\n\tvar _x: float | String = n\n")
 	var int_to_float_union_report: Dictionary = probe.analyze_source(int_to_float_union, "res://tests/union_numeric_store_widen.barista")
 	_expect(failures, int_to_float_union_report.get("valid", false) == true, "int → float|String numeric store widen is valid")
 
 	# Plain String→StringName still works (non-union slot performs the engine bridge).
-	var plain_string_name := "class_name PlainStringToStringName extends Node\nfunc take() -> void:\n\tvar _n: StringName = \"ready\"\n"
+	var plain_string_name := _src_class("PlainStringToStringName extends Node\nfunc take() -> void:\n\tvar _n: StringName = \"ready\"\n")
 	var plain_string_name_report: Dictionary = probe.analyze_source(plain_string_name, "res://tests/plain_string_to_string_name.barista")
 	_expect(failures, plain_string_name_report.get("valid", false) == true, "String → StringName plain assign remains valid")
 
 	# Union store cannot perform String→StringName: no numeric store-carrier counterpart.
-	var string_to_string_name_union := "class_name UnionRejectsStringNameBridge extends Node\nfunc take() -> void:\n\tvar _x: StringName | int = \"ready\"\n"
+	var string_to_string_name_union := _src_class("UnionRejectsStringNameBridge extends Node\nfunc take() -> void:\n\tvar _x: StringName | int = \"ready\"\n")
 	var string_to_string_name_union_report: Dictionary = probe.analyze_source(string_to_string_name_union, "res://tests/union_rejects_string_name_bridge.barista")
 	_expect(failures, string_to_string_name_union_report.get("valid", true) == false,
 		"String → StringName|int rejected (union store cannot bridge)")
 
 	# Same bridge rejection with a non-literal String source.
-	var string_param_to_union := "class_name UnionRejectsStringParamBridge extends Node\nfunc take(s: String) -> void:\n\tvar _x: StringName | Node = s\n"
+	var string_param_to_union := _src_class("UnionRejectsStringParamBridge extends Node\nfunc take(s: String) -> void:\n\tvar _x: StringName | Node = s\n")
 	var string_param_to_union_report: Dictionary = probe.analyze_source(string_param_to_union, "res://tests/union_rejects_string_param_bridge.barista")
 	_expect(failures, string_param_to_union_report.get("valid", true) == false,
 		"String param → StringName|Node rejected (union store cannot bridge)")

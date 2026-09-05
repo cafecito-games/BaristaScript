@@ -553,7 +553,11 @@ void BSParser::set_last_completion_call_arg(int p_argument) {
 Error BSParser::parse(const String &p_source_code, const String &p_script_path, bool p_for_completion, bool p_parse_body) {
 	clear();
 
-	String source = p_source_code;
+	// Detach from caller/GDScript CoW buffers before the tokenizer aliases the source.
+	// Dense analyzer_test traffic otherwise corrupts GDScript string constants in-place
+	// (`class_name` -> `class_nane`), flaking Linux CI.
+	const PackedByteArray source_utf8 = p_source_code.to_utf8_buffer();
+	String source = String::utf8(reinterpret_cast<const char *>(source_utf8.ptr()), source_utf8.size());
 	int cursor_line = -1;
 	int cursor_column = -1;
 	for_completion = p_for_completion;
@@ -567,7 +571,7 @@ Error BSParser::parse(const String &p_source_code, const String &p_script_path, 
 
 	if (p_for_completion) {
 		// Remove cursor sentinel char.
-		const PackedStringArray lines = p_source_code.split("\n");
+		const PackedStringArray lines = source.split("\n");
 		cursor_line = 1;
 		cursor_column = 1;
 		for (int i = 0; i < lines.size(); i++) {
