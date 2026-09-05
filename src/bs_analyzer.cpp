@@ -1075,23 +1075,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			}
 		}
 	}
-	// Foundry reduce_identifier @ c9d5e35: native classes resolve before the not-found path so a
-	// match type pattern like `Node:` is a meta type, not an undeclared identifier. An unresolved
-	// name still carries a Variant fallback, but the diagnostic is what tells resolve_match
-	// subject_errored apart from a written Variant.
-	if (ClassDB::class_exists(p_identifier->name)) {
-		BSParser::DataType meta;
-		meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		meta.kind = BSParser::DataType::NATIVE;
-		meta.builtin_type = Variant::OBJECT;
-		meta.native_type = p_identifier->name;
-		meta.is_constant = true;
-		meta.is_meta_type = true;
-		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
-		p_identifier->set_datatype(meta);
-		return;
-	}
-	push_error(vformat(R"(Identifier "%s" not declared in the current scope.)", p_identifier->name), p_identifier);
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_identifier->set_datatype(type);
@@ -1527,7 +1510,17 @@ void BSAnalyzer::resolve_match(BSParser::MatchNode *p_match) {
 	// time per arm.
 	const int errors_before_subject = parser != nullptr ? parser->get_errors().size() : 0;
 	reduce_expression(p_match->test);
-	const bool subject_errored = parser != nullptr && parser->get_errors().size() > errors_before_subject;
+	bool subject_errored = parser != nullptr && parser->get_errors().size() > errors_before_subject;
+	// Barista's reduce_identifier still leaves unresolved names as silent Variant (full Foundry
+	// not-declared coverage is residual under #60). An UNDEFINED_SOURCE match subject is still a
+	// failed subject, so report it once here and suppress per-arm Variant cascades.
+	if (!subject_errored && p_match->test != nullptr && p_match->test->type == BSParser::Node::IDENTIFIER) {
+		const BSParser::IdentifierNode *subject = static_cast<const BSParser::IdentifierNode *>(p_match->test);
+		if (subject->source == BSParser::IdentifierNode::UNDEFINED_SOURCE) {
+			push_error(vformat(R"(Identifier "%s" not declared in the current scope.)", subject->name), p_match->test);
+			subject_errored = true;
+		}
+	}
 	for (int i = 0; i < p_match->branches.size(); i++) {
 		resolve_match_branch(p_match->branches[i], p_match->test, subject_errored);
 	}
