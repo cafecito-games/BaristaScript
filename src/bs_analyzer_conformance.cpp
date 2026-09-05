@@ -8,8 +8,10 @@
 /*  engine contact through bs_platform.h.                                 */
 /*  Non-generic trait method signature matching (async/static/arity/     */
 /*  params/returns/rest + Self reify + MethodInfo). ConformanceVisibility*/
-/*  can_see BFS. Full FSConformanceRegistry registration / generic       */
-/*  alpha-equivalence / witness dual-scope remain follow-up under #60.   */
+/*  can_see BFS. resolve_conformances publishes validated entries via    */
+/*  try_replace_file_conformances under ScopedInFlightReplacement.       */
+/*  ClassTraitBinding / RecordedTypeArgument / witness maps / chain      */
+/*  coherence remain residual under #60.                                 */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -773,9 +775,25 @@ bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, 
 }
 
 void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
+	const String source_file = parser != nullptr ? parser->script_path : String();
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+
+	// Re-analysis replaces this file's previously-registered conformances wholesale. Empty
+	// candidates still publish so stale entries clear; ClassTraitBinding publish is residual #60.
 	if (p_class == nullptr || p_class->conformances.is_empty()) {
+		if (registry != nullptr && !source_file.is_empty()) {
+			registry->try_replace_file_conformances(source_file, Vector<BSConformanceRegistry::Conformance>());
+		}
 		return;
 	}
+
+	// Hide this file's previous declarations from *this* thread while validating; other readers
+	// keep seeing them until try_replace commits below.
+	BSConformanceRegistry::ScopedInFlightReplacement in_flight_replacement(source_file);
+
+	HashMap<String, int> seen_membership_conformances;
+	Vector<BSConformanceRegistry::Conformance> valid_entries;
+	HashSet<int> reported_declarations;
 
 	BSParser::ClassNode *head = parser != nullptr ? parser->get_tree() : p_class;
 	for (int conformance_index = 0; conformance_index < p_class->conformances.size(); conformance_index++) {
@@ -793,6 +811,16 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 		if (!target->is_native_conformance_shim && !target->is_builtin_conformance_shim) {
 			resolve_used_traits(target);
 			analyze_class_interface(target);
+		}
+
+		const StringName target_global = target->get_global_name();
+		Vector<String> target_keys;
+		target_keys.push_back(target->fqcn);
+		if (target_global != StringName()) {
+			target_keys.push_back(String(target_global));
+		}
+		if (!target_type.script_path.is_empty() && !target_keys.has(target_type.script_path)) {
+			target_keys.push_back(target_type.script_path);
 		}
 
 		for (int i = 0; i < conformance->traits.size(); i++) {
@@ -818,7 +846,113 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				continue;
 			}
 
-			validate_conformance(conformance, target, trait);
+			// Direct trait + already-resolved supertraits (Foundry identity closure without a new port).
+			Vector<BSParser::ClassNode *> identity_nodes;
+			identity_nodes.push_back(trait);
+			for (int t = 0; t < trait->resolved_traits.size(); t++) {
+				BSParser::ClassNode *supertrait = trait->resolved_traits[t];
+				if (supertrait == nullptr) {
+					continue;
+				}
+				bool already = false;
+				for (int j = 0; j < identity_nodes.size(); j++) {
+					if (identity_nodes[j] == supertrait) {
+						already = true;
+						break;
+					}
+				}
+				if (!already) {
+					identity_nodes.push_back(supertrait);
+				}
+			}
+
+			bool membership_conflict = false;
+			for (int identity_index = 0; identity_index < identity_nodes.size(); identity_index++) {
+				const StringName identity = bs_trait_identity_name(identity_nodes[identity_index]);
+				if (identity == StringName()) {
+					continue;
+				}
+				const String pair_key = target->fqcn + "\n" + String(identity);
+				const int *existing_conformance = seen_membership_conformances.getptr(pair_key);
+				if (existing_conformance != nullptr &&
+						(*existing_conformance != conformance_index || identity_index == 0)) {
+					push_error(vformat(R"(Class "%s" already has a conformance to trait "%s" in this file.)",
+									   bs_class_or_trait_diagnostic_name(target), String(identity)),
+							conformance);
+					membership_conflict = true;
+					reported_declarations.insert(conformance_index);
+					break;
+				}
+
+				if (registry != nullptr) {
+					const String other_source = registry->get_conformance_source(target->fqcn, identity);
+					if (!other_source.is_empty() && other_source != source_file) {
+						push_error(vformat(R"(Class "%s" already conforms to trait "%s" via a conformance in "%s".)",
+										   bs_class_or_trait_diagnostic_name(target), String(identity),
+										   bs_diagnostic_file_reference(other_source)),
+								conformance);
+						membership_conflict = true;
+						reported_declarations.insert(conformance_index);
+						break;
+					}
+				}
+			}
+			if (membership_conflict) {
+				continue;
+			}
+
+			if (!validate_conformance(conformance, target, trait)) {
+				continue;
+			}
+
+			BSConformanceRegistry::Conformance entry;
+			entry.target_keys = target_keys;
+			entry.target_fqcn = target->fqcn;
+			entry.target_script_path = target_type.script_path;
+			entry.target_is_root_class = target->outer == nullptr;
+			entry.target_label = bs_class_or_trait_diagnostic_name(target);
+			entry.source_file = source_file;
+			entry.conformance_index = conformance_index;
+			for (int identity_index = 0; identity_index < identity_nodes.size(); identity_index++) {
+				const StringName identity = bs_trait_identity_name(identity_nodes[identity_index]);
+				if (identity == StringName()) {
+					continue;
+				}
+				const String pair_key = target->fqcn + "\n" + String(identity);
+				const int *existing_conformance = seen_membership_conformances.getptr(pair_key);
+				if (existing_conformance != nullptr && *existing_conformance == conformance_index) {
+					continue;
+				}
+				entry.trait_name = identity;
+				valid_entries.push_back(entry);
+				seen_membership_conformances.insert(pair_key, conformance_index);
+			}
+		}
+	}
+
+	if (registry == nullptr || source_file.is_empty()) {
+		return;
+	}
+
+	const BSConformanceRegistry::RegistrationResult result =
+			registry->try_replace_file_conformances(source_file, valid_entries);
+	for (int i = 0; i < result.conflicts.size(); i++) {
+		const BSConformanceRegistry::RegistrationConflict &conflict = result.conflicts[i];
+		if (reported_declarations.has(conflict.conformance_index)) {
+			continue;
+		}
+		BSParser::ConformanceNode *conformance = conflict.conformance_index >= 0 &&
+						conflict.conformance_index < p_class->conformances.size()
+				? p_class->conformances[conflict.conformance_index]
+				: nullptr;
+		if (conformance == nullptr) {
+			continue;
+		}
+		if (conflict.kind == BSConformanceRegistry::RegistrationConflict::DUPLICATE_MEMBERSHIP) {
+			push_error(vformat(R"(Class "%s" already conforms to trait "%s" via a conformance in %s.)",
+							   conflict.target_label, String(conflict.trait_name),
+							   bs_diagnostic_file_reference(conflict.conflicting_source_file)),
+					conformance);
 		}
 	}
 }

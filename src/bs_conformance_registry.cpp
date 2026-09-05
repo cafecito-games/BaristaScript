@@ -2,8 +2,9 @@
 /*  bs_conformance_registry.cpp                                           */
 /*                                                                        */
 /*  Hard fork of Foundry fs_conformance_registry.cpp @ c9d5e35. Visibility*/
-/*  stack + empty/seedable declaration store; full try_replace / runtime */
-/*  witness / RecordedTypeArgument coherence remains residual under #60. */
+/*  stack + declaration store with atomic try_replace_file_conformances. */
+/*  ClassTraitBinding / RecordedTypeArgument / runtime witnesses remain  */
+/*  residual under #60.                                                   */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -19,6 +20,26 @@ BSConformanceRegistry *BSConformanceRegistry::singleton = nullptr;
 thread_local const BSConformanceRegistry::Visibility *BSConformanceRegistry::active_visibility = nullptr;
 thread_local bool BSConformanceRegistry::has_in_flight_source_file = false;
 thread_local char BSConformanceRegistry::in_flight_source_file[1024] = {};
+
+namespace {
+
+// Drop the script-path alias for an inner-class target: that path is shared with siblings and the
+// root class, so keeping it would make membership lookups cross class boundaries.
+Vector<String> _identifying_target_keys(const Vector<String> &p_target_keys, const String &p_target_script_path,
+		bool p_target_is_root_class) {
+	if (p_target_is_root_class || p_target_script_path.is_empty() || !p_target_keys.has(p_target_script_path)) {
+		return p_target_keys;
+	}
+	Vector<String> identifying;
+	for (const String &target_key : p_target_keys) {
+		if (target_key != p_target_script_path) {
+			identifying.push_back(target_key);
+		}
+	}
+	return identifying;
+}
+
+} // namespace
 
 BSConformanceRegistry::ScopedVisibility::ScopedVisibility(const Visibility *p_visibility) {
 	previous = active_visibility;
@@ -88,14 +109,114 @@ void BSConformanceRegistry::_rebuild_index() {
 	}
 }
 
+bool BSConformanceRegistry::_candidate_conflicts(const Conformance &p_candidate,
+		const Vector<const Conformance *> &p_view, RegistrationConflict &r_conflict) const {
+	if (p_candidate.trait_name == StringName() || p_candidate.target_fqcn.is_empty()) {
+		return false;
+	}
+	// Duplicate membership: match the candidate's exact FQCN against the other side's alias set —
+	// the same identity relation the flattened lookup index answers with.
+	for (const Conformance *existing : p_view) {
+		if (existing->trait_name != p_candidate.trait_name ||
+				!existing->target_keys.has(p_candidate.target_fqcn)) {
+			continue;
+		}
+		r_conflict.kind = RegistrationConflict::DUPLICATE_MEMBERSHIP;
+		r_conflict.conformance_index = p_candidate.conformance_index;
+		r_conflict.target_label = p_candidate.target_label;
+		r_conflict.trait_name = p_candidate.trait_name;
+		r_conflict.conflicting_target_label =
+				existing->target_label.is_empty() ? existing->target_fqcn : existing->target_label;
+		r_conflict.conflicting_source_file = existing->source_file;
+		return true;
+	}
+	return false;
+}
+
 void BSConformanceRegistry::register_file_conformances(const String &p_source_file, const Vector<Conformance> &p_conformances) {
 	std::lock_guard<std::mutex> lock(mutex);
 	if (p_conformances.is_empty()) {
 		conformances_by_file.erase(p_source_file);
 	} else {
-		conformances_by_file[p_source_file] = p_conformances;
+		Vector<Conformance> stored = p_conformances;
+		for (int i = 0; i < stored.size(); i++) {
+			stored.write[i].target_keys = _identifying_target_keys(
+					stored[i].target_keys, stored[i].target_script_path, stored[i].target_is_root_class);
+		}
+		conformances_by_file[p_source_file] = stored;
 	}
 	_rebuild_index();
+}
+
+BSConformanceRegistry::RegistrationResult BSConformanceRegistry::try_replace_file_conformances(
+		const String &p_source_file, const Vector<Conformance> &p_candidates) {
+	RegistrationResult result;
+	std::lock_guard<std::mutex> lock(mutex);
+
+	Vector<Conformance> normalized = p_candidates;
+	for (int i = 0; i < normalized.size(); i++) {
+		normalized.write[i].target_keys = _identifying_target_keys(
+				normalized[i].target_keys, normalized[i].target_script_path, normalized[i].target_is_root_class);
+	}
+
+	// View excludes this file's previous entries so unchanged reanalysis cannot conflict with itself;
+	// those entries stay in the store until the replacement below commits.
+	Vector<const Conformance *> view;
+	for (const KeyValue<String, Vector<Conformance>> &file_entry : conformances_by_file) {
+		if (file_entry.key == p_source_file) {
+			continue;
+		}
+		for (const Conformance &conformance : file_entry.value) {
+			view.push_back(&conformance);
+		}
+	}
+	const int foreign_entry_count = view.size();
+
+	// Group candidates by ConformanceNode index: a conflict on any identity a declaration emits
+	// drops every entry it emitted. Groups keep first-seen order.
+	Vector<Vector<int>> declarations;
+	HashMap<int, int> declaration_by_conformance_index;
+	for (int entry_index = 0; entry_index < normalized.size(); entry_index++) {
+		const int conformance_index = normalized[entry_index].conformance_index;
+		const int *declaration = declaration_by_conformance_index.getptr(conformance_index);
+		if (declaration == nullptr) {
+			declaration_by_conformance_index.insert(conformance_index, declarations.size());
+			declarations.push_back(Vector<int>());
+			declaration = declaration_by_conformance_index.getptr(conformance_index);
+		}
+		declarations.write[*declaration].push_back(entry_index);
+	}
+
+	Vector<Conformance> accepted;
+	for (int d = 0; d < declarations.size(); d++) {
+		const Vector<int> &declaration = declarations[d];
+		RegistrationConflict conflict;
+		bool conflicts = false;
+		for (int position = 0; position < declaration.size() && !conflicts; position++) {
+			conflicts = _candidate_conflicts(normalized[declaration[position]], view, conflict);
+		}
+		if (conflicts) {
+			result.conflicts.push_back(conflict);
+		} else {
+			for (int position = 0; position < declaration.size(); position++) {
+				accepted.push_back(normalized[declaration[position]]);
+			}
+			view.resize(foreign_entry_count);
+			for (const Conformance &entry : accepted) {
+				view.push_back(&entry);
+			}
+		}
+	}
+
+	if (accepted.is_empty()) {
+		conformances_by_file.erase(p_source_file);
+	} else {
+		conformances_by_file[p_source_file] = accepted;
+	}
+	_rebuild_index();
+
+	result.registered_count = accepted.size();
+	return result;
 }
 
 void BSConformanceRegistry::clear_file(const String &p_source_file) {

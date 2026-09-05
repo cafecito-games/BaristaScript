@@ -20,10 +20,11 @@
 /*  DependentResolutionFailureReplays / ForeignAnalyzerVisibilityScope    */
 /*  (real BSConformanceRegistry::ScopedVisibility) for external SCRIPT    */
 /*  member + class-phase INTERFACE/BODY failure replay;                   */
-/*  ConformanceVisibility can_see BFS; reduce_await + MISSING_AWAIT /     */
-/*  REDUNDANT_AWAIT for AsyncCallable→coroutine wrap; Coroutine[T]        */
-/*  annotation decode via datatype_from_type_node + make_coroutine_type;  */
-/*  direct async-call wrap + mark_coroutine_handle_capture (#60 residual).*/
+/*  ConformanceVisibility can_see BFS; resolve_conformances registers via */
+/*  try_replace_file_conformances + ScopedInFlightReplacement;            */
+/*  reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→     */
+/*  coroutine wrap; Coroutine[T] annotation decode; direct async-call wrap*/
+/*  + mark_coroutine_handle_capture (#60 residual).                       */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -669,7 +670,7 @@ private:
 			BSParser::FunctionNode *p_required_function, const TraitMethodImplementation &p_implementation,
 			const HashMap<StringName, BSParser::DataType> &p_trait_substitution = HashMap<StringName, BSParser::DataType>());
 	void resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class);
-	/** Foundry resolve_conformances starter: target/shim resolve + missing-witness checks. */
+	/** Foundry resolve_conformances: validate + register into BSConformanceRegistry. */
 	void resolve_conformances(BSParser::ClassNode *p_class);
 	BSParser::ClassNode *resolve_conformance_target(BSParser::ConformanceNode *p_conformance, BSParser::DataType &r_target_type);
 	BSParser::ClassNode *resolve_native_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_native_type);

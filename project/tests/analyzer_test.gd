@@ -61,6 +61,7 @@ func _init() -> void:
 	_test_foreign_member_failure_replay(failures)
 	_test_foreign_class_phase_failure_replay(failures)
 	_test_conformance_scoped_visibility(failures)
+	_test_conformance_registry_registration(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -3037,4 +3038,50 @@ func _test_conformance_scoped_visibility(failures: PackedStringArray) -> void:
 		_src_class("VisIndexGuard extends Node\n"), "res://tests/vis_index_guard.barista")
 	_expect(failures, index.get_record_count() == before,
 		"visibility probes must not mutate declaration index")
+	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_conformance_registry_registration(failures: PackedStringArray) -> void:
+	# Foundry resolve_conformances → try_replace_file_conformances under ScopedInFlight (#60).
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var report: Dictionary = probe.conformance_registry_registration()
+
+	_expect(failures, report.get("analyze_ok", false) == true, "declaring analyze publishes conformances")
+	_expect(failures, int(report.get("registered_count", 0)) >= 1, "registry stores at least one Conformance")
+	_expect(failures, report.get("registered_after_analyze", false) == true, "has_conformance after analyze")
+	_expect(failures, report.get("none_sees_registered", false) == true, "no Visibility → membership visible")
+	_expect(failures, report.get("in_flight_hides_has_conformance", false) == true,
+		"ScopedInFlightReplacement hides has_conformance for declaring file")
+	_expect(failures, report.get("after_in_flight_sees_again", false) == true,
+		"leaving in-flight restores has_conformance")
+
+	_expect(failures, report.get("viewer_parse_ok", false) == true, "viewer parse ok")
+	_expect(failures, report.get("viewer_hides_unrelated_declaring", false) == true,
+		"ConformanceVisibility hides unrelated declaring has_conformance")
+	_expect(failures, report.get("viewer_can_see_own", false) == true, "viewer can_see own path")
+	_expect(failures, report.get("viewer_can_see_dep", false) == true, "viewer can_see extends dependency")
+	_expect(failures, report.get("viewer_cannot_see_declaring", false) == true,
+		"viewer cannot_see unrelated declaring file")
+	_expect(failures, report.get("viewer_cannot_see_unrelated", false) == true,
+		"viewer cannot_see unrelated path")
+
+	_expect(failures, report.get("dep_parse_ok", false) == true, "dependency-of-declaring parse ok")
+	_expect(failures, report.get("dep_can_see_declaring", false) == true,
+		"preload dependency can_see declaring file")
+	_expect(failures, report.get("dep_sees_has_conformance", false) == true,
+		"dependency Visibility sees has_conformance")
+
+	_expect(failures, report.get("reanalyze_clear_ok", false) == true, "empty reanalysis ok")
+	_expect(failures, report.get("cleared_after_reanalyze", false) == true,
+		"empty reanalysis clears file conformances")
+	_expect(failures, report.get("reanalyze_replace_ok", false) == true, "replacement reanalysis ok")
+	_expect(failures, report.get("replaced_has_other", false) == true, "reanalysis registers new trait")
+	_expect(failures, report.get("replaced_dropped_old", false) == true, "reanalysis drops previous trait")
+
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before := index.get_record_count()
+	var _ignored: Dictionary = probe.analyze_source(
+		_src_class("RegIndexGuard extends Node\n"), "res://tests/reg_index_guard.barista")
+	_expect(failures, index.get_record_count() == before,
+		"registry registration probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()

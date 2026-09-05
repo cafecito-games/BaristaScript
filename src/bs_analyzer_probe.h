@@ -52,6 +52,13 @@ public:
 	 * BSConformanceRegistry::debug_is_visible. Returns Dictionary of bool checks.
 	 */
 	godot::Dictionary scoped_visibility_nest_restore() const;
+
+	/**
+	 * Drive resolve_conformances registration: analyze a declaring file, then probe
+	 * has_conformance under Visibility / in-flight / reanalysis / ConformanceVisibility.
+	 * Returns Dictionary of bool checks plus registered_count.
+	 */
+	godot::Dictionary conformance_registry_registration() const;
 };
 
 } // namespace barista_script

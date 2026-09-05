@@ -63,6 +63,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("conformance_visibility_can_see", "source", "path", "candidates"),
 			&BaristaScriptAnalyzerProbe::conformance_visibility_can_see);
 	ClassDB::bind_method(D_METHOD("scoped_visibility_nest_restore"), &BaristaScriptAnalyzerProbe::scoped_visibility_nest_restore);
+	ClassDB::bind_method(D_METHOD("conformance_registry_registration"),
+			&BaristaScriptAnalyzerProbe::conformance_registry_registration);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {
@@ -248,6 +250,167 @@ godot::Dictionary BaristaScriptAnalyzerProbe::scoped_visibility_nest_restore() c
 	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
 	result["empty_has_conformance"] = registry != nullptr &&
 			!registry->has_conformance("res://Widget", StringName("SomeTrait"));
+
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::conformance_registry_registration() const {
+	godot::Dictionary result;
+
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	ERR_FAIL_COND_V(registry == nullptr, result);
+
+	const String declaring_path = "res://tests/reg_declare.barista";
+	const String dep_path = "res://tests/reg_dep.barista";
+	const String viewer_path = "res://tests/reg_viewer.barista";
+	const String unrelated_path = "res://tests/reg_unrelated.barista";
+
+	registry->clear_file(declaring_path);
+	registry->clear_file(dep_path);
+	registry->clear_file(viewer_path);
+	registry->clear_file(unrelated_path);
+
+	const String declaring_source =
+			"trait RegMarker:\n\tpass\n\nextend Node uses RegMarker:\n\tpass\n";
+	{
+		BSCache::set_source_override(declaring_path, declaring_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(declaring_source, declaring_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		result["analyze_ok"] = err == OK && parser.get_errors().is_empty();
+	}
+	BSCache::clear_source_override(declaring_path);
+
+	const Vector<BSConformanceRegistry::Conformance> registered =
+			registry->get_file_conformances(declaring_path);
+	result["registered_count"] = registered.size();
+	StringName lookup_trait;
+	String lookup_target;
+	if (!registered.is_empty()) {
+		lookup_trait = registered[0].trait_name;
+		lookup_target = registered[0].target_fqcn;
+	}
+	result["lookup_trait"] = String(lookup_trait);
+	result["lookup_target"] = lookup_target;
+	result["registered_after_analyze"] = !lookup_target.is_empty() &&
+			registry->has_conformance(lookup_target, lookup_trait);
+
+	// Same-file / no Visibility: membership is visible.
+	result["none_sees_registered"] = !lookup_target.is_empty() &&
+			registry->has_conformance(lookup_target, lookup_trait);
+
+	{
+		BSConformanceRegistry::ScopedInFlightReplacement in_flight(declaring_path);
+		result["in_flight_hides_has_conformance"] = lookup_target.is_empty() ||
+				!registry->has_conformance(lookup_target, lookup_trait);
+	}
+	result["after_in_flight_sees_again"] = !lookup_target.is_empty() &&
+			registry->has_conformance(lookup_target, lookup_trait);
+
+	// Dependency viewer with ConformanceVisibility can_see the declaring file.
+	BSCache::set_source_override(dep_path, "class_name RegDep extends Node\n");
+	BSCache::set_source_override(unrelated_path, "class_name RegUnrelated extends Node\n");
+	const String viewer_source = vformat("class_name RegViewer extends \"%s\"\n", dep_path);
+	{
+		BSCache::set_source_override(viewer_path, viewer_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		const Error err = parser.parse(viewer_source, viewer_path, false);
+		result["viewer_parse_ok"] = err == OK;
+		if (err == OK) {
+			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
+			// Declaring file is unrelated to viewer — must be hidden under ConformanceVisibility.
+			result["viewer_hides_unrelated_declaring"] = lookup_target.is_empty() ||
+					!registry->has_conformance(lookup_target, lookup_trait);
+			result["viewer_can_see_own"] = analyzer.conformance_visibility.can_see(viewer_path);
+			result["viewer_can_see_dep"] = analyzer.conformance_visibility.can_see(dep_path);
+			result["viewer_cannot_see_declaring"] =
+					!analyzer.conformance_visibility.can_see(declaring_path);
+			result["viewer_cannot_see_unrelated"] =
+					!analyzer.conformance_visibility.can_see(unrelated_path);
+		}
+	}
+	BSCache::clear_source_override(viewer_path);
+
+	// A file that depends on the declaring path can see its registered conformances.
+	const String dep_on_declaring = "res://tests/reg_dep_on_decl.barista";
+	const String dep_on_declaring_source =
+			vformat("class_name RegDepOnDecl extends Node\nconst _link = preload(\"%s\")\n", declaring_path);
+	{
+		BSCache::set_source_override(declaring_path, declaring_source);
+		BSCache::set_source_override(dep_on_declaring, dep_on_declaring_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		const Error err = parser.parse(dep_on_declaring_source, dep_on_declaring, false);
+		result["dep_parse_ok"] = err == OK;
+		if (err == OK) {
+			const BSConformanceRegistry::ScopedVisibility scope(&analyzer.conformance_visibility);
+			result["dep_can_see_declaring"] = analyzer.conformance_visibility.can_see(declaring_path);
+			result["dep_sees_has_conformance"] = !lookup_target.is_empty() &&
+					registry->has_conformance(lookup_target, lookup_trait);
+		}
+	}
+	BSCache::clear_source_override(dep_on_declaring);
+	BSCache::clear_source_override(declaring_path);
+
+	const StringName old_trait = lookup_trait;
+	const String old_target = lookup_target;
+
+	// Reanalysis with no conformances clears stale entries.
+	const String cleared_source = "class_name RegCleared extends Node\n";
+	{
+		BSCache::set_source_override(declaring_path, cleared_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(cleared_source, declaring_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		result["reanalyze_clear_ok"] = err == OK && parser.get_errors().is_empty();
+	}
+	BSCache::clear_source_override(declaring_path);
+	result["cleared_after_reanalyze"] = (old_target.is_empty() ||
+												!registry->has_conformance(old_target, old_trait)) &&
+			registry->get_file_conformances(declaring_path).is_empty();
+
+	// Reanalysis replaces with a different trait membership.
+	const String replace_source =
+			"trait RegOther:\n\tpass\n\nextend Node uses RegOther:\n\tpass\n";
+	{
+		BSCache::set_source_override(declaring_path, replace_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		Error err = parser.parse(replace_source, declaring_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		result["reanalyze_replace_ok"] = err == OK && parser.get_errors().is_empty();
+	}
+	BSCache::clear_source_override(declaring_path);
+	const Vector<BSConformanceRegistry::Conformance> replaced =
+			registry->get_file_conformances(declaring_path);
+	StringName replacement_trait;
+	String replacement_target;
+	if (!replaced.is_empty()) {
+		replacement_trait = replaced[0].trait_name;
+		replacement_target = replaced[0].target_fqcn;
+	}
+	result["replaced_has_other"] = !replacement_target.is_empty() &&
+			registry->has_conformance(replacement_target, replacement_trait) &&
+			replacement_trait != old_trait;
+	result["replaced_dropped_old"] = old_target.is_empty() ||
+			!registry->has_conformance(old_target, old_trait);
+
+	registry->clear_file(declaring_path);
+	registry->clear_file(dep_path);
+	registry->clear_file(viewer_path);
+	registry->clear_file(unrelated_path);
+	registry->clear_file(dep_on_declaring);
+	BSCache::clear_source_override(dep_path);
+	BSCache::clear_source_override(unrelated_path);
 
 	return result;
 }
