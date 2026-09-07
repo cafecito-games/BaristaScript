@@ -18,11 +18,13 @@ func _init() -> void:
 	_test_missing_and_self(failures)
 	_test_move_remove(failures)
 	_test_dependency_cycle(failures)
+	_test_finalization_raises_dependencies(failures)
 	_test_strict_settings(failures)
 	_test_can_reference(failures)
 	_test_host_bootstrap_filtering(failures)
 	_test_validate_and_is_valid_agree(failures)
 	_test_semantic_errors(failures)
+	_test_undeclared_identifier_diagnostic(failures)
 	_test_unary_sign_constant_folding(failures)
 	_test_analyzer_declaration_commit(failures)
 	_test_declaration_head_kinds_and_conformance(failures)
@@ -48,6 +50,8 @@ func _init() -> void:
 	_test_lambda_capture_and_compound_narrowing(failures)
 	_test_get_operation_type(failures)
 	_test_builtin_annotation_resolve(failures)
+	_test_custom_annotation_surface(failures)
+	_test_type_alias_surface(failures)
 	_test_union_union_assignability(failures)
 	_test_union_store_carrier_select(failures)
 	_test_enum_case_match_and_case_binds(failures)
@@ -83,6 +87,18 @@ func _init() -> void:
 func _expect(failures: PackedStringArray, condition: bool, message: String) -> void:
 	if not condition:
 		failures.append(message)
+
+
+func _test_undeclared_identifier_diagnostic(failures: PackedStringArray) -> void:
+	# Byte-faithful producer fixture: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/errors/match_guard_invalid_expression.fs:1-4
+	# @ c9d5e35. Its corresponding .out expects the identifier diagnostic at line 3.
+	var source := "func test():\n\tmatch 0:\n\t\t_ when a == 0:\n\t\t\tprint(\"a does not exist\")\n"
+	var report: Dictionary = BaristaScriptAnalyzerProbe.new().analyze_source(source, "res://tests/match_guard_invalid_expression.barista")
+	var errors: PackedStringArray = report.get("errors", PackedStringArray())
+	_expect(failures, report.get("valid", true) == false, "undeclared identifier invalidates analysis")
+	_expect(failures, errors.size() == 1, "undeclared identifier suppresses Variant cascades")
+	_expect(failures, errors.size() == 1 and errors[0] == 'Identifier "a" not declared in the current scope.', "undeclared identifier matches Foundry diagnostic")
 
 
 func _kw_class_name() -> String:
@@ -180,6 +196,25 @@ func _test_dependency_cycle(failures: PackedStringArray) -> void:
 	var raised_b := BaristaScriptParseCache.get_parser("res://tests/cycle_b.barista", Status.FULLY_SOLVED, "")
 	_expect(failures, raised_a.valid and raised_b.valid, "cycle raise completes without deadlock")
 	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_finalization_raises_dependencies(failures: PackedStringArray) -> void:
+	# Byte-faithful preload expression from the producer statement: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/errors/type_alias_cross_file_base.fs:1-3
+	# @ c9d5e35. BSAnalyzer::raise_declared_conformance_dependencies adds every parser dependency
+	# at src/bs_analyzer_conformance.cpp:382; finalization raises it from PARSED to INHERITANCE_SOLVED.
+	BaristaScriptParseCache.clear_script_cache()
+	var dependency_path := "res://tests/finalization_dependency.notest.barista"
+	var owner_path := "res://tests/finalization_dependency.barista"
+	BaristaScriptParseCache.set_source_override(dependency_path, _src_class("FinalizationDependency extends Node\n"))
+	BaristaScriptParseCache.set_source_override(owner_path, "func test() -> void:\n\tpreload(\"./finalization_dependency.notest.barista\")\n")
+	var owner := BaristaScriptParseCache.get_parser(owner_path, Status.FULLY_SOLVED, "")
+	var dependency := BaristaScriptParseCache.get_parser(dependency_path, Status.EMPTY, "")
+	_expect(failures, owner.valid and owner.status == Status.FULLY_SOLVED, "finalization dependency owner fully solves")
+	_expect(failures, dependency.valid and dependency.status >= Status.INHERITANCE_SOLVED,
+		"finalization raises every depended parser to INHERITANCE_SOLVED")
+	BaristaScriptParseCache.clear_source_override(owner_path)
+	BaristaScriptParseCache.clear_source_override(dependency_path)
 
 
 func _test_strict_settings(failures: PackedStringArray) -> void:
@@ -855,6 +890,8 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 func _test_callable_signal_constructor_and_typed_receiver_depth(failures: PackedStringArray) -> void:
 	# Foundry CallSiteValidationContext @ c9d5e35: Callable(Object, method) and Signal(Object, signal)
 	# recover the declared signature instead of degrading to an untyped builtin value.
+	# Constructor shapes are byte-faithful to the engine API producer at
+	# godot-cpp/gdextension/extension_api-4-7.json:19959-19984 and :20130-20155.
 	var probe := BaristaScriptAnalyzerProbe.new()
 	var callable_ctor := _src_class("CallableCtorDepth extends Node\nfunc take(value: int) -> String:\n\treturn str(value)\nfunc test() -> void:\n\tvar callback := Callable(self, \"take\")\n\tcallback.call()\n")
 	var callable_report: Dictionary = probe.analyze_source(callable_ctor, "res://tests/callable_ctor_depth.barista")
@@ -871,6 +908,22 @@ func _test_callable_signal_constructor_and_typed_receiver_depth(failures: Packed
 		if "Cannot connect signal" in message and "cannot be passed" in message:
 			saw_signal_signature = true
 	_expect(failures, saw_signal_signature, "Signal(Object, name) preserves payload signature")
+
+	var callable_bad_arity := _src_class("CallableCtorBadArity extends Node\nfunc test() -> void:\n\tvar _callback := Callable(self, \"test\", 1)\n")
+	var callable_bad_arity_report: Dictionary = probe.analyze_source(callable_bad_arity, "res://tests/callable_ctor_bad_arity.barista")
+	_expect(failures, callable_bad_arity_report.get("valid", true) == false, "Callable constructor rejects unsupported arity")
+
+	var callable_bad_types := _src_class("CallableCtorBadTypes extends Node\nfunc test() -> void:\n\tvar _callback := Callable(1, \"test\")\n")
+	var callable_bad_types_report: Dictionary = probe.analyze_source(callable_bad_types, "res://tests/callable_ctor_bad_types.barista")
+	_expect(failures, callable_bad_types_report.get("valid", true) == false, "Callable constructor rejects non-Object receiver")
+
+	var signal_bad_copy := _src_class("SignalCtorBadCopy extends Node\nfunc test() -> void:\n\tvar _signal := Signal(self)\n")
+	var signal_bad_copy_report: Dictionary = probe.analyze_source(signal_bad_copy, "res://tests/signal_ctor_bad_copy.barista")
+	_expect(failures, signal_bad_copy_report.get("valid", true) == false, "Signal copy constructor rejects Object")
+
+	var signal_bad_name := _src_class("SignalCtorBadName extends Node\nfunc test() -> void:\n\tvar _signal := Signal(self, 7)\n")
+	var signal_bad_name_report: Dictionary = probe.analyze_source(signal_bad_name, "res://tests/signal_ctor_bad_name.barista")
+	_expect(failures, signal_bad_name_report.get("valid", true) == false, "Signal constructor rejects non-StringName signal name")
 
 	# Object signal APIs on a typed non-self receiver use that receiver's declared signal surface.
 	var typed_receiver := _src_class("TypedReceiverSignalDepth extends Node\nsignal changed(value: int)\nfunc on_changed(value: String) -> void:\n\tpass\nfunc test(child: Self) -> void:\n\tchild.emit_signal(\"changed\", \"bad\")\n\tchild.connect(\"changed\", on_changed)\n")
@@ -1428,6 +1481,13 @@ func _test_member_name_conflicts(failures: PackedStringArray) -> void:
 			saw_outer_shadow = true
 	_expect(failures, saw_outer_shadow, "nested member cannot shadow visible outer constant")
 
+	# Byte-faithful member-kind dispatch from Foundry's producer
+	# modules/foundry_script/fs_analyzer_surface.cpp:1921-1924 @ c9d5e35: functions run only
+	# outer-class conflict checks, so a method may share a builtin/native class spelling.
+	var function_builtin_name := _src_class("FunctionBuiltinName extends Node\nfunc Vector2() -> void:\n\tpass\n")
+	var function_builtin_report: Dictionary = probe.analyze_source(function_builtin_name, "res://tests/function_builtin_name.barista")
+	_expect(failures, function_builtin_report.get("valid", false) == true, "function names do not run non-function native/builtin conflict checks")
+
 
 func _test_trait_requirements_and_conformance_witness(failures: PackedStringArray) -> void:
 	# Foundry fixtures: trait_required_method / retroactive_conformance_missing_method (#60).
@@ -1838,6 +1898,90 @@ func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:
 	_expect(failures, mismatch_report.get("valid", true) == false, "int → StringName annotation assign remains invalid")
 
 
+func _test_custom_annotation_surface(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	# Byte-faithful producer fixture: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/features/annotation_custom_usage.fs:1-35
+	# @ c9d5e35. This covers every non-generic target plus positional, named, default,
+	# variadic, stacked, and repeated argument binding.
+	var valid_source := "# Custom annotations declared and used in the same namespace resolve without an import and\n# accept positional, named, default, variadic, stacked, and repeated arguments. They apply to\n# class, method, member-variable, signal, and constant targets.\nnamespace cafecito.usage\n\nannotation suite(name: String = \"\") targets CLASS\nannotation test targets METHOD\nannotation timeout(seconds: float) targets METHOD\nannotation tags(...names: String) targets METHOD, CLASS\nannotation fixture targets VARIABLE\nannotation event targets SIGNAL\nannotation config(key: String) targets CONSTANT\n\n@suite(name = \"Combat\")\n@tags(\"gameplay\")\nclass CombatTests:\n\t@fixture\n\tvar world: int\n\n\t@config(\"max_health\")\n\tconst MAX_HEALTH = 100\n\n\t@event\n\tsignal damage_taken(amount: int)\n\n\t@test\n\t@timeout(10.0)\n\t@tags(\"slow\", \"integration\")\n\t@tags(\"flaky\")\n\tfunc crit_table() -> void:\n\t\tpass\n\nfunc test() -> void:\n\tpass\n"
+	var valid_report: Dictionary = probe.analyze_source(valid_source, "res://tests/annotation_custom_usage.barista")
+	_expect(failures, valid_report.get("valid", false) == true, "custom annotation valid target and arguments analyze")
+
+	# Byte-faithful error fixtures: Foundry analyzer/errors/annotation_*.fs @ c9d5e35.
+	var invalid_cases := [
+		{"name": "type mismatch", "path": "annotation_argument_type_mismatch", "source": "namespace cafecito.typemismatch\n\nannotation timeout(seconds: float) targets METHOD\n\n@timeout(\"not a number\")\nfunc test() -> void:\n\tpass\n", "needle": "expected \"float\" but got \"String\""},
+		{"name": "nonconstant", "path": "annotation_non_constant_arg", "source": "namespace cafecito.nonconst\n\nannotation timeout(seconds: float) targets METHOD\n\nvar seconds_value: float = 1.0\n\n@timeout(seconds_value)\nfunc test() -> void:\n\tprint(seconds_value)\n", "needle": "not a constant expression"},
+		{"name": "wrong target", "path": "annotation_wrong_target", "source": "namespace cafecito.wrongtarget\n\nannotation fixture targets VARIABLE\n\n@fixture\nfunc test() -> void:\n\tpass\n", "needle": "cannot be applied to a method"},
+		{"name": "missing required", "path": "annotation_missing_required_arg", "source": "namespace cafecito.missingarg\n\nannotation cases(provider: String) targets METHOD\n\n@cases\nfunc test() -> void:\n\tpass\n", "needle": "missing required argument \"provider\""},
+		{"name": "unknown named", "path": "annotation_unknown_named_arg", "source": "namespace cafecito.unknownnamed\n\nannotation suite(name: String = \"\") targets CLASS\n\n@suite(title = \"x\")\nclass Demo:\n\tpass\n", "needle": "has no parameter named \"title\""},
+		{"name": "positional after named", "path": "annotation_positional_after_named", "source": "namespace cafecito.posafternamed\n\nannotation pair(first: String, second: String) targets METHOD\n\n@pair(first = \"a\", \"b\")\nfunc test() -> void:\n\tpass\n", "needle": "Positional argument after named argument"},
+		{"name": "too many", "path": "annotation_too_many_args", "source": "namespace cafecito.toomany\n\nannotation test targets METHOD\n\n@test(\"extra\")\nfunc test() -> void:\n\tpass\n", "needle": "takes at most 0 argument(s), but 1 were given"},
+	]
+	for invalid_case in invalid_cases:
+		var report: Dictionary = probe.analyze_source(invalid_case.source, "res://tests/%s.barista" % invalid_case.path)
+		var joined := "\n".join(report.get("errors", PackedStringArray()))
+		_expect(failures, report.get("valid", true) == false, "custom annotation %s invalidates analysis" % invalid_case.name)
+		_expect(failures, invalid_case.needle in joined, "custom annotation %s reports Foundry diagnostic" % invalid_case.name)
+
+	var unknown_report: Dictionary = probe.analyze_source("@not_declared\nfunc test() -> void:\n\tpass\n", "res://tests/annotation_unknown.barista")
+	_expect(failures, unknown_report.get("valid", true) == false, "unknown custom annotation is rejected")
+	_expect(failures, "Unknown annotation" in "\n".join(unknown_report.get("errors", PackedStringArray())), "unknown custom annotation has lookup diagnostic")
+
+	# Byte-faithful declaration-index producer: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/features/annotation_index_library.notest.fs:1-6
+	# and consumer annotation_custom_import.fs:1-13 @ c9d5e35.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var provider_path := "res://tests/annotation_index_library.barista"
+	var provider_source := "# Provider file used by analyzer custom-annotation import tests. It intentionally has no test()\n# function; the companion consumer imports this namespace and applies all three declarations.\nnamespace cafecito.annotation_index\n\nannotation suite(name: String = \"\") targets CLASS\nannotation index_test targets METHOD\nannotation fixture targets VARIABLE\n"
+	index.synchronize_path_from_source(provider_path, provider_source)
+	BaristaScriptParseCache.set_source_override(provider_path, provider_source)
+	var consumer_source := "# Custom annotations declared in another file resolve through an imported namespace.\n# This is the analyzer half of the declaration-index coverage: the provider fixture is indexed\n# before this script is analyzed.\nnamespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = \"Imported\")\nclass ImportedSuite:\n\t@fixture\n\tvar state: int\n\n\t@index_test\n\tfunc works() -> void:\n\t\tpass\n\nfunc test() -> void:\n\tpass\n"
+	var consumer_report: Dictionary = probe.analyze_source(consumer_source, "res://tests/annotation_custom_import.barista")
+	_expect(failures, consumer_report.get("valid", false) == true, "imported custom annotations resolve through declaration index")
+	var import_mismatch := "namespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = 7)\nclass ImportedSuite:\n\tpass\n"
+	var mismatch_report: Dictionary = probe.analyze_source(import_mismatch, "res://tests/annotation_custom_import_mismatch.barista")
+	_expect(failures, mismatch_report.get("valid", true) == false, "imported annotation signature is validated")
+	BaristaScriptParseCache.clear_source_override(provider_path)
+	index.clear()
+
+
+func _test_type_alias_surface(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	# Byte-faithful producer fixtures: Foundry analyzer/features/type_alias_resolution.fs
+	# and analyzer/errors/type_alias_*.fs @ c9d5e35.
+	var transparent_source := "type Meters = float\n\nfunc measure(distance: Meters) -> Meters:\n\treturn distance * 2.0\n\nfunc test():\n\tvar distance: Meters = 1.5\n\tprint(measure(distance))\n"
+	var transparent_report: Dictionary = probe.analyze_source(transparent_source, "res://tests/type_alias_resolution.barista")
+	_expect(failures, transparent_report.get("valid", false) == true, "type alias expands transparently in signatures and locals")
+
+	var cycle_source := "type Left = Right\ntype Right = Left\ntype SelfReferential = SelfReferential | int\n\n\nfunc test():\n\tvar value: Left = 1\n\tprint(value)\n"
+	var cycle_report: Dictionary = probe.analyze_source(cycle_source, "res://tests/type_alias_cycle.barista")
+	var cycle_errors := "\n".join(cycle_report.get("errors", PackedStringArray()))
+	_expect(failures, cycle_report.get("valid", true) == false, "cyclic type aliases invalidate analysis")
+	_expect(failures, 'Type alias "Left" -> "Right" -> "Left" expands to itself' in cycle_errors, "mutual type alias cycle names its chain")
+	_expect(failures, 'Type alias "SelfReferential" -> "SelfReferential" expands to itself' in cycle_errors, "self type alias cycle is diagnosed")
+
+	var unknown_source := "type Mixed = int | NotAType\n\n\nfunc test():\n\tvar value: Mixed = 1\n\tprint(value)\n"
+	var unknown_report: Dictionary = probe.analyze_source(unknown_source, "res://tests/type_alias_unknown_member.barista")
+	var unknown_errors := "\n".join(unknown_report.get("errors", PackedStringArray()))
+	_expect(failures, unknown_report.get("valid", true) == false, "unresolvable type alias invalidates analysis")
+	_expect(failures, 'Type alias "Mixed" has no expansion' in unknown_errors, "unresolvable alias reports declaration failure")
+	_expect(failures, 'Could not find type "NotAType"' in unknown_errors, "unresolvable alias reports missing member")
+
+	var expression_source := "class Holder:\n\tvar label: String = \"holder\"\n\n\ntype Only = Holder\ntype Scalar = int | String\n\n\nfunc test():\n\tvar read = Scalar\n\tvar called = Scalar()\n\tvar made = Only.new()\n\tprints(read, called, made)\n"
+	var expression_report: Dictionary = probe.analyze_source(expression_source, "res://tests/type_alias_not_an_expression.barista")
+	var expression_errors := "\n".join(expression_report.get("errors", PackedStringArray()))
+	_expect(failures, 'Type alias "Scalar" can only be used in a type position' in expression_errors, "type alias has no expression value")
+	_expect(failures, 'Type alias "Only" can only be used in a type position' in expression_errors, "class alias has no constructor handle")
+
+	var conflict_source := "type int = String\ntype Label = float\n\n\nfunc test():\n\tprint(\"unreachable\")\n"
+	var conflict_report: Dictionary = probe.analyze_source(conflict_source, "res://tests/type_alias_hides_existing_type.barista")
+	var conflict_errors := "\n".join(conflict_report.get("errors", PackedStringArray()))
+	_expect(failures, 'Type alias "int" hides a built-in type' in conflict_errors, "type alias cannot hide builtin type")
+	_expect(failures, 'Type alias "Label" hides a native class' in conflict_errors, "type alias cannot hide native class")
+
+
 func _test_union_union_assignability(failures: PackedStringArray) -> void:
 	# Foundry FSTypeCompatibility source-UNION @ c9d5e35 (#89 residual): every alternative of a
 	# union source must satisfy the target. Number→Number / written union self-assign are the AC.
@@ -1978,11 +2122,13 @@ func _test_enum_case_match_and_case_binds(failures: PackedStringArray) -> void:
 			saw_not_case = true
 	_expect(failures, saw_not_case, "non-enum case-bind diagnostic")
 
-	var array_ok := _src_class("ArrayPatOk extends Node\nfunc handle(xs: Array[int]) -> int:\n\tmatch xs:\n\t\t[a, b]:\n\t\t\treturn a + b\n\t\t_:\n\t\t\treturn 0\n")
+	# Foundry's parser producer requires `var` for binds (`fs_parser.cpp:4361-4388` @ c9d5e35);
+	# bare identifiers are value patterns and must not be silently accepted as undeclared locals.
+	var array_ok := _src_class("ArrayPatOk extends Node\nfunc handle(xs: Array[int]) -> int:\n\tmatch xs:\n\t\t[var a, var b]:\n\t\t\treturn a + b\n\t\t_:\n\t\t\treturn 0\n")
 	var array_ok_report: Dictionary = probe.analyze_source(array_ok, "res://tests/array_pat_ok.barista")
 	_expect(failures, array_ok_report.get("valid", false) == true, "Array[int] pattern binds are valid")
 
-	var dict_ok := _src_class("DictPatOk extends Node\nfunc handle(d: Dictionary[String, int]) -> int:\n\tmatch d:\n\t\t{\"a\": n}:\n\t\t\treturn n\n\t\t_:\n\t\t\treturn 0\n")
+	var dict_ok := _src_class("DictPatOk extends Node\nfunc handle(d: Dictionary[String, int]) -> int:\n\tmatch d:\n\t\t{\"a\": var n}:\n\t\t\treturn n\n\t\t_:\n\t\t\treturn 0\n")
 	var dict_ok_report: Dictionary = probe.analyze_source(dict_ok, "res://tests/dict_pat_ok.barista")
 	_expect(failures, dict_ok_report.get("valid", false) == true, "Dictionary[String, int] pattern binds are valid")
 

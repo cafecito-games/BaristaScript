@@ -479,6 +479,10 @@ private:
 	// shorthands reduced before their consumer supplies a union, then the end-of-body sweep.
 	LocalVector<BSParser::ExpressionNode *> reduced_contextual_enum_cases;
 	HashSet<const BSParser::ExpressionNode *> resolved_contextual_enum_cases;
+	/** Foundry transparent type-alias expansion cache / failure and cycle guards. */
+	HashMap<const BSParser::TypeAliasNode *, BSParser::DataType> resolved_type_aliases;
+	HashSet<const BSParser::TypeAliasNode *> failed_type_aliases;
+	Vector<BSParser::TypeAliasNode *> type_alias_resolution_stack;
 
 	Error run_phase_preflight();
 	Error run_phase_inheritance_resolution();
@@ -514,6 +518,8 @@ private:
 	void resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);
 	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
+	BSParser::TypeAliasNode *find_type_alias_in_scope(const StringName &p_name) const;
+	BSParser::DataType resolve_type_alias(BSParser::TypeAliasNode *p_type_alias);
 	/**
 	 * Foundry resolve_class_interface @ c9d5e35 (`fs_analyzer_surface.cpp` ~2030): own-class
 	 * member surface + base INTERFACE walk; foreign SCRIPT raise under
@@ -537,11 +543,19 @@ private:
 	void warn_unused_parameters(BSParser::FunctionNode *p_function);
 	/** Foundry resolve_class_body unused pass: UNUSED_PRIVATE_CLASS_VARIABLE + UNUSED_SIGNAL. */
 	void warn_unused_class_members(BSParser::ClassNode *p_class);
-	/**
-	 * Built-in annotation constant-argument resolution before apply (Foundry
-	 * resolve_annotation @ c9d5e35). Custom / @autoload depth remains #60 follow-up.
-	 */
+	/** Built-in and custom annotation resolution/validation (Foundry @ c9d5e35). */
 	void resolve_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind = 0);
+	bool coerce_annotation_argument(const BSParser::DataType &p_parameter_type, Variant &r_value,
+			const BSParser::ExpressionNode *p_argument, const String &p_context);
+	void resolve_annotation_declaration(BSParser::AnnotationDeclarationNode *p_declaration);
+	void resolve_annotation_declaration_signatures();
+	BSParser::AnnotationDeclarationNode *load_external_annotation_declaration(
+			const String &p_qualified_name, BSParser::AnnotationNode *p_annotation, bool &r_error_reported);
+	BSParser::AnnotationDeclarationNode *resolve_custom_annotation_declaration(BSParser::AnnotationNode *p_annotation);
+	BSParser::AnnotationDeclarationNode *resolve_qualified_annotation_declaration(
+			const String &p_identity, BSParser::AnnotationNode *p_annotation);
+	void resolve_custom_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind);
+	Error validate_annotation_declarations();
 	/** Counts emit_signal/connect/disconnect/is_connected as signal uses (Foundry @ c9d5e35). */
 	void mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_is_self);
 

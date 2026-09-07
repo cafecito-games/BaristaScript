@@ -548,6 +548,7 @@ Error BSAnalyzer::run_phase_preflight() {
 		return ERR_PARSE_ERROR;
 	}
 	validate_bootstrap_namespace_imports();
+	validate_annotation_declarations();
 	mark_phase(AnalyzerPhase::PREFLIGHT);
 	mark_phase(AnalyzerPhase::DEPENDENCY_PARSE_AVAILABILITY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
@@ -824,6 +825,73 @@ void BSAnalyzer::resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_
 	}
 }
 
+BSParser::TypeAliasNode *BSAnalyzer::find_type_alias_in_scope(const StringName &p_name) const {
+	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+		if (!scope->has_member(p_name)) {
+			continue;
+		}
+		const BSParser::ClassNode::Member member = scope->get_member(p_name);
+		return member.type == BSParser::ClassNode::Member::TYPE_ALIAS ? member.type_alias : nullptr;
+	}
+	return nullptr;
+}
+
+BSParser::DataType BSAnalyzer::resolve_type_alias(BSParser::TypeAliasNode *p_type_alias) {
+	BSParser::DataType failed;
+	if (p_type_alias == nullptr || p_type_alias->identifier == nullptr || p_type_alias->aliased_type == nullptr) {
+		return failed;
+	}
+	if (const BSParser::DataType *cached = resolved_type_aliases.getptr(p_type_alias)) {
+		return *cached;
+	}
+	if (failed_type_aliases.has(p_type_alias)) {
+		return failed;
+	}
+
+	int cycle_start = -1;
+	for (int i = 0; i < type_alias_resolution_stack.size(); i++) {
+		if (type_alias_resolution_stack[i] == p_type_alias) {
+			cycle_start = i;
+			break;
+		}
+	}
+	if (cycle_start >= 0) {
+		BSParser::TypeAliasNode *reported_at = p_type_alias;
+		String cycle;
+		for (int i = cycle_start; i < type_alias_resolution_stack.size(); i++) {
+			BSParser::TypeAliasNode *participant = type_alias_resolution_stack[i];
+			cycle += vformat(R"("%s" -> )", participant->identifier->name);
+			if (participant->start_line < reported_at->start_line ||
+					(participant->start_line == reported_at->start_line && participant->start_column < reported_at->start_column)) {
+				reported_at = participant;
+			}
+		}
+		cycle += vformat(R"("%s")", p_type_alias->identifier->name);
+		push_error(vformat(R"(Type alias %s expands to itself, so it names no type.)", cycle), reported_at);
+		for (int i = cycle_start; i < type_alias_resolution_stack.size(); i++) {
+			failed_type_aliases.insert(type_alias_resolution_stack[i]);
+		}
+		return failed;
+	}
+
+	type_alias_resolution_stack.push_back(p_type_alias);
+	const int error_count = parser->get_errors().size();
+	const BSParser::DataType resolved = datatype_from_type_node(p_type_alias->aliased_type);
+	type_alias_resolution_stack.remove_at(type_alias_resolution_stack.size() - 1);
+	if (failed_type_aliases.has(p_type_alias)) {
+		return failed;
+	}
+	if (!resolved.is_set() || parser->get_errors().size() > error_count) {
+		failed_type_aliases.insert(p_type_alias);
+		push_error(vformat(R"(Type alias "%s" has no expansion, because its definition does not name a resolvable type.)",
+						   p_type_alias->identifier->name),
+				p_type_alias->identifier);
+		return failed;
+	}
+	resolved_type_aliases.insert(p_type_alias, resolved);
+	return resolved;
+}
+
 BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_type_node) {
 	BSParser::DataType result;
 	if (p_type_node == nullptr) {
@@ -966,6 +1034,16 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		if (name == SNAME("Variant")) {
 			result.kind = BSParser::DataType::VARIANT;
 			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			return result;
+		}
+
+		if (BSParser::TypeAliasNode *type_alias = find_type_alias_in_scope(name)) {
+			result = resolve_type_alias(type_alias);
+			if (!result.is_set()) {
+				result.kind = BSParser::DataType::VARIANT;
+				return result;
+			}
+			result.is_nullable = result.is_nullable || p_type_node->is_nullable;
 			return result;
 		}
 
@@ -1202,6 +1280,12 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 
 	BSParser::ClassNode *previous_class = current_class;
 	current_class = p_class;
+	for (BSParser::AnnotationNode *annotation : p_class->annotations) {
+		if (annotation != nullptr) {
+			resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_CLASS);
+			annotation->apply(parser, p_class, p_class);
+		}
+	}
 
 	if (!p_class->base_type.is_resolving()) {
 		resolve_class_inheritance(p_class);
@@ -1227,7 +1311,15 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 				push_error(vformat(R"(Member "%s" is declared more than once.)", name), member.get_source_node());
 			}
 			seen.insert(name);
-			check_class_member_name_conflict(p_class, name, member.get_source_node());
+			// Foundry dispatches conflict policy by member kind
+			// (`fs_analyzer_surface.cpp:1755-2015` @ c9d5e35). Methods may override an
+			// inherited method or share a native/builtin spelling and only conflict with visible
+			// lexical outers. Type aliases have a dedicated type-namespace policy in their member arm.
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				check_outer_class_member_name_conflict(p_class, name, member.get_source_node());
+			} else if (member.type != BSParser::ClassNode::Member::TYPE_ALIAS) {
+				check_class_member_name_conflict(p_class, name, member.get_source_node());
+			}
 		}
 		if (member.type == BSParser::ClassNode::Member::CLASS) {
 			// Nested class interface after inheritance (Foundry resolve_class_member CLASS arm
@@ -1259,6 +1351,9 @@ Error BSAnalyzer::run_phase_interface_and_member_surface() {
 	// Abstract-method requirements belong in FLOW_FINALITY_INVARIANTS.
 	raise_declared_conformance_dependencies();
 	resolve_conformances(parser->get_tree());
+	// Imported files raised only to INTERFACE_SOLVED must still publish typed annotation
+	// signatures for their consumers (Foundry run_phase_trait_conformance_registration).
+	resolve_annotation_declaration_signatures();
 	mark_phase(AnalyzerPhase::TRAIT_CONFORMANCE_REGISTRATION);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
@@ -1658,6 +1753,14 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (p_identifier == nullptr) {
 		return;
 	}
+	// Parser-produced pattern/case binds already carry their declaration even when their branch
+	// suite is not the identifier's retained suite. Foundry starts from this source tag before
+	// attempting broader lookup (`fs_analyzer.cpp:12551-12614` @ c9d5e35).
+	if (p_identifier->source == BSParser::IdentifierNode::LOCAL_BIND && p_identifier->bind_source != nullptr) {
+		p_identifier->set_datatype(p_identifier->bind_source->get_datatype());
+		maybe_capture_identifier_in_lambda(p_identifier);
+		return;
+	}
 	// Suite locals (including parameters) are declared during parse; bind them first so flow
 	// finality can see LOCAL_VARIABLE / variable_source for `final var` assignment targets.
 	if (p_identifier->suite != nullptr && p_identifier->suite->has_local(p_identifier->name)) {
@@ -1795,6 +1898,33 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		p_identifier->set_datatype(self_handle);
 		return;
 	}
+	// Native classes are expression-position class handles after locals and members have missed.
+	// This also lets match patterns distinguish an unshadowed native type from a value pattern.
+	if (ClassDB::class_exists(p_identifier->name)) {
+		BSParser::DataType native_meta;
+		native_meta.kind = BSParser::DataType::NATIVE;
+		native_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		native_meta.builtin_type = Variant::OBJECT;
+		native_meta.native_type = p_identifier->name;
+		native_meta.is_meta_type = true;
+		native_meta.is_constant = true;
+		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
+		p_identifier->set_datatype(native_meta);
+		return;
+	}
+	if (find_type_alias_in_scope(p_identifier->name) != nullptr) {
+		push_error(vformat(R"(Type alias "%s" can only be used in a type position. It declares no value, so it cannot be called, constructed, or read.)",
+						   p_identifier->name),
+				p_identifier);
+		BSParser::DataType alias_use;
+		alias_use.kind = BSParser::DataType::VARIANT;
+		p_identifier->set_datatype(alias_use);
+		return;
+	}
+	// Foundry reduce_identifier @ c9d5e35 (`fs_analyzer.cpp:12875-12879`): once every
+	// local/member/type/global lookup has missed, report at the identifier token and retain a
+	// Variant datatype only to suppress dependent type cascades.
+	push_error(vformat(R"(Identifier "%s" not declared in the current scope.)", p_identifier->name), p_identifier);
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_identifier->set_datatype(type);
@@ -2099,9 +2229,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		}
 	}
 
-	// Foundry builtin constructor specialization @ c9d5e35: preserve the target signature
-	// carried by Callable(Object, method) and Signal(Object, signal). Generic constructor
-	// overload selection remains outside this mechanical signature slice.
+	// Foundry builtin constructor specialization @ c9d5e35: validate the pinned engine overloads,
+	// then preserve the target signature carried by Callable(Object, method) and Signal(Object, signal).
 	StringName constructor_name = p_call->function_name;
 	if (constructor_name == StringName() && p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER) {
 		constructor_name = static_cast<BSParser::IdentifierNode *>(p_call->callee)->name;
@@ -2111,7 +2240,55 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	if ((callable_constructor || signal_constructor) &&
 			(p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER)) {
 		call_site_validation.reject_named_call_arguments(p_call);
-		BSParser::DataType constructor_type = type_from_property(PropertyInfo(callable_constructor ? Variant::CALLABLE : Variant::SIGNAL, ""));
+		const Variant::Type builtin_type = callable_constructor ? Variant::CALLABLE : Variant::SIGNAL;
+		BSParser::DataType constructor_type = type_from_property(PropertyInfo(builtin_type, ""));
+		// The pinned engine producer declares exactly (), (same carrier), and
+		// (Object, StringName) overloads for both types
+		// (`godot-cpp/gdextension/extension_api-4-7.json:19959-19984,20130-20155`).
+		// Validate that overload surface before adding Foundry's richer target signature.
+		auto argument_matches = [&](int p_index, const BSParser::DataType &p_expected) {
+			if (p_index < 0 || p_index >= p_call->arguments.size() || p_call->arguments[p_index] == nullptr) {
+				return false;
+			}
+			BSTypeCompatibility::Options options;
+			options.allow_implicit_conversion = true;
+			options.strict_dynamic = strict_dynamic_checks;
+			options.strict_null = strict_null_checks;
+			if (p_call->arguments[p_index]->is_constant) {
+				options.constant_source_value = &p_call->arguments[p_index]->reduced_value;
+			}
+			return BSTypeCompatibility::check(p_expected, p_call->arguments[p_index]->get_datatype(), options).compatible;
+		};
+		bool valid_constructor = p_call->arguments.is_empty();
+		if (p_call->arguments.size() == 1) {
+			const BSParser::DataType source_type = p_call->arguments[0]->get_datatype();
+			// Copy construction is carrier identity, not general type coercion. A genuinely gradual
+			// value remains a runtime check in non-strict mode; a concrete Object/@Self does not.
+			valid_constructor = (source_type.kind == BSParser::DataType::BUILTIN &&
+										source_type.builtin_type == builtin_type) ||
+					(source_type.is_variant() && !strict_dynamic_checks);
+		} else if (p_call->arguments.size() == 2) {
+			const BSParser::DataType object_type = type_from_property(PropertyInfo(
+																			  Variant::OBJECT, "", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_DEFAULT, SNAME("Object")),
+					true);
+			const BSParser::DataType name_type = type_from_property(PropertyInfo(Variant::STRING_NAME, ""), true);
+			valid_constructor = argument_matches(0, object_type) && argument_matches(1, name_type);
+		}
+		if (!valid_constructor) {
+			String signature = Variant::get_type_name(builtin_type) + "(";
+			for (int i = 0; i < p_call->arguments.size(); i++) {
+				if (i > 0) {
+					signature += ", ";
+				}
+				signature += p_call->arguments[i] != nullptr ? p_call->arguments[i]->get_datatype().to_string() : String("Variant");
+			}
+			signature += ")";
+			push_error(vformat(R"(No constructor of "%s" matches the signature "%s".)",
+							   Variant::get_type_name(builtin_type), signature),
+					p_call);
+			p_call->set_datatype(constructor_type);
+			return;
+		}
 		if (p_call->arguments.size() == 2) {
 			BSParser::DataType explicit_type;
 			const bool found = callable_constructor ? call_site_validation.callable_type_from_constant_method_args(p_call, 0, 1, explicit_type) : call_site_validation.signal_type_from_receiver(p_call->arguments[0]->get_datatype(), p_call, 1, explicit_type);
@@ -2699,16 +2876,6 @@ void BSAnalyzer::resolve_match(BSParser::MatchNode *p_match) {
 	const int errors_before_subject = parser != nullptr ? parser->get_errors().size() : 0;
 	reduce_expression(p_match->test);
 	bool subject_errored = parser != nullptr && parser->get_errors().size() > errors_before_subject;
-	// Barista's reduce_identifier still leaves unresolved names as silent Variant (full Foundry
-	// not-declared coverage is residual under #60). An UNDEFINED_SOURCE match subject is still a
-	// failed subject, so report it once here and suppress per-arm Variant cascades.
-	if (!subject_errored && p_match->test != nullptr && p_match->test->type == BSParser::Node::IDENTIFIER) {
-		const BSParser::IdentifierNode *subject = static_cast<const BSParser::IdentifierNode *>(p_match->test);
-		if (subject->source == BSParser::IdentifierNode::UNDEFINED_SOURCE) {
-			push_error(vformat(R"(Identifier "%s" not declared in the current scope.)", subject->name), p_match->test);
-			subject_errored = true;
-		}
-	}
 	for (int i = 0; i < p_match->branches.size(); i++) {
 		resolve_match_branch(p_match->branches[i], p_match->test, subject_errored);
 	}
