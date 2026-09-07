@@ -216,6 +216,9 @@
 41:#include "core/object/class_db.h"
 42:#include "core/object/script_language.h"
 
+=== modules/foundry_script/fs_analyzer_finalization.cpp ===
+31:#include "fs_analyzer.h"
+
 === modules/foundry_script/fs_conformance_registry.h ===
 31:#pragma once
 33:#include "fs_function.h"

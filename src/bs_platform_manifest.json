@@ -25,6 +25,7 @@
 			"fs_analyzer_flow_finality.cpp",
 			"fs_analyzer_call_validation.cpp",
 			"fs_analyzer_conformance.cpp",
+			"fs_analyzer_finalization.cpp",
 			"fs_conformance_registry.h",
 			"fs_conformance_registry.cpp",
 			"fs_trait_utils.h"

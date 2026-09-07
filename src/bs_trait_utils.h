@@ -5,7 +5,8 @@
 /*  c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6. FS* -> BS*; engine contact  */
 /*  through bs_platform.h. Diagnostic naming + identity helpers +         */
 /*  ClassTraitBinding / RecordedTypeArgument projection walkers for #60.  */
-/*  Full class_has_named_trait / open-Self residual under #60.            */
+/*  Runtime class_has_named_trait and compiler open-Self substitution are*/
+/*  deliberately M4/M5 work: neither has an analyzer-only consumer here. */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */

@@ -23,6 +23,7 @@
 #include "barista_script.h"
 #include "bs_cache.h"
 #include "bs_platform.h"
+#include "bs_trait_utils.h"
 #include "bs_type.h"
 
 namespace barista_script {
@@ -394,6 +395,122 @@ void BSAnalyzer::mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_i
 	(void)p_call;
 	(void)p_is_self;
 #endif
+}
+
+bool BSAnalyzer::has_member_name_conflict_in_script_class(const StringName &p_member_name, const BSParser::ClassNode *p_class, const BSParser::Node *p_member) const {
+	if (p_class == nullptr || !p_class->members_indices.has(p_member_name)) {
+		return false;
+	}
+	const BSParser::ClassNode::Member &member = p_class->members[p_class->members_indices[p_member_name]];
+	if (member.type == BSParser::ClassNode::Member::VARIABLE || member.type == BSParser::ClassNode::Member::CONSTANT ||
+			member.type == BSParser::ClassNode::Member::ENUM || member.type == BSParser::ClassNode::Member::ENUM_VALUE ||
+			member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::SIGNAL) {
+		return true;
+	}
+	return p_member != nullptr && p_member->type != BSParser::Node::FUNCTION && member.type == BSParser::ClassNode::Member::FUNCTION;
+}
+
+static bool _member_is_visible_outer_class_surface(const BSParser::ClassNode::Member &p_member) {
+	switch (p_member.type) {
+		case BSParser::ClassNode::Member::CONSTANT:
+		case BSParser::ClassNode::Member::ENUM:
+		case BSParser::ClassNode::Member::ENUM_VALUE:
+		case BSParser::ClassNode::Member::CLASS:
+		case BSParser::ClassNode::Member::TUPLE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+bool BSAnalyzer::has_member_name_conflict_in_native_type(const StringName &p_member_name, const StringName &p_native_type) const {
+	if (ClassDB::class_has_signal(p_native_type, p_member_name) || ClassDB::class_has_integer_constant(p_native_type, p_member_name)) {
+		return true;
+	}
+	const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(p_native_type, false);
+	for (int i = 0; i < properties.size(); i++) {
+		const Dictionary property = properties[i];
+		if (StringName(property.get("name", String())) == p_member_name) {
+			return true;
+		}
+	}
+	return p_member_name == SNAME("script");
+}
+
+Error BSAnalyzer::check_native_member_name_conflict(const StringName &p_member_name, const BSParser::Node *p_member_node, const StringName &p_native_type) {
+	if (has_member_name_conflict_in_native_type(p_member_name, p_native_type)) {
+		push_error(vformat(R"*(Member "%s" redefined (original in native class '%s'))*", p_member_name, p_native_type), p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	if (ClassDB::class_exists(p_member_name)) {
+		push_error(vformat(R"*(The member "%s" shadows a native class.)*", p_member_name), p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	if (BSParser::get_builtin_type(p_member_name) < Variant::VARIANT_MAX || p_member_name == SNAME("AsyncCallable")) {
+		push_error(vformat(R"*(The member "%s" cannot have the same name as a builtin type.)*", p_member_name), p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	if (p_member_name == BSParser::get_number_type_name()) {
+		push_error(R"*(The member "Number" cannot have the same name as the compiler-provided type "Number".)*", p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	return OK;
+}
+
+Error BSAnalyzer::check_outer_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node) {
+	if (p_class == nullptr || p_class->outer == nullptr) {
+		return OK;
+	}
+	List<BSParser::ClassNode *> outer_scope_classes;
+	get_class_node_current_scope_classes(p_class->outer, &outer_scope_classes, const_cast<BSParser::Node *>(p_member_node));
+	for (BSParser::ClassNode *outer_class : outer_scope_classes) {
+		if (outer_class == nullptr) {
+			continue;
+		}
+		if (outer_class->identifier != nullptr && outer_class->identifier->name == p_member_name) {
+			push_error(vformat(R"*(The member "%s" already exists in outer class %s.)*", p_member_name, bs_class_or_trait_diagnostic_name(outer_class)), p_member_node);
+			return ERR_PARSE_ERROR;
+		}
+		if (!outer_class->members_indices.has(p_member_name)) {
+			continue;
+		}
+		const BSParser::ClassNode::Member &outer_member = outer_class->members[outer_class->members_indices[p_member_name]];
+		if (_member_is_visible_outer_class_surface(outer_member) && has_member_name_conflict_in_script_class(p_member_name, outer_class, p_member_node)) {
+			push_error(vformat(R"*(The member "%s" already exists in outer class %s.)*", p_member_name, bs_class_or_trait_diagnostic_name(outer_class)), p_member_node);
+			return ERR_PARSE_ERROR;
+		}
+	}
+	return OK;
+}
+
+Error BSAnalyzer::check_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node) {
+	if (p_class == nullptr) {
+		return OK;
+	}
+	const BSParser::DataType *current_type = &p_class->base_type;
+	HashSet<const BSParser::ClassNode *> visited;
+	while (current_type != nullptr && current_type->kind == BSParser::DataType::CLASS && current_type->class_type != nullptr) {
+		BSParser::ClassNode *parent = current_type->class_type;
+		// BaristaScript's cross-file fail-stop can retain the already diagnosed CLASS edge while
+		// unwinding a cycle. Keep this surface walk bounded exactly like the other inheritance walks.
+		if (visited.has(parent)) {
+			break;
+		}
+		visited.insert(parent);
+		if (has_member_name_conflict_in_script_class(p_member_name, parent, p_member_node)) {
+			const String parent_name = parent->identifier != nullptr ? String(parent->identifier->name) : parent->fqcn;
+			push_error(vformat(R"*(The member "%s" already exists in parent class %s.)*", p_member_name, parent_name), p_member_node);
+			return ERR_PARSE_ERROR;
+		}
+		current_type = &parent->base_type;
+	}
+	if (current_type != nullptr && current_type->kind == BSParser::DataType::NATIVE && current_type->native_type != StringName()) {
+		const Error err = check_native_member_name_conflict(p_member_name, p_member_node, current_type->native_type);
+		if (err != OK) {
+			return err;
+		}
+	}
+	return check_outer_class_member_name_conflict(p_class, p_member_name, p_member_node);
 }
 
 void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source) {

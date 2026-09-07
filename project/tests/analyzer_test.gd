@@ -32,14 +32,17 @@ func _init() -> void:
 	_test_call_arity_and_types(failures)
 	_test_call_validation_methodinfo_and_signals(failures)
 	_test_named_arg_and_connect_callable(failures)
+	_test_callable_signal_constructor_and_typed_receiver_depth(failures)
 	_test_match_and_flow(failures)
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
 	_test_final_member_and_static_assignment(failures)
 	_test_final_trait_flattening(failures)
+	_test_final_pattern_and_nested_expression_reads(failures)
 	_test_noreturn_flow(failures)
 	_test_unused_locals(failures)
 	_test_unused_class_members_and_signals(failures)
+	_test_member_name_conflicts(failures)
 	_test_trait_requirements_and_conformance_witness(failures)
 	_test_flow_narrowing(failures)
 	_test_lambda_capture_and_compound_narrowing(failures)
@@ -849,6 +852,40 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	_expect(failures, float_to_int_report.get("valid", true) == false, "non-constant float→int remains invalid")
 
 
+func _test_callable_signal_constructor_and_typed_receiver_depth(failures: PackedStringArray) -> void:
+	# Foundry CallSiteValidationContext @ c9d5e35: Callable(Object, method) and Signal(Object, signal)
+	# recover the declared signature instead of degrading to an untyped builtin value.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var callable_ctor := _src_class("CallableCtorDepth extends Node\nfunc take(value: int) -> String:\n\treturn str(value)\nfunc test() -> void:\n\tvar callback := Callable(self, \"take\")\n\tcallback.call()\n")
+	var callable_report: Dictionary = probe.analyze_source(callable_ctor, "res://tests/callable_ctor_depth.barista")
+	var saw_callable_arity := false
+	for message in callable_report.get("errors", PackedStringArray()):
+		if "Too few arguments" in message and "call" in message:
+			saw_callable_arity = true
+	_expect(failures, saw_callable_arity, "Callable(Object, method) preserves target arity")
+
+	var signal_ctor := _src_class("SignalCtorDepth extends Node\nsignal changed(value: int)\nfunc on_changed(value: String) -> void:\n\tpass\nfunc test() -> void:\n\tvar typed_signal := Signal(self, \"changed\")\n\ttyped_signal.connect(on_changed)\n")
+	var signal_report: Dictionary = probe.analyze_source(signal_ctor, "res://tests/signal_ctor_depth.barista")
+	var saw_signal_signature := false
+	for message in signal_report.get("errors", PackedStringArray()):
+		if "Cannot connect signal" in message and "cannot be passed" in message:
+			saw_signal_signature = true
+	_expect(failures, saw_signal_signature, "Signal(Object, name) preserves payload signature")
+
+	# Object signal APIs on a typed non-self receiver use that receiver's declared signal surface.
+	var typed_receiver := _src_class("TypedReceiverSignalDepth extends Node\nsignal changed(value: int)\nfunc on_changed(value: String) -> void:\n\tpass\nfunc test(child: Self) -> void:\n\tchild.emit_signal(\"changed\", \"bad\")\n\tchild.connect(\"changed\", on_changed)\n")
+	var receiver_report: Dictionary = probe.analyze_source(typed_receiver, "res://tests/typed_receiver_signal_depth.barista")
+	var saw_typed_emit := false
+	var saw_typed_connect := false
+	for message in receiver_report.get("errors", PackedStringArray()):
+		if "Invalid argument" in message and "emit_signal" in message:
+			saw_typed_emit = true
+		if "Cannot connect signal" in message and "cannot be passed" in message:
+			saw_typed_connect = true
+	_expect(failures, saw_typed_emit, "typed receiver emit_signal validates payload")
+	_expect(failures, saw_typed_connect, "typed receiver connect validates callable")
+
+
 func _test_match_and_flow(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 	var incomplete := _src_class("MatchIncomplete extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n")
@@ -1172,6 +1209,35 @@ func _test_noreturn_flow(failures: PackedStringArray) -> void:
 	_expect(failures, saw_cannot_return, "@noreturn nested-return diagnostic")
 
 
+func _test_final_pattern_and_nested_expression_reads(failures: PackedStringArray) -> void:
+	# Foundry fs_analyzer_flow_finality.cpp @ c9d5e35: patterns and every nested expression
+	# carrier are evaluated before a blank final can be assigned.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var pattern_read := _src_class("FinalPatternRead extends Node\nfinal var id: int\nfunc _init(value: int) -> void:\n\tmatch value:\n\t\tself.id:\n\t\t\tid = 1\n\t\t_:\n\t\t\tid = 2\n")
+	var pattern_report: Dictionary = probe.analyze_source(pattern_read, "res://tests/final_pattern_read.barista")
+	var saw_pattern_read := false
+	for message in pattern_report.get("errors", PackedStringArray()):
+		if "Final variable \"id\" may be used before assignment" in message:
+			saw_pattern_read = true
+	_expect(failures, saw_pattern_read, "match expression pattern checks blank-final reads")
+
+	var type_test_read := _src_class("FinalTypeTestRead extends Node\nfinal var item: Variant\nfunc _init() -> void:\n\tif item is Node:\n\t\tpass\n\titem = null\n")
+	var type_test_report: Dictionary = probe.analyze_source(type_test_read, "res://tests/final_type_test_read.barista")
+	var saw_type_test_read := false
+	for message in type_test_report.get("errors", PackedStringArray()):
+		if "Final variable \"item\" may be used before assignment" in message:
+			saw_type_test_read = true
+	_expect(failures, saw_type_test_read, "type-test operand checks blank-final reads")
+
+	var tuple_read := _src_class("FinalTupleRead extends Node\nfinal var id: int\nfunc _init() -> void:\n\tvar _pair := (self.id, 1)\n\tid = 2\n")
+	var tuple_report: Dictionary = probe.analyze_source(tuple_read, "res://tests/final_tuple_read.barista")
+	var saw_tuple_read := false
+	for message in tuple_report.get("errors", PackedStringArray()):
+		if "Final variable \"id\" may be used before assignment" in message:
+			saw_tuple_read = true
+	_expect(failures, saw_tuple_read, "tuple-literal element checks blank-final reads")
+
+
 func _test_unused_locals(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
@@ -1308,6 +1374,59 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "quiet" in str(warn.get("message", "")):
 			saw_ignored = true
 	_expect(failures, not saw_ignored, "@warning_ignore(\"unused_signal\") suppresses UNUSED_SIGNAL via resolve_annotation")
+
+
+func _test_member_name_conflicts(failures: PackedStringArray) -> void:
+	# Foundry fs_analyzer_surface.cpp @ c9d5e35: builtin/compiler-provided type names win type
+	# lookup, so a member with one of those names is unreachable and must fail at declaration.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var builtin_shadow := _src_class("BuiltinMemberShadow extends Node\nvar Vector2\n")
+	var builtin_report: Dictionary = probe.analyze_source(builtin_shadow, "res://tests/builtin_member_shadow.barista")
+	var saw_builtin_shadow := false
+	for message in builtin_report.get("errors", PackedStringArray()):
+		if "Vector2" in message and "builtin type" in message:
+			saw_builtin_shadow = true
+	_expect(failures, saw_builtin_shadow, "member cannot shadow builtin type")
+
+	var async_shadow := _src_class("AsyncCallableMemberShadow extends Node\nvar AsyncCallable\n")
+	var async_report: Dictionary = probe.analyze_source(async_shadow, "res://tests/async_callable_member_shadow.barista")
+	var saw_async_shadow := false
+	for message in async_report.get("errors", PackedStringArray()):
+		if "AsyncCallable" in message and "builtin type" in message:
+			saw_async_shadow = true
+	_expect(failures, saw_async_shadow, "member cannot shadow AsyncCallable")
+
+	var number_shadow := _src_class("NumberMemberShadow extends Node\nclass Number:\n\tpass\n")
+	var number_report: Dictionary = probe.analyze_source(number_shadow, "res://tests/number_member_shadow.barista")
+	var saw_number_shadow := false
+	for message in number_report.get("errors", PackedStringArray()):
+		if "Number" in message and "compiler-provided type" in message:
+			saw_number_shadow = true
+	_expect(failures, saw_number_shadow, "member cannot shadow compiler-provided Number")
+
+	var native_shadow := _src_class("NativeMemberShadow extends Node\nvar name: String\n")
+	var native_report: Dictionary = probe.analyze_source(native_shadow, "res://tests/native_member_shadow.barista")
+	var saw_native_shadow := false
+	for message in native_report.get("errors", PackedStringArray()):
+		if "name" in message and "native class" in message:
+			saw_native_shadow = true
+	_expect(failures, saw_native_shadow, "member cannot redefine inherited native property")
+
+	var parent_shadow := _src_class("ParentMemberShadowHost extends Node\nclass Parent extends Node:\n\tfunc ping() -> void:\n\t\tpass\nclass Child extends Parent:\n\tvar ping: int\n")
+	var parent_report: Dictionary = probe.analyze_source(parent_shadow, "res://tests/parent_member_shadow.barista")
+	var saw_parent_shadow := false
+	for message in parent_report.get("errors", PackedStringArray()):
+		if "ping" in message and "parent class" in message:
+			saw_parent_shadow = true
+	_expect(failures, saw_parent_shadow, "non-function member cannot shadow parent method")
+
+	var outer_shadow := _src_class("OuterMemberShadowHost extends Node\nconst TOKEN := 1\nclass Inner extends Node:\n\tvar TOKEN: int\n")
+	var outer_report: Dictionary = probe.analyze_source(outer_shadow, "res://tests/outer_member_shadow.barista")
+	var saw_outer_shadow := false
+	for message in outer_report.get("errors", PackedStringArray()):
+		if "TOKEN" in message and "outer class" in message:
+			saw_outer_shadow = true
+	_expect(failures, saw_outer_shadow, "nested member cannot shadow visible outer constant")
 
 
 func _test_trait_requirements_and_conformance_witness(failures: PackedStringArray) -> void:

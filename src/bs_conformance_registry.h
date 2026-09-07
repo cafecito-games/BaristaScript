@@ -11,8 +11,8 @@
 /*  p_loaded_files load-graph licensing + declaration-side               */
 /*  get_recorded_trait_arguments / get_native_recorded_trait_arguments / */
 /*  get_builtin_recorded_trait_arguments + native_class_conforms /       */
-/*  builtin_type_conforms. Runtime Function* witnesses remain residual   */
-/*  under #60.                                                           */
+/*  builtin_type_conforms. Runtime Function* witness objects are M4       */
+/*  runtime dispatch; analyzer lookups re-find live declaration nodes.    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */

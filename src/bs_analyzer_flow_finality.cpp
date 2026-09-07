@@ -997,6 +997,18 @@ void BSAnalyzer::FlowFinalityContext::check_final_reads_in_expression(const BSPa
 			check_final_reads_in_expression(ternary->true_expr, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
 			check_final_reads_in_expression(ternary->false_expr, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
 		} break;
+		case BSParser::Node::TYPE_TEST: {
+			const BSParser::TypeTestNode *type_test = static_cast<const BSParser::TypeTestNode *>(p_expression);
+			check_final_reads_in_expression(type_test->operand, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+		} break;
+		case BSParser::Node::CAST: {
+			const BSParser::CastNode *cast = static_cast<const BSParser::CastNode *>(p_expression);
+			check_final_reads_in_expression(cast->operand, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+		} break;
+		case BSParser::Node::AWAIT: {
+			const BSParser::AwaitNode *await_node = static_cast<const BSParser::AwaitNode *>(p_expression);
+			check_final_reads_in_expression(await_node->to_await, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+		} break;
 		case BSParser::Node::CALL: {
 			const BSParser::CallNode *call = static_cast<const BSParser::CallNode *>(p_expression);
 			check_final_reads_in_expression(call->callee, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
@@ -1019,6 +1031,12 @@ void BSAnalyzer::FlowFinalityContext::check_final_reads_in_expression(const BSPa
 				check_final_reads_in_expression(array->elements[i], p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
 			}
 		} break;
+		case BSParser::Node::TUPLE_LITERAL: {
+			const BSParser::TupleLiteralNode *tuple_literal = static_cast<const BSParser::TupleLiteralNode *>(p_expression);
+			for (int i = 0; i < tuple_literal->elements.size(); i++) {
+				check_final_reads_in_expression(tuple_literal->elements[i], p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+			}
+		} break;
 		case BSParser::Node::DICTIONARY: {
 			const BSParser::DictionaryNode *dictionary = static_cast<const BSParser::DictionaryNode *>(p_expression);
 			for (int i = 0; i < dictionary->elements.size(); i++) {
@@ -1032,6 +1050,35 @@ void BSAnalyzer::FlowFinalityContext::check_final_reads_in_expression(const BSPa
 		} break;
 		case BSParser::Node::LAMBDA:
 			// Nested lambda scopes are analyzed independently via collect_local_finals.
+			break;
+		default:
+			break;
+	}
+}
+
+void BSAnalyzer::FlowFinalityContext::check_final_reads_in_pattern(const BSParser::PatternNode *p_pattern,
+		const HashSet<const BSParser::VariableNode *> &p_finals,
+		const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state,
+		bool p_flattened_trait_body) {
+	if (p_pattern == nullptr) {
+		return;
+	}
+	switch (p_pattern->pattern_type) {
+		case BSParser::PatternNode::PT_EXPRESSION:
+			check_final_reads_in_expression(p_pattern->expression, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+			break;
+		case BSParser::PatternNode::PT_ARRAY:
+		case BSParser::PatternNode::PT_TUPLE:
+		case BSParser::PatternNode::PT_ENUM_CASE:
+			for (int i = 0; i < p_pattern->array.size(); i++) {
+				check_final_reads_in_pattern(p_pattern->array[i], p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+			}
+			break;
+		case BSParser::PatternNode::PT_DICTIONARY:
+			for (int i = 0; i < p_pattern->dictionary.size(); i++) {
+				check_final_reads_in_expression(p_pattern->dictionary[i].key, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+				check_final_reads_in_pattern(p_pattern->dictionary[i].value_pattern, p_finals, p_finals_by_name, p_scope, p_state, p_flattened_trait_body);
+			}
 			break;
 		default:
 			break;
@@ -1113,6 +1160,9 @@ void BSAnalyzer::FlowFinalityContext::analyze_final_definite_assignment_statemen
 					continue;
 				}
 				FinalAssignmentState branch_state = r_state;
+				for (int p = 0; p < branch->patterns.size(); p++) {
+					check_final_reads_in_pattern(branch->patterns[p], p_finals, p_finals_by_name, p_scope, branch_state, p_flattened_trait_body);
+				}
 				analyze_final_definite_assignment_suite(branch->guard_body, p_finals, p_finals_by_name, p_scope, branch_state, r_assigned_anywhere, p_flattened_trait_body);
 				analyze_final_definite_assignment_suite(branch->block, p_finals, p_finals_by_name, p_scope, branch_state, r_assigned_anywhere, p_flattened_trait_body);
 				if (!has_branch) {
@@ -1123,7 +1173,7 @@ void BSAnalyzer::FlowFinalityContext::analyze_final_definite_assignment_statemen
 					merge_final_assignment_branches(merged, branch_state, intersection);
 					merged = intersection;
 				}
-				if (branch->has_wildcard && branch->guard_body == nullptr) {
+				if ((branch->has_wildcard && branch->guard_body == nullptr) || BSAnalyzer::match_branch_always_matches(branch)) {
 					has_unguarded_catchall = true;
 					break;
 				}

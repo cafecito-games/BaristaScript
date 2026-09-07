@@ -23,7 +23,11 @@
 /*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
 /*  Non-generic SelfFieldLeg + Self-contract RETURN assign/return (#60). */
 /*  Gradual Self-union admission + self_free union members (#60 residual). */
-/*  complete_self_referential_enum_type + specialize helpers (#60 residual). */
+/*  complete_self_referential_enum_type + specialize helpers (#60).      */
+/*  Deliberate non-ports: NumericType / fs_numeric_ops / integer suffixes */
+/*  are deleted by D1; fs_builtin_types registration and its JsonResult  */
+/*  generic return hint require the M5 builtin generic source surface;    */
+/*  runtime Function witnesses and compiler open-Self lowering are M4/M5.*/
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -1223,6 +1227,7 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 				push_error(vformat(R"(Member "%s" is declared more than once.)", name), member.get_source_node());
 			}
 			seen.insert(name);
+			check_class_member_name_conflict(p_class, name, member.get_source_node());
 		}
 		if (member.type == BSParser::ClassNode::Member::CLASS) {
 			// Nested class interface after inheritance (Foundry resolve_class_member CLASS arm
@@ -1999,6 +2004,9 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					native_type = base_type.native_type;
 				} else if (base_type.kind == BSParser::DataType::CLASS && base_type.native_type != StringName()) {
 					native_type = base_type.native_type;
+				} else if (base_type.kind == BSParser::DataType::TYPE_PARAMETER &&
+						base_type.type_parameter_name == SNAME("@Self") && !base_type.type_parameter_bound.is_empty()) {
+					native_type = base_type.type_parameter_bound[0].native_type;
 				} else if (is_self && current_class != nullptr && current_class->base_type.native_type != StringName()) {
 					native_type = current_class->base_type.native_type;
 				}
@@ -2032,6 +2040,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
 						call_site_validation.reject_named_call_arguments(p_call);
 						call_site_validation.validate_call_arg(method_info, p_call);
+						call_site_validation.validate_typed_object_signal_api_args(base_type, p_call, is_self);
 						// Foundry @ c9d5e35: after MethodInfo on self.emit_signal / connect, still run typed
 						// payload / callable checks against the named local signal.
 						if (is_self && p_call->function_name == SNAME("emit_signal")) {
@@ -2088,6 +2097,34 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 		}
+	}
+
+	// Foundry builtin constructor specialization @ c9d5e35: preserve the target signature
+	// carried by Callable(Object, method) and Signal(Object, signal). Generic constructor
+	// overload selection remains outside this mechanical signature slice.
+	StringName constructor_name = p_call->function_name;
+	if (constructor_name == StringName() && p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER) {
+		constructor_name = static_cast<BSParser::IdentifierNode *>(p_call->callee)->name;
+	}
+	const bool callable_constructor = constructor_name == SNAME("Callable");
+	const bool signal_constructor = constructor_name == SNAME("Signal");
+	if ((callable_constructor || signal_constructor) &&
+			(p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER)) {
+		call_site_validation.reject_named_call_arguments(p_call);
+		BSParser::DataType constructor_type = type_from_property(PropertyInfo(callable_constructor ? Variant::CALLABLE : Variant::SIGNAL, ""));
+		if (p_call->arguments.size() == 2) {
+			BSParser::DataType explicit_type;
+			const bool found = callable_constructor ? call_site_validation.callable_type_from_constant_method_args(p_call, 0, 1, explicit_type) : call_site_validation.signal_type_from_receiver(p_call->arguments[0]->get_datatype(), p_call, 1, explicit_type);
+			if (found) {
+				constructor_type = explicit_type;
+			} else if (callable_constructor) {
+				call_site_validation.validate_strict_callable_method_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
+			} else {
+				call_site_validation.validate_strict_signal_name_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
+			}
+		}
+		p_call->set_datatype(constructor_type);
+		return;
 	}
 
 	if (current_class != nullptr) {
@@ -4320,6 +4357,13 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				// Foundry assignable path: contextual `.Case` takes its union from the declared type.
 				qualify_contextual_enum_case_consumer(variable->initializer, declared);
 				mark_coroutine_handle_capture(variable->initializer, declared);
+				// Foundry resolve_assignable @ c9d5e35: `:=` preserves the initializer's complete
+				// analyzer type, including Callable/Signal signatures used by later calls.
+				if ((!declared.is_set() || declared.is_variant()) && variable->infer_datatype &&
+						variable->initializer->get_datatype().is_set()) {
+					variable->set_datatype(variable->initializer->get_datatype());
+					declared = variable->get_datatype();
+				}
 			}
 			if (declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
 				const BSParser::DataType initializer_type = variable->initializer->get_datatype();
@@ -5477,14 +5521,6 @@ Error BSAnalyzer::run_phase_conformance_witness_body() {
 	// Foundry @ c9d5e35: witness bodies need their own unqualified-shorthand sweep.
 	report_unqualified_contextual_enum_cases();
 	mark_phase(AnalyzerPhase::CONFORMANCE_WITNESS_BODY);
-	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
-}
-
-Error BSAnalyzer::run_phase_finalize() {
-#ifdef DEBUG_ENABLED
-	parser->apply_pending_warnings();
-#endif
-	mark_phase(AnalyzerPhase::FINAL_DIAGNOSTICS_AND_DEPENDENCIES);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
 

@@ -94,6 +94,9 @@ public:
 
 		bool callable_signature_from_type(const BSParser::DataType &p_callable_type, Vector<BSParser::DataType> &r_par_types, int &r_default_arg_count, bool &r_is_vararg) const;
 		BSParser::DataType callable_type_from_function(const BSParser::FunctionNode *p_function) const;
+		BSParser::DataType explicit_callable_type_from_info(const MethodInfo &p_info) const;
+		bool callable_type_from_method(const BSParser::DataType &p_receiver_type, const StringName &p_method_name, BSParser::Node *p_source, BSParser::DataType &r_callable_type);
+		bool callable_type_from_constant_method_args(BSParser::CallNode *p_call, int p_receiver_arg_index, int p_method_arg_index, BSParser::DataType &r_callable_type);
 
 		/** Foundry plain_callable_type / over_bound_callable_type / transformed_callable_type @ c9d5e35. */
 		BSParser::DataType plain_callable_type() const;
@@ -114,9 +117,11 @@ public:
 		BSParser::DataType explicit_signal_type_from_info(const MethodInfo &p_info) const;
 		BSParser::DataType explicit_signal_type_from_node(const BSParser::SignalNode *p_signal, const BSParser::DataType &p_receiver_type, const BSParser::ClassNode *p_declaring_class) const;
 		bool signal_name_from_constant_arg(const BSParser::CallNode *p_call, int p_signal_arg_index, StringName &r_signal_name) const;
+		bool signal_type_from_receiver(const BSParser::DataType &p_receiver_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
 		bool signal_type_from_class_constant_arg(const BSParser::DataType &p_receiver_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
 		bool signal_type_from_native_constant_arg(const StringName &p_native_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
 		bool local_signal_type_from_constant_arg(const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
+		void validate_strict_callable_method_fallback(const BSParser::CallNode *p_call, const BSParser::DataType &p_receiver_type, int p_method_arg_index);
 		void validate_strict_signal_name_fallback(const BSParser::CallNode *p_call, const BSParser::DataType &p_receiver_type, int p_signal_arg_index);
 		bool call_argument_can_be_string_name(const BSParser::CallNode *p_call, int p_argument_index);
 
@@ -124,6 +129,7 @@ public:
 		void validate_signal_connect_arg(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_callable_arg_index = 0);
 		void validate_local_object_emit_signal_args(const BSParser::CallNode *p_call, bool p_is_self);
 		void validate_local_object_signal_callable_arg(const BSParser::CallNode *p_call, bool p_is_self);
+		void validate_typed_object_signal_api_args(const BSParser::DataType &p_base_type, const BSParser::CallNode *p_call, bool p_is_self);
 
 	private:
 		BSAnalyzer *analyzer = nullptr;
@@ -226,6 +232,10 @@ public:
 				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, FinalAssignmentState &r_state,
 				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere, bool p_flattened_trait_body = false);
 		void check_final_reads_in_expression(const BSParser::ExpressionNode *p_expression,
+				const HashSet<const BSParser::VariableNode *> &p_finals,
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state,
+				bool p_flattened_trait_body = false);
+		void check_final_reads_in_pattern(const BSParser::PatternNode *p_pattern,
 				const HashSet<const BSParser::VariableNode *> &p_finals,
 				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state,
 				bool p_flattened_trait_body = false);
@@ -484,6 +494,11 @@ private:
 	 * walk base CLASS chain then outer for same-file extends / member lookup.
 	 */
 	void get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source);
+	bool has_member_name_conflict_in_script_class(const StringName &p_member_name, const BSParser::ClassNode *p_class, const BSParser::Node *p_member) const;
+	bool has_member_name_conflict_in_native_type(const StringName &p_member_name, const StringName &p_native_type) const;
+	Error check_native_member_name_conflict(const StringName &p_member_name, const BSParser::Node *p_member_node, const StringName &p_native_type);
+	Error check_outer_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node);
+	Error check_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node);
 	/** Bind an identifier to a VARIABLE/CONSTANT/SIGNAL/FUNCTION/ENUM member of `p_class` when present. */
 	bool try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited);
 	/** Walk `p_class` then `base_type.class_type` for a named member bind. */
