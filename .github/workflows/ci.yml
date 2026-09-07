@@ -102,6 +102,13 @@ jobs:
         run: |
           scons api_version=4.7 target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
 
+      - name: Verify parse-cache release surface
+        shell: bash
+        run: >-
+          python3 tests/verify_parse_cache_surface.py
+          --binary-dir project/bin/${{ matrix.target.platform }}
+          --target-type ${{ matrix.target-type }}
+
       - name: Probe the removed-warning-code compile error
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash

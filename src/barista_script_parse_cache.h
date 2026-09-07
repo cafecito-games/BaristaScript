@@ -8,6 +8,8 @@
 
 #pragma once
 
+#ifdef DEBUG_ENABLED
+
 #include "bs_cache.h"
 
 #include <godot_cpp/classes/ref_counted.hpp>
@@ -107,3 +109,5 @@ public:
 };
 
 } // namespace barista_script
+
+#endif // DEBUG_ENABLED

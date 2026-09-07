@@ -10,7 +10,6 @@
 
 #include "barista_script.h"
 #include "barista_script_language.h"
-#include "barista_script_parse_cache.h"
 #include "barista_script_resource_loader.h"
 #include "bs_analyzer_probe.h"
 #include "bs_cache.h"
@@ -21,6 +20,10 @@
 #include "bs_platform_probe.h"
 #include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
+
+#ifdef DEBUG_ENABLED
+#include "barista_script_parse_cache.h"
+#endif // DEBUG_ENABLED
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
@@ -44,10 +47,6 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);
-	// The parse cache's engine-facing handle. godot-cpp's String/Variant only work inside a loaded
-	// Godot runtime, so the ported frontend is exercised from headless Godot rather than from a
-	// standalone C++ test binary, and it has to be a registered class to be reachable at all.
-	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
 	// The corpus sentinels, so the GDScript harness reads the same two literals the C++ side and
 	// the Python tooling do rather than restating them.
 	GDREGISTER_CLASS(barista_script::BaristaScriptCorpusSentinels);
@@ -59,6 +58,10 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	// Nothing but the GDScript suites reaches them, and those run against `template_debug`, so
 	// registering them unconditionally would publish test-only classes from `template_release` and
 	// buy nothing.
+	// The parse cache's engine-facing handle belongs to the same debug surface. Production code
+	// reaches BSCache directly; only the GDScript suites use this adapter to mutate cache state and
+	// inject persistence faults.
+	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
 	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptGlobalClassProbe);

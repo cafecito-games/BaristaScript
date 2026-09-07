@@ -8,6 +8,8 @@
 
 #include "barista_script_parse_cache.h"
 
+#ifdef DEBUG_ENABLED
+
 #include "bs_parser.h"
 
 #include <cstring>
@@ -260,3 +262,5 @@ bool BaristaScriptParseCache::invalidate_analysis_on_strict_settings_change() {
 #endif // DEBUG_ENABLED
 
 } // namespace barista_script
+
+#endif // DEBUG_ENABLED
