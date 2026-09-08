@@ -85,9 +85,9 @@
 				"fs_parser_data_type.cpp:37",
 				"fs_analyzer.cpp:47"
 			],
-			"resolution": "guarded-out",
-			"omission_reason": "unreferenced",
-			"rationale": "Engine-internal global-constant registry. The analyzer port reaches CoreConstants::* through src/bs_core_constants.h, which fails closed (every query returns false/empty) because godot-cpp does not expose @GlobalScope constants the way an engine module can. The include is dropped; the adapter is the audited contract."
+			"resolution": "shimmed",
+			"shim_symbols": ["CoreConstants"],
+			"rationale": "The seam aliases CoreConstants to BSCoreConstants, defined in src/bs_core_constants.h and exercised by bs_platform_seam.cpp. GDExtension cannot enumerate this registry or utility signatures, so scripts/generate_global_api.py embeds the complete corresponding sections of pinned godot-cpp/gdextension/extension_api-4-7.json for both build paths. Exact int64 values and engine carrier names are retained; malformed producer input fails generation and unknown names remain absent."
 		},
 		{
 			"core_header": "core/error/error_macros.h",

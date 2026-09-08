@@ -23,14 +23,15 @@
 #include "barista_script.h"
 #include "barista_script_language.h"
 #include "bs_cache.h"
+#include "bs_native_db.h"
 #include "bs_platform.h"
 #include "bs_trait_utils.h"
 #include "bs_type.h"
 
 namespace barista_script {
 
-// Foundry uses Variant::construct; godot-cpp has no matching free function, so convert
-// through typed operators for the annotation argument types that MethodInfo declares.
+// Use the engine's complete conversion surface after Foundry's strict-admission gate
+// (core/variant/variant_utility.cpp:853 @ c9d5e35), including Array/packed-array conversions.
 static bool _convert_annotation_argument(Variant &r_value, Variant::Type p_expected_type) {
 	if (r_value.get_type() == p_expected_type) {
 		return true;
@@ -38,30 +39,12 @@ static bool _convert_annotation_argument(Variant &r_value, Variant::Type p_expec
 	if (!Variant::can_convert_strict(r_value.get_type(), p_expected_type)) {
 		return false;
 	}
-	switch (p_expected_type) {
-		case Variant::BOOL:
-			r_value = (bool)r_value;
-			return true;
-		case Variant::INT:
-			r_value = (int64_t)r_value;
-			return true;
-		case Variant::FLOAT:
-			r_value = (double)r_value;
-			return true;
-		case Variant::STRING:
-			r_value = String(r_value);
-			return true;
-		case Variant::STRING_NAME:
-			r_value = StringName(String(r_value));
-			return true;
-		case Variant::ARRAY:
-			if (r_value.get_type() == Variant::ARRAY) {
-				return true;
-			}
-			return false;
-		default:
-			return false;
+	Variant converted = UtilityFunctions::type_convert(r_value, p_expected_type);
+	if (converted.get_type() != p_expected_type) {
+		return false;
 	}
+	r_value = converted;
+	return true;
 }
 
 static String _annotation_target_name(uint32_t p_target_kind) {
@@ -1255,6 +1238,13 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 	// inferred vars / cyclic refs are not silently Variant.
 	resolve_class_member(p_class, p_identifier->name, p_identifier);
 	const BSParser::ClassNode::Member member = p_class->get_member(p_identifier->name);
+	if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
+		BSParser::DataType class_type = member.m_class->get_datatype();
+		class_type.is_meta_type = true;
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
+		p_identifier->set_datatype(class_type);
+		return true;
+	}
 	if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
 		if (p_mark_inherited && !member.variable->is_static) {
 			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
@@ -1307,7 +1297,7 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 	return false;
 }
 
-bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class) {
+bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_is_lexical_outer) {
 	if (p_identifier == nullptr || p_class == nullptr) {
 		return false;
 	}
@@ -1319,10 +1309,45 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 			break;
 		}
 		visited.insert(lookup);
-		if (try_bind_identifier_member(p_identifier, lookup, !first)) {
+		// Foundry fs_analyzer.cpp:12018,12146-12172: lexical outers do not supply
+		// receiver variables/functions/signals. Reuse the same visible-outer policy as conflicts.
+		const bool visible = !p_is_lexical_outer || (lookup->has_member(p_identifier->name) && _member_is_visible_outer_class_surface(lookup->get_member(p_identifier->name)));
+		if (visible && try_bind_identifier_member(p_identifier, lookup, !first)) {
 			return true;
 		}
 		first = false;
+	}
+	if (p_is_lexical_outer) {
+		return false;
+	}
+	const StringName native = p_class->base_type.native_type;
+	if (native != StringName()) {
+		const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(native, false);
+		for (int i = 0; i < properties.size(); i++) {
+			const Dictionary property = properties[i];
+			if (StringName(property.get("name", String())) == p_identifier->name) {
+				p_identifier->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+				p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+				return true;
+			}
+		}
+		MethodInfo info;
+		if (BSNativeDB::get_method_info(native, p_identifier->name, &info)) {
+			p_identifier->set_datatype(call_site_validation.explicit_callable_type_from_info(info));
+			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			return true;
+		}
+		if (ClassDB::class_has_signal(native, p_identifier->name) && BSNativeDB::get_signal(native, p_identifier->name, &info)) {
+			p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_info(info));
+			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			return true;
+		}
+		if (ClassDB::class_has_integer_constant(native, p_identifier->name)) {
+			p_identifier->is_constant = true;
+			p_identifier->reduced_value = ClassDB::class_get_integer_constant(native, p_identifier->name);
+			p_identifier->set_datatype(type_from_variant(p_identifier->reduced_value));
+			return true;
+		}
 	}
 	return false;
 }

@@ -122,6 +122,12 @@
  */
 using namespace godot;
 
+namespace barista_script {
+// Definition lives in bs_core_constants.h; metadata comes from the pinned engine API producer.
+class BSCoreConstants;
+using CoreConstants = BSCoreConstants;
+} // namespace barista_script
+
 /**
  * `docs/foundry-reuse-plan.md` section 3 predicted that godot-cpp spells the error macros
  * differently and that the seam would need a shim. It does not: every macro the port set uses is

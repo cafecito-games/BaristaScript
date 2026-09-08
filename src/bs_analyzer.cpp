@@ -39,6 +39,7 @@
 #include "barista_script_language.h"
 #include "bs_builtin_sources.h"
 #include "bs_cache.h"
+#include "bs_core_constants.h"
 #include "bs_declaration_index.h"
 #include "bs_diagnostic_names.h"
 #include "bs_global_class.h"
@@ -1038,7 +1039,17 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		}
 
 		if (BSParser::TypeAliasNode *type_alias = find_type_alias_in_scope(name)) {
-			result = resolve_type_alias(type_alias);
+			// Member resolution installs the declaring scope before expanding/caching the alias.
+			// A first use in an inner class must not bind names against that consumer's members.
+			for (BSParser::ClassNode *owner = current_class; owner != nullptr; owner = owner->outer) {
+				if (owner->has_member(name) && owner->get_member(name).type_alias == type_alias) {
+					resolve_class_member(owner, name, p_type_node);
+					break;
+				}
+			}
+			if (const BSParser::DataType *resolved = resolved_type_aliases.getptr(type_alias)) {
+				result = *resolved;
+			}
 			if (!result.is_set()) {
 				result.kind = BSParser::DataType::VARIANT;
 				return result;
@@ -1112,20 +1123,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			result.native_type = name;
 			result.builtin_type = Variant::OBJECT;
 		} else {
-			String qualified = String(name);
-			BSParser::ClassNode *head = parser != nullptr ? parser->get_tree() : nullptr;
-			BSParser::DataType indexed = resolve_named_type(qualified, p_type_node);
-			if (indexed.kind == BSParser::DataType::VARIANT && head != nullptr && !head->namespace_name.is_empty()) {
-				indexed = resolve_named_type(head->namespace_name + String(".") + qualified, p_type_node);
-			}
-			if (indexed.kind == BSParser::DataType::VARIANT && head != nullptr) {
-				for (int i = 0; i < head->imports.size(); i++) {
-					indexed = resolve_named_type(head->imports[i] + String(".") + qualified, p_type_node);
-					if (indexed.kind != BSParser::DataType::VARIANT) {
-						break;
-					}
-				}
-			}
+			BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node);
 			if (indexed.kind != BSParser::DataType::VARIANT) {
 				return indexed;
 			}
@@ -1839,8 +1837,10 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			}
 		}
 	}
-	if (current_class != nullptr && try_bind_identifier_member_in_inheritance(p_identifier, current_class)) {
-		return;
+	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+		if (try_bind_identifier_member_in_inheritance(p_identifier, scope, scope != current_class)) {
+			return;
+		}
 	}
 	// Foundry surface: flattened trait members are visible on the implementer (#60).
 	if (current_class != nullptr) {
@@ -1910,6 +1910,24 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		native_meta.is_constant = true;
 		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
 		p_identifier->set_datatype(native_meta);
+		return;
+	}
+	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier);
+	if (!indexed.is_variant()) {
+		indexed.is_meta_type = true;
+		p_identifier->set_datatype(indexed);
+		return;
+	}
+	if (CoreConstants::is_global_constant(p_identifier->name)) {
+		const int index = CoreConstants::get_global_constant_index(p_identifier->name);
+		p_identifier->reduced_value = CoreConstants::get_global_constant_value(index);
+		p_identifier->is_constant = true;
+		p_identifier->set_datatype(type_from_variant(p_identifier->reduced_value));
+		return;
+	}
+	MethodInfo utility;
+	if (CoreConstants::get_utility_function(p_identifier->name, utility)) {
+		p_identifier->set_datatype(call_site_validation.explicit_callable_type_from_info(utility));
 		return;
 	}
 	if (find_type_alias_in_scope(p_identifier->name) != nullptr) {
@@ -2300,6 +2318,16 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				call_site_validation.validate_strict_signal_name_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
 			}
 		}
+		// Foundry fs_analyzer.cpp:8265-8351 @ c9d5e35: only empty carriers and constant
+		// carrier-preserving copies are safe to fold. Receiver/name construction stays dynamic.
+		if (p_call->arguments.is_empty()) {
+			p_call->is_constant = true;
+			p_call->reduced_value = callable_constructor ? Variant(Callable()) : Variant(Signal());
+		} else if (p_call->arguments.size() == 1 && p_call->arguments[0]->is_constant &&
+				p_call->arguments[0]->reduced_value.get_type() == builtin_type) {
+			p_call->is_constant = true;
+			p_call->reduced_value = p_call->arguments[0]->reduced_value;
+		}
 		p_call->set_datatype(constructor_type);
 		return;
 	}
@@ -2374,6 +2402,23 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			(p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER &&
 					static_cast<BSParser::IdentifierNode *>(p_call->callee)->name == SNAME("push_fatal"))) {
 		p_call->is_noreturn = true;
+	}
+	// Every unmatched bare call must pass through the same name lookup as a value read.
+	// Builtin constructors and the language's fatal intrinsic are already recognized callees.
+	if (p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER &&
+			BSParser::get_builtin_type(constructor_name) == Variant::VARIANT_MAX && !p_call->is_noreturn) {
+		reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_call->callee));
+		const BSParser::DataType callee_type = p_call->callee->get_datatype();
+		if (callee_type.kind == BSParser::DataType::BUILTIN && callee_type.builtin_type == Variant::CALLABLE) {
+			if (callee_type.has_method_signature) {
+				call_site_validation.reject_named_call_arguments(p_call);
+				call_site_validation.validate_call_arg(callee_type.method_info, p_call);
+				p_call->set_datatype(type_from_property(callee_type.method_info.return_val));
+				return;
+			}
+		} else if (callee_type.is_hard_type() && !callee_type.is_variant()) {
+			push_error(vformat(R"(Cannot call "%s": it is not a function.)", constructor_name), p_call->callee);
+		}
 	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
@@ -4370,7 +4415,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			reduce_expression(assignment->assigned_value);
 			if (assignment->assignee != nullptr && assignment->assignee->type == BSParser::Node::IDENTIFIER) {
 				BSParser::IdentifierNode *assignee = static_cast<BSParser::IdentifierNode *>(assignment->assignee);
-				if (assignee->variable_source != nullptr) {
+				// Foundry fs_analyzer.cpp:7603: only a LOCAL_VARIABLE owns this union arm.
+				// Parameters and binds point to smaller nodes without an assignments field.
+				if (assignee->source == BSParser::IdentifierNode::LOCAL_VARIABLE && assignee->variable_source != nullptr) {
 					assignee->variable_source->assignments++;
 				}
 			}
@@ -5610,6 +5657,24 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 			resolve_used_traits(p_class->members[i].m_class);
 		}
 	}
+}
+
+BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source) {
+	const String qualified = p_name;
+	BSParser::ClassNode *head = parser != nullptr ? parser->get_tree() : nullptr;
+	BSParser::DataType indexed = resolve_named_type(qualified, p_source);
+	if (indexed.is_variant() && head != nullptr && !head->namespace_name.is_empty()) {
+		indexed = resolve_named_type(head->namespace_name + String(".") + qualified, p_source);
+	}
+	if (indexed.is_variant() && head != nullptr) {
+		for (const String &import : head->imports) {
+			indexed = resolve_named_type(import + String(".") + qualified, p_source);
+			if (!indexed.is_variant()) {
+				break;
+			}
+		}
+	}
+	return indexed;
 }
 
 BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source) {

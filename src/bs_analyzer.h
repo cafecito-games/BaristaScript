@@ -506,7 +506,7 @@ private:
 	/** Bind an identifier to a VARIABLE/CONSTANT/SIGNAL/FUNCTION/ENUM member of `p_class` when present. */
 	bool try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited);
 	/** Walk `p_class` then `base_type.class_type` for a named member bind. */
-	bool try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class);
+	bool try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_is_lexical_outer = false);
 	/**
 	 * Foundry resolve_class_member @ c9d5e35 (`fs_analyzer_surface.cpp`): lazily resolve a class
 	 * member's datatype with cyclic `RESOLVING` fail-stop before identifier/member binds read it.
@@ -793,6 +793,7 @@ private:
 	/** Own members then `base_type.class_type` chain (Foundry inherited method surface @ c9d5e35). */
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
 	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
+	BSParser::DataType resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source);
 	bool errors_are_only_m5_deferred() const;
 	/** True when every error at/after `p_from_index` is an M5 deferred diagnostic (or none exist). */
 	bool errors_from_index_are_only_m5_deferred(int p_from_index) const;

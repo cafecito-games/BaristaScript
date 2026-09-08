@@ -28,6 +28,18 @@ if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/godot-cpp/src")
 endif()
 add_subdirectory(godot-cpp SYSTEM)
 
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_global_api.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp/gdextension/extension_api-4-7.json")
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_global_api.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp/gdextension/extension_api-4-7.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/bs_global_api.gen.h"
+    RESULT_VARIABLE BARISTA_GLOBAL_API_RESULT)
+if(NOT BARISTA_GLOBAL_API_RESULT EQUAL 0)
+    message(FATAL_ERROR "Cannot generate pinned BaristaScript global API metadata")
+endif()
+
 # When compiling for emscripten, this toolchainhack needs to be included.
 # set(CMAKE_PROJECT_<project-name>_INCLUDE ${godot-cpp_SOURCE_DIR}/cmake/emsdkHack.cmake)
 

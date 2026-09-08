@@ -25,6 +25,8 @@ func _init() -> void:
 	_test_validate_and_is_valid_agree(failures)
 	_test_semantic_errors(failures)
 	_test_undeclared_identifier_diagnostic(failures)
+	_test_review_resolution_regressions(failures)
+	_test_pinned_global_api_lookup(failures)
 	_test_unary_sign_constant_folding(failures)
 	_test_analyzer_declaration_commit(failures)
 	_test_declaration_head_kinds_and_conformance(failures)
@@ -103,6 +105,98 @@ func _test_undeclared_identifier_diagnostic(failures: PackedStringArray) -> void
 
 func _kw_class_name() -> String:
 	return "class_" + "name"
+
+
+func _test_review_resolution_regressions(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var valid_cases := {
+		"global_constant": "func test():\n\tprint(OK)\n",
+		"utility_value": "func test():\n\tvar fn = print\n",
+		"native_property": "extends Node\nfunc test():\n\tvar value: StringName = name\n",
+		"native_method": "extends Node\nfunc test():\n\tvar fn: Callable = get_parent\n",
+		"native_signal": "extends Node\nfunc test():\n\tvar event: Signal = tree_entered\n",
+		"native_constant": "extends Node\nfunc test():\n\tvar mode: int = PROCESS_MODE_DISABLED\n",
+		"outer_member": "const VALUE = 1\nclass Inner:\n\tfunc test():\n\t\tvar value: int = VALUE\n",
+		"nested_class": "class Inner:\n\tpass\nfunc test():\n\tvar cls = Inner\n",
+		"packed_argument": "annotation items(values: PackedInt32Array) targets METHOD\n@items([1, 2])\nfunc test():\n\tpass\n",
+		"packed_default": "annotation items(values: PackedInt32Array = [1, 2]) targets METHOD\n@items\nfunc test():\n\tpass\n",
+		"empty_callable": "const EMPTY = Callable()\n",
+		"empty_signal": "const EMPTY = Signal()\n",
+		"copy_callable": "const EMPTY = Callable()\nconst COPY = Callable(EMPTY)\n",
+		"copy_signal": "const EMPTY = Signal()\nconst COPY = Signal(EMPTY)\n",
+		"carrier_annotation": "annotation empty(value: Callable, event: Signal = Signal()) targets METHOD\n@empty(Callable())\nfunc test():\n\tpass\n",
+		"carrier_default": "func test(value: Callable = Callable(), event: Signal = Signal()):\n\tpass\n",
+		"alias_owner": "class Inner:\n\ttype Scalar = String\n\tvar first: Value = 1.5\ntype Value = Scalar\ntype Scalar = float\nvar subsequent: Value = 2.5\n",
+		"alias_chain": "class Inner:\n\ttype Scalar = String\n\tvar first: Value = 1.5\ntype Value = Middle\ntype Middle = Scalar\ntype Scalar = float\nvar subsequent: Value = 2.5\n",
+		"alias_order": "type Scalar = float\ntype Value = Scalar\nclass Inner:\n\ttype Scalar = String\n\tvar first: Value = 1.5\nvar subsequent: Value = 2.5\n",
+	}
+	for label in valid_cases:
+		var report: Dictionary = probe.analyze_source(valid_cases[label], "res://tests/review_%s.barista" % label)
+		_expect(failures, report.get("valid", false), "%s must resolve: %s" % [label, report.get("errors")])
+	for callee in ["missing_ident", "Only"]:
+		for expression in ["%s()", "var value = %s()", "return %s()", "print(%s())"]:
+			var prefix := "type Only = int\n" if callee == "Only" else ""
+			var source: String = prefix + "func test():\n\t" + (expression % callee) + "\n"
+			var report: Dictionary = probe.analyze_source(source, "res://tests/review_call.barista")
+			var errors: PackedStringArray = report.get("errors", PackedStringArray())
+			var diagnostic := 'Type alias "Only" can only be used in a type position.' if callee == "Only" else 'Identifier "missing_ident" not declared in the current scope.'
+			_expect(failures, not report.get("valid", true) and errors.size() == 1 and errors[0].begins_with(diagnostic), "%s %s must reject callee: %s" % [callee, expression, errors])
+	var negative: Dictionary = probe.analyze_source("func test():\n\tvar value = missing_value\n", "res://tests/review_missing_value.barista")
+	_expect(failures, not negative.get("valid", true), "true missing value stays rejected")
+	for source in ["var outer_value: int\nclass Inner:\n\tfunc test():\n\t\tprint(outer_value)\n", "signal outer_event\nclass Inner:\n\tfunc test():\n\t\tvar event = outer_event\n", "static func outer() -> int:\n\treturn 1\nclass Inner:\n\tfunc test():\n\t\tvar value = outer\n", "extends Node\nclass Inner:\n\tfunc test():\n\t\tvar value = name\n"]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/review_outer_boundary.barista")
+		_expect(failures, not report.get("valid", true), "lexical outer does not donate receiver members: %s" % source)
+	for source in ["const BAD = Callable(1)\n", "const BAD = Signal(1)\n", "extends Node\nconst BAD = Callable(self, \"get_parent\")\n", "extends Node\nconst BAD = Signal(self, \"tree_entered\")\n"]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/review_unsafe_constant.barista")
+		_expect(failures, not report.get("valid", true), "invalid overloads and bound carriers do not fold")
+	for expression in ["Callable()", "Callable(Callable())", "Signal()", "Signal(Signal())"]:
+		var report: Dictionary = probe.fold_expression(expression)
+		var expected_type := TYPE_CALLABLE if expression.begins_with("Callable") else TYPE_SIGNAL
+		_expect(failures, report.get("ok", false) and report.get("value_type") == expected_type, "%s folds to its exact engine carrier" % expression)
+	for carrier in ["PackedByteArray", "PackedInt32Array", "PackedInt64Array", "PackedFloat32Array", "PackedFloat64Array", "PackedStringArray"]:
+		var values := '["one", "two"]' if carrier == "PackedStringArray" else "[1, 2]"
+		for use_default in [false, true]:
+			var parameter: String = "value: " + carrier + (" = " + values if use_default else "")
+			var annotation: String = "@items" if use_default else "@items(" + values + ")"
+			var source: String = "annotation items(" + parameter + ") targets METHOD\n" + annotation + "\nfunc test():\n\tpass\n"
+			var report: Dictionary = probe.analyze_source(source, "res://tests/review_conversion.barista")
+			_expect(failures, report.get("valid", false), "%s supplied/default conversion uses engine surface: %s" % [carrier, report.get("errors")])
+
+
+func _test_pinned_global_api_lookup(failures: PackedStringArray) -> void:
+	# Read the actual pinned producer bytes. Foundry extension_api_dump.cpp:499-619 @ c9d5e35.
+	var path := ProjectSettings.globalize_path("res://../godot-cpp/gdextension/extension_api-4-7.json")
+	var api: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var constants: Array = api.global_constants.duplicate()
+	for enumeration in api.global_enums:
+		constants.append_array(enumeration.values)
+	for entry in constants:
+		var report: Dictionary = probe.fold_expression(entry.name)
+		_expect(failures, report.get("ok", false) and report.get("value_type") == TYPE_INT, "engine constant %s resolves" % entry.name)
+		# Godot's JSON reader uses double; compare exact-int cases here and boundaries below.
+		if abs(entry.value) < 9007199254740992.0:
+			_expect(failures, report.get("value") == int(entry.value), "engine constant %s preserves its value" % entry.name)
+	_expect(failures, probe.fold_expression("INT64_MAX").get("value") == 9223372036854775807, "INT64_MAX preserves every bit")
+	_expect(failures, probe.fold_expression("INT64_MIN").get("value") == -9223372036854775807 - 1, "INT64_MIN preserves every bit")
+	for function in api.utility_functions:
+		var report: Dictionary = probe.analyze_source("func test():\n\tvar utility: Callable = " + function.name + "\n", "res://tests/review_utility.barista")
+		_expect(failures, report.get("valid", false), "engine utility %s resolves as a value: %s" % [function.name, report.get("errors")])
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var indexed_source := _src_class("ReviewIndexed extends RefCounted\n")
+	var imported_source := "namespace review_scope\n" + _src_class("ReviewImported extends RefCounted\n")
+	index.synchronize_path_from_source("res://tests/review_indexed.barista", indexed_source)
+	index.synchronize_path_from_source("res://tests/review_imported.barista", imported_source)
+	BaristaScriptParseCache.set_source_override("res://tests/review_indexed.barista", indexed_source)
+	BaristaScriptParseCache.set_source_override("res://tests/review_imported.barista", imported_source)
+	for source in ["func test():\n\tvar handle = ReviewIndexed\n", "import review_scope\nfunc test():\n\tvar handle = ReviewImported\n"]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/review_handle.barista")
+		_expect(failures, report.get("valid", false), "producer-indexed/imported class handle resolves: %s" % report.get("errors"))
+	BaristaScriptParseCache.clear_source_override("res://tests/review_indexed.barista")
+	BaristaScriptParseCache.clear_source_override("res://tests/review_imported.barista")
+	index.clear()
+
 
 func _src_class(body_after_keyword_space: String) -> String:
 	return _kw_class_name() + " " + body_after_keyword_space
@@ -1781,7 +1875,13 @@ func _test_lambda_capture_and_compound_narrowing(failures: PackedStringArray) ->
 	# Narrowed compound read: inside the `is int` arm, `v += 1` is accepted (narrowed left operand).
 	var compound_narrow_ok := _src_class("CompoundAssignNarrowedReadOk extends Node\nfunc take(v: int | String) -> void:\n\tif v is int:\n\t\tv += 1\n")
 	var compound_narrow_ok_report: Dictionary = probe.analyze_source(compound_narrow_ok, "res://tests/compound_assign_narrowed_read_ok.barista")
-	_expect(failures, compound_narrow_ok_report.get("valid", false) == true, "compound += inside `is int` arm is valid")
+	_expect(failures, compound_narrow_ok_report.get("valid", false) == true, "compound += inside `is int` arm is valid: %s" % compound_narrow_ok_report.get("errors"))
+	# ParameterNode does not have VariableNode.assignments. Repeated fresh parser allocations
+	# exercise assignment accounting without letting a write through the identifier union damage
+	# a neighboring AST node (the original symptom depended on allocator layout).
+	for iteration in range(64):
+		var repeated: Dictionary = probe.analyze_source(compound_narrow_ok, "res://tests/compound_parameter_%d.barista" % iteration)
+		_expect(failures, repeated.get("valid", false), "parameter assignment preserves AST on iteration %d: %s" % [iteration, repeated.get("errors")])
 
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
