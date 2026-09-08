@@ -28,6 +28,7 @@ func _init() -> void:
 	_test_review_resolution_regressions(failures)
 	_test_pinned_global_api_lookup(failures)
 	_test_language_utility_registry(failures)
+	_test_dictionary_literal_constant_parity(failures)
 	_test_unary_sign_constant_folding(failures)
 	_test_analyzer_declaration_commit(failures)
 	_test_declaration_head_kinds_and_conformance(failures)
@@ -240,6 +241,54 @@ func _test_language_utility_registry(failures: PackedStringArray) -> void:
 		var report: Dictionary = probe.analyze_source("func test():\n\t" + expression + "\n", "res://tests/language_utility_unknown.barista")
 		var errors: PackedStringArray = report.get("errors", PackedStringArray())
 		_expect(failures, errors.size() == 1 and errors[0] == 'Identifier "missing_language_utility" not declared in the current scope.', "unknown language utility remains one diagnostic: %s" % errors)
+
+
+func _test_dictionary_literal_constant_parity(failures: PackedStringArray) -> void:
+	# Byte-faithful producer/analyzer contract: Foundry fs_parser.cpp:5357-5430 and
+	# fs_analyzer.cpp:9323-9349 @ c9d5e35. Lua-style identifier keys are parser-produced
+	# constants; only Python-style key expressions are reduced, and repeated constants fail.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for sample in [
+		['{"key": 1}', "key", 1],
+		["{ key = 1 }", "key", 1],
+		['{"outer": { inner = 2 }}', "outer", { &"inner": 2 }],
+		["{ outer = {\"inner\": 2} }", &"outer", { "inner": 2 }],
+	]:
+		var folded: Dictionary = probe.fold_expression(sample[0])
+		var raw_value: Variant = folded.get("value", {})
+		var value: Dictionary = raw_value if raw_value is Dictionary else {}
+		_expect(failures, folded.get("ok", false), "dictionary constant folds: %s -> %s" % [sample[0], folded])
+		_expect(failures, value.get(sample[1]) == sample[2], "dictionary preserves nested key/value: %s -> %s" % [sample[0], value])
+	for sample in [['len({"key": 1})', 1], ["len({ key = 1 })", 1], ["len({})", 0]]:
+		var folded: Dictionary = probe.fold_expression(sample[0])
+		_expect(failures, folded.get("ok", false) and folded.get("value") == sample[1], "dictionary len folds: %s -> %s" % [sample[0], folded])
+	var empty: Dictionary = probe.fold_expression("{}")
+	_expect(failures, empty.get("ok", false) and (empty.get("value", {}) as Dictionary).is_empty(), "empty dictionary constant folds")
+	var valid_source := "func test(value: int):\n\tvar python := {\"key\": value}\n\tvar lua := { key = value }\n\tvar python_count: int = len(python)\n\tvar lua_count: int = len(lua)\n"
+	var valid_report: Dictionary = probe.analyze_source(valid_source, "res://tests/dictionary_nonconstant.barista")
+	_expect(failures, valid_report.get("valid", false), "nonconstant dictionary values remain valid runtime expressions: %s" % valid_report.get("errors"))
+	for sample in [
+		['const DUPLICATE = {"key": 1, "key": 2}\n', 1, 1, 30],
+		["const DUPLICATE = { key = 1, key = 2 }\n", 1, 1, 30],
+		['const KEY = &"key"\nconst DUPLICATE = {KEY: 1, "key": 2}\n', 2, 2, 28],
+		['const DUPLICATE = { key = 1, "key" = 2 }\n', 1, 1, 30],
+	]:
+		var source: String = sample[0]
+		var report: Dictionary = probe.analyze_source(source, "res://tests/dictionary_duplicate.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, not report.get("valid", true), "duplicate constant dictionary key is invalid: %s" % source)
+		var expected := 'Key "key" was already used in this dictionary (at line %d).' % sample[1]
+		_expect(failures, errors.size() == 1 and errors[0] == expected, "duplicate key uses pinned diagnostic and first-value line: %s" % errors)
+		var validate: Dictionary = probe.validate_source(source, "res://tests/dictionary_duplicate.barista", false)
+		var positioned_errors: Array = validate.get("errors", [])
+		_expect(failures, positioned_errors.size() == 1 and positioned_errors[0].get("line") == sample[2] and positioned_errors[0].get("column") == sample[3], "duplicate key diagnostic originates at repeated key: %s" % positioned_errors)
+	for source in [
+		'var value = 1\nconst BAD = len({"key": value})\n',
+		"var value = 1\nconst BAD = len({ key = value })\n",
+	]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/dictionary_nonconstant_const.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, not report.get("valid", true) and not "not declared" in str(errors), "nonconstant dictionary is rejected only by its constant consumer: %s" % errors)
 
 
 func _test_review_resolution_regressions(failures: PackedStringArray) -> void:

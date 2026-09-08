@@ -2763,15 +2763,32 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 	if (p_dictionary == nullptr) {
 		return;
 	}
+	// Foundry `reduce_dictionary` @ c9d5e35 (fs_analyzer.cpp:9323-9349): Lua-table keys
+	// are constants produced by the parser, while Python-dictionary keys remain expressions.
+	// Godot Dictionary supplies the same string/StringName key equivalence as Foundry's
+	// StringLikeVariantComparator, so it also preserves the first value line for diagnostics.
 	bool all_constant = true;
 	Dictionary values;
+	Dictionary first_value_lines;
 	for (int i = 0; i < p_dictionary->elements.size(); i++) {
-		reduce_expression(p_dictionary->elements[i].key);
-		reduce_expression(p_dictionary->elements[i].value);
 		const auto &element = p_dictionary->elements[i];
+		if (p_dictionary->style == BSParser::DictionaryNode::PYTHON_DICT) {
+			reduce_expression(element.key);
+		}
+		reduce_expression(element.value);
+
+		if (element.key != nullptr && element.key->is_constant) {
+			if (first_value_lines.has(element.key->reduced_value)) {
+				push_error(vformat(R"(Key "%s" was already used in this dictionary (at line %d).)", element.key->reduced_value,
+								   int(first_value_lines[element.key->reduced_value])),
+						element.key);
+			} else {
+				first_value_lines[element.key->reduced_value] = element.value != nullptr ? element.value->start_line : element.key->start_line;
+			}
+		}
 		if (element.key == nullptr || element.value == nullptr || !element.key->is_constant || !element.value->is_constant) {
 			all_constant = false;
-		} else {
+		} else if (!values.has(element.key->reduced_value)) {
 			values[element.key->reduced_value] = element.value->reduced_value;
 		}
 	}
