@@ -4,6 +4,7 @@
 
 """Validate the byte-faithful pinned engine producer and rejected schema mutations."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -27,6 +28,8 @@ class GlobalAPITest(unittest.TestCase):
     def test_real_producer_and_reproducibility(self):
         first = GENERATOR.generate(self.source)
         self.assertEqual(first, GENERATOR.generate(self.source))
+        self.assertEqual(hashlib.sha256(first.encode("utf-8")).hexdigest(),
+                         "0a823732096dff8b2a24b779fab0b36c796a1ab9039f2d26bc846812e13c7d67")
         constants = list(self.api["global_constants"])
         for enum in self.api["global_enums"]:
             for value in enum["values"]:
@@ -73,6 +76,87 @@ class GlobalAPITest(unittest.TestCase):
             before = target.stat().st_mtime_ns
             GENERATOR.write_header(self.path, target)
             self.assertEqual(before, target.stat().st_mtime_ns)
+
+    def test_byte_level_producer_schema_mutations(self):
+        # Mutate the actual producer bytes: dictionary round-tripping would erase duplicate keys.
+        def replace(source, old, new, section=None):
+            start = source.index(('"' + section + '":').encode("ascii")) if section else 0
+            self.assertIn(old, source[start:])
+            return source[:start] + source[start:].replace(old, new, 1)
+
+        mutations = []
+        for section, empty in [("header", b"{}"), ("global_constants", b"[]"),
+                               ("global_enums", b"[]"), ("builtin_classes", b"[]"),
+                               ("utility_functions", b"[]")]:
+            mutations.append(("duplicate section " + section,
+                              self.source.replace(b"{", b'{"' + section.encode("ascii") + b'":' + empty + b",", 1)))
+        for field, original in [("version_major", b"4"), ("version_minor", b"7"), ("version_patch", b"0")]:
+            token = ('"' + field + '": ').encode("ascii")
+            for value in [original + b".0", b"true", b"false", b"-1", b"2147483648", b"null", b'"7"', b"[]",
+                          b"NaN", b"Infinity", b"-Infinity"]:
+                mutations.append((field + " " + value.decode("ascii"), replace(self.source, token + original, token + value)))
+            mutations.append(("duplicate " + field, replace(self.source, token + original, token + original + b", " + token + original)))
+        for old, new in [(b'"precision": "single"', b'"precision": null'),
+                         (b'"precision": "single"', b'"precision": "double"'),
+                         (b'"precision": "single"', b'"precision": "single", "unknown": true'),
+                         (b'"version_patch": 0,', b''),
+                         (b'"version_status": "stable"', b'"version_status": []'),
+                         (b'"version_build": "official"', b'"version_build": false'),
+                         (b'"version_full_name": "Godot Engine v4.7.stable.official"', b'"version_full_name": ""')]:
+            mutations.append(("header shape " + old.decode("ascii"), replace(self.source, old, new)))
+        mutations.append(("duplicate utility name", replace(self.source, b'"name": "sin"', b'"name": "sin", "name": "sin"', "utility_functions")))
+        mutations.append(("duplicate constant value", replace(self.source, b'"value": 255', b'"value": 255, "value": 255', "global_constants")))
+        for old, new in [(b'"name": "Nil"', b'"name": "UnknownCarrier"'),
+                         (b'"name": "Nil"', b'"name": "bool"'),
+                         (b'"name": "Nil"', b'"name": "nil"'),
+                         (b'"name": "Nil"', b'"name": "Nil", "unexpected": true'),
+                         (b'"name": "Nil"', b'"name": "Nil", "name": "Nil"'),
+                         (b'"is_keyed": false', b'"is_keyed": 0'),
+                         (b'"is_keyed": false,', b''),
+                         (b'"has_destructor": false', b'"has_destructor": null'),
+                         (b'"indexing_return_type": "float"', b'"indexing_return_type": "UnknownCarrier"')]:
+            mutations.append(("builtin shape " + new.decode("ascii"), replace(self.source, old, new, "builtin_classes")))
+        for field in ("operators", "constructors", "members", "constants", "enums", "methods"):
+            token = ('"' + field + '": [').encode("ascii")
+            mutations.append(("non-object builtin " + field, replace(self.source, token, token + b"null,", "builtin_classes")))
+            token = ('"' + field + '":').encode("ascii")
+            # Adding a malformed optional field to Nil also exercises an exact non-array shape.
+            if field in ("members", "constants", "enums", "methods"):
+                mutations.append(("non-array builtin " + field,
+                                  replace(self.source, b'"name": "Nil"', b'"name": "Nil", ' + token + b"null", "builtin_classes")))
+        invented = replace(self.source, b'"builtin_classes": [', b'"builtin_classes": [{"name":"UnknownCarrier"},')
+        invented = replace(invented, b'"return_type": "float"', b'"return_type": "UnknownCarrier"', "utility_functions")
+        mutations.append(("invented carrier authorizes utility", invented))
+        renamed = replace(self.source, b'"name": "Nil"', b'"name": "UnknownCarrier"', "builtin_classes")
+        renamed = replace(renamed, b'"return_type": "float"', b'"return_type": "UnknownCarrier"', "utility_functions")
+        mutations.append(("renamed complete builtin authorizes utility", renamed))
+        for label, source in mutations:
+            with self.subTest(mutation=label):
+                # These are schema mutations, not accidentally invalid JSON syntax. Python's
+                # permissive decoder deliberately permits duplicate keys/non-finite literals.
+                json.loads(source.decode("utf-8"))
+                with self.assertRaises(ValueError):
+                    GENERATOR.generate(source)
+
+    def test_carrier_fingerprint_is_semantic_and_reports_evidence(self):
+        api = copy.deepcopy(self.api)
+        api["builtin_classes"].reverse()
+        self.assertEqual(GENERATOR.generate(self.source), GENERATOR.generate(json.dumps(api).encode("utf-8")))
+        api["builtin_classes"][0]["name"] = "UnknownCarrier"
+        with self.assertRaisesRegex(ValueError, "expected [0-9a-f]{64}, actual [0-9a-f]{64}"):
+            GENERATOR.generate(json.dumps(api).encode("utf-8"))
+
+    def test_every_closed_carrier_in_both_utility_positions(self):
+        api = copy.deepcopy(self.api)
+        carriers = sorted(GENERATOR.validate_builtin_carriers(api["builtin_classes"]))
+        api["utility_functions"] = [dict(name="carrier_" + name, category="general", is_vararg=False,
+                                         hash=1, return_type=name, arguments=[dict(name="value", type=name)])
+                                    for name in carriers]
+        output = GENERATOR.generate(json.dumps(api).encode("utf-8"))
+        for carrier in carriers:
+            with self.subTest(carrier=carrier):
+                self.assertIn('property("%s", "")' % carrier, output)
+                self.assertIn('property("%s", "value")' % carrier, output)
 
     def test_cpp_string_escaping(self):
         api = copy.deepcopy(self.api)

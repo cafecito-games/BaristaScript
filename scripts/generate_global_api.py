@@ -8,8 +8,16 @@ Producer: core/extension/extension_api_dump.cpp:499-619 @ Foundry c9d5e35.
 No runtime file reads, guessed names, or independent signature tables.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
+
+# Complete carrier names from pinned godot-cpp/gdextension/extension_api-4-7.json.
+# Producer: core/extension/extension_api_dump.cpp:624-643,911 @ Foundry c9d5e35.
+# Projection: ASCII JSON of the sorted builtin_classes[].name list, separators=(',', ':').
+# It excludes paths, timestamps and unused builtin members. Exact names (including case) are
+# pinned because the C++ consumer resolves them with Variant::get_type_name at API 4.7.
+BUILTIN_CARRIER_SHA256 = "dd14ccfa9e8879d5ddf5de44d4b524bf0366e1c4d32cbf2284da49505f52e848"
 
 
 def require(condition, message):
@@ -32,14 +40,66 @@ def named_records(values):
     return values
 
 
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, "duplicate JSON object member: " + key)
+        result[key] = value
+    return result
+
+
+def reject_non_json_number(value):
+    raise ValueError("invalid JSON numeric token: " + value)
+
+
+def validate_header(header):
+    record(header, ("version_major", "version_minor", "version_patch", "version_status",
+                    "version_build", "version_full_name", "precision"))
+    for field in ("version_major", "version_minor", "version_patch"):
+        require(type(header[field]) is int and 0 <= header[field] <= 2147483647,
+                "invalid exact integer API header field: " + field)
+    require((header["version_major"], header["version_minor"], header["version_patch"]) == (4, 7, 0),
+            "expected pinned Godot 4.7.0 API")
+    expected = {"version_status": "stable", "version_build": "official",
+                "version_full_name": "Godot Engine v4.7.stable.official", "precision": "single"}
+    for field, value in expected.items():
+        require(type(header[field]) is str and header[field] == value,
+                "invalid pinned API header field " + field + ": expected " + value)
+
+
+def validate_builtin_carriers(builtins):
+    entries = named_records(builtins)
+    names = sorted(entry["name"] for entry in entries)
+    projection = json.dumps(names, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    digest = hashlib.sha256(projection).hexdigest()
+    require(digest == BUILTIN_CARRIER_SHA256,
+            "builtin carrier vocabulary mismatch: expected " + BUILTIN_CARRIER_SHA256 + ", actual " + digest)
+    # Variant is the dynamic carrier, and Object is emitted in classes rather than builtin_classes.
+    types = set(names) | {"Variant", "Object"}
+    required = ("name", "is_keyed", "operators", "constructors", "has_destructor")
+    optional = ("indexing_return_type", "members", "constants", "enums", "methods")
+    for entry in entries:
+        record(entry, required, optional)
+        for flag in ("is_keyed", "has_destructor"):
+            require(type(entry[flag]) is bool, "invalid builtin flag: " + flag)
+        for field in ("operators", "constructors", "members", "constants", "enums", "methods"):
+            if field in entry:
+                require(type(entry[field]) is list and all(type(item) is dict for item in entry[field]),
+                        "invalid builtin metadata array: " + field)
+        if "indexing_return_type" in entry:
+            require(type(entry["indexing_return_type"]) is str and entry["indexing_return_type"] in types,
+                    "unknown builtin indexing carrier")
+    return types
+
+
 def generate(source):
-    api = json.loads(source.decode("utf-8"))
+    api = json.loads(source.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_non_json_number)
     require(type(api) is dict and type(api.get("header")) is dict, "missing API header")
-    require(api["header"].get("version_major") == 4 and api["header"].get("version_minor") == 7, "expected pinned Godot 4.7 API")
+    validate_header(api["header"])
     sections = ("global_constants", "global_enums", "utility_functions")
     require(all(section in api for section in sections), "missing global metadata section")
     require("builtin_classes" in api, "missing builtin carrier vocabulary")
-    types = set(value["name"] for value in named_records(api["builtin_classes"])) | {"Variant", "Object"}
+    types = validate_builtin_carriers(api["builtin_classes"])
     constant_names = set()
     for value in named_records(api["global_constants"]):
         record(value, ("name", "value", "is_bitfield"))
