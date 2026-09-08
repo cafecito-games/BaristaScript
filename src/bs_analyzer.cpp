@@ -46,6 +46,7 @@
 #include "bs_native_db.h"
 #include "bs_script_server.h"
 #include "bs_trait_utils.h"
+#include "bs_utility_functions.h"
 #include "bs_warning.h"
 
 namespace barista_script {
@@ -1926,8 +1927,13 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		return;
 	}
 	MethodInfo utility;
-	if (CoreConstants::get_utility_function(p_identifier->name, utility)) {
+	const bool language_utility = BSUtilityFunctions::get_function_info(p_identifier->name, utility);
+	if (language_utility || CoreConstants::get_utility_function(p_identifier->name, utility)) {
 		p_identifier->set_datatype(call_site_validation.explicit_callable_type_from_info(utility));
+		if (language_utility) {
+			p_identifier->is_constant = true;
+			p_identifier->reduced_value = BSUtilityFunctions::make_analyzer_callable(p_identifier->name);
+		}
 		return;
 	}
 	if (find_type_alias_in_scope(p_identifier->name) != nullptr) {
@@ -2339,7 +2345,9 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		}
 		// Same-class bare call: callee is the identifier itself (or null for some super forms).
 		const bool local_shape = p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER;
-		if (local_shape && fname != StringName()) {
+		const BSParser::IdentifierNode *identifier = local_shape && p_call->callee != nullptr ? static_cast<BSParser::IdentifierNode *>(p_call->callee) : nullptr;
+		const bool has_lexical_callee = identifier != nullptr && identifier->suite != nullptr && identifier->suite->has_local(fname);
+		if (local_shape && fname != StringName() && !has_lexical_callee) {
 			if (fname == SNAME("emit_signal")) {
 				call_site_validation.reject_named_call_arguments(p_call);
 				call_site_validation.validate_local_object_emit_signal_args(p_call, true);
@@ -2411,9 +2419,41 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		const BSParser::DataType callee_type = p_call->callee->get_datatype();
 		if (callee_type.kind == BSParser::DataType::BUILTIN && callee_type.builtin_type == Variant::CALLABLE) {
 			if (callee_type.has_method_signature) {
+				const int previous_errors = parser->get_errors().size();
 				call_site_validation.reject_named_call_arguments(p_call);
 				call_site_validation.validate_call_arg(callee_type.method_info, p_call);
 				p_call->set_datatype(type_from_property(callee_type.method_info.return_val));
+				// The existing name pipeline owns precedence. Only a genuine unshadowed language
+				// utility reaches this branch with no local/member source (Foundry 8489-8542).
+				MethodInfo language_info;
+				if (static_cast<BSParser::IdentifierNode *>(p_call->callee)->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+						BSUtilityFunctions::get_function_info(constructor_name, language_info)) {
+					if (!p_is_root && !p_is_await && language_info.return_val.type == Variant::NIL &&
+							!(language_info.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT)) {
+						push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", constructor_name), p_call);
+					}
+					bool all_constant = true;
+					Vector<Variant> arguments;
+					for (const BSParser::ExpressionNode *argument : p_call->arguments) {
+						all_constant = all_constant && argument->is_constant;
+						arguments.push_back(argument->reduced_value);
+					}
+					if (all_constant && parser->get_errors().size() == previous_errors) {
+						Variant value;
+						String error;
+						switch (BSUtilityFunctions::evaluate_constant(constructor_name, arguments, value, error)) {
+							case BSUtilityFunctions::ConstantResult::FOLDED:
+								p_call->is_constant = true;
+								p_call->reduced_value = value;
+								break;
+							case BSUtilityFunctions::ConstantResult::INVALID_ARGUMENT:
+								push_error(vformat(R"*(Invalid argument for "%s()" function: %s)*", constructor_name, error), p_call);
+								break;
+							case BSUtilityFunctions::ConstantResult::NOT_CONSTANT:
+								break;
+						}
+					}
+				}
 				return;
 			}
 		} else if (callee_type.is_hard_type() && !callee_type.is_variant()) {
@@ -2723,13 +2763,27 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 	if (p_dictionary == nullptr) {
 		return;
 	}
+	bool all_constant = true;
+	Dictionary values;
 	for (int i = 0; i < p_dictionary->elements.size(); i++) {
 		reduce_expression(p_dictionary->elements[i].key);
 		reduce_expression(p_dictionary->elements[i].value);
+		const auto &element = p_dictionary->elements[i];
+		if (element.key == nullptr || element.value == nullptr || !element.key->is_constant || !element.value->is_constant) {
+			all_constant = false;
+		} else {
+			values[element.key->reduced_value] = element.value->reduced_value;
+		}
 	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::BUILTIN;
 	type.builtin_type = Variant::DICTIONARY;
+	if (all_constant) {
+		p_dictionary->is_constant = true;
+		p_dictionary->reduced = true;
+		p_dictionary->reduced_value = values;
+		type.is_constant = true;
+	}
 	p_dictionary->set_datatype(type);
 }
 
@@ -4728,6 +4782,25 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 		case BSParser::Node::FOR: {
 			BSParser::ForNode *for_node = static_cast<BSParser::ForNode *>(p_node);
 			reduce_expression(for_node->list);
+			// Foundry resolve_for: range is variadic in ordinary call metadata, but the for
+			// intrinsic requires 1..3 operands and yields an int iterator. Do not allocate it.
+			if (for_node->list != nullptr && for_node->list->type == BSParser::Node::CALL) {
+				BSParser::CallNode *call = static_cast<BSParser::CallNode *>(for_node->list);
+				if (call->callee != nullptr && call->callee->type == BSParser::Node::IDENTIFIER) {
+					const BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(call->callee);
+					if (identifier->name == SNAME("range") && identifier->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+							identifier->get_datatype().has_method_signature) {
+						List<BSParser::DataType> range_parameters;
+						for (int i = 0; i < 3; i++) {
+							range_parameters.push_back(type_from_property(PropertyInfo(Variant::NIL, ""), true));
+						}
+						call_site_validation.validate_call_arg(range_parameters, 2, false, call);
+						if (for_node->variable != nullptr) {
+							for_node->variable->set_datatype(type_from_property(PropertyInfo(Variant::INT, "")));
+						}
+					}
+				}
+			}
 			analyze_suite(for_node->loop);
 		} break;
 		case BSParser::Node::MATCH: {

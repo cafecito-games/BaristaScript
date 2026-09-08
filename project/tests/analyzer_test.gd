@@ -27,6 +27,7 @@ func _init() -> void:
 	_test_undeclared_identifier_diagnostic(failures)
 	_test_review_resolution_regressions(failures)
 	_test_pinned_global_api_lookup(failures)
+	_test_language_utility_registry(failures)
 	_test_unary_sign_constant_folding(failures)
 	_test_analyzer_declaration_commit(failures)
 	_test_declaration_head_kinds_and_conformance(failures)
@@ -105,6 +106,140 @@ func _test_undeclared_identifier_diagnostic(failures: PackedStringArray) -> void
 
 func _kw_class_name() -> String:
 	return "class_" + "name"
+
+
+func _test_language_utility_registry(failures: PackedStringArray) -> void:
+	# Complete separate language registry: Foundry fs_utility_functions.cpp:501-511 @ c9d5e35.
+	# These source strings are analyzed, never executed (especially load/debug/proxy calls).
+	var calls := {
+		"type_exists": ['type_exists("Node")', "bool"],
+		"char": ["char(65)", "String"],
+		"ord": ['ord("A")', "int"],
+		"range": ["range(1, 4, 1)", "Array"],
+		"load": ['load("res://does_not_exist.barista")', "Resource"],
+		"print_debug": ['print_debug("test", 1)', "void"],
+		"print_stack": ["print_stack()", "void"],
+		"get_stack": ["get_stack()", "Array"],
+		"len": ['len("abc")', "int"],
+		"is_instance_of": ["is_instance_of(1, TYPE_INT)", "bool"],
+		"create_proxy_dynamic": ["create_proxy_dynamic(Object, Callable())", "Object"],
+	}
+	var probe := BaristaScriptAnalyzerProbe.new()
+	# Metadata inspection never exports or invokes the analyzer-only callable marker.
+	for expression in ["char", "[char]", "Callable(char)", '{"callback": char}', '{char: "callback"}']:
+		_expect(failures, not probe.fold_expression(expression).get("ok", true), "utility identity is not exported by constant probe: " + expression)
+	if probe.has_method("language_utility_metadata"):
+		var metadata: Dictionary = probe.call("language_utility_metadata")
+		_expect(failures, metadata.get("roundtrip", false), "language public MethodInfo round-trip preserves every field")
+		_expect(failures, metadata.get("private_identity", false), "utility identity is stable, distinct and non-executable")
+		var functions: Array = metadata.get("functions", [])
+		_expect(failures, functions.size() == calls.size(), "complete public language utility inventory")
+		for info in functions:
+			_expect(failures, calls.has(info.name), "no invented public language utility")
+			_expect(failures, info.has("args") and info.has("return") and info.has("flags") and info.has("default_args"), "complete utility MethodInfo: " + str(info))
+			_expect(failures, metadata.constant_flags.get(info.name) == (info.name in ["type_exists", "char", "ord", "len", "is_instance_of"]), "pinned constant flag: " + str(info.name))
+	else:
+		_expect(failures, false, "language utility metadata inspection is available")
+	for sample in [['len("abc")', 3], ['char(65)', "A"], ['ord("A")', 65], ['type_exists("Node")', true], ["is_instance_of(1, TYPE_INT)", true], ["is_instance_of(1, TYPE_STRING)", false], ["len([1, 2])", 2], ['len({"x": 1})', 1], ["len({})", 0], ['len({"x": {"y": 1}, "z": 2})', 2]]:
+		var folded: Dictionary = probe.fold_expression(sample[0])
+		_expect(failures, folded.get("ok", false) and folded.get("value") == sample[1], "language utility constant result: %s -> %s" % [sample[0], folded])
+	for name in calls:
+		var expression: String = calls[name][0]
+		var result_type: String = calls[name][1]
+		var cases := {
+			"discarded": "func test():\n\t" + expression + "\n",
+			"value": "func test():\n\tvar utility: Callable = " + name + "\n",
+			"constant_value": "const UTILITY = " + name + "\n",
+		}
+		if result_type != "void":
+			cases["initializer"] = "func test():\n\tvar value: " + result_type + " = " + expression + "\n"
+			cases["return"] = "func test() -> " + result_type + ":\n\treturn " + expression + "\n"
+			cases["nested"] = "func test():\n\tprint(" + expression + ")\n"
+		for context in cases:
+			var report: Dictionary = probe.analyze_source(cases[context], "res://tests/language_utility.barista")
+			_expect(failures, report.get("valid", false), "%s %s language utility: %s" % [name, context, report.get("errors")])
+	# Every fixed signature family rejects both too few/too many, with concrete type mismatch
+	# checks kept separate from unknown-name rejection.
+	var invalid := {
+		"type_exists_arity": ["type_exists()", "Too few arguments"],
+		"type_exists_type": ["type_exists(1)", "Invalid argument"],
+		"char_arity": ["char(65, 66)", "Too many arguments"],
+		"char_type": ['char("A")', "Invalid argument"],
+		"ord_arity": ["ord()", "Too few arguments"],
+		"ord_type": ["ord(65)", "Invalid argument"],
+		"load_arity": ["load()", "Too few arguments"],
+		"load_type": ["load(1)", "Invalid argument"],
+		"print_stack_arity": ["print_stack(1)", "Too many arguments"],
+		"get_stack_arity": ["get_stack(1)", "Too many arguments"],
+		"len_arity": ["len()", "Too few arguments"],
+		"len_constant_type": ["len(1)", "Invalid argument"],
+		"instance_arity": ["is_instance_of(1)", "Too few arguments"],
+		"instance_constant_type": ['is_instance_of(1, "int")', "Invalid argument"],
+		"proxy_arity": ["create_proxy_dynamic(Object)", "Too few arguments"],
+		"proxy_type": ["create_proxy_dynamic(1, Callable())", "Invalid argument"],
+		"proxy_handler": ["create_proxy_dynamic(Object, 1)", "Invalid argument"],
+		"named": ["char(code = 65)", "Named arguments"],
+	}
+	for label in invalid:
+		var report: Dictionary = probe.analyze_source("func test():\n\t" + invalid[label][0] + "\n", "res://tests/language_utility_bad.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, not report.get("valid", true) and errors.size() == 1 and invalid[label][1] in errors[0], "%s signature diagnostic: %s" % [label, errors])
+	var positives := {
+		"typed_value": 'func test():\n\tvar cb: Callable[[int], String] = char\n\tvar text: String = cb.call(65)\n',
+		"inferred_value": 'func test():\n\tvar cb := ord\n\tvar code: int = cb.call("A")\n',
+		"bound_value": 'func test():\n\tvar cb := char.bind(65)\n\tvar text: String = cb.call()\n',
+		"callv": 'func test():\n\tvar cb := ord\n\tvar code: int = cb.callv(["A"])\n',
+		"local_shadow": 'func test(len: Callable[[String], String]) -> String:\n\treturn len("abc")\n',
+		"local_over_member": 'func len(value: int) -> int:\n\treturn value\nfunc test(len: Callable[[String], String]) -> String:\n\treturn len("abc")\n',
+		"member_shadow": 'func len(value: String) -> String:\n\treturn value\nfunc test() -> String:\n\treturn len("abc")\n',
+		"member_value_shadow": 'var len: Callable[[String], String]\nfunc test() -> String:\n\treturn len("abc")\n',
+		"constants": 'const COUNT = len("abc")\nconst CHARACTER = char(65)\nconst CODE = ord(CHARACTER)\nconst EXISTS = type_exists("Node")\nconst MATCHES = is_instance_of(CODE, TYPE_INT)\n',
+		"annotation": 'annotation number(value: int = len("abc")) targets METHOD\n@number(ord("A"))\nfunc test(value: String = char(65)):\n\tpass\n',
+		"utility_annotation": 'annotation callback(value: Callable = len) targets METHOD\n@callback(ord)\nfunc test(cb: Callable = char):\n\tpass\n',
+		"range_loop": 'func test():\n\tfor value in range(3):\n\t\tvar number: int = value\n',
+		"shadowed_range_loop": 'func test(range: Callable[[], Array]):\n\tfor value in range():\n\t\tpass\n',
+		# Pinned range is NOARGS+vararg metadata outside the for intrinsic; execution is M4.
+		"runtime_range": 'func test():\n\tvar values: Array = range()\n\tvar other: Array = range("runtime check")\n',
+		"runtime_len": 'func test(value):\n\tvar count: int = len(value)\n',
+		"runtime_dictionary_len": 'func test(value):\n\tvar count: int = len({"x": value})\n',
+		"constant_dictionary_len": 'const N = len({"x": 1})\n',
+		"runtime_instance": 'func test(value, type):\n\tvar matches: bool = is_instance_of(value, type)\n',
+		"debug_vararg": 'func test():\n\tprint_debug()\n\tprint_debug(1, "x", null)\n',
+	}
+	for label in positives:
+		var report: Dictionary = probe.analyze_source(positives[label], "res://tests/language_utility_context.barista")
+		_expect(failures, report.get("valid", false), "%s utility context: %s" % [label, report.get("errors")])
+	var negatives := {
+		"callable_arity": 'func test():\n\tvar cb := char\n\tcb.call()\n',
+		"callable_type": 'func test():\n\tvar cb := ord\n\tcb.call(65)\n',
+		"bound_type": 'func test():\n\tvar cb := char.bind("A")\n',
+		"callv_type": 'func test():\n\tvar cb := ord\n\tcb.callv([65])\n',
+		"void_initializer": 'func test():\n\tvar value = print_stack()\n',
+		"void_nested": 'func test():\n\tprint(print_debug())\n',
+		"char_domain": 'const BAD = char(-1)\n',
+		"ord_domain": 'const BAD = ord("abc")\n',
+		"instance_domain": 'const BAD = is_instance_of(1, -1)\n',
+		"range_loop_arity": 'func test():\n\tfor value in range():\n\t\tpass\n',
+		"range_loop_many": 'func test():\n\tfor value in range(1, 2, 3, 4):\n\t\tpass\n',
+		"range_iterator_type": 'func test():\n\tfor value in range(3):\n\t\tvar text: String = value\n',
+		"nonconstant_range": 'const BAD = range(3)\n',
+		"nonconstant_load": 'const BAD = load("res://does_not_exist.barista")\n',
+		"nonconstant_stack": 'const BAD = get_stack()\n',
+		"nonconstant_proxy": 'const BAD = create_proxy_dynamic(Object, Callable())\n',
+		"nonconstant_dictionary_len": 'var value = 1\nconst BAD = len({"x": value})\n',
+	}
+	for label in negatives:
+		var report: Dictionary = probe.analyze_source(negatives[label], "res://tests/language_utility_negative.barista")
+		_expect(failures, not report.get("valid", true) and not 'not declared' in str(report.get("errors")), "%s utility rejection: %s" % [label, report.get("errors")])
+	# Existing general compatibility residual belongs to #138, not utility lookup: assigning
+	# char to Callable[[String], String] is still admitted by BSTypeCompatibility's carrier-only
+	# comparison. The registry retains int -> String metadata and invocation tests above use it.
+	# Packed-array constructor/general constant folding remains the pre-existing #141 surface;
+	# this registry can evaluate those carriers when constants exist, but does not invent them.
+	for expression in ["missing_language_utility()", "len(missing_language_utility())"]:
+		var report: Dictionary = probe.analyze_source("func test():\n\t" + expression + "\n", "res://tests/language_utility_unknown.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, errors.size() == 1 and errors[0] == 'Identifier "missing_language_utility" not declared in the current scope.', "unknown language utility remains one diagnostic: %s" % errors)
 
 
 func _test_review_resolution_regressions(failures: PackedStringArray) -> void:

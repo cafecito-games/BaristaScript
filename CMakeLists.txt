@@ -103,6 +103,7 @@ target_sources(${LIBNAME}
     src/bs_analyzer.cpp
     src/bs_analyzer.h
     src/bs_analyzer_call_validation.cpp
+	src/bs_utility_functions.cpp
     src/bs_analyzer_flow_finality.cpp
     src/bs_analyzer_surface.cpp
 	src/bs_analyzer_finalization.cpp

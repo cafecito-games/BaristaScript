@@ -45,6 +45,9 @@
 #include <godot_cpp/variant/char_utils.hpp>
 // core/variant/variant.h
 #include <godot_cpp/variant/variant.hpp>
+// core/variant/callable.h -- analyzer-only utility identity, with no runtime registration.
+#include <godot_cpp/variant/callable.hpp>
+#include <godot_cpp/variant/callable_custom.hpp>
 
 // core/error/error_macros.h
 #include <godot_cpp/core/error_macros.hpp>

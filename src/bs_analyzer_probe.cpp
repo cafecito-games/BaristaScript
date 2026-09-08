@@ -19,10 +19,32 @@
 #include "bs_diagnostic_names.h"
 #include "bs_parser.h"
 #include "bs_type.h"
+#include "bs_utility_functions.h"
 
 namespace barista_script {
 
 namespace {
+
+bool _contains_analyzer_utility(const Variant &p_value, int p_depth = 0) {
+	if (p_depth > 64) {
+		return true; // Fail closed for unexpectedly deep diagnostic values.
+	}
+	if (p_value.get_type() == Variant::CALLABLE) {
+		return BSUtilityFunctions::is_analyzer_callable(p_value);
+	}
+	if (p_value.get_type() == Variant::ARRAY) {
+		const Array values = p_value;
+		for (int i = 0; i < values.size(); i++) {
+			if (_contains_analyzer_utility(values[i], p_depth + 1)) {
+				return true;
+			}
+		}
+	} else if (p_value.get_type() == Variant::DICTIONARY) {
+		const Dictionary values = p_value;
+		return _contains_analyzer_utility(values.keys(), p_depth + 1) || _contains_analyzer_utility(values.values(), p_depth + 1);
+	}
+	return false;
+}
 
 bool _expression_has_unary_sign(const BSParser::ExpressionNode *p_expression) {
 	if (p_expression == nullptr) {
@@ -59,6 +81,7 @@ const BSParser::ExpressionNode *_find_fold_expression(const BSParser::ClassNode 
 } // namespace
 
 void BaristaScriptAnalyzerProbe::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("language_utility_metadata"), &BaristaScriptAnalyzerProbe::language_utility_metadata);
 	ClassDB::bind_method(D_METHOD("fold_expression", "expression_source"), &BaristaScriptAnalyzerProbe::fold_expression);
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
 	ClassDB::bind_method(D_METHOD("is_semantically_valid", "source", "path"), &BaristaScriptAnalyzerProbe::is_semantically_valid);
@@ -136,9 +159,45 @@ godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::Strin
 		result["errors"] = errors;
 		return result;
 	}
+	if (_contains_analyzer_utility(reduced_value)) {
+		errors.push_back("Analyzer-only utility identity is not an exportable runtime value.");
+		result["errors"] = errors;
+		return result;
+	}
 	result["ok"] = true;
 	result["value"] = reduced_value;
 	result["value_type"] = (int)reduced_value.get_type();
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::language_utility_metadata() const {
+	Dictionary result;
+	const List<MethodInfo> source = BSUtilityFunctions::get_function_list();
+	const List<MethodInfo> roundtrip = BaristaScriptLanguage::get_public_function_list();
+	result["functions"] = BaristaScriptLanguage::get_singleton()->_get_public_functions();
+	bool complete = source.size() == roundtrip.size();
+	bool private_identity = true;
+	Dictionary constant_flags;
+	for (const MethodInfo &info : source) {
+		bool found = false;
+		for (const MethodInfo &copy : roundtrip) {
+			if (copy.name == info.name) {
+				found = Dictionary(copy) == Dictionary(info);
+				break;
+			}
+		}
+		complete = complete && found;
+		constant_flags[info.name] = BSUtilityFunctions::is_function_constant(info.name);
+		const Callable identity = BSUtilityFunctions::make_analyzer_callable(info.name);
+		private_identity = private_identity && !identity.is_valid() && BSUtilityFunctions::is_analyzer_callable(identity);
+		for (const MethodInfo &other : source) {
+			const Callable other_identity = BSUtilityFunctions::make_analyzer_callable(other.name);
+			private_identity = private_identity && ((identity == other_identity) == (info.name == other.name));
+		}
+	}
+	result["constant_flags"] = constant_flags;
+	result["roundtrip"] = complete;
+	result["private_identity"] = private_identity;
 	return result;
 }
 

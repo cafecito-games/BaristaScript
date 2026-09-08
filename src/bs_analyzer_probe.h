@@ -32,6 +32,9 @@ public:
 	 */
 	godot::Dictionary fold_expression(const godot::String &p_expression_source) const;
 
+	/** Copied public metadata and boolean identity checks only; never returns or invokes markers. */
+	godot::Dictionary language_utility_metadata() const;
+
 	/** Run `_validate`-equivalent analysis; returns valid + first error message. */
 	godot::Dictionary analyze_source(const godot::String &p_source, const godot::String &p_path) const;
 
