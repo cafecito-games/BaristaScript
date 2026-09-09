@@ -4848,6 +4848,16 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	var direct_fractional_errors: Array = probe.validate_source(direct_fractional_source, "res://tests/direct_fractional_constant.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(direct_fractional_errors, [['Cannot assign a value of type "float" to a variable of type "int".', 2, 33]]),
 		"direct fractional constant reaches the same D1 implicit-assignment refusal through the ordinary consumer: %s" % [direct_fractional_errors])
+	var class_boxed_consumers_source := "const BOXED: Variant = 1\nvar MEMBER: float = BOXED\nconst MEMBER_CONST: float = BOXED\n"
+	var class_boxed_consumers_report: Dictionary = probe.validate_source(class_boxed_consumers_source, "res://tests/boxed_constant_class_consumers.barista", true)
+	_expect(failures, class_boxed_consumers_report.get("valid", false) and class_boxed_consumers_report.get("errors", []).is_empty() and class_boxed_consumers_report.get("warnings", []).is_empty(),
+		"class variable and class constant consumers share boxed constant conversion: %s" % [class_boxed_consumers_report])
+	var class_boxed_refusal_source := "const BOXED: Variant = 1.5\nvar MEMBER: int = BOXED\nconst MEMBER_CONST: int = BOXED\n"
+	var class_boxed_refusal_errors: Array = probe.validate_source(class_boxed_refusal_source, "res://tests/boxed_constant_class_refusals.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(class_boxed_refusal_errors, [
+		['Cannot assign a value of type "float" as "int".', 2, 19],
+		['Cannot assign a value of type "float" as "int".', 3, 27],
+	]), "class variable and class constant consumers apply the value-aware D1 refusal: %s" % [class_boxed_refusal_errors])
 
 	# Repair R3: a root ternary forwards root position to both value arms, while its condition and
 	# value-producing consumers remain non-root.
