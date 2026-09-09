@@ -14,7 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from corpus_registry import ROOT, validate_registration, verify_checkout
+from corpus_registry import ROOT, sparse_patterns, validate_registration, verify_checkout
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         registry = validate_registration(ROOT)
         if args.github_output is not None:
-            paths = sorted(record["source"] for record in registry["corpora"].values())
+            paths = sparse_patterns(registry)
             # Only validated path characters reach the protocol. This delimiter
             # cannot equal a normalized source path containing '/' characters.
             output = (f"repository={registry['repository']}\nrevision={registry['revision']}\n"

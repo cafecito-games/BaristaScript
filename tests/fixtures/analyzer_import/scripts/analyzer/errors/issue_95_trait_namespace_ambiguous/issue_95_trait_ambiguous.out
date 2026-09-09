@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 5: Could not resolve trait "Issue95AmbiguousTrait": imported namespaces "issue_95.alpha" and "issue_95.beta" are ambiguous.

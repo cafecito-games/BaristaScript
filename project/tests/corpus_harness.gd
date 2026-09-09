@@ -51,6 +51,7 @@ enum FailureReason {
 ## Injection is transport-only. Results follow the native raw oracle schema.
 var case_evaluator: Callable
 var fixture_stages: Dictionary = {}
+var fixture_paths: PackedStringArray = []
 var frontend_factory: Callable = func(): return ClassDB.instantiate("BaristaScriptAnalyzerProbe")
 
 
@@ -58,7 +59,7 @@ var frontend_factory: Callable = func(): return ClassDB.instantiate("BaristaScri
 ## `{"exit_code": int, "output": Array[String]}`. The output always ends with
 ## exactly one machine-readable summary line, so consecutive runs over an
 ## unchanged tree are byte-identical.
-func run(corpus_root: String, allow_empty: bool = false, update_expectations: bool = false) -> Dictionary:
+func run(corpus_root: String, allow_empty: bool = false, update_expectations: bool = false, exact_case: String = "") -> Dictionary:
 	var identity := _path_identity(corpus_root)
 	if identity.has("error"):
 		return error_result("BS_ERROR " + identity.error)
@@ -91,10 +92,20 @@ func run(corpus_root: String, allow_empty: bool = false, update_expectations: bo
 	if not discovery.get("discovery_errors", []).is_empty():
 		return error_result("BS_ERROR " + "; ".join(discovery.discovery_errors))
 
+	if not exact_case.is_empty():
+		if not _valid_case_relative(exact_case) or update_expectations:
+			return error_result("BS_ERROR invalid exact case or expectation update")
+		var selected: Array = cases.filter(func(case): return case.path == corpus_root.path_join(exact_case))
+		if selected.size() != 1:
+			return error_result("BS_ERROR exact case was not discovered: %s" % exact_case)
+		cases = selected
+
 	var failures: Array[Dictionary] = []
+	var results: Array[Dictionary] = []
 	var passed := 0
 	for case_info in cases:
 		var outcome := _run_case(case_info)
+		results.append(outcome)
 		if outcome["passed"]:
 			passed += 1
 		else:
@@ -154,7 +165,7 @@ func run(corpus_root: String, allow_empty: bool = false, update_expectations: bo
 		if failure.reason in [FailureReason.UNREADABLE_SOURCE, FailureReason.INVALID_RESULT]:
 			exit_code = ExitCode.HARNESS_ERROR
 	output.append(_summary_line(passed, cases.size(), skipped_count))
-	return {"exit_code": exit_code, "output": output}
+	return {"exit_code": exit_code, "output": output, "results": results}
 
 
 ## Builds a harness-error result for callers that parse arguments themselves,
@@ -292,14 +303,17 @@ func _run_case(case_info: Dictionary) -> Dictionary:
 		return _failure(case_info, FailureReason.INVALID_RESULT, evaluation.output)
 	var actual: String = evaluation["output"]
 	if expected != actual:
-		return _failure(
+		var failure := _failure(
 			case_info,
 			FailureReason.OUTPUT_MISMATCH,
 			"output mismatch\nexpected: \"%s\"\nactual:   \"%s\""
 			% [_escape_mismatch_value(expected), _escape_mismatch_value(actual)],
 			actual
 		)
-	return {"passed": true}
+		failure["fixture_index"] = evaluation.get("fixture_index", {})
+		failure["analysis_ran"] = evaluation.analysis_ran
+		return failure
+	return {"passed": true, "path": case_info.path, "expected": expected, "actual": actual, "analysis_ran": evaluation.analysis_ran, "fixture_index": evaluation.get("fixture_index", {})}
 
 
 func _evaluate(case_path: String, stage: String) -> Variant:
@@ -335,7 +349,9 @@ func _evaluate_with_language(case_path: String, stage: String) -> Variant:
 	var probe: Variant = frontend_factory.call()
 	if probe == null or not probe.has_method("evaluate_corpus"):
 		return {"ok": false, "output": "missing raw corpus frontend probe: %s" % case_path, "analysis_ran": false, "infrastructure_error": true}
-	return probe.evaluate_corpus(source_bytes, case_path, stage)
+	if fixture_paths.is_empty():
+		return probe.evaluate_corpus(source_bytes, case_path, stage)
+	return probe.evaluate_corpus(source_bytes, case_path, stage, fixture_paths)
 
 
 func _failure(
@@ -348,6 +364,7 @@ func _failure(
 		"expectation_path": case_info["expectation_path"],
 		"message": message,
 		"actual": actual,
+		"expected": FileAccess.get_file_as_string(case_info["expectation_path"]).trim_suffix("\n"),
 	}
 
 
@@ -438,6 +455,21 @@ func _assign_stages(corpus_root: String, cases: Array, update: bool) -> String:
 		if validated.has("error"):
 			return validated.error
 		owned.merge(validated.stages)
+
+	var staging_root := "res://tests/corpus_staging/analyzer"
+	if _under(corpus_root, staging_root) or _under(staging_root, corpus_root):
+		if update:
+			return "--update-expectations refused: discovery staging is importer-owned"
+		var manifest := _read_unique_json(staging_root.path_join("case_stages.json"))
+		if manifest.has("error"):
+			return manifest.error
+		var validated := _validate_stage_manifest(manifest.document, staging_root, document.revision)
+		if validated.has("error"):
+			return validated.error
+		owned.merge(validated.stages)
+		fixture_paths = _fixture_source_paths(staging_root)
+		fixture_paths.append_array(_fixture_source_paths("res://tests/corpus/parser"))
+		fixture_paths.sort()
 
 	for case in cases:
 		if owned.has(case.path):
@@ -692,3 +724,18 @@ func _read_unique_json(path: String) -> Dictionary:
 	if not complaint.is_empty():
 		return {"error": "%s: %s" % [complaint, path]}
 	return {"document": parser.data}
+
+
+# Dependency availability is independent of the selected execution case.
+func _fixture_source_paths(root: String) -> PackedStringArray:
+	var paths := PackedStringArray()
+	var directory := DirAccess.open(root)
+	if directory == null:
+		return paths
+	for file in directory.get_files():
+		if file.ends_with(CASE_EXTENSION):
+			paths.append(root.path_join(file))
+	for child in directory.get_directories():
+		paths.append_array(_fixture_source_paths(root.path_join(child)))
+	paths.sort()
+	return paths

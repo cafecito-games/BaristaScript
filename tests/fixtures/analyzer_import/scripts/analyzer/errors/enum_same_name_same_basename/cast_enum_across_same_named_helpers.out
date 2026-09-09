@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 7: Cannot cast a value of type "helper.notest.fs.Result" as "helper.notest.fs.Result". The value is declared in "res://analyzer/errors/enum_same_name_same_basename/a/helper.notest.fs"; the target type is declared in "res://analyzer/errors/enum_same_name_same_basename/b/helper.notest.fs".

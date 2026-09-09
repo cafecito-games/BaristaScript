@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 4: Could not resolve type "Issue70NamespaceAmbiguous": imported namespaces "issue_70.ambiguous.first" and "issue_70.ambiguous.second" are ambiguous.

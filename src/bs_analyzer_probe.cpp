@@ -18,10 +18,12 @@
 #include "bs_conformance_registry.h"
 #include "bs_corpus_sentinels.h"
 #include "bs_diagnostic_names.h"
+#include "bs_global_class.h"
 #include "bs_parser.h"
 #include "bs_tokenizer.h"
 #include "bs_type.h"
 #include "bs_utility_functions.h"
+#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 
 namespace barista_script {
@@ -84,7 +86,7 @@ const BSParser::ExpressionNode *_find_fold_expression(const BSParser::ClassNode 
 } // namespace
 
 void BaristaScriptAnalyzerProbe::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("evaluate_corpus", "bytes", "path", "stage"), &BaristaScriptAnalyzerProbe::evaluate_corpus);
+	ClassDB::bind_method(D_METHOD("evaluate_corpus", "bytes", "path", "stage", "fixture_paths"), &BaristaScriptAnalyzerProbe::evaluate_corpus, DEFVAL(PackedStringArray()));
 	ClassDB::bind_method(D_METHOD("corpus_state_controls"), &BaristaScriptAnalyzerProbe::corpus_state_controls);
 	ClassDB::bind_method(D_METHOD("corpus_format_controls"), &BaristaScriptAnalyzerProbe::corpus_format_controls);
 	ClassDB::bind_method(D_METHOD("language_utility_metadata"), &BaristaScriptAnalyzerProbe::language_utility_metadata);
@@ -215,7 +217,7 @@ Dictionary format_corpus_result(const BSParser &p_parser, Error p_error, bool p_
 }
 } // namespace
 
-Dictionary BaristaScriptAnalyzerProbe::evaluate_corpus(const PackedByteArray &p_bytes, const String &p_path, const String &p_stage) const {
+Dictionary BaristaScriptAnalyzerProbe::evaluate_corpus(const PackedByteArray &p_bytes, const String &p_path, const String &p_stage, const PackedStringArray &p_fixture_paths) const {
 	if ((p_stage != "parser" && p_stage != "analyzer") || !p_path.begins_with("res://") || p_path != p_path.simplify_path() || !p_path.ends_with(".barista")) {
 		return corpus_result("Invalid corpus stage or res:// case path: " + p_path, false, false, true);
 	}
@@ -232,17 +234,83 @@ Dictionary BaristaScriptAnalyzerProbe::evaluate_corpus(const PackedByteArray &p_
 	BSDeclarationIndex::ScopedCorpusState declarations(language->get_declaration_index());
 	BSConformanceRegistry::ScopedCorpusState conformances;
 	BSCache::ScopedCorpusState cache;
+	Dictionary fixture_index;
+	fixture_index["sources"] = p_fixture_paths.size();
+	fixture_index["heads"] = 0;
+	fixture_index["annotation_providers"] = 0;
+	fixture_index["conformance_providers"] = 0;
+	// Fixture discovery publishes only production declaration heads into the
+	// existing scoped index. Full namespace identities remain distinct; no
+	// ScriptServer global-class table, semantic lookup or script body execution.
+	if (!p_fixture_paths.is_empty()) {
+		// This is the temporary index selected by ScopedCorpusState, never the
+		// ambient editor index. Fixture-only lookup must not inherit editor heads.
+		language->get_declaration_index().clear();
+	}
 	HashMap<String, String> overrides;
+	for (int i = 0; i < p_fixture_paths.size(); i++) {
+		const String path = p_fixture_paths[i];
+		if (!path.begins_with("res://") || path != path.simplify_path() || !path.ends_with(".barista") || (i > 0 && path <= p_fixture_paths[i - 1])) {
+			return corpus_result("Invalid/unsorted corpus fixture path: " + path, false, false, true);
+		}
+		const Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
+		if (file.is_null()) {
+			return corpus_result("Unreadable corpus fixture source: " + path, false, false, true);
+		}
+		String fixture_source;
+		if (!BSTokenizer::decode_source(file->get_buffer(file->get_length()), &fixture_source, &diagnostic)) {
+			return corpus_result("Invalid corpus fixture source: " + path, false, false, true);
+		}
+		overrides[path] = fixture_source;
+	}
 	overrides[p_path] = source;
 	BSCacheSourceOverrideGuard override_guard(overrides);
+	for (int i = 0; i < p_fixture_paths.size(); i++) {
+		const String path = p_fixture_paths[i];
+		const String fixture_source = overrides[path];
+		const BSGlobalClass head = bs_resolve_global_class_from_source(fixture_source, path);
+		BSParser declaration_parser;
+		const Error parsed = declaration_parser.parse(fixture_source, path, false);
+		const BSParser::ClassNode *tree = declaration_parser.get_tree();
+		if ((head.declarations_parsed && !head.name.is_empty()) || (parsed == OK && tree != nullptr)) {
+			BSDeclarationIndex &index = language->get_declaration_index();
+			BSDeclarationRecord record = BSDeclarationIndex::record_from_global_class(path, fixture_source, head);
+			// The pinned producer indexes these declaration-only sources even
+			// without a named head. This copies AST declaration identities; it
+			// neither resolves annotations nor registers semantic conformances.
+			if (parsed == OK && tree != nullptr) {
+				record.namespace_name = tree->namespace_name;
+				record.declares_retroactive_conformances = !tree->conformances.is_empty();
+				for (const BSParser::AnnotationDeclarationNode *annotation : tree->annotation_declarations) {
+					if (annotation != nullptr && annotation->identifier != nullptr) {
+						record.global_annotations.push_back(annotation->qualified_name);
+					}
+				}
+			}
+			if (!index.commit_record(index.claim_refresh(path), record)) {
+				return corpus_result("Corpus declaration fixture registration rejected: " + path, false, false, true);
+			}
+			fixture_index["heads"] = int(fixture_index["heads"]) + int(record.has_head_declaration());
+			fixture_index["annotation_providers"] = int(fixture_index["annotation_providers"]) + int(!record.global_annotations.is_empty());
+			fixture_index["conformance_providers"] = int(fixture_index["conformance_providers"]) + int(record.declares_retroactive_conformances);
+		}
+	}
 	BSParser parser;
 	Error error = parser.parse(source, p_path, false);
 	if (error != OK || !parser.get_errors().is_empty() || p_stage == "parser") {
-		return format_corpus_result(parser, error, false);
+		Dictionary result = format_corpus_result(parser, error, false);
+		if (!p_fixture_paths.is_empty()) {
+			result["fixture_index"] = fixture_index;
+		}
+		return result;
 	}
 	BSAnalyzer analyzer(&parser);
 	error = analyzer.analyze();
-	return format_corpus_result(parser, error, true);
+	Dictionary result = format_corpus_result(parser, error, true);
+	if (!p_fixture_paths.is_empty()) {
+		result["fixture_index"] = fixture_index;
+	}
+	return result;
 }
 
 Dictionary BaristaScriptAnalyzerProbe::corpus_format_controls() const {

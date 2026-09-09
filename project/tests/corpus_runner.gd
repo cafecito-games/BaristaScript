@@ -12,6 +12,7 @@ const DEFAULT_CORPUS_ROOT := "res://tests/corpus"
 func _initialize() -> void:
 	var corpus_root := DEFAULT_CORPUS_ROOT
 	var stage := ""
+	var exact_case := ""
 	var allow_empty := false
 	var update_expectations := false
 	var harness := Harness.new()
@@ -27,6 +28,12 @@ func _initialize() -> void:
 					_finish(harness.error_result("BS_ERROR --corpus requires a path"))
 					return
 				corpus_root = arguments[index]
+			"--case":
+				index += 1
+				if index >= arguments.size():
+					_finish(harness.error_result("BS_ERROR --case requires a relative case"))
+					return
+				exact_case = arguments[index]
 			"--stage":
 				index += 1
 				if index >= arguments.size() or not arguments[index] in ["parser", "analyzer"]:
@@ -44,7 +51,12 @@ func _initialize() -> void:
 
 	if not stage.is_empty():
 		harness.fixture_stages[corpus_root] = stage
-	_finish(harness.run(corpus_root, allow_empty, update_expectations))
+	var result := harness.run(corpus_root, allow_empty, update_expectations, exact_case)
+	if not exact_case.is_empty():
+		for case_result in result.get("results", []):
+			print("BS_CASE_RESULT " + JSON.stringify(case_result))
+			print("BS_CASE_RAN " + exact_case)
+	_finish(result)
 
 
 func _finish(result: Dictionary) -> void:

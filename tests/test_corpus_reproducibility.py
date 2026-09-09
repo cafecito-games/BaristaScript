@@ -44,7 +44,7 @@ class RegistryContract(unittest.TestCase):
         self.root = Path(self.temp.name)
         for directory in ("scripts", "tests", "src"):
             (self.root / directory).mkdir()
-        for name in ("corpus_sources.json", "import_parser_corpus.py"):
+        for name in ("corpus_sources.json", "import_parser_corpus.py", "import_analyzer_corpus.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         for name in ("corpus_baseline.json", "gdscript_suites.json"):
             shutil.copy2(ROOT / "tests" / name, self.root / "tests" / name)
@@ -303,7 +303,7 @@ class WrapperContract(unittest.TestCase):
         text = output.read_text()
         self.assertEqual(text, "repository=" + self.registry["repository"] + "\nrevision=" + self.registry["revision"]
                          + "\nsparse_paths<<CORPUS_PATHS_END\n"
-                         + "\n".join(sorted(item["source"] for item in self.registry["corpora"].values()))
+                         + "\n".join(self.registry_module.sparse_patterns(self.registry))
                          + "\nCORPUS_PATHS_END\n")
         self.registry["repository"] += "\ninjected=true"
         (self.root / "scripts/corpus_sources.json").write_text(json.dumps(self.registry))
@@ -370,6 +370,10 @@ class CheckoutContract(unittest.TestCase):
             path = self.root / record["source"]
             path.mkdir(parents=True)
             (path / "input.fs").write_text("data only")
+        for relative in self.registry.get("auxiliary_sources", []):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("auxiliary data only")
         self.git("add", ".")
         self.git("-c", "user.name=Offline Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture")
         self.registry["revision"] = self.git("rev-parse", "HEAD")
@@ -380,6 +384,28 @@ class CheckoutContract(unittest.TestCase):
 
     def verify(self):
         self.module.verify_checkout(self.root, self.registry, self.registry["revision"])
+
+    def test_auxiliary_exact_bytes_missing_and_index_drift(self):
+        for relative in self.registry["auxiliary_sources"]:
+            path = self.root / relative
+            original = path.read_bytes()
+            self.git("update-index", "--assume-unchanged", "--", relative)
+            path.write_bytes(original.replace(b"data", b"dAta"))
+            with self.assertRaisesRegex(ValueError, "auxiliary source bytes"):
+                self.verify()
+            path.write_bytes(original)
+            self.git("update-index", "--no-assume-unchanged", "--", relative)
+            path.unlink()
+            with self.assertRaisesRegex(ValueError, "auxiliary source missing"):
+                self.verify()
+            path.write_bytes(original)
+            path.write_bytes(original + b"staged")
+            self.git("add", "--", relative)
+            path.write_bytes(original)
+            with self.assertRaisesRegex(ValueError, "uncommitted"):
+                self.verify()
+            self.git("reset", "--quiet", "HEAD", "--", relative)
+        self.verify()
 
     def test_clean_checkout_and_unrelated_parent_cache(self):
         self.verify()
@@ -649,13 +675,16 @@ class FullProducer(unittest.TestCase):
                                   capture_output=True, text=True, check=True, env=offline_env).stdout.strip()
 
         registry = corpus_registry.load_registry(ROOT)
-        roots = [item["source"] for item in registry["corpora"].values()]
+        roots = corpus_registry.source_paths(registry)
         object_store = Path(input_git("rev-parse", "--path-format=absolute", "--git-path", "objects"))
         original_index = Path(input_git("rev-parse", "--path-format=absolute", "--git-path", "index"))
 
+        def digest_file(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
         def supplied_state():
             return {
-                "roots": {root: self.snapshot(FOUNDRY / root) for root in roots},
+                "roots": {root: self.snapshot(FOUNDRY / root) if (FOUNDRY / root).is_dir() else digest_file(FOUNDRY / root) for root in roots},
                 "index": original_index.read_bytes(),
                 "objects": {path.relative_to(object_store).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns)
                             for path in object_store.rglob("*") if path.is_file()},
@@ -684,13 +713,17 @@ class FullProducer(unittest.TestCase):
         git("read-tree", self.revision)
         git("config", "core.sparseCheckout", "true")
         git("config", "core.sparseCheckoutCone", "false")
-        (source / ".git/info/sparse-checkout").write_text("".join(f"/{root}/\n" for root in roots))
+        (source / ".git/info/sparse-checkout").write_text("\n".join(corpus_registry.sparse_patterns(registry)) + "\n")
         outside = [path for path in git("ls-files", "-z").split("\0") if path
-                   and not any(path.startswith(root + "/") for root in roots)]
+                   and not any(path == root or path.startswith(root + "/") for root in roots)]
         self.assertTrue(outside, "fixture must retain real sparse index coverage")
         git("update-index", "--skip-worktree", "-z", "--stdin", input="\0".join(outside) + "\0")
         for root in roots:
-            shutil.copytree(FOUNDRY / root, source / root)
+            if (FOUNDRY / root).is_dir():
+                shutil.copytree(FOUNDRY / root, source / root)
+            else:
+                (source / root).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(FOUNDRY / root, source / root)
         self.assertEqual(git("rev-parse", "HEAD").strip(), self.revision)
         self.assertEqual(git("remote", "get-url", "origin").strip(), origin)
         self.assertTrue(git("ls-files", "-v", "--", outside[0]).startswith("S "))

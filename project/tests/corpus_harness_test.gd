@@ -34,6 +34,7 @@ func _initialize() -> void:
 	_test_unreadable_corpus_root_is_harness_error(failures)
 	_test_unreadable_directory_is_harness_error(failures)
 	_test_runner_process_arguments(failures)
+	_test_exact_case_selection(failures)
 
 	if failures.is_empty():
 		print("corpus harness fail-closed contract: all assertions passed")
@@ -532,3 +533,15 @@ func _remove_directory(path: String) -> void:
 		else:
 			DirAccess.remove_absolute(child)
 	DirAccess.remove_absolute(path)
+
+
+func _test_exact_case_selection(failures: Array[String]) -> void:
+	var harness := Harness.new()
+	harness.fixture_stages[FIXTURES_ROOT] = "parser"
+	var root := FIXTURES_ROOT + "/passing"
+	var selected := harness.run(root, false, false, "paired_ok.barista")
+	_expect(failures, selected.exit_code == 0 and selected.get("results", []).size() == 1, "exact case must execute once with result")
+	var missing := harness.run(root, false, false, "missing.barista")
+	_expect(failures, missing.exit_code == Harness.ExitCode.HARNESS_ERROR, "missing exact case must fail")
+	var helper := harness.run(root, false, false, "helper.notest.barista")
+	_expect(failures, helper.exit_code == Harness.ExitCode.HARNESS_ERROR, "helper must not be executable")

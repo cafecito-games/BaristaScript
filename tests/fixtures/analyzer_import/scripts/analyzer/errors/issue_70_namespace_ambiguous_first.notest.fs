@@ -1,0 +1,3 @@
+namespace issue_70.ambiguous.first
+class_name Issue70NamespaceAmbiguous
+extends RefCounted

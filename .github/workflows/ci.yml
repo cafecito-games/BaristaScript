@@ -40,10 +40,13 @@ jobs:
           submodules: false
           persist-credentials: false
           fetch-depth: 1
+          sparse-checkout-cone-mode: false
           sparse-checkout: ${{ steps.source.outputs.sparse_paths }}
       - name: Test reproducibility failure modes
         shell: bash
-        run: python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry
+        run: |
+          python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry
+          python3 tests/test_import_analyzer_corpus.py --foundry .upstream-foundry
       - name: Check all imported corpora
         shell: bash
         run: python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry

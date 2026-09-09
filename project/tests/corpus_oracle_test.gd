@@ -20,6 +20,7 @@ func _initialize() -> void:
 	_test_filesystem_aliases()
 	_test_strict_json()
 	_test_frontend()
+	_test_declaration_fixtures()
 	var frontend := Harness.new()
 	frontend.fixture_stages["res://tests/oracle_fixtures/frontend"] = "analyzer"
 	var native_cases := frontend.run("res://tests/oracle_fixtures/frontend")
@@ -288,3 +289,21 @@ func _test_strict_json() -> void:
 	var revision: String = harness._read_unique_json("res://tests/corpus/parser/case_stages.json").document.foundry_revision
 	_write("strict.json", ('{"schema_version":1,"foundry_revision":"%s","cases":{"case.barista":"parser",},}' % revision).to_utf8_buffer())
 	_expect(harness._read_unique_json(fixture_root.path_join("strict.json")).has("error"), "malformed serialized stage manifest rejected before shape validation")
+
+
+func _test_declaration_fixtures() -> void:
+	var probe: Variant = ClassDB.instantiate("BaristaScriptAnalyzerProbe")
+	var source := "import cafecito.dupsamefile\n\n@twice\nfunc test() -> void:\n\tpass\n"
+	var path := "res://tests/oracle_fixtures/declarations/annotation_duplicate_in_imported_usage.barista"
+	var sources := PackedStringArray(["res://tests/oracle_fixtures/declarations/annotation_duplicate_in_imported_lib.notest.barista"])
+	var result: Dictionary = probe.evaluate_corpus(source.to_utf8_buffer(), path, "analyzer", sources)
+	# The pinned ambiguity message remains an executed #140 provider-replay
+	# residual in discovery. This control checks fixture availability, not a
+	# replacement semantic expectation for that still-failing upstream case.
+	_expect(result.get("fixture_index", {}).get("annotation_providers") == 1 and not result.infrastructure_error, "pinned annotation-only fixture index: %s" % result)
+	var a: Dictionary = probe.evaluate_corpus("func test():\n\tpass\n".to_utf8_buffer(), path, "analyzer")
+	var b: Dictionary = probe.evaluate_corpus(source.to_utf8_buffer(), path, "analyzer", sources)
+	var again: Dictionary = probe.evaluate_corpus("func test():\n\tpass\n".to_utf8_buffer(), path, "analyzer")
+	_expect(a == again and b == result, "A-B-A declaration fixture restoration")
+	var missing: Dictionary = probe.evaluate_corpus(source.to_utf8_buffer(), path, "analyzer", PackedStringArray(["res://tests/oracle_fixtures/declarations/missing.barista"]))
+	_expect(missing.infrastructure_error and not missing.ok, "missing fixture source cannot become semantic result")

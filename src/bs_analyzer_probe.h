@@ -26,7 +26,7 @@ protected:
 
 public:
 	/** Static raw-byte corpus oracle; never compiles or executes script code. */
-	godot::Dictionary evaluate_corpus(const godot::PackedByteArray &p_bytes, const godot::String &p_path, const godot::String &p_stage) const;
+	godot::Dictionary evaluate_corpus(const godot::PackedByteArray &p_bytes, const godot::String &p_path, const godot::String &p_stage, const godot::PackedStringArray &p_fixture_paths = godot::PackedStringArray()) const;
 	godot::Dictionary corpus_format_controls() const;
 	godot::Dictionary corpus_state_controls() const;
 	/**
