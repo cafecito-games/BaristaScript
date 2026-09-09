@@ -94,6 +94,7 @@ func _init() -> void:
 	_test_pure_constant_review_regressions(failures)
 	_test_constant_dictionary_key_conversion(failures)
 	_test_nested_constant_evidence_and_contextual_casts(failures)
+	_test_folded_tuple_child_and_failed_contextual_materialization(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -5276,3 +5277,83 @@ func _test_nested_constant_evidence_and_contextual_casts(failures: PackedStringA
 	var runtime_observed: Dictionary = probe.inspect_expression_source(runtime_source, "res://tests/runtime_contextual_cast.barista")
 	var runtime_report: Dictionary = probe.validate_source(runtime_source, "res://tests/runtime_contextual_cast.barista", true)
 	_expect(failures, _inspection_is_valid(runtime_observed) and not runtime_observed.get("is_constant", true) and runtime_observed.get("value") == null and runtime_observed.get("datatype") == "Array[float]" and runtime_report.get("valid", false) and runtime_report.get("errors", []).is_empty() and runtime_report.get("warnings", []).is_empty(), "runtime contextual cast retains nonconstant state: %s / %s" % [runtime_observed, runtime_report])
+
+
+func _test_folded_tuple_child_and_failed_contextual_materialization(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for control: Array in [
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "int", 2],
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst PAIR = Pair(KEYS, 0)\nvar probe_expression = PAIR.0[1]\n", "int", 2],
+		["const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "int", 2],
+		["tuple Pair(data: Dictionary[float, int], count: int)\nconst KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "int", 2],
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0]\n", "Dictionary[float?, int?]", {null: null, 1.0: 2}],
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][null]\n", "null", null],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/folded_tuple_child.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/folded_tuple_child.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_hard_type", false) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2] and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty() and probe.is_semantically_valid(control[0], "res://tests/folded_tuple_child.barista"), "folded named tuple retains established nullable child evidence: %s / %s" % [observed, report])
+	for control: Array in [
+		["var probe_expression = [1, \"x\"] as Array[int]\n", [{"column": 28, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 28, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+		["var probe_expression = {\"x\": \"bad\"} as Dictionary[String, int]\n", [{"column": 30, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 30, "line": 1, "message": "Cannot have a value of type \"String\" in a dictionary of type \"Dictionary[String, int]\"."}]],
+		["const VALUE = [1, \"x\"] as Array[int]\nvar probe_expression = VALUE\n", [{"line": 1, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 19, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 19, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+		["var probe_expression = [[1, \"x\"] as Array[int]]\n", [{"column": 29, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 29, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+		["const VALUE: Array[int] = [1, \"x\"]\nvar probe_expression = VALUE\n", [{"line": 1, "column": 27, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 31, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 31, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"column": 31, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 31, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/failed_contextual_materialization.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/failed_contextual_materialization.barista", true)
+		var expected_errors: Array = control[1].duplicate(true)
+		for error: Dictionary in expected_errors:
+			error.path = "res://tests/failed_contextual_materialization.barista"
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null and not report.get("valid", true) and report.get("errors", []) == expected_errors and report.get("warnings", []).is_empty() and not probe.is_semantically_valid(control[0], "res://tests/failed_contextual_materialization.barista"), "failed contextual conversion never publishes a constant: %s / %s" % [observed, report])
+
+	var matrix: Array = [
+		{"case": "named_array_nullable", "source": "tuple Pair(data: Array[int?], count: int)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0]\n", "datatype": "Array[int?]", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_array_null", "source": "tuple Pair(data: Array[int?], count: int)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0][0]\n", "datatype": "null", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_nested_child", "source": "tuple Pair(data: Dictionary[String, Array[int?]], count: int)\nconst VALUES: Dictionary[String, Array[int?]] = {\"values\": [null, 1]}\nconst BOX = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0][\"values\"]\n", "datatype": "Array[int?]", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_nested_tuple", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\ntuple Outer(pair: Pair, count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Outer(Pair(KEYS, 0), 1)]\nvar probe_expression = BOX[0][0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_broad_alias", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = Pair(KEYS, 0)\nconst BOX = {\"values\": [VALUE]}\nvar probe_expression = BOX[\"values\"][0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_direct_variant", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = Pair(KEYS, 0)\nvar probe_expression = VALUE\n", "datatype": "Variant", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_concat", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)] + []\nvar probe_expression = BOX[0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_ternary", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)] if true else []\nvar probe_expression = BOX[0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_equal_raw", "source": "tuple Pair(data: Variant, raw: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, RAW)]\nvar probe_expression = BOX[0][1][1]\n", "datatype": "Variant", "is_constant": false, "valid": false, "errors": [{"line": 5, "column": 34, "message": "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\"."}]},
+		{"case": "failed_tuple_parent", "source": "var probe_expression = ([1, \"x\"] as Array[int], 0)\n", "datatype": "(Array[int], int)", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_dictionary_parent", "source": "var probe_expression = {\"outer\": [1, \"x\"] as Array[int]}\n", "datatype": "Dictionary", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 38, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 38, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_dictionary_key_parent", "source": "var probe_expression = {([1, \"x\"] as Array[int]): 0}\n", "datatype": "Dictionary", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 30, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 30, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_nested_array", "source": "var probe_expression = [[1, \"x\"]] as Array[Array[int]]\n", "datatype": "Array[Array[int]]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_wrapped_cast", "source": "var probe_expression = ([1, \"x\"] as Array[int]) as Array\n", "datatype": "Array", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_key_conversion", "source": "var probe_expression = {\"bad\": 1} as Dictionary[int, int]\n", "datatype": "Dictionary[int, int]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 25, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 25, "message": "Cannot have a key of type \"String\" in a dictionary of type \"Dictionary[int, int]\"."}]},
+		{"case": "failed_variable_annotation", "source": "var probe_expression: Array[int] = [1, \"x\"]\n", "datatype": "Array", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 40, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 40, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"line": 1, "column": 40, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 40, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_named_argument", "source": "tuple Pair(data: Array[int], count: int)\nconst VALUE = Pair([1, \"x\"], 0)\nvar probe_expression = VALUE\n", "datatype": "Pair", "is_constant": false, "valid": false, "errors": [{"line": 2, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 2, "column": 24, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 24, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_constant_alias", "source": "const BAD = [1, \"x\"] as Array[int]\nconst VALUE = BAD\nvar probe_expression = VALUE\n", "datatype": "Array[int]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 13, "message": "Assigned value for constant \"BAD\" isn't a constant expression."}, {"line": 1, "column": 17, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 17, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"line": 2, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}]},
+		{"case": "independent_after_failure", "source": "var rejected = [1, \"x\"] as Array[int]\nvar probe_expression = [1, 2] as Array[float]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 1, "column": 20, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 20, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "independent_before_failure", "source": "var probe_expression = [1, 2] as Array[float]\nvar rejected = [1, \"x\"] as Array[int]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 2, "column": 20, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 20, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "local_const_and_independent", "source": "func test():\n\tconst VALUE = [1, \"x\"] as Array[int]\n\treturn VALUE\nvar probe_expression = [1, 2] as Array[float]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 2, "column": 19, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 2, "column": 23, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 23, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_tuple_annotation", "source": "const VALUE: (int, int) = (1, \"x\")\nvar probe_expression = VALUE\n", "datatype": "(int, int)", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 27, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 1, "column": 27, "message": "Cannot assign a value of type \"(int, String)\" to a constant of type \"(int, int)\"."}, {"line": 1, "column": 31, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 31, "message": "Cannot include a value of type \"String\" as \"int\"."}]},
+		{"case": "valid_tuple_conversion", "source": "const VALUE: (float, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(float, int)", "is_constant": true, "valid": true, "errors": []},
+	]
+	for control: Dictionary in matrix:
+		var path := "res://tests/repair3_%s.barista" % control.case
+		var observed: Dictionary = probe.inspect_expression_source(control.source, path)
+		var report: Dictionary = probe.validate_source(control.source, path, true)
+		var expected_errors: Array = control.errors.duplicate(true)
+		for error: Dictionary in expected_errors:
+			error.path = path
+		_expect(failures, observed.get("found", false) and observed.get("valid") == control.valid and observed.get("is_constant") == control.is_constant and observed.get("datatype") == control.datatype and report.get("valid") == control.valid and report.get("errors", []) == expected_errors and report.get("warnings", []).is_empty() and probe.is_semantically_valid(control.source, path) == control.valid, "folded tuple/contextual failure consumer %s: %s / %s" % [control.case, observed, report])
+		_expect(failures, probe.validate_source(control.source, path, true) == report, "repeated analysis preserves exact contextual diagnostics: %s" % control.case)
+		if not control.is_constant:
+			_expect(failures, observed.get("value") == null, "rejected conversion has no published carrier: %s" % control.case)
+		else:
+			_expect(failures, observed.get("is_hard_type", false), "known folded tuple child remains hard: %s" % control.case)
+			var value: Variant = observed.get("value")
+			if control.datatype == "int":
+				_expect(failures, typeof(value) == TYPE_INT and value == 2, "named tuple selection preserves exact int2")
+			elif control.datatype == "null":
+				_expect(failures, value == null, "successful named tuple null is a real constant")
+			elif control.datatype == "Array[int?]":
+				_expect(failures, value is Array and value == [null, 1] and value.is_read_only() and typeof(value[1]) == TYPE_INT, "nullable Array child retains null and integer carrier")
+			elif control.datatype == "Variant":
+				_expect(failures, value is Array and value == [{null: null, 1.0: 2}, 0] and value.is_read_only() and value[0].is_read_only(), "direct Variant alias keeps declared type and actual read-only named tuple value")
+			elif control.datatype == "Array[float]":
+				_expect(failures, value is Array and value == [1.0, 2.0] and value.is_read_only() and typeof(value[0]) == TYPE_FLOAT and typeof(value[1]) == TYPE_FLOAT, "unrelated rejected expression does not poison an independent constant")
+			elif control.datatype == "(float, int)":
+				_expect(failures, value is Array and value == [1.0, 2] and value.is_read_only() and typeof(value[0]) == TYPE_FLOAT and typeof(value[1]) == TYPE_INT, "successful tuple context still converts and publishes exact carriers")

@@ -153,6 +153,19 @@ static bool _constant_container_source_type(BSParser::ExpressionNode *p_expressi
 				}
 			}
 			break;
+		case BSParser::Node::CALL: {
+			const BSParser::CallNode *call = static_cast<const BSParser::CallNode *>(p_expression);
+			// Existing concrete named-tuple construction already folded these arguments.
+			// Inspect its retained values only; do not make any other CALL reducible here.
+			if (call->is_tuple_construction && type.kind == BSParser::DataType::TUPLE &&
+					!type.is_meta_type && call->reduced_value.get_type() == Variant::ARRAY) {
+				for (BSParser::ExpressionNode *argument : call->arguments) {
+					if (inspect(argument)) {
+						return true;
+					}
+				}
+			}
+		} break;
 		case BSParser::Node::CAST:
 			return inspect(static_cast<BSParser::CastNode *>(p_expression)->operand);
 		case BSParser::Node::SUBSCRIPT: {
@@ -3313,6 +3326,20 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 	p_subscript->set_datatype(type);
 }
 
+// Rejected contextual literals must not be retried by the pure collector. Keep the
+// rejection on this analyzer's own expression, without invalidating independent constants.
+void BSAnalyzer::reject_constant_materialization(BSParser::ExpressionNode *p_expression) {
+	if (p_expression == nullptr) {
+		return;
+	}
+	failed_constant_expressions.insert(p_expression);
+	p_expression->is_constant = false;
+	p_expression->reduced_value = Variant();
+	BSParser::DataType type = p_expression->get_datatype();
+	type.is_constant = false;
+	p_expression->set_datatype(type);
+}
+
 // Foundry make_expression_reduced_value and literal collectors @ c9d5e35:15187-15325.
 // Only pure literal/subscript structure is materialized here. CALL belongs to #141 S5;
 // class/generic runtime descriptors belong to M4/M5. Visitation is not constant success.
@@ -3320,7 +3347,7 @@ Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_ex
 	// r_reduced can alias p_expression->is_constant. Preserve the input before clearing output.
 	const bool was_constant = p_expression != nullptr && p_expression->is_constant;
 	r_reduced = false;
-	if (p_expression == nullptr || failed_constant_subscripts.has(p_expression)) {
+	if (p_expression == nullptr || failed_constant_expressions.has(p_expression)) {
 		return Variant();
 	}
 	if (was_constant) {
@@ -4559,6 +4586,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 				update_array_literal_element_type(static_cast<BSParser::ArrayNode *>(p_expression),
 						target_type.get_container_element_type(0));
 				if (parser != nullptr && parser->get_errors().size() > error_count) {
+					reject_constant_materialization(p_expression);
 					return true;
 				}
 				BSParser::DataType published = datatype_contains_self_type_parameter(target_type)
@@ -4580,6 +4608,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 						target_type.get_container_element_type_or_variant(0),
 						target_type.get_container_element_type_or_variant(1));
 				if (parser != nullptr && parser->get_errors().size() > error_count) {
+					reject_constant_materialization(p_expression);
 					return true;
 				}
 				BSParser::DataType published = datatype_contains_self_type_parameter(target_type)
@@ -4601,6 +4630,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 			if (literal->elements.size() != target_type.container_element_types.size()) {
 				return false;
 			}
+			const int error_count = parser != nullptr ? parser->get_errors().size() : 0;
 			Vector<BSParser::DataType> element_types;
 			for (int i = 0; i < literal->elements.size(); i++) {
 				BSParser::ExpressionNode *element = literal->elements[i];
@@ -4612,6 +4642,10 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 			}
 			BSParser::DataType published = make_tuple_type(StringName(), String(), String(), element_types, Vector<StringName>(), false);
 			p_expression->set_datatype(published);
+			if (parser != nullptr && parser->get_errors().size() > error_count) {
+				reject_constant_materialization(p_expression);
+				return true;
+			}
 			p_expression->is_constant = false;
 			p_expression->reduced_value = make_expression_reduced_value(p_expression, p_expression->is_constant);
 			published.is_constant = p_expression->is_constant;
@@ -6457,7 +6491,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			if ((!subscript->is_attribute || subscript->is_tuple_index) && parser->get_errors().size() != error_count) {
 				// A later parent/constant collector must not retry rejected tuple access as
 				// erased Array.get (which admits negative and float indices).
-				failed_constant_subscripts.insert(subscript);
+				failed_constant_expressions.insert(subscript);
 				subscript->is_constant = false;
 				subscript->reduced_value = Variant();
 			}
