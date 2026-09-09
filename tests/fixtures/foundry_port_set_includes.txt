@@ -216,6 +216,9 @@
 41:#include "core/object/class_db.h"
 42:#include "core/object/script_language.h"
 
+=== modules/foundry_script/fs_analyzer_finalization.cpp ===
+31:#include "fs_analyzer.h"
+
 === modules/foundry_script/fs_conformance_registry.h ===
 31:#pragma once
 33:#include "fs_function.h"
@@ -239,3 +242,31 @@
 31:#pragma once
 33:#include "fs_diagnostic_names.h"
 34:#include "fs_parser.h"
+
+=== modules/foundry_script/fs_utility_functions.h ===
+31:#pragma once
+33:#include "core/string/string_name.h"
+34:#include "core/variant/variant.h"
+
+=== modules/foundry_script/fs_utility_functions.cpp ===
+31:#include "fs_utility_functions.h"
+33:#include "foundry_script.h"
+34:#include "fs_conformance_registry.h"
+35:#include "fs_proxy.h"
+37:#include "core/io/resource_loader.h"
+38:#include "core/object/class_db.h"
+39:#include "core/object/object.h"
+40:#include "core/templates/a_hash_map.h"
+41:#include "core/templates/vector.h"
+42:#include "core/variant/typed_array.h"
+44:#ifdef DEBUG_ENABLED
+46:#define DEBUG_VALIDATE_ARG_COUNT(m_min_count, m_max_count)                  \
+60:#define DEBUG_VALIDATE_ARG_TYPE(m_arg, m_type)                                       \
+
+=== modules/foundry_script/fs_utility_callable.h ===
+31:#pragma once
+33:#include "fs_utility_functions.h"
+35:#include "core/variant/callable.h"
+
+=== modules/foundry_script/fs_utility_callable.cpp ===
+31:#include "fs_utility_callable.h"

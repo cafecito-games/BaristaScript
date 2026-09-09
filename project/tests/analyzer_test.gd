@@ -18,11 +18,17 @@ func _init() -> void:
 	_test_missing_and_self(failures)
 	_test_move_remove(failures)
 	_test_dependency_cycle(failures)
+	_test_finalization_raises_dependencies(failures)
 	_test_strict_settings(failures)
 	_test_can_reference(failures)
 	_test_host_bootstrap_filtering(failures)
 	_test_validate_and_is_valid_agree(failures)
 	_test_semantic_errors(failures)
+	_test_undeclared_identifier_diagnostic(failures)
+	_test_review_resolution_regressions(failures)
+	_test_pinned_global_api_lookup(failures)
+	_test_language_utility_registry(failures)
+	_test_dictionary_literal_constant_parity(failures)
 	_test_unary_sign_constant_folding(failures)
 	_test_analyzer_declaration_commit(failures)
 	_test_declaration_head_kinds_and_conformance(failures)
@@ -32,19 +38,24 @@ func _init() -> void:
 	_test_call_arity_and_types(failures)
 	_test_call_validation_methodinfo_and_signals(failures)
 	_test_named_arg_and_connect_callable(failures)
+	_test_callable_signal_constructor_and_typed_receiver_depth(failures)
 	_test_match_and_flow(failures)
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
 	_test_final_member_and_static_assignment(failures)
 	_test_final_trait_flattening(failures)
+	_test_final_pattern_and_nested_expression_reads(failures)
 	_test_noreturn_flow(failures)
 	_test_unused_locals(failures)
 	_test_unused_class_members_and_signals(failures)
+	_test_member_name_conflicts(failures)
 	_test_trait_requirements_and_conformance_witness(failures)
 	_test_flow_narrowing(failures)
 	_test_lambda_capture_and_compound_narrowing(failures)
 	_test_get_operation_type(failures)
 	_test_builtin_annotation_resolve(failures)
+	_test_custom_annotation_surface(failures)
+	_test_type_alias_surface(failures)
 	_test_union_union_assignability(failures)
 	_test_union_store_carrier_select(failures)
 	_test_enum_case_match_and_case_binds(failures)
@@ -82,8 +93,294 @@ func _expect(failures: PackedStringArray, condition: bool, message: String) -> v
 		failures.append(message)
 
 
+func _test_undeclared_identifier_diagnostic(failures: PackedStringArray) -> void:
+	# Byte-faithful producer fixture: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/errors/match_guard_invalid_expression.fs:1-4
+	# @ c9d5e35. Its corresponding .out expects the identifier diagnostic at line 3.
+	var source := "func test():\n\tmatch 0:\n\t\t_ when a == 0:\n\t\t\tprint(\"a does not exist\")\n"
+	var report: Dictionary = BaristaScriptAnalyzerProbe.new().analyze_source(source, "res://tests/match_guard_invalid_expression.barista")
+	var errors: PackedStringArray = report.get("errors", PackedStringArray())
+	_expect(failures, report.get("valid", true) == false, "undeclared identifier invalidates analysis")
+	_expect(failures, errors.size() == 1, "undeclared identifier suppresses Variant cascades")
+	_expect(failures, errors.size() == 1 and errors[0] == 'Identifier "a" not declared in the current scope.', "undeclared identifier matches Foundry diagnostic")
+
+
 func _kw_class_name() -> String:
 	return "class_" + "name"
+
+
+func _test_language_utility_registry(failures: PackedStringArray) -> void:
+	# Complete separate language registry: Foundry fs_utility_functions.cpp:501-511 @ c9d5e35.
+	# These source strings are analyzed, never executed (especially load/debug/proxy calls).
+	var calls := {
+		"type_exists": ['type_exists("Node")', "bool"],
+		"char": ["char(65)", "String"],
+		"ord": ['ord("A")', "int"],
+		"range": ["range(1, 4, 1)", "Array"],
+		"load": ['load("res://does_not_exist.barista")', "Resource"],
+		"print_debug": ['print_debug("test", 1)', "void"],
+		"print_stack": ["print_stack()", "void"],
+		"get_stack": ["get_stack()", "Array"],
+		"len": ['len("abc")', "int"],
+		"is_instance_of": ["is_instance_of(1, TYPE_INT)", "bool"],
+		"create_proxy_dynamic": ["create_proxy_dynamic(Object, Callable())", "Object"],
+	}
+	var probe := BaristaScriptAnalyzerProbe.new()
+	# Metadata inspection never exports or invokes the analyzer-only callable marker.
+	for expression in ["char", "[char]", "Callable(char)", '{"callback": char}', '{char: "callback"}']:
+		_expect(failures, not probe.fold_expression(expression).get("ok", true), "utility identity is not exported by constant probe: " + expression)
+	if probe.has_method("language_utility_metadata"):
+		var metadata: Dictionary = probe.call("language_utility_metadata")
+		_expect(failures, metadata.get("roundtrip", false), "language public MethodInfo round-trip preserves every field")
+		_expect(failures, metadata.get("private_identity", false), "utility identity is stable, distinct and non-executable")
+		var functions: Array = metadata.get("functions", [])
+		_expect(failures, functions.size() == calls.size(), "complete public language utility inventory")
+		for info in functions:
+			_expect(failures, calls.has(info.name), "no invented public language utility")
+			_expect(failures, info.has("args") and info.has("return") and info.has("flags") and info.has("default_args"), "complete utility MethodInfo: " + str(info))
+			_expect(failures, metadata.constant_flags.get(info.name) == (info.name in ["type_exists", "char", "ord", "len", "is_instance_of"]), "pinned constant flag: " + str(info.name))
+	else:
+		_expect(failures, false, "language utility metadata inspection is available")
+	for sample in [['len("abc")', 3], ['char(65)', "A"], ['ord("A")', 65], ['type_exists("Node")', true], ["is_instance_of(1, TYPE_INT)", true], ["is_instance_of(1, TYPE_STRING)", false], ["len([1, 2])", 2], ['len({"x": 1})', 1], ["len({})", 0], ['len({"x": {"y": 1}, "z": 2})', 2]]:
+		var folded: Dictionary = probe.fold_expression(sample[0])
+		_expect(failures, folded.get("ok", false) and folded.get("value") == sample[1], "language utility constant result: %s -> %s" % [sample[0], folded])
+	for name in calls:
+		var expression: String = calls[name][0]
+		var result_type: String = calls[name][1]
+		var cases := {
+			"discarded": "func test():\n\t" + expression + "\n",
+			"value": "func test():\n\tvar utility: Callable = " + name + "\n",
+			"constant_value": "const UTILITY = " + name + "\n",
+		}
+		if result_type != "void":
+			cases["initializer"] = "func test():\n\tvar value: " + result_type + " = " + expression + "\n"
+			cases["return"] = "func test() -> " + result_type + ":\n\treturn " + expression + "\n"
+			cases["nested"] = "func test():\n\tprint(" + expression + ")\n"
+		for context in cases:
+			var report: Dictionary = probe.analyze_source(cases[context], "res://tests/language_utility.barista")
+			_expect(failures, report.get("valid", false), "%s %s language utility: %s" % [name, context, report.get("errors")])
+	# Every fixed signature family rejects both too few/too many, with concrete type mismatch
+	# checks kept separate from unknown-name rejection.
+	var invalid := {
+		"type_exists_arity": ["type_exists()", "Too few arguments"],
+		"type_exists_type": ["type_exists(1)", "Invalid argument"],
+		"char_arity": ["char(65, 66)", "Too many arguments"],
+		"char_type": ['char("A")', "Invalid argument"],
+		"ord_arity": ["ord()", "Too few arguments"],
+		"ord_type": ["ord(65)", "Invalid argument"],
+		"load_arity": ["load()", "Too few arguments"],
+		"load_type": ["load(1)", "Invalid argument"],
+		"print_stack_arity": ["print_stack(1)", "Too many arguments"],
+		"get_stack_arity": ["get_stack(1)", "Too many arguments"],
+		"len_arity": ["len()", "Too few arguments"],
+		"len_constant_type": ["len(1)", "Invalid argument"],
+		"instance_arity": ["is_instance_of(1)", "Too few arguments"],
+		"instance_constant_type": ['is_instance_of(1, "int")', "Invalid argument"],
+		"proxy_arity": ["create_proxy_dynamic(Object)", "Too few arguments"],
+		"proxy_type": ["create_proxy_dynamic(1, Callable())", "Invalid argument"],
+		"proxy_handler": ["create_proxy_dynamic(Object, 1)", "Invalid argument"],
+		"named": ["char(code = 65)", "Named arguments"],
+	}
+	for label in invalid:
+		var report: Dictionary = probe.analyze_source("func test():\n\t" + invalid[label][0] + "\n", "res://tests/language_utility_bad.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, not report.get("valid", true) and errors.size() == 1 and invalid[label][1] in errors[0], "%s signature diagnostic: %s" % [label, errors])
+	var positives := {
+		"typed_value": 'func test():\n\tvar cb: Callable[[int], String] = char\n\tvar text: String = cb.call(65)\n',
+		"inferred_value": 'func test():\n\tvar cb := ord\n\tvar code: int = cb.call("A")\n',
+		"bound_value": 'func test():\n\tvar cb := char.bind(65)\n\tvar text: String = cb.call()\n',
+		"callv": 'func test():\n\tvar cb := ord\n\tvar code: int = cb.callv(["A"])\n',
+		"local_shadow": 'func test(len: Callable[[String], String]) -> String:\n\treturn len("abc")\n',
+		"local_over_member": 'func len(value: int) -> int:\n\treturn value\nfunc test(len: Callable[[String], String]) -> String:\n\treturn len("abc")\n',
+		"member_shadow": 'func len(value: String) -> String:\n\treturn value\nfunc test() -> String:\n\treturn len("abc")\n',
+		"member_value_shadow": 'var len: Callable[[String], String]\nfunc test() -> String:\n\treturn len("abc")\n',
+		"constants": 'const COUNT = len("abc")\nconst CHARACTER = char(65)\nconst CODE = ord(CHARACTER)\nconst EXISTS = type_exists("Node")\nconst MATCHES = is_instance_of(CODE, TYPE_INT)\n',
+		"annotation": 'annotation number(value: int = len("abc")) targets METHOD\n@number(ord("A"))\nfunc test(value: String = char(65)):\n\tpass\n',
+		"utility_annotation": 'annotation callback(value: Callable = len) targets METHOD\n@callback(ord)\nfunc test(cb: Callable = char):\n\tpass\n',
+		"range_loop": 'func test():\n\tfor value in range(3):\n\t\tvar number: int = value\n',
+		"shadowed_range_loop": 'func test(range: Callable[[], Array]):\n\tfor value in range():\n\t\tpass\n',
+		# Pinned range is NOARGS+vararg metadata outside the for intrinsic; execution is M4.
+		"runtime_range": 'func test():\n\tvar values: Array = range()\n\tvar other: Array = range("runtime check")\n',
+		"runtime_len": 'func test(value):\n\tvar count: int = len(value)\n',
+		"runtime_dictionary_len": 'func test(value):\n\tvar count: int = len({"x": value})\n',
+		"constant_dictionary_len": 'const N = len({"x": 1})\n',
+		"runtime_instance": 'func test(value, type):\n\tvar matches: bool = is_instance_of(value, type)\n',
+		"debug_vararg": 'func test():\n\tprint_debug()\n\tprint_debug(1, "x", null)\n',
+	}
+	for label in positives:
+		var report: Dictionary = probe.analyze_source(positives[label], "res://tests/language_utility_context.barista")
+		_expect(failures, report.get("valid", false), "%s utility context: %s" % [label, report.get("errors")])
+	var negatives := {
+		"callable_arity": 'func test():\n\tvar cb := char\n\tcb.call()\n',
+		"callable_type": 'func test():\n\tvar cb := ord\n\tcb.call(65)\n',
+		"bound_type": 'func test():\n\tvar cb := char.bind("A")\n',
+		"callv_type": 'func test():\n\tvar cb := ord\n\tcb.callv([65])\n',
+		"void_initializer": 'func test():\n\tvar value = print_stack()\n',
+		"void_nested": 'func test():\n\tprint(print_debug())\n',
+		"char_domain": 'const BAD = char(-1)\n',
+		"ord_domain": 'const BAD = ord("abc")\n',
+		"instance_domain": 'const BAD = is_instance_of(1, -1)\n',
+		"range_loop_arity": 'func test():\n\tfor value in range():\n\t\tpass\n',
+		"range_loop_many": 'func test():\n\tfor value in range(1, 2, 3, 4):\n\t\tpass\n',
+		"range_iterator_type": 'func test():\n\tfor value in range(3):\n\t\tvar text: String = value\n',
+		"nonconstant_range": 'const BAD = range(3)\n',
+		"nonconstant_load": 'const BAD = load("res://does_not_exist.barista")\n',
+		"nonconstant_stack": 'const BAD = get_stack()\n',
+		"nonconstant_proxy": 'const BAD = create_proxy_dynamic(Object, Callable())\n',
+		"nonconstant_dictionary_len": 'var value = 1\nconst BAD = len({"x": value})\n',
+	}
+	for label in negatives:
+		var report: Dictionary = probe.analyze_source(negatives[label], "res://tests/language_utility_negative.barista")
+		_expect(failures, not report.get("valid", true) and not 'not declared' in str(report.get("errors")), "%s utility rejection: %s" % [label, report.get("errors")])
+	# Existing general compatibility residual belongs to #138, not utility lookup: assigning
+	# char to Callable[[String], String] is still admitted by BSTypeCompatibility's carrier-only
+	# comparison. The registry retains int -> String metadata and invocation tests above use it.
+	# Packed-array constructor/general constant folding remains the pre-existing #141 surface;
+	# this registry can evaluate those carriers when constants exist, but does not invent them.
+	for expression in ["missing_language_utility()", "len(missing_language_utility())"]:
+		var report: Dictionary = probe.analyze_source("func test():\n\t" + expression + "\n", "res://tests/language_utility_unknown.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, errors.size() == 1 and errors[0] == 'Identifier "missing_language_utility" not declared in the current scope.', "unknown language utility remains one diagnostic: %s" % errors)
+
+
+func _test_dictionary_literal_constant_parity(failures: PackedStringArray) -> void:
+	# Byte-faithful producer/analyzer contract: Foundry fs_parser.cpp:5357-5430 and
+	# fs_analyzer.cpp:9323-9349 @ c9d5e35. Lua-style identifier keys are parser-produced
+	# constants; only Python-style key expressions are reduced, and repeated constants fail.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for sample in [
+		['{"key": 1}', "key", 1],
+		["{ key = 1 }", "key", 1],
+		['{"outer": { inner = 2 }}', "outer", { &"inner": 2 }],
+		["{ outer = {\"inner\": 2} }", &"outer", { "inner": 2 }],
+	]:
+		var folded: Dictionary = probe.fold_expression(sample[0])
+		var raw_value: Variant = folded.get("value", {})
+		var value: Dictionary = raw_value if raw_value is Dictionary else {}
+		_expect(failures, folded.get("ok", false), "dictionary constant folds: %s -> %s" % [sample[0], folded])
+		_expect(failures, value.get(sample[1]) == sample[2], "dictionary preserves nested key/value: %s -> %s" % [sample[0], value])
+	for sample in [['len({"key": 1})', 1], ["len({ key = 1 })", 1], ["len({})", 0]]:
+		var folded: Dictionary = probe.fold_expression(sample[0])
+		_expect(failures, folded.get("ok", false) and folded.get("value") == sample[1], "dictionary len folds: %s -> %s" % [sample[0], folded])
+	var empty: Dictionary = probe.fold_expression("{}")
+	_expect(failures, empty.get("ok", false) and (empty.get("value", {}) as Dictionary).is_empty(), "empty dictionary constant folds")
+	var valid_source := "func test(value: int):\n\tvar python := {\"key\": value}\n\tvar lua := { key = value }\n\tvar python_count: int = len(python)\n\tvar lua_count: int = len(lua)\n"
+	var valid_report: Dictionary = probe.analyze_source(valid_source, "res://tests/dictionary_nonconstant.barista")
+	_expect(failures, valid_report.get("valid", false), "nonconstant dictionary values remain valid runtime expressions: %s" % valid_report.get("errors"))
+	for sample in [
+		['const DUPLICATE = {"key": 1, "key": 2}\n', 1, 1, 30],
+		["const DUPLICATE = { key = 1, key = 2 }\n", 1, 1, 30],
+		['const KEY = &"key"\nconst DUPLICATE = {KEY: 1, "key": 2}\n', 2, 2, 28],
+		['const DUPLICATE = { key = 1, "key" = 2 }\n', 1, 1, 30],
+	]:
+		var source: String = sample[0]
+		var report: Dictionary = probe.analyze_source(source, "res://tests/dictionary_duplicate.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, not report.get("valid", true), "duplicate constant dictionary key is invalid: %s" % source)
+		var expected := 'Key "key" was already used in this dictionary (at line %d).' % sample[1]
+		_expect(failures, errors.size() == 1 and errors[0] == expected, "duplicate key uses pinned diagnostic and first-value line: %s" % errors)
+		var validate: Dictionary = probe.validate_source(source, "res://tests/dictionary_duplicate.barista", false)
+		var positioned_errors: Array = validate.get("errors", [])
+		_expect(failures, positioned_errors.size() == 1 and positioned_errors[0].get("line") == sample[2] and positioned_errors[0].get("column") == sample[3], "duplicate key diagnostic originates at repeated key: %s" % positioned_errors)
+	for source in [
+		'var value = 1\nconst BAD = len({"key": value})\n',
+		"var value = 1\nconst BAD = len({ key = value })\n",
+	]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/dictionary_nonconstant_const.barista")
+		var errors: PackedStringArray = report.get("errors", PackedStringArray())
+		_expect(failures, not report.get("valid", true) and not "not declared" in str(errors), "nonconstant dictionary is rejected only by its constant consumer: %s" % errors)
+
+
+func _test_review_resolution_regressions(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var valid_cases := {
+		"global_constant": "func test():\n\tprint(OK)\n",
+		"utility_value": "func test():\n\tvar fn = print\n",
+		"native_property": "extends Node\nfunc test():\n\tvar value: StringName = name\n",
+		"native_method": "extends Node\nfunc test():\n\tvar fn: Callable = get_parent\n",
+		"native_signal": "extends Node\nfunc test():\n\tvar event: Signal = tree_entered\n",
+		"native_constant": "extends Node\nfunc test():\n\tvar mode: int = PROCESS_MODE_DISABLED\n",
+		"outer_member": "const VALUE = 1\nclass Inner:\n\tfunc test():\n\t\tvar value: int = VALUE\n",
+		"nested_class": "class Inner:\n\tpass\nfunc test():\n\tvar cls = Inner\n",
+		"packed_argument": "annotation items(values: PackedInt32Array) targets METHOD\n@items([1, 2])\nfunc test():\n\tpass\n",
+		"packed_default": "annotation items(values: PackedInt32Array = [1, 2]) targets METHOD\n@items\nfunc test():\n\tpass\n",
+		"empty_callable": "const EMPTY = Callable()\n",
+		"empty_signal": "const EMPTY = Signal()\n",
+		"copy_callable": "const EMPTY = Callable()\nconst COPY = Callable(EMPTY)\n",
+		"copy_signal": "const EMPTY = Signal()\nconst COPY = Signal(EMPTY)\n",
+		"carrier_annotation": "annotation empty(value: Callable, event: Signal = Signal()) targets METHOD\n@empty(Callable())\nfunc test():\n\tpass\n",
+		"carrier_default": "func test(value: Callable = Callable(), event: Signal = Signal()):\n\tpass\n",
+		"alias_owner": "class Inner:\n\ttype Scalar = String\n\tvar first: Value = 1.5\ntype Value = Scalar\ntype Scalar = float\nvar subsequent: Value = 2.5\n",
+		"alias_chain": "class Inner:\n\ttype Scalar = String\n\tvar first: Value = 1.5\ntype Value = Middle\ntype Middle = Scalar\ntype Scalar = float\nvar subsequent: Value = 2.5\n",
+		"alias_order": "type Scalar = float\ntype Value = Scalar\nclass Inner:\n\ttype Scalar = String\n\tvar first: Value = 1.5\nvar subsequent: Value = 2.5\n",
+	}
+	for label in valid_cases:
+		var report: Dictionary = probe.analyze_source(valid_cases[label], "res://tests/review_%s.barista" % label)
+		_expect(failures, report.get("valid", false), "%s must resolve: %s" % [label, report.get("errors")])
+	for callee in ["missing_ident", "Only"]:
+		for expression in ["%s()", "var value = %s()", "return %s()", "print(%s())"]:
+			var prefix := "type Only = int\n" if callee == "Only" else ""
+			var source: String = prefix + "func test():\n\t" + (expression % callee) + "\n"
+			var report: Dictionary = probe.analyze_source(source, "res://tests/review_call.barista")
+			var errors: PackedStringArray = report.get("errors", PackedStringArray())
+			var diagnostic := 'Type alias "Only" can only be used in a type position.' if callee == "Only" else 'Identifier "missing_ident" not declared in the current scope.'
+			_expect(failures, not report.get("valid", true) and errors.size() == 1 and errors[0].begins_with(diagnostic), "%s %s must reject callee: %s" % [callee, expression, errors])
+	var negative: Dictionary = probe.analyze_source("func test():\n\tvar value = missing_value\n", "res://tests/review_missing_value.barista")
+	_expect(failures, not negative.get("valid", true), "true missing value stays rejected")
+	for source in ["var outer_value: int\nclass Inner:\n\tfunc test():\n\t\tprint(outer_value)\n", "signal outer_event\nclass Inner:\n\tfunc test():\n\t\tvar event = outer_event\n", "static func outer() -> int:\n\treturn 1\nclass Inner:\n\tfunc test():\n\t\tvar value = outer\n", "extends Node\nclass Inner:\n\tfunc test():\n\t\tvar value = name\n"]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/review_outer_boundary.barista")
+		_expect(failures, not report.get("valid", true), "lexical outer does not donate receiver members: %s" % source)
+	for source in ["const BAD = Callable(1)\n", "const BAD = Signal(1)\n", "extends Node\nconst BAD = Callable(self, \"get_parent\")\n", "extends Node\nconst BAD = Signal(self, \"tree_entered\")\n"]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/review_unsafe_constant.barista")
+		_expect(failures, not report.get("valid", true), "invalid overloads and bound carriers do not fold")
+	for expression in ["Callable()", "Callable(Callable())", "Signal()", "Signal(Signal())"]:
+		var report: Dictionary = probe.fold_expression(expression)
+		var expected_type := TYPE_CALLABLE if expression.begins_with("Callable") else TYPE_SIGNAL
+		_expect(failures, report.get("ok", false) and report.get("value_type") == expected_type, "%s folds to its exact engine carrier" % expression)
+	for carrier in ["PackedByteArray", "PackedInt32Array", "PackedInt64Array", "PackedFloat32Array", "PackedFloat64Array", "PackedStringArray"]:
+		var values := '["one", "two"]' if carrier == "PackedStringArray" else "[1, 2]"
+		for use_default in [false, true]:
+			var parameter: String = "value: " + carrier + (" = " + values if use_default else "")
+			var annotation: String = "@items" if use_default else "@items(" + values + ")"
+			var source: String = "annotation items(" + parameter + ") targets METHOD\n" + annotation + "\nfunc test():\n\tpass\n"
+			var report: Dictionary = probe.analyze_source(source, "res://tests/review_conversion.barista")
+			_expect(failures, report.get("valid", false), "%s supplied/default conversion uses engine surface: %s" % [carrier, report.get("errors")])
+
+
+func _test_pinned_global_api_lookup(failures: PackedStringArray) -> void:
+	# Read the actual pinned producer bytes. Foundry extension_api_dump.cpp:499-619 @ c9d5e35.
+	var path := ProjectSettings.globalize_path("res://../godot-cpp/gdextension/extension_api-4-7.json")
+	var api: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var constants: Array = api.global_constants.duplicate()
+	for enumeration in api.global_enums:
+		constants.append_array(enumeration.values)
+	for entry in constants:
+		var report: Dictionary = probe.fold_expression(entry.name)
+		_expect(failures, report.get("ok", false) and report.get("value_type") == TYPE_INT, "engine constant %s resolves" % entry.name)
+		# Godot's JSON reader uses double; compare exact-int cases here and boundaries below.
+		if abs(entry.value) < 9007199254740992.0:
+			_expect(failures, report.get("value") == int(entry.value), "engine constant %s preserves its value" % entry.name)
+	_expect(failures, probe.fold_expression("INT64_MAX").get("value") == 9223372036854775807, "INT64_MAX preserves every bit")
+	_expect(failures, probe.fold_expression("INT64_MIN").get("value") == -9223372036854775807 - 1, "INT64_MIN preserves every bit")
+	for function in api.utility_functions:
+		var report: Dictionary = probe.analyze_source("func test():\n\tvar utility: Callable = " + function.name + "\n", "res://tests/review_utility.barista")
+		_expect(failures, report.get("valid", false), "engine utility %s resolves as a value: %s" % [function.name, report.get("errors")])
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var indexed_source := _src_class("ReviewIndexed extends RefCounted\n")
+	var imported_source := "namespace review_scope\n" + _src_class("ReviewImported extends RefCounted\n")
+	index.synchronize_path_from_source("res://tests/review_indexed.barista", indexed_source)
+	index.synchronize_path_from_source("res://tests/review_imported.barista", imported_source)
+	BaristaScriptParseCache.set_source_override("res://tests/review_indexed.barista", indexed_source)
+	BaristaScriptParseCache.set_source_override("res://tests/review_imported.barista", imported_source)
+	for source in ["func test():\n\tvar handle = ReviewIndexed\n", "import review_scope\nfunc test():\n\tvar handle = ReviewImported\n"]:
+		var report: Dictionary = probe.analyze_source(source, "res://tests/review_handle.barista")
+		_expect(failures, report.get("valid", false), "producer-indexed/imported class handle resolves: %s" % report.get("errors"))
+	BaristaScriptParseCache.clear_source_override("res://tests/review_indexed.barista")
+	BaristaScriptParseCache.clear_source_override("res://tests/review_imported.barista")
+	index.clear()
+
 
 func _src_class(body_after_keyword_space: String) -> String:
 	return _kw_class_name() + " " + body_after_keyword_space
@@ -177,6 +474,25 @@ func _test_dependency_cycle(failures: PackedStringArray) -> void:
 	var raised_b := BaristaScriptParseCache.get_parser("res://tests/cycle_b.barista", Status.FULLY_SOLVED, "")
 	_expect(failures, raised_a.valid and raised_b.valid, "cycle raise completes without deadlock")
 	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_finalization_raises_dependencies(failures: PackedStringArray) -> void:
+	# Byte-faithful preload expression from the producer statement: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/errors/type_alias_cross_file_base.fs:1-3
+	# @ c9d5e35. BSAnalyzer::raise_declared_conformance_dependencies adds every parser dependency
+	# at src/bs_analyzer_conformance.cpp:382; finalization raises it from PARSED to INHERITANCE_SOLVED.
+	BaristaScriptParseCache.clear_script_cache()
+	var dependency_path := "res://tests/finalization_dependency.notest.barista"
+	var owner_path := "res://tests/finalization_dependency.barista"
+	BaristaScriptParseCache.set_source_override(dependency_path, _src_class("FinalizationDependency extends Node\n"))
+	BaristaScriptParseCache.set_source_override(owner_path, "func test() -> void:\n\tpreload(\"./finalization_dependency.notest.barista\")\n")
+	var owner := BaristaScriptParseCache.get_parser(owner_path, Status.FULLY_SOLVED, "")
+	var dependency := BaristaScriptParseCache.get_parser(dependency_path, Status.EMPTY, "")
+	_expect(failures, owner.valid and owner.status == Status.FULLY_SOLVED, "finalization dependency owner fully solves")
+	_expect(failures, dependency.valid and dependency.status >= Status.INHERITANCE_SOLVED,
+		"finalization raises every depended parser to INHERITANCE_SOLVED")
+	BaristaScriptParseCache.clear_source_override(owner_path)
+	BaristaScriptParseCache.clear_source_override(dependency_path)
 
 
 func _test_strict_settings(failures: PackedStringArray) -> void:
@@ -849,6 +1165,58 @@ func _test_named_arg_and_connect_callable(failures: PackedStringArray) -> void:
 	_expect(failures, float_to_int_report.get("valid", true) == false, "non-constant float→int remains invalid")
 
 
+func _test_callable_signal_constructor_and_typed_receiver_depth(failures: PackedStringArray) -> void:
+	# Foundry CallSiteValidationContext @ c9d5e35: Callable(Object, method) and Signal(Object, signal)
+	# recover the declared signature instead of degrading to an untyped builtin value.
+	# Constructor shapes are byte-faithful to the engine API producer at
+	# godot-cpp/gdextension/extension_api-4-7.json:19959-19984 and :20130-20155.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var callable_ctor := _src_class("CallableCtorDepth extends Node\nfunc take(value: int) -> String:\n\treturn str(value)\nfunc test() -> void:\n\tvar callback := Callable(self, \"take\")\n\tcallback.call()\n")
+	var callable_report: Dictionary = probe.analyze_source(callable_ctor, "res://tests/callable_ctor_depth.barista")
+	var saw_callable_arity := false
+	for message in callable_report.get("errors", PackedStringArray()):
+		if "Too few arguments" in message and "call" in message:
+			saw_callable_arity = true
+	_expect(failures, saw_callable_arity, "Callable(Object, method) preserves target arity")
+
+	var signal_ctor := _src_class("SignalCtorDepth extends Node\nsignal changed(value: int)\nfunc on_changed(value: String) -> void:\n\tpass\nfunc test() -> void:\n\tvar typed_signal := Signal(self, \"changed\")\n\ttyped_signal.connect(on_changed)\n")
+	var signal_report: Dictionary = probe.analyze_source(signal_ctor, "res://tests/signal_ctor_depth.barista")
+	var saw_signal_signature := false
+	for message in signal_report.get("errors", PackedStringArray()):
+		if "Cannot connect signal" in message and "cannot be passed" in message:
+			saw_signal_signature = true
+	_expect(failures, saw_signal_signature, "Signal(Object, name) preserves payload signature")
+
+	var callable_bad_arity := _src_class("CallableCtorBadArity extends Node\nfunc test() -> void:\n\tvar _callback := Callable(self, \"test\", 1)\n")
+	var callable_bad_arity_report: Dictionary = probe.analyze_source(callable_bad_arity, "res://tests/callable_ctor_bad_arity.barista")
+	_expect(failures, callable_bad_arity_report.get("valid", true) == false, "Callable constructor rejects unsupported arity")
+
+	var callable_bad_types := _src_class("CallableCtorBadTypes extends Node\nfunc test() -> void:\n\tvar _callback := Callable(1, \"test\")\n")
+	var callable_bad_types_report: Dictionary = probe.analyze_source(callable_bad_types, "res://tests/callable_ctor_bad_types.barista")
+	_expect(failures, callable_bad_types_report.get("valid", true) == false, "Callable constructor rejects non-Object receiver")
+
+	var signal_bad_copy := _src_class("SignalCtorBadCopy extends Node\nfunc test() -> void:\n\tvar _signal := Signal(self)\n")
+	var signal_bad_copy_report: Dictionary = probe.analyze_source(signal_bad_copy, "res://tests/signal_ctor_bad_copy.barista")
+	_expect(failures, signal_bad_copy_report.get("valid", true) == false, "Signal copy constructor rejects Object")
+
+	var signal_bad_name := _src_class("SignalCtorBadName extends Node\nfunc test() -> void:\n\tvar _signal := Signal(self, 7)\n")
+	var signal_bad_name_report: Dictionary = probe.analyze_source(signal_bad_name, "res://tests/signal_ctor_bad_name.barista")
+	_expect(failures, signal_bad_name_report.get("valid", true) == false, "Signal constructor rejects non-StringName signal name")
+
+	# Object signal APIs on a typed non-self receiver use that receiver's declared signal surface.
+	var typed_receiver := _src_class("TypedReceiverSignalDepth extends Node\nsignal changed(value: int)\nfunc on_changed(value: String) -> void:\n\tpass\nfunc test(child: Self) -> void:\n\tchild.emit_signal(\"changed\", \"bad\")\n\tchild.connect(\"changed\", on_changed)\n")
+	var receiver_report: Dictionary = probe.analyze_source(typed_receiver, "res://tests/typed_receiver_signal_depth.barista")
+	var saw_typed_emit := false
+	var saw_typed_connect := false
+	for message in receiver_report.get("errors", PackedStringArray()):
+		if "Invalid argument" in message and "emit_signal" in message:
+			saw_typed_emit = true
+		if "Cannot connect signal" in message and "cannot be passed" in message:
+			saw_typed_connect = true
+	_expect(failures, saw_typed_emit, "typed receiver emit_signal validates payload")
+	_expect(failures, saw_typed_connect, "typed receiver connect validates callable")
+
+
 func _test_match_and_flow(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 	var incomplete := _src_class("MatchIncomplete extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n")
@@ -1172,6 +1540,35 @@ func _test_noreturn_flow(failures: PackedStringArray) -> void:
 	_expect(failures, saw_cannot_return, "@noreturn nested-return diagnostic")
 
 
+func _test_final_pattern_and_nested_expression_reads(failures: PackedStringArray) -> void:
+	# Foundry fs_analyzer_flow_finality.cpp @ c9d5e35: patterns and every nested expression
+	# carrier are evaluated before a blank final can be assigned.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var pattern_read := _src_class("FinalPatternRead extends Node\nfinal var id: int\nfunc _init(value: int) -> void:\n\tmatch value:\n\t\tself.id:\n\t\t\tid = 1\n\t\t_:\n\t\t\tid = 2\n")
+	var pattern_report: Dictionary = probe.analyze_source(pattern_read, "res://tests/final_pattern_read.barista")
+	var saw_pattern_read := false
+	for message in pattern_report.get("errors", PackedStringArray()):
+		if "Final variable \"id\" may be used before assignment" in message:
+			saw_pattern_read = true
+	_expect(failures, saw_pattern_read, "match expression pattern checks blank-final reads")
+
+	var type_test_read := _src_class("FinalTypeTestRead extends Node\nfinal var item: Variant\nfunc _init() -> void:\n\tif item is Node:\n\t\tpass\n\titem = null\n")
+	var type_test_report: Dictionary = probe.analyze_source(type_test_read, "res://tests/final_type_test_read.barista")
+	var saw_type_test_read := false
+	for message in type_test_report.get("errors", PackedStringArray()):
+		if "Final variable \"item\" may be used before assignment" in message:
+			saw_type_test_read = true
+	_expect(failures, saw_type_test_read, "type-test operand checks blank-final reads")
+
+	var tuple_read := _src_class("FinalTupleRead extends Node\nfinal var id: int\nfunc _init() -> void:\n\tvar _pair := (self.id, 1)\n\tid = 2\n")
+	var tuple_report: Dictionary = probe.analyze_source(tuple_read, "res://tests/final_tuple_read.barista")
+	var saw_tuple_read := false
+	for message in tuple_report.get("errors", PackedStringArray()):
+		if "Final variable \"id\" may be used before assignment" in message:
+			saw_tuple_read = true
+	_expect(failures, saw_tuple_read, "tuple-literal element checks blank-final reads")
+
+
 func _test_unused_locals(failures: PackedStringArray) -> void:
 	var probe := BaristaScriptAnalyzerProbe.new()
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
@@ -1308,6 +1705,66 @@ func _test_unused_class_members_and_signals(failures: PackedStringArray) -> void
 		if "UNUSED_SIGNAL" in str(warn.get("string_code", "")) and "quiet" in str(warn.get("message", "")):
 			saw_ignored = true
 	_expect(failures, not saw_ignored, "@warning_ignore(\"unused_signal\") suppresses UNUSED_SIGNAL via resolve_annotation")
+
+
+func _test_member_name_conflicts(failures: PackedStringArray) -> void:
+	# Foundry fs_analyzer_surface.cpp @ c9d5e35: builtin/compiler-provided type names win type
+	# lookup, so a member with one of those names is unreachable and must fail at declaration.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var builtin_shadow := _src_class("BuiltinMemberShadow extends Node\nvar Vector2\n")
+	var builtin_report: Dictionary = probe.analyze_source(builtin_shadow, "res://tests/builtin_member_shadow.barista")
+	var saw_builtin_shadow := false
+	for message in builtin_report.get("errors", PackedStringArray()):
+		if "Vector2" in message and "builtin type" in message:
+			saw_builtin_shadow = true
+	_expect(failures, saw_builtin_shadow, "member cannot shadow builtin type")
+
+	var async_shadow := _src_class("AsyncCallableMemberShadow extends Node\nvar AsyncCallable\n")
+	var async_report: Dictionary = probe.analyze_source(async_shadow, "res://tests/async_callable_member_shadow.barista")
+	var saw_async_shadow := false
+	for message in async_report.get("errors", PackedStringArray()):
+		if "AsyncCallable" in message and "builtin type" in message:
+			saw_async_shadow = true
+	_expect(failures, saw_async_shadow, "member cannot shadow AsyncCallable")
+
+	var number_shadow := _src_class("NumberMemberShadow extends Node\nclass Number:\n\tpass\n")
+	var number_report: Dictionary = probe.analyze_source(number_shadow, "res://tests/number_member_shadow.barista")
+	var saw_number_shadow := false
+	for message in number_report.get("errors", PackedStringArray()):
+		if "Number" in message and "compiler-provided type" in message:
+			saw_number_shadow = true
+	_expect(failures, saw_number_shadow, "member cannot shadow compiler-provided Number")
+
+	var native_shadow := _src_class("NativeMemberShadow extends Node\nvar name: String\n")
+	var native_report: Dictionary = probe.analyze_source(native_shadow, "res://tests/native_member_shadow.barista")
+	var saw_native_shadow := false
+	for message in native_report.get("errors", PackedStringArray()):
+		if "name" in message and "native class" in message:
+			saw_native_shadow = true
+	_expect(failures, saw_native_shadow, "member cannot redefine inherited native property")
+
+	var parent_shadow := _src_class("ParentMemberShadowHost extends Node\nclass Parent extends Node:\n\tfunc ping() -> void:\n\t\tpass\nclass Child extends Parent:\n\tvar ping: int\n")
+	var parent_report: Dictionary = probe.analyze_source(parent_shadow, "res://tests/parent_member_shadow.barista")
+	var saw_parent_shadow := false
+	for message in parent_report.get("errors", PackedStringArray()):
+		if "ping" in message and "parent class" in message:
+			saw_parent_shadow = true
+	_expect(failures, saw_parent_shadow, "non-function member cannot shadow parent method")
+
+	var outer_shadow := _src_class("OuterMemberShadowHost extends Node\nconst TOKEN := 1\nclass Inner extends Node:\n\tvar TOKEN: int\n")
+	var outer_report: Dictionary = probe.analyze_source(outer_shadow, "res://tests/outer_member_shadow.barista")
+	var saw_outer_shadow := false
+	for message in outer_report.get("errors", PackedStringArray()):
+		if "TOKEN" in message and "outer class" in message:
+			saw_outer_shadow = true
+	_expect(failures, saw_outer_shadow, "nested member cannot shadow visible outer constant")
+
+	# Byte-faithful member-kind dispatch from Foundry's producer
+	# modules/foundry_script/fs_analyzer_surface.cpp:1921-1924 @ c9d5e35: functions run only
+	# outer-class conflict checks, so a method may share a builtin/native class spelling.
+	var function_builtin_name := _src_class("FunctionBuiltinName extends Node\nfunc Vector2() -> void:\n\tpass\n")
+	var function_builtin_report: Dictionary = probe.analyze_source(function_builtin_name, "res://tests/function_builtin_name.barista")
+	_expect(failures, function_builtin_report.get("valid", false) == true, "function names do not run non-function native/builtin conflict checks")
 
 
 func _test_trait_requirements_and_conformance_witness(failures: PackedStringArray) -> void:
@@ -1602,7 +2059,13 @@ func _test_lambda_capture_and_compound_narrowing(failures: PackedStringArray) ->
 	# Narrowed compound read: inside the `is int` arm, `v += 1` is accepted (narrowed left operand).
 	var compound_narrow_ok := _src_class("CompoundAssignNarrowedReadOk extends Node\nfunc take(v: int | String) -> void:\n\tif v is int:\n\t\tv += 1\n")
 	var compound_narrow_ok_report: Dictionary = probe.analyze_source(compound_narrow_ok, "res://tests/compound_assign_narrowed_read_ok.barista")
-	_expect(failures, compound_narrow_ok_report.get("valid", false) == true, "compound += inside `is int` arm is valid")
+	_expect(failures, compound_narrow_ok_report.get("valid", false) == true, "compound += inside `is int` arm is valid: %s" % compound_narrow_ok_report.get("errors"))
+	# ParameterNode does not have VariableNode.assignments. Repeated fresh parser allocations
+	# exercise assignment accounting without letting a write through the identifier union damage
+	# a neighboring AST node (the original symptom depended on allocator layout).
+	for iteration in range(64):
+		var repeated: Dictionary = probe.analyze_source(compound_narrow_ok, "res://tests/compound_parameter_%d.barista" % iteration)
+		_expect(failures, repeated.get("valid", false), "parameter assignment preserves AST on iteration %d: %s" % [iteration, repeated.get("errors")])
 
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", false)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
@@ -1717,6 +2180,95 @@ func _test_builtin_annotation_resolve(failures: PackedStringArray) -> void:
 	var mismatch := _src_class("BuiltinStringNameMismatch extends Node\nfunc take() -> void:\n\tvar _n: StringName = 123\n")
 	var mismatch_report: Dictionary = probe.analyze_source(mismatch, "res://tests/builtin_string_name_mismatch.barista")
 	_expect(failures, mismatch_report.get("valid", true) == false, "int → StringName annotation assign remains invalid")
+
+
+func _test_custom_annotation_surface(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	# Byte-faithful producer fixture: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/features/annotation_custom_usage.fs:1-35
+	# @ c9d5e35. This covers every non-generic target plus positional, named, default,
+	# variadic, stacked, and repeated argument binding.
+	var valid_source := "# Custom annotations declared and used in the same namespace resolve without an import and\n# accept positional, named, default, variadic, stacked, and repeated arguments. They apply to\n# class, method, member-variable, signal, and constant targets.\nnamespace cafecito.usage\n\nannotation suite(name: String = \"\") targets CLASS\nannotation test targets METHOD\nannotation timeout(seconds: float) targets METHOD\nannotation tags(...names: String) targets METHOD, CLASS\nannotation fixture targets VARIABLE\nannotation event targets SIGNAL\nannotation config(key: String) targets CONSTANT\n\n@suite(name = \"Combat\")\n@tags(\"gameplay\")\nclass CombatTests:\n\t@fixture\n\tvar world: int\n\n\t@config(\"max_health\")\n\tconst MAX_HEALTH = 100\n\n\t@event\n\tsignal damage_taken(amount: int)\n\n\t@test\n\t@timeout(10.0)\n\t@tags(\"slow\", \"integration\")\n\t@tags(\"flaky\")\n\tfunc crit_table() -> void:\n\t\tpass\n\nfunc test() -> void:\n\tpass\n"
+	var valid_report: Dictionary = probe.analyze_source(valid_source, "res://tests/annotation_custom_usage.barista")
+	_expect(failures, valid_report.get("valid", false) == true, "custom annotation valid target and arguments analyze")
+
+	# Byte-faithful error fixtures: Foundry analyzer/errors/annotation_*.fs @ c9d5e35.
+	var invalid_cases := [
+		{"name": "type mismatch", "path": "annotation_argument_type_mismatch", "source": "namespace cafecito.typemismatch\n\nannotation timeout(seconds: float) targets METHOD\n\n@timeout(\"not a number\")\nfunc test() -> void:\n\tpass\n", "needle": "expected \"float\" but got \"String\""},
+		{"name": "nonconstant", "path": "annotation_non_constant_arg", "source": "namespace cafecito.nonconst\n\nannotation timeout(seconds: float) targets METHOD\n\nvar seconds_value: float = 1.0\n\n@timeout(seconds_value)\nfunc test() -> void:\n\tprint(seconds_value)\n", "needle": "not a constant expression"},
+		{"name": "wrong target", "path": "annotation_wrong_target", "source": "namespace cafecito.wrongtarget\n\nannotation fixture targets VARIABLE\n\n@fixture\nfunc test() -> void:\n\tpass\n", "needle": "cannot be applied to a method"},
+		{"name": "missing required", "path": "annotation_missing_required_arg", "source": "namespace cafecito.missingarg\n\nannotation cases(provider: String) targets METHOD\n\n@cases\nfunc test() -> void:\n\tpass\n", "needle": "missing required argument \"provider\""},
+		{"name": "unknown named", "path": "annotation_unknown_named_arg", "source": "namespace cafecito.unknownnamed\n\nannotation suite(name: String = \"\") targets CLASS\n\n@suite(title = \"x\")\nclass Demo:\n\tpass\n", "needle": "has no parameter named \"title\""},
+		{"name": "positional after named", "path": "annotation_positional_after_named", "source": "namespace cafecito.posafternamed\n\nannotation pair(first: String, second: String) targets METHOD\n\n@pair(first = \"a\", \"b\")\nfunc test() -> void:\n\tpass\n", "needle": "Positional argument after named argument"},
+		{"name": "too many", "path": "annotation_too_many_args", "source": "namespace cafecito.toomany\n\nannotation test targets METHOD\n\n@test(\"extra\")\nfunc test() -> void:\n\tpass\n", "needle": "takes at most 0 argument(s), but 1 were given"},
+	]
+	for invalid_case in invalid_cases:
+		var report: Dictionary = probe.analyze_source(invalid_case.source, "res://tests/%s.barista" % invalid_case.path)
+		var joined := "\n".join(report.get("errors", PackedStringArray()))
+		_expect(failures, report.get("valid", true) == false, "custom annotation %s invalidates analysis" % invalid_case.name)
+		_expect(failures, invalid_case.needle in joined, "custom annotation %s reports Foundry diagnostic" % invalid_case.name)
+
+	var unknown_report: Dictionary = probe.analyze_source("@not_declared\nfunc test() -> void:\n\tpass\n", "res://tests/annotation_unknown.barista")
+	_expect(failures, unknown_report.get("valid", true) == false, "unknown custom annotation is rejected")
+	_expect(failures, "Unknown annotation" in "\n".join(unknown_report.get("errors", PackedStringArray())), "unknown custom annotation has lookup diagnostic")
+
+	# Byte-faithful declaration-index producer: Foundry
+	# modules/foundry_script/tests/scripts/analyzer/features/annotation_index_library.notest.fs:1-6
+	# and consumer annotation_custom_import.fs:1-13 @ c9d5e35.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	index.clear()
+	var provider_path := "res://tests/annotation_index_library.barista"
+	var provider_source := "# Provider file used by analyzer custom-annotation import tests. It intentionally has no test()\n# function; the companion consumer imports this namespace and applies all three declarations.\nnamespace cafecito.annotation_index\n\nannotation suite(name: String = \"\") targets CLASS\nannotation index_test targets METHOD\nannotation fixture targets VARIABLE\n"
+	index.synchronize_path_from_source(provider_path, provider_source)
+	BaristaScriptParseCache.set_source_override(provider_path, provider_source)
+	var consumer_source := "# Custom annotations declared in another file resolve through an imported namespace.\n# This is the analyzer half of the declaration-index coverage: the provider fixture is indexed\n# before this script is analyzed.\nnamespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = \"Imported\")\nclass ImportedSuite:\n\t@fixture\n\tvar state: int\n\n\t@index_test\n\tfunc works() -> void:\n\t\tpass\n\nfunc test() -> void:\n\tpass\n"
+	var consumer_report: Dictionary = probe.analyze_source(consumer_source, "res://tests/annotation_custom_import.barista")
+	_expect(failures, consumer_report.get("valid", false) == true, "imported custom annotations resolve through declaration index")
+	var depended_parser_statuses: Dictionary = consumer_report.get("depended_parser_statuses", {})
+	_expect(failures, depended_parser_statuses.has(provider_path),
+		"external annotation provider is retained as a depended parser")
+	_expect(failures, depended_parser_statuses.get(provider_path, Status.EMPTY) >= Status.INHERITANCE_SOLVED,
+		"external annotation provider reaches dependency finalization")
+	var import_mismatch := "namespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = 7)\nclass ImportedSuite:\n\tpass\n"
+	var mismatch_report: Dictionary = probe.analyze_source(import_mismatch, "res://tests/annotation_custom_import_mismatch.barista")
+	_expect(failures, mismatch_report.get("valid", true) == false, "imported annotation signature is validated")
+	BaristaScriptParseCache.clear_source_override(provider_path)
+	index.clear()
+
+
+func _test_type_alias_surface(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	# Byte-faithful producer fixtures: Foundry analyzer/features/type_alias_resolution.fs
+	# and analyzer/errors/type_alias_*.fs @ c9d5e35.
+	var transparent_source := "type Meters = float\n\nfunc measure(distance: Meters) -> Meters:\n\treturn distance * 2.0\n\nfunc test():\n\tvar distance: Meters = 1.5\n\tprint(measure(distance))\n"
+	var transparent_report: Dictionary = probe.analyze_source(transparent_source, "res://tests/type_alias_resolution.barista")
+	_expect(failures, transparent_report.get("valid", false) == true, "type alias expands transparently in signatures and locals")
+
+	var cycle_source := "type Left = Right\ntype Right = Left\ntype SelfReferential = SelfReferential | int\n\n\nfunc test():\n\tvar value: Left = 1\n\tprint(value)\n"
+	var cycle_report: Dictionary = probe.analyze_source(cycle_source, "res://tests/type_alias_cycle.barista")
+	var cycle_errors := "\n".join(cycle_report.get("errors", PackedStringArray()))
+	_expect(failures, cycle_report.get("valid", true) == false, "cyclic type aliases invalidate analysis")
+	_expect(failures, 'Type alias "Left" -> "Right" -> "Left" expands to itself' in cycle_errors, "mutual type alias cycle names its chain")
+	_expect(failures, 'Type alias "SelfReferential" -> "SelfReferential" expands to itself' in cycle_errors, "self type alias cycle is diagnosed")
+
+	var unknown_source := "type Mixed = int | NotAType\n\n\nfunc test():\n\tvar value: Mixed = 1\n\tprint(value)\n"
+	var unknown_report: Dictionary = probe.analyze_source(unknown_source, "res://tests/type_alias_unknown_member.barista")
+	var unknown_errors := "\n".join(unknown_report.get("errors", PackedStringArray()))
+	_expect(failures, unknown_report.get("valid", true) == false, "unresolvable type alias invalidates analysis")
+	_expect(failures, 'Type alias "Mixed" has no expansion' in unknown_errors, "unresolvable alias reports declaration failure")
+	_expect(failures, 'Could not find type "NotAType"' in unknown_errors, "unresolvable alias reports missing member")
+
+	var expression_source := "class Holder:\n\tvar label: String = \"holder\"\n\n\ntype Only = Holder\ntype Scalar = int | String\n\n\nfunc test():\n\tvar read = Scalar\n\tvar called = Scalar()\n\tvar made = Only.new()\n\tprints(read, called, made)\n"
+	var expression_report: Dictionary = probe.analyze_source(expression_source, "res://tests/type_alias_not_an_expression.barista")
+	var expression_errors := "\n".join(expression_report.get("errors", PackedStringArray()))
+	_expect(failures, 'Type alias "Scalar" can only be used in a type position' in expression_errors, "type alias has no expression value")
+	_expect(failures, 'Type alias "Only" can only be used in a type position' in expression_errors, "class alias has no constructor handle")
+
+	var conflict_source := "type int = String\ntype Label = float\n\n\nfunc test():\n\tprint(\"unreachable\")\n"
+	var conflict_report: Dictionary = probe.analyze_source(conflict_source, "res://tests/type_alias_hides_existing_type.barista")
+	var conflict_errors := "\n".join(conflict_report.get("errors", PackedStringArray()))
+	_expect(failures, 'Type alias "int" hides a built-in type' in conflict_errors, "type alias cannot hide builtin type")
+	_expect(failures, 'Type alias "Label" hides a native class' in conflict_errors, "type alias cannot hide native class")
 
 
 func _test_union_union_assignability(failures: PackedStringArray) -> void:
@@ -1859,11 +2411,13 @@ func _test_enum_case_match_and_case_binds(failures: PackedStringArray) -> void:
 			saw_not_case = true
 	_expect(failures, saw_not_case, "non-enum case-bind diagnostic")
 
-	var array_ok := _src_class("ArrayPatOk extends Node\nfunc handle(xs: Array[int]) -> int:\n\tmatch xs:\n\t\t[a, b]:\n\t\t\treturn a + b\n\t\t_:\n\t\t\treturn 0\n")
+	# Foundry's parser producer requires `var` for binds (`fs_parser.cpp:4361-4388` @ c9d5e35);
+	# bare identifiers are value patterns and must not be silently accepted as undeclared locals.
+	var array_ok := _src_class("ArrayPatOk extends Node\nfunc handle(xs: Array[int]) -> int:\n\tmatch xs:\n\t\t[var a, var b]:\n\t\t\treturn a + b\n\t\t_:\n\t\t\treturn 0\n")
 	var array_ok_report: Dictionary = probe.analyze_source(array_ok, "res://tests/array_pat_ok.barista")
 	_expect(failures, array_ok_report.get("valid", false) == true, "Array[int] pattern binds are valid")
 
-	var dict_ok := _src_class("DictPatOk extends Node\nfunc handle(d: Dictionary[String, int]) -> int:\n\tmatch d:\n\t\t{\"a\": n}:\n\t\t\treturn n\n\t\t_:\n\t\t\treturn 0\n")
+	var dict_ok := _src_class("DictPatOk extends Node\nfunc handle(d: Dictionary[String, int]) -> int:\n\tmatch d:\n\t\t{\"a\": var n}:\n\t\t\treturn n\n\t\t_:\n\t\t\treturn 0\n")
 	var dict_ok_report: Dictionary = probe.analyze_source(dict_ok, "res://tests/dict_pat_ok.barista")
 	_expect(failures, dict_ok_report.get("valid", false) == true, "Dictionary[String, int] pattern binds are valid")
 

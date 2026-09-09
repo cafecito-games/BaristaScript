@@ -2,7 +2,7 @@
 /*  bs_analyzer_surface.cpp                                               */
 /*                                                                        */
 /*  #60 class-body surface diagnostics. Ports unused-private /            */
-/*  unused-signal post-pass, built-in resolve_annotation,                 */
+/*  unused-signal post-pass, built-in/custom resolve_annotation,          */
 /*  resolve_enum_values, complete_self_referential_enum_type /            */
 /*  enum_type_argument_bindings / specialize_enum_type, same-file scope   */
 /*  inheritance helpers, CLASS inheritance member bind, and               */
@@ -21,14 +21,17 @@
 #include "bs_analyzer.h"
 
 #include "barista_script.h"
+#include "barista_script_language.h"
 #include "bs_cache.h"
+#include "bs_native_db.h"
 #include "bs_platform.h"
+#include "bs_trait_utils.h"
 #include "bs_type.h"
 
 namespace barista_script {
 
-// Foundry uses Variant::construct; godot-cpp has no matching free function, so convert
-// through typed operators for the annotation argument types that MethodInfo declares.
+// Use the engine's complete conversion surface after Foundry's strict-admission gate
+// (core/variant/variant_utility.cpp:853 @ c9d5e35), including Array/packed-array conversions.
 static bool _convert_annotation_argument(Variant &r_value, Variant::Type p_expected_type) {
 	if (r_value.get_type() == p_expected_type) {
 		return true;
@@ -36,30 +39,380 @@ static bool _convert_annotation_argument(Variant &r_value, Variant::Type p_expec
 	if (!Variant::can_convert_strict(r_value.get_type(), p_expected_type)) {
 		return false;
 	}
-	switch (p_expected_type) {
-		case Variant::BOOL:
-			r_value = (bool)r_value;
-			return true;
-		case Variant::INT:
-			r_value = (int64_t)r_value;
-			return true;
-		case Variant::FLOAT:
-			r_value = (double)r_value;
-			return true;
-		case Variant::STRING:
-			r_value = String(r_value);
-			return true;
-		case Variant::STRING_NAME:
-			r_value = StringName(String(r_value));
-			return true;
-		case Variant::ARRAY:
-			if (r_value.get_type() == Variant::ARRAY) {
-				return true;
-			}
-			return false;
-		default:
-			return false;
+	Variant converted = UtilityFunctions::type_convert(r_value, p_expected_type);
+	if (converted.get_type() != p_expected_type) {
+		return false;
 	}
+	r_value = converted;
+	return true;
+}
+
+static String _annotation_target_name(uint32_t p_target_kind) {
+	switch (p_target_kind) {
+		case BSParser::AnnotationDeclarationNode::TARGET_CLASS:
+			return "a class";
+		case BSParser::AnnotationDeclarationNode::TARGET_METHOD:
+			return "a method";
+		case BSParser::AnnotationDeclarationNode::TARGET_VARIABLE:
+			return "a variable";
+		case BSParser::AnnotationDeclarationNode::TARGET_SIGNAL:
+			return "a signal";
+		case BSParser::AnnotationDeclarationNode::TARGET_CONSTANT:
+			return "a constant";
+		case BSParser::AnnotationDeclarationNode::TARGET_PARAMETER:
+			return "a parameter";
+		default:
+			return "this target";
+	}
+}
+
+bool BSAnalyzer::coerce_annotation_argument(const BSParser::DataType &p_parameter_type, Variant &r_value,
+		const BSParser::ExpressionNode *p_argument, const String &p_context) {
+	if (p_parameter_type.kind != BSParser::DataType::BUILTIN) {
+		return true;
+	}
+	const Variant::Type expected_type = p_parameter_type.builtin_type;
+	if (expected_type == Variant::NIL || r_value.get_type() == expected_type) {
+		return true;
+	}
+#ifdef DEBUG_ENABLED
+	if (expected_type == Variant::INT && r_value.get_type() == Variant::FLOAT) {
+		Vector<String> symbols;
+		push_warning(p_argument, BSWarning::NARROWING_CONVERSION, symbols);
+	}
+#endif
+	if (!_convert_annotation_argument(r_value, expected_type)) {
+		push_error(vformat(R"(Invalid %s: expected "%s" but got "%s".)", p_context,
+						   Variant::get_type_name(expected_type), Variant::get_type_name(r_value.get_type())),
+				p_argument);
+		return false;
+	}
+	return true;
+}
+
+void BSAnalyzer::resolve_annotation_declaration(BSParser::AnnotationDeclarationNode *p_declaration) {
+	if (p_declaration == nullptr || p_declaration->resolved_signature) {
+		return;
+	}
+	p_declaration->resolved_signature = true;
+
+	BSParser::ClassNode *previous_class = current_class;
+	current_class = parser->get_tree();
+	Vector<BSParser::ParameterNode *> parameters = p_declaration->parameters;
+	if (p_declaration->rest_parameter != nullptr) {
+		parameters.push_back(p_declaration->rest_parameter);
+	}
+	for (BSParser::ParameterNode *parameter : parameters) {
+		if (parameter == nullptr || parameter->identifier == nullptr) {
+			continue;
+		}
+		if (parameter->datatype_specifier == nullptr) {
+			push_error(vformat(R"(Annotation parameter "%s" must declare a type.)", parameter->identifier->name), parameter);
+			BSParser::DataType variant_type;
+			variant_type.kind = BSParser::DataType::VARIANT;
+			variant_type.type_source = BSParser::DataType::INFERRED;
+			parameter->set_datatype(variant_type);
+		} else {
+			parameter->set_datatype(datatype_from_type_node(parameter->datatype_specifier));
+		}
+		if (parameter->initializer != nullptr) {
+			reduce_expression(parameter->initializer);
+			if (!parameter->initializer->is_constant) {
+				push_error(vformat(R"(Default value for annotation parameter "%s" must be a constant expression.)", parameter->identifier->name), parameter->initializer);
+			} else {
+				Variant default_value = parameter->initializer->reduced_value;
+				const String context = vformat(R"(default value of annotation parameter "%s")", parameter->identifier->name);
+				coerce_annotation_argument(parameter->get_datatype(), default_value, parameter->initializer, context);
+			}
+		}
+	}
+	current_class = previous_class;
+}
+
+void BSAnalyzer::resolve_annotation_declaration_signatures() {
+	if (parser == nullptr || parser->get_tree() == nullptr) {
+		return;
+	}
+	for (BSParser::AnnotationDeclarationNode *declaration : parser->get_tree()->annotation_declarations) {
+		resolve_annotation_declaration(declaration);
+	}
+}
+
+BSParser::AnnotationDeclarationNode *BSAnalyzer::load_external_annotation_declaration(
+		const String &p_qualified_name, BSParser::AnnotationNode *p_annotation, bool &r_error_reported) {
+	r_error_reported = false;
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	if (language == nullptr || parser == nullptr) {
+		return nullptr;
+	}
+	Vector<String> paths = language->get_declaration_index().get_annotation_declaring_paths(p_qualified_name);
+	if (paths.size() > 1) {
+		push_error(vformat(R"(Ambiguous annotation "%s": the canonical identity "%s" is declared in multiple files.)",
+						   p_annotation->name, p_qualified_name),
+				p_annotation);
+		r_error_reported = true;
+		return nullptr;
+	}
+	if (paths.is_empty()) {
+		return nullptr;
+	}
+	const String path = paths[0].simplify_path();
+	if (path == parser->script_path.simplify_path()) {
+		return nullptr;
+	}
+	if (!is_bootstrap_path_allowed(path)) {
+		push_error(vformat(R"(Build task bootstrap cannot use annotation "%s" from "%s"; it is outside the provider bootstrap root "%s".)",
+						   p_qualified_name, path, bootstrap_root_storage()),
+				p_annotation);
+		r_error_reported = true;
+		return nullptr;
+	}
+
+	Ref<BSParserRef> ref = parser->get_depended_parser_for(path);
+	if (ref.is_null()) {
+		return nullptr;
+	}
+	const Error err = ref->raise_status(BSParserRef::INTERFACE_SOLVED);
+	if (err != OK || ref->get_status() < BSParserRef::INTERFACE_SOLVED) {
+		return nullptr;
+	}
+	BSParser *external_parser = ref->get_parser();
+	if (external_parser == nullptr || external_parser->get_tree() == nullptr) {
+		return nullptr;
+	}
+	BSParser::AnnotationDeclarationNode *first_match = nullptr;
+	for (BSParser::AnnotationDeclarationNode *declaration : external_parser->get_tree()->annotation_declarations) {
+		if (declaration->qualified_name != p_qualified_name) {
+			continue;
+		}
+		if (first_match != nullptr) {
+			push_error(vformat(R"(Ambiguous annotation "%s": the canonical identity "%s" has multiple declarations.)",
+							   p_annotation->name, p_qualified_name),
+					p_annotation);
+			r_error_reported = true;
+			return nullptr;
+		}
+		first_match = declaration;
+	}
+	return first_match;
+}
+
+BSParser::AnnotationDeclarationNode *BSAnalyzer::resolve_qualified_annotation_declaration(
+		const String &p_identity, BSParser::AnnotationNode *p_annotation) {
+	for (BSParser::AnnotationDeclarationNode *declaration : parser->get_tree()->annotation_declarations) {
+		if (declaration->qualified_name == p_identity) {
+			resolve_annotation_declaration(declaration);
+			return declaration;
+		}
+	}
+	bool error_reported = false;
+	BSParser::AnnotationDeclarationNode *declaration = load_external_annotation_declaration(p_identity, p_annotation, error_reported);
+	if (declaration != nullptr || error_reported) {
+		return declaration;
+	}
+	push_error(vformat(R"(Unknown annotation "%s". A fully qualified annotation must name an existing declaration.)", p_annotation->name), p_annotation);
+	return nullptr;
+}
+
+BSParser::AnnotationDeclarationNode *BSAnalyzer::resolve_custom_annotation_declaration(BSParser::AnnotationNode *p_annotation) {
+	const String usage_name = String(p_annotation->name);
+	const String short_name = usage_name.begins_with("@") ? usage_name.substr(1) : usage_name;
+	if (short_name.find(".") >= 0) {
+		return resolve_qualified_annotation_declaration(short_name, p_annotation);
+	}
+
+	for (BSParser::AnnotationDeclarationNode *declaration : parser->get_tree()->annotation_declarations) {
+		if (declaration->identifier != nullptr && declaration->identifier->name == StringName(short_name)) {
+			resolve_annotation_declaration(declaration);
+			return declaration;
+		}
+	}
+
+	const String current_namespace = parser->get_tree()->namespace_name;
+	const String own_identity = current_namespace.is_empty() ? short_name : current_namespace + String(".") + short_name;
+	bool error_reported = false;
+	BSParser::AnnotationDeclarationNode *declaration = load_external_annotation_declaration(own_identity, p_annotation, error_reported);
+	if (declaration != nullptr || error_reported) {
+		return declaration;
+	}
+
+	Vector<String> matching_namespaces;
+	String resolved_identity;
+	HashSet<String> checked_imports;
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	if (language != nullptr) {
+		for (const String &import : parser->get_tree()->imports) {
+			if (checked_imports.has(import)) {
+				continue;
+			}
+			checked_imports.insert(import);
+			const String identity = import + String(".") + short_name;
+			if (!language->get_declaration_index().get_annotation_declaring_paths(identity).is_empty()) {
+				matching_namespaces.push_back(import);
+				resolved_identity = identity;
+			}
+		}
+	}
+	if (matching_namespaces.size() > 1) {
+		matching_namespaces.sort();
+		String namespace_list;
+		for (int i = 0; i < matching_namespaces.size(); i++) {
+			if (i > 0) {
+				namespace_list += i == matching_namespaces.size() - 1 ? " and " : ", ";
+			}
+			namespace_list += "\"" + matching_namespaces[i] + "\"";
+		}
+		push_error(vformat(R"(Ambiguous annotation "%s": it is declared in imported namespaces %s.)", p_annotation->name, namespace_list), p_annotation);
+		return nullptr;
+	}
+	if (matching_namespaces.size() == 1) {
+		error_reported = false;
+		declaration = load_external_annotation_declaration(resolved_identity, p_annotation, error_reported);
+		if (declaration != nullptr || error_reported) {
+			return declaration;
+		}
+	}
+
+	push_error(vformat(R"(Unknown annotation "%s". Custom annotations must be declared in the current namespace or an imported namespace.)", p_annotation->name), p_annotation);
+	return nullptr;
+}
+
+void BSAnalyzer::resolve_custom_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind) {
+	if (p_annotation->is_resolved) {
+		return;
+	}
+	p_annotation->is_resolved = true;
+	BSParser::AnnotationDeclarationNode *declaration = resolve_custom_annotation_declaration(p_annotation);
+	if (declaration == nullptr) {
+		return;
+	}
+	p_annotation->resolved_qualified_name = declaration->qualified_name;
+	if (p_target_kind == 0 || (declaration->targets & p_target_kind) == 0) {
+		push_error(vformat(R"(Annotation "%s" cannot be applied to %s.)", p_annotation->name, _annotation_target_name(p_target_kind)), p_annotation);
+	}
+
+	const int fixed_count = declaration->parameters.size();
+	const bool is_variadic = declaration->is_variadic();
+	LocalVector<int> binding;
+	binding.resize(fixed_count);
+	for (int i = 0; i < fixed_count; i++) {
+		binding[i] = 0;
+	}
+	int next_positional = 0;
+	bool seen_named = false;
+	bool reported_too_many = false;
+	bool argument_error = false;
+	for (int i = 0; i < p_annotation->arguments.size(); i++) {
+		BSParser::ExpressionNode *argument = p_annotation->arguments[i];
+		if (argument == nullptr) {
+			argument_error = true;
+			continue;
+		}
+		const StringName argument_name = i < p_annotation->argument_names.size() ? p_annotation->argument_names[i] : StringName();
+		reduce_expression(argument);
+		if (!argument->is_constant) {
+			push_error(vformat(R"(Argument %d of annotation "%s" is not a constant expression.)", i + 1, p_annotation->name), argument);
+			argument_error = true;
+			continue;
+		}
+		Variant value = argument->reduced_value;
+		BSParser::ParameterNode *parameter = nullptr;
+		if (argument_name == StringName()) {
+			if (seen_named) {
+				push_error(vformat(R"(Positional argument after named argument in annotation "%s".)", p_annotation->name), argument);
+				argument_error = true;
+				continue;
+			}
+			if (next_positional < fixed_count) {
+				binding[next_positional] = 1;
+				parameter = declaration->parameters[next_positional];
+			} else if (is_variadic) {
+				parameter = declaration->rest_parameter;
+			} else {
+				if (!reported_too_many) {
+					push_error(vformat(R"(Annotation "%s" takes at most %d argument(s), but %d were given.)",
+									   p_annotation->name, fixed_count, p_annotation->arguments.size()),
+							argument);
+					reported_too_many = true;
+				}
+				argument_error = true;
+				continue;
+			}
+			next_positional++;
+		} else {
+			seen_named = true;
+			const int *parameter_index = declaration->parameters_indices.getptr(argument_name);
+			if (parameter_index == nullptr) {
+				push_error(vformat(R"(Annotation "%s" has no parameter named "%s".)", p_annotation->name, argument_name), argument);
+				argument_error = true;
+				continue;
+			}
+			if (binding[*parameter_index] != 0) {
+				push_error(vformat(R"(Parameter "%s" of annotation "%s" was specified more than once.)", argument_name, p_annotation->name), argument);
+				argument_error = true;
+				continue;
+			}
+			binding[*parameter_index] = 2;
+			parameter = declaration->parameters[*parameter_index];
+		}
+		if (parameter != nullptr) {
+			const String context = vformat(R"(argument %d of annotation "%s")", i + 1, p_annotation->name);
+			if (!coerce_annotation_argument(parameter->get_datatype(), value, argument, context)) {
+				argument_error = true;
+				continue;
+			}
+		}
+		p_annotation->resolved_arguments.push_back(value);
+	}
+	if (!argument_error) {
+		for (int i = 0; i < fixed_count; i++) {
+			if (binding[i] == 0 && declaration->parameters[i]->initializer == nullptr) {
+				push_error(vformat(R"(Annotation "%s" is missing required argument "%s".)",
+								   p_annotation->name, declaration->parameters[i]->identifier->name),
+						p_annotation);
+			}
+		}
+	}
+}
+
+Error BSAnalyzer::validate_annotation_declarations() {
+	if (parser == nullptr || parser->get_tree() == nullptr) {
+		return ERR_BUG;
+	}
+	HashSet<String> declared_in_file;
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	for (BSParser::AnnotationDeclarationNode *declaration : parser->get_tree()->annotation_declarations) {
+		if (declaration == nullptr || declaration->identifier == nullptr) {
+			continue;
+		}
+		const StringName short_name = declaration->identifier->name;
+		if (parser->valid_annotations.has(StringName("@" + String(short_name)))) {
+			push_error(vformat(R"(Cannot declare custom annotation "%s": "@%s" is a built-in annotation.)", short_name, short_name), declaration);
+			continue;
+		}
+		const String &qualified_name = declaration->qualified_name;
+		if (qualified_name.is_empty()) {
+			continue;
+		}
+		if (declared_in_file.has(qualified_name)) {
+			push_error(vformat(R"(Duplicate annotation declaration "%s".)", qualified_name), declaration);
+			continue;
+		}
+		declared_in_file.insert(qualified_name);
+		if (language != nullptr) {
+			const Vector<String> paths = language->get_declaration_index().get_annotation_declaring_paths(qualified_name);
+			int other_paths = 0;
+			for (const String &path : paths) {
+				if (path.simplify_path() != parser->script_path.simplify_path()) {
+					other_paths++;
+				}
+			}
+			if (other_paths > 0) {
+				push_error(vformat(R"(Duplicate annotation declaration "%s": the same canonical annotation is declared in another file.)", qualified_name), declaration);
+			}
+		}
+	}
+	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
 
 void BSAnalyzer::resolve_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind) {
@@ -72,8 +425,7 @@ void BSAnalyzer::resolve_annotation(BSParser::AnnotationNode *p_annotation, uint
 		return;
 	}
 	if (p_annotation->is_custom) {
-		// Custom annotation declaration resolution remains follow-up under #60.
-		(void)p_target_kind;
+		resolve_custom_annotation(p_annotation, p_target_kind);
 		return;
 	}
 	ERR_FAIL_COND_MSG(parser == nullptr || !parser->valid_annotations.has(p_annotation->name),
@@ -394,6 +746,122 @@ void BSAnalyzer::mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_i
 	(void)p_call;
 	(void)p_is_self;
 #endif
+}
+
+bool BSAnalyzer::has_member_name_conflict_in_script_class(const StringName &p_member_name, const BSParser::ClassNode *p_class, const BSParser::Node *p_member) const {
+	if (p_class == nullptr || !p_class->members_indices.has(p_member_name)) {
+		return false;
+	}
+	const BSParser::ClassNode::Member &member = p_class->members[p_class->members_indices[p_member_name]];
+	if (member.type == BSParser::ClassNode::Member::VARIABLE || member.type == BSParser::ClassNode::Member::CONSTANT ||
+			member.type == BSParser::ClassNode::Member::ENUM || member.type == BSParser::ClassNode::Member::ENUM_VALUE ||
+			member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::SIGNAL) {
+		return true;
+	}
+	return p_member != nullptr && p_member->type != BSParser::Node::FUNCTION && member.type == BSParser::ClassNode::Member::FUNCTION;
+}
+
+static bool _member_is_visible_outer_class_surface(const BSParser::ClassNode::Member &p_member) {
+	switch (p_member.type) {
+		case BSParser::ClassNode::Member::CONSTANT:
+		case BSParser::ClassNode::Member::ENUM:
+		case BSParser::ClassNode::Member::ENUM_VALUE:
+		case BSParser::ClassNode::Member::CLASS:
+		case BSParser::ClassNode::Member::TUPLE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+bool BSAnalyzer::has_member_name_conflict_in_native_type(const StringName &p_member_name, const StringName &p_native_type) const {
+	if (ClassDB::class_has_signal(p_native_type, p_member_name) || ClassDB::class_has_integer_constant(p_native_type, p_member_name)) {
+		return true;
+	}
+	const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(p_native_type, false);
+	for (int i = 0; i < properties.size(); i++) {
+		const Dictionary property = properties[i];
+		if (StringName(property.get("name", String())) == p_member_name) {
+			return true;
+		}
+	}
+	return p_member_name == SNAME("script");
+}
+
+Error BSAnalyzer::check_native_member_name_conflict(const StringName &p_member_name, const BSParser::Node *p_member_node, const StringName &p_native_type) {
+	if (has_member_name_conflict_in_native_type(p_member_name, p_native_type)) {
+		push_error(vformat(R"*(Member "%s" redefined (original in native class '%s'))*", p_member_name, p_native_type), p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	if (ClassDB::class_exists(p_member_name)) {
+		push_error(vformat(R"*(The member "%s" shadows a native class.)*", p_member_name), p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	if (BSParser::get_builtin_type(p_member_name) < Variant::VARIANT_MAX || p_member_name == SNAME("AsyncCallable")) {
+		push_error(vformat(R"*(The member "%s" cannot have the same name as a builtin type.)*", p_member_name), p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	if (p_member_name == BSParser::get_number_type_name()) {
+		push_error(R"*(The member "Number" cannot have the same name as the compiler-provided type "Number".)*", p_member_node);
+		return ERR_PARSE_ERROR;
+	}
+	return OK;
+}
+
+Error BSAnalyzer::check_outer_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node) {
+	if (p_class == nullptr || p_class->outer == nullptr) {
+		return OK;
+	}
+	List<BSParser::ClassNode *> outer_scope_classes;
+	get_class_node_current_scope_classes(p_class->outer, &outer_scope_classes, const_cast<BSParser::Node *>(p_member_node));
+	for (BSParser::ClassNode *outer_class : outer_scope_classes) {
+		if (outer_class == nullptr) {
+			continue;
+		}
+		if (outer_class->identifier != nullptr && outer_class->identifier->name == p_member_name) {
+			push_error(vformat(R"*(The member "%s" already exists in outer class %s.)*", p_member_name, bs_class_or_trait_diagnostic_name(outer_class)), p_member_node);
+			return ERR_PARSE_ERROR;
+		}
+		if (!outer_class->members_indices.has(p_member_name)) {
+			continue;
+		}
+		const BSParser::ClassNode::Member &outer_member = outer_class->members[outer_class->members_indices[p_member_name]];
+		if (_member_is_visible_outer_class_surface(outer_member) && has_member_name_conflict_in_script_class(p_member_name, outer_class, p_member_node)) {
+			push_error(vformat(R"*(The member "%s" already exists in outer class %s.)*", p_member_name, bs_class_or_trait_diagnostic_name(outer_class)), p_member_node);
+			return ERR_PARSE_ERROR;
+		}
+	}
+	return OK;
+}
+
+Error BSAnalyzer::check_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node) {
+	if (p_class == nullptr) {
+		return OK;
+	}
+	const BSParser::DataType *current_type = &p_class->base_type;
+	HashSet<const BSParser::ClassNode *> visited;
+	while (current_type != nullptr && current_type->kind == BSParser::DataType::CLASS && current_type->class_type != nullptr) {
+		BSParser::ClassNode *parent = current_type->class_type;
+		// BaristaScript's cross-file fail-stop can retain the already diagnosed CLASS edge while
+		// unwinding a cycle. Keep this surface walk bounded exactly like the other inheritance walks.
+		if (visited.has(parent)) {
+			break;
+		}
+		visited.insert(parent);
+		if (has_member_name_conflict_in_script_class(p_member_name, parent, p_member_node)) {
+			const String parent_name = parent->identifier != nullptr ? String(parent->identifier->name) : parent->fqcn;
+			push_error(vformat(R"*(The member "%s" already exists in parent class %s.)*", p_member_name, parent_name), p_member_node);
+			return ERR_PARSE_ERROR;
+		}
+		current_type = &parent->base_type;
+	}
+	if (current_type != nullptr && current_type->kind == BSParser::DataType::NATIVE && current_type->native_type != StringName()) {
+		const Error err = check_native_member_name_conflict(p_member_name, p_member_node, current_type->native_type);
+		if (err != OK) {
+			return err;
+		}
+	}
+	return check_outer_class_member_name_conflict(p_class, p_member_name, p_member_node);
 }
 
 void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source) {
@@ -744,9 +1212,22 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 		case BSParser::ClassNode::Member::ENUM_VALUE:
 		case BSParser::ClassNode::Member::GROUP:
 		case BSParser::ClassNode::Member::TUPLE:
-		case BSParser::ClassNode::Member::TYPE_ALIAS:
 		case BSParser::ClassNode::Member::UNDEFINED:
 			break;
+		case BSParser::ClassNode::Member::TYPE_ALIAS: {
+			if (member.type_alias == nullptr || member.type_alias->identifier == nullptr) {
+				break;
+			}
+			const StringName alias_name = member.type_alias->identifier->name;
+			if (BSParser::is_builtin_data_type(alias_name) || alias_name == SNAME("AsyncCallable")) {
+				push_error(vformat(R"(Type alias "%s" hides a built-in type.)", alias_name), member.type_alias->identifier);
+			} else if (alias_name == BSParser::get_number_type_name()) {
+				push_error(R"(Type alias "Number" hides the compiler-provided type "Number".)", member.type_alias->identifier);
+			} else if (ClassDB::class_exists(alias_name)) {
+				push_error(vformat(R"(Type alias "%s" hides a native class.)", alias_name), member.type_alias->identifier);
+			}
+			resolve_type_alias(member.type_alias);
+		} break;
 	}
 
 	if (parser->get_errors().size() > member_error_count) {
@@ -764,6 +1245,13 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 	// inferred vars / cyclic refs are not silently Variant.
 	resolve_class_member(p_class, p_identifier->name, p_identifier);
 	const BSParser::ClassNode::Member member = p_class->get_member(p_identifier->name);
+	if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
+		BSParser::DataType class_type = member.m_class->get_datatype();
+		class_type.is_meta_type = true;
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
+		p_identifier->set_datatype(class_type);
+		return true;
+	}
 	if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
 		if (p_mark_inherited && !member.variable->is_static) {
 			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
@@ -816,7 +1304,7 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 	return false;
 }
 
-bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class) {
+bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_is_lexical_outer) {
 	if (p_identifier == nullptr || p_class == nullptr) {
 		return false;
 	}
@@ -828,10 +1316,45 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 			break;
 		}
 		visited.insert(lookup);
-		if (try_bind_identifier_member(p_identifier, lookup, !first)) {
+		// Foundry fs_analyzer.cpp:12018,12146-12172: lexical outers do not supply
+		// receiver variables/functions/signals. Reuse the same visible-outer policy as conflicts.
+		const bool visible = !p_is_lexical_outer || (lookup->has_member(p_identifier->name) && _member_is_visible_outer_class_surface(lookup->get_member(p_identifier->name)));
+		if (visible && try_bind_identifier_member(p_identifier, lookup, !first)) {
 			return true;
 		}
 		first = false;
+	}
+	if (p_is_lexical_outer) {
+		return false;
+	}
+	const StringName native = p_class->base_type.native_type;
+	if (native != StringName()) {
+		const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(native, false);
+		for (int i = 0; i < properties.size(); i++) {
+			const Dictionary property = properties[i];
+			if (StringName(property.get("name", String())) == p_identifier->name) {
+				p_identifier->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+				p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+				return true;
+			}
+		}
+		MethodInfo info;
+		if (BSNativeDB::get_method_info(native, p_identifier->name, &info)) {
+			p_identifier->set_datatype(call_site_validation.explicit_callable_type_from_info(info));
+			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			return true;
+		}
+		if (ClassDB::class_has_signal(native, p_identifier->name) && BSNativeDB::get_signal(native, p_identifier->name, &info)) {
+			p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_info(info));
+			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			return true;
+		}
+		if (ClassDB::class_has_integer_constant(native, p_identifier->name)) {
+			p_identifier->is_constant = true;
+			p_identifier->reduced_value = ClassDB::class_get_integer_constant(native, p_identifier->name);
+			p_identifier->set_datatype(type_from_variant(p_identifier->reduced_value));
+			return true;
+		}
 	}
 	return false;
 }

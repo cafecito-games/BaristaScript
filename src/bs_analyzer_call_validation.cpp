@@ -285,6 +285,23 @@ bool BSAnalyzer::CallSiteValidationContext::signal_name_from_constant_arg(const 
 	return true;
 }
 
+bool BSAnalyzer::CallSiteValidationContext::signal_type_from_receiver(const BSParser::DataType &p_receiver_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const {
+	BSParser::DataType receiver_type = p_receiver_type;
+	if (receiver_type.kind == BSParser::DataType::TYPE_PARAMETER &&
+			receiver_type.type_parameter_name == SNAME("@Self") &&
+			!receiver_type.type_parameter_bound.is_empty()) {
+		receiver_type = receiver_type.type_parameter_bound[0];
+		receiver_type.is_meta_type = false;
+	}
+	if (receiver_type.kind == BSParser::DataType::CLASS) {
+		return signal_type_from_class_constant_arg(receiver_type, p_call, p_signal_arg_index, r_signal_type);
+	}
+	if (receiver_type.kind == BSParser::DataType::NATIVE) {
+		return signal_type_from_native_constant_arg(receiver_type.native_type, p_call, p_signal_arg_index, r_signal_type);
+	}
+	return false;
+}
+
 bool BSAnalyzer::CallSiteValidationContext::signal_type_from_class_constant_arg(const BSParser::DataType &p_receiver_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const {
 	BSParser::ClassNode *class_node = p_receiver_type.class_type;
 	if (class_node == nullptr) {
@@ -356,6 +373,19 @@ bool BSAnalyzer::CallSiteValidationContext::call_argument_can_be_string_name(con
 		return true;
 	}
 	return type.is_variant() || !type.is_set();
+}
+
+void BSAnalyzer::CallSiteValidationContext::validate_strict_callable_method_fallback(const BSParser::CallNode *p_call, const BSParser::DataType &p_receiver_type, int p_method_arg_index) {
+	if (!analyzer->strict_dynamic_checks || p_call == nullptr || p_method_arg_index < 0 || p_method_arg_index >= p_call->arguments.size()) {
+		return;
+	}
+
+	StringName method_name;
+	if (signal_name_from_constant_arg(p_call, p_method_arg_index, method_name)) {
+		analyzer->push_error(vformat(R"*(Cannot resolve method "%s" on type "%s" for Callable construction in strict dynamic mode.)*", method_name, p_receiver_type.to_string()), p_call->arguments[p_method_arg_index]);
+	} else if (call_argument_can_be_string_name(p_call, p_method_arg_index)) {
+		analyzer->push_error("Cannot use dynamic method name for Callable construction in strict dynamic mode.", p_call->arguments[p_method_arg_index]);
+	}
 }
 
 void BSAnalyzer::CallSiteValidationContext::validate_strict_signal_name_fallback(const BSParser::CallNode *p_call, const BSParser::DataType &p_receiver_type, int p_signal_arg_index) {
@@ -734,6 +764,68 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::callable_type_from_fun
 	return type;
 }
 
+BSParser::DataType BSAnalyzer::CallSiteValidationContext::explicit_callable_type_from_info(const MethodInfo &p_info) const {
+	// Foundry explicit_callable_type_from_info @ c9d5e35. PropertyInfo is the native signature
+	// carrier available through godot-cpp; D1 deliberately ignores numeric metadata.
+	BSParser::DataType type = plain_callable_type();
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	type.is_constant = true;
+	type.has_method_signature = true;
+	type.has_explicit_method_signature = true;
+	type.method_info = p_info;
+	for (const PropertyInfo &argument : p_info.arguments) {
+		type.method_parameter_types.push_back(analyzer->type_from_property(argument, true));
+	}
+	type.method_return_type.push_back(analyzer->type_from_property(p_info.return_val));
+	return type;
+}
+
+bool BSAnalyzer::CallSiteValidationContext::callable_type_from_method(const BSParser::DataType &p_receiver_type, const StringName &p_method_name, BSParser::Node *p_source, BSParser::DataType &r_callable_type) {
+	(void)p_source;
+	BSParser::DataType receiver_type = p_receiver_type;
+	if (receiver_type.kind == BSParser::DataType::TYPE_PARAMETER &&
+			receiver_type.type_parameter_name == SNAME("@Self") &&
+			!receiver_type.type_parameter_bound.is_empty()) {
+		receiver_type = receiver_type.type_parameter_bound[0];
+		receiver_type.is_meta_type = false;
+	}
+
+	if (receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr) {
+		BSParser::FunctionNode *function = analyzer->find_class_function(receiver_type.class_type, p_method_name);
+		if (function != nullptr) {
+			r_callable_type = callable_type_from_function(function);
+			return true;
+		}
+	}
+
+	StringName native_type;
+	if (receiver_type.kind == BSParser::DataType::NATIVE) {
+		native_type = receiver_type.native_type;
+	} else if (receiver_type.kind == BSParser::DataType::CLASS) {
+		native_type = receiver_type.native_type;
+	}
+	if (native_type == StringName()) {
+		return false;
+	}
+	MethodInfo method_info;
+	if (!BSNativeDB::get_method_info(native_type, p_method_name, &method_info)) {
+		return false;
+	}
+	r_callable_type = explicit_callable_type_from_info(method_info);
+	return true;
+}
+
+bool BSAnalyzer::CallSiteValidationContext::callable_type_from_constant_method_args(BSParser::CallNode *p_call, int p_receiver_arg_index, int p_method_arg_index, BSParser::DataType &r_callable_type) {
+	if (p_call == nullptr || p_receiver_arg_index < 0 || p_receiver_arg_index >= p_call->arguments.size()) {
+		return false;
+	}
+	StringName method_name;
+	if (!signal_name_from_constant_arg(p_call, p_method_arg_index, method_name)) {
+		return false;
+	}
+	return callable_type_from_method(p_call->arguments[p_receiver_arg_index]->get_datatype(), method_name, p_call, r_callable_type);
+}
+
 BSParser::DataType BSAnalyzer::CallSiteValidationContext::plain_callable_type() const {
 	return analyzer->type_from_property(PropertyInfo(Variant::CALLABLE, ""));
 }
@@ -932,6 +1024,28 @@ void BSAnalyzer::CallSiteValidationContext::validate_local_object_signal_callabl
 	}
 
 	validate_signal_connect_arg(signal_type, p_call, 1);
+}
+
+void BSAnalyzer::CallSiteValidationContext::validate_typed_object_signal_api_args(const BSParser::DataType &p_base_type, const BSParser::CallNode *p_call, bool p_is_self) {
+	// Foundry validate_typed_object_signal_api_args @ c9d5e35: Object's MethodInfo describes only
+	// the dynamic API. A typed non-self receiver supplies the signal-specific payload signature.
+	if (p_is_self || p_call == nullptr) {
+		return;
+	}
+	if (p_call->function_name != SNAME("connect") && p_call->function_name != SNAME("disconnect") &&
+			p_call->function_name != SNAME("is_connected") && p_call->function_name != SNAME("emit_signal")) {
+		return;
+	}
+	BSParser::DataType signal_type;
+	if (!signal_type_from_receiver(p_base_type, p_call, 0, signal_type)) {
+		validate_strict_signal_name_fallback(p_call, p_base_type, 0);
+		return;
+	}
+	if (p_call->function_name == SNAME("emit_signal")) {
+		validate_signal_emit_args(signal_type, p_call, 1);
+	} else {
+		validate_signal_connect_arg(signal_type, p_call, 1);
+	}
 }
 
 bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSParser::CallNode *p_call, const BSParser::DataType &p_base_type) {

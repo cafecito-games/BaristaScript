@@ -7,6 +7,7 @@
 
 import os
 import sys
+import runpy
 
 from methods import print_error
 
@@ -44,6 +45,11 @@ Run the following command to download godot-cpp:
 env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
 
 env.Append(CPPPATH=["src/"])
+
+# Share the pinned engine metadata generator with CMake; unchanged content is not rewritten.
+runpy.run_path("scripts/generate_global_api.py")["write_header"](
+    "godot-cpp/gdextension/extension_api-4-7.json", "src/gen/bs_global_api.gen.h"
+)
 
 # The warning registry's message switch has no `default:` label on purpose, so an unhandled warning
 # code must stop the build rather than fall through. Promote the compiler's unhandled-enumerator

@@ -94,6 +94,9 @@ public:
 
 		bool callable_signature_from_type(const BSParser::DataType &p_callable_type, Vector<BSParser::DataType> &r_par_types, int &r_default_arg_count, bool &r_is_vararg) const;
 		BSParser::DataType callable_type_from_function(const BSParser::FunctionNode *p_function) const;
+		BSParser::DataType explicit_callable_type_from_info(const MethodInfo &p_info) const;
+		bool callable_type_from_method(const BSParser::DataType &p_receiver_type, const StringName &p_method_name, BSParser::Node *p_source, BSParser::DataType &r_callable_type);
+		bool callable_type_from_constant_method_args(BSParser::CallNode *p_call, int p_receiver_arg_index, int p_method_arg_index, BSParser::DataType &r_callable_type);
 
 		/** Foundry plain_callable_type / over_bound_callable_type / transformed_callable_type @ c9d5e35. */
 		BSParser::DataType plain_callable_type() const;
@@ -114,9 +117,11 @@ public:
 		BSParser::DataType explicit_signal_type_from_info(const MethodInfo &p_info) const;
 		BSParser::DataType explicit_signal_type_from_node(const BSParser::SignalNode *p_signal, const BSParser::DataType &p_receiver_type, const BSParser::ClassNode *p_declaring_class) const;
 		bool signal_name_from_constant_arg(const BSParser::CallNode *p_call, int p_signal_arg_index, StringName &r_signal_name) const;
+		bool signal_type_from_receiver(const BSParser::DataType &p_receiver_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
 		bool signal_type_from_class_constant_arg(const BSParser::DataType &p_receiver_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
 		bool signal_type_from_native_constant_arg(const StringName &p_native_type, const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
 		bool local_signal_type_from_constant_arg(const BSParser::CallNode *p_call, int p_signal_arg_index, BSParser::DataType &r_signal_type) const;
+		void validate_strict_callable_method_fallback(const BSParser::CallNode *p_call, const BSParser::DataType &p_receiver_type, int p_method_arg_index);
 		void validate_strict_signal_name_fallback(const BSParser::CallNode *p_call, const BSParser::DataType &p_receiver_type, int p_signal_arg_index);
 		bool call_argument_can_be_string_name(const BSParser::CallNode *p_call, int p_argument_index);
 
@@ -124,6 +129,7 @@ public:
 		void validate_signal_connect_arg(const BSParser::DataType &p_signal_type, const BSParser::CallNode *p_call, int p_callable_arg_index = 0);
 		void validate_local_object_emit_signal_args(const BSParser::CallNode *p_call, bool p_is_self);
 		void validate_local_object_signal_callable_arg(const BSParser::CallNode *p_call, bool p_is_self);
+		void validate_typed_object_signal_api_args(const BSParser::DataType &p_base_type, const BSParser::CallNode *p_call, bool p_is_self);
 
 	private:
 		BSAnalyzer *analyzer = nullptr;
@@ -226,6 +232,10 @@ public:
 				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, FinalAssignmentState &r_state,
 				HashSet<const BSParser::VariableNode *> &r_assigned_anywhere, bool p_flattened_trait_body = false);
 		void check_final_reads_in_expression(const BSParser::ExpressionNode *p_expression,
+				const HashSet<const BSParser::VariableNode *> &p_finals,
+				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state,
+				bool p_flattened_trait_body = false);
+		void check_final_reads_in_pattern(const BSParser::PatternNode *p_pattern,
 				const HashSet<const BSParser::VariableNode *> &p_finals,
 				const HashMap<StringName, const BSParser::VariableNode *> &p_finals_by_name, FinalAssignmentScope p_scope, const FinalAssignmentState &p_state,
 				bool p_flattened_trait_body = false);
@@ -469,6 +479,10 @@ private:
 	// shorthands reduced before their consumer supplies a union, then the end-of-body sweep.
 	LocalVector<BSParser::ExpressionNode *> reduced_contextual_enum_cases;
 	HashSet<const BSParser::ExpressionNode *> resolved_contextual_enum_cases;
+	/** Foundry transparent type-alias expansion cache / failure and cycle guards. */
+	HashMap<const BSParser::TypeAliasNode *, BSParser::DataType> resolved_type_aliases;
+	HashSet<const BSParser::TypeAliasNode *> failed_type_aliases;
+	Vector<BSParser::TypeAliasNode *> type_alias_resolution_stack;
 
 	Error run_phase_preflight();
 	Error run_phase_inheritance_resolution();
@@ -484,10 +498,15 @@ private:
 	 * walk base CLASS chain then outer for same-file extends / member lookup.
 	 */
 	void get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source);
+	bool has_member_name_conflict_in_script_class(const StringName &p_member_name, const BSParser::ClassNode *p_class, const BSParser::Node *p_member) const;
+	bool has_member_name_conflict_in_native_type(const StringName &p_member_name, const StringName &p_native_type) const;
+	Error check_native_member_name_conflict(const StringName &p_member_name, const BSParser::Node *p_member_node, const StringName &p_native_type);
+	Error check_outer_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node);
+	Error check_class_member_name_conflict(const BSParser::ClassNode *p_class, const StringName &p_member_name, const BSParser::Node *p_member_node);
 	/** Bind an identifier to a VARIABLE/CONSTANT/SIGNAL/FUNCTION/ENUM member of `p_class` when present. */
 	bool try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited);
 	/** Walk `p_class` then `base_type.class_type` for a named member bind. */
-	bool try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class);
+	bool try_bind_identifier_member_in_inheritance(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_is_lexical_outer = false);
 	/**
 	 * Foundry resolve_class_member @ c9d5e35 (`fs_analyzer_surface.cpp`): lazily resolve a class
 	 * member's datatype with cyclic `RESOLVING` fail-stop before identifier/member binds read it.
@@ -499,6 +518,8 @@ private:
 	void resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);
 	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
+	BSParser::TypeAliasNode *find_type_alias_in_scope(const StringName &p_name) const;
+	BSParser::DataType resolve_type_alias(BSParser::TypeAliasNode *p_type_alias);
 	/**
 	 * Foundry resolve_class_interface @ c9d5e35 (`fs_analyzer_surface.cpp` ~2030): own-class
 	 * member surface + base INTERFACE walk; foreign SCRIPT raise under
@@ -522,11 +543,19 @@ private:
 	void warn_unused_parameters(BSParser::FunctionNode *p_function);
 	/** Foundry resolve_class_body unused pass: UNUSED_PRIVATE_CLASS_VARIABLE + UNUSED_SIGNAL. */
 	void warn_unused_class_members(BSParser::ClassNode *p_class);
-	/**
-	 * Built-in annotation constant-argument resolution before apply (Foundry
-	 * resolve_annotation @ c9d5e35). Custom / @autoload depth remains #60 follow-up.
-	 */
+	/** Built-in and custom annotation resolution/validation (Foundry @ c9d5e35). */
 	void resolve_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind = 0);
+	bool coerce_annotation_argument(const BSParser::DataType &p_parameter_type, Variant &r_value,
+			const BSParser::ExpressionNode *p_argument, const String &p_context);
+	void resolve_annotation_declaration(BSParser::AnnotationDeclarationNode *p_declaration);
+	void resolve_annotation_declaration_signatures();
+	BSParser::AnnotationDeclarationNode *load_external_annotation_declaration(
+			const String &p_qualified_name, BSParser::AnnotationNode *p_annotation, bool &r_error_reported);
+	BSParser::AnnotationDeclarationNode *resolve_custom_annotation_declaration(BSParser::AnnotationNode *p_annotation);
+	BSParser::AnnotationDeclarationNode *resolve_qualified_annotation_declaration(
+			const String &p_identity, BSParser::AnnotationNode *p_annotation);
+	void resolve_custom_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind);
+	Error validate_annotation_declarations();
 	/** Counts emit_signal/connect/disconnect/is_connected as signal uses (Foundry @ c9d5e35). */
 	void mark_implicit_signal_usage(BSParser::CallNode *p_call, bool p_is_self);
 
@@ -764,6 +793,7 @@ private:
 	/** Own members then `base_type.class_type` chain (Foundry inherited method surface @ c9d5e35). */
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
 	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
+	BSParser::DataType resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source);
 	bool errors_are_only_m5_deferred() const;
 	/** True when every error at/after `p_from_index` is an M5 deferred diagnostic (or none exist). */
 	bool errors_from_index_are_only_m5_deferred(int p_from_index) const;

@@ -25,9 +25,14 @@
 			"fs_analyzer_flow_finality.cpp",
 			"fs_analyzer_call_validation.cpp",
 			"fs_analyzer_conformance.cpp",
+			"fs_analyzer_finalization.cpp",
 			"fs_conformance_registry.h",
 			"fs_conformance_registry.cpp",
-			"fs_trait_utils.h"
+			"fs_trait_utils.h",
+			"fs_utility_functions.h",
+			"fs_utility_functions.cpp",
+			"fs_utility_callable.h",
+			"fs_utility_callable.cpp"
 		],
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
@@ -62,6 +67,27 @@
 	],
 	"entries": [
 		{
+			"core_header": "core/variant/callable.h",
+			"sites": ["fs_utility_callable.h:35"],
+			"resolution": "mapped",
+			"godot_cpp_headers": ["godot_cpp/variant/callable.hpp", "godot_cpp/variant/callable_custom.hpp"],
+			"rationale": "bs_utility_functions.cpp ports the complete 11-entry language utility metadata registry and a private analyzer-only CallableCustom identity. It is never registered, exposed as a runtime callable, or deliberately invoked; is_valid is false and invocation fails closed. Only type_exists, char, ord, len and representable TYPE_* is_instance_of constants are evaluated by the analyzer. Resource loading, range allocation, debugger/stack access and proxy execution remain M4/M7; object/script/trait instance checks remain runtime-only. General Callable assignment compatibility is the existing #138 residual, not a parallel validator here."
+		},
+		{
+			"core_header": "core/templates/a_hash_map.h",
+			"sites": ["fs_utility_functions.cpp:40"],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "The analyzer-only 11-entry utility registry uses the existing mapped Vector carrier; no runtime registration or AHashMap symbol is ported."
+		},
+		{
+			"core_header": "core/variant/typed_array.h",
+			"sites": ["fs_utility_functions.cpp:42"],
+			"resolution": "guarded-out",
+			"omission_reason": "unreferenced",
+			"rationale": "The typed debugger-stack construction in get_stack is runtime-only and is not ported. Analyzer/public return metadata remains the pinned untyped Array MethodInfo."
+		},
+		{
 			"core_header": "core/config/project_settings.h",
 			"sites": [
 				"fs_parser.cpp:38",
@@ -84,9 +110,9 @@
 				"fs_parser_data_type.cpp:37",
 				"fs_analyzer.cpp:47"
 			],
-			"resolution": "guarded-out",
-			"omission_reason": "unreferenced",
-			"rationale": "Engine-internal global-constant registry. The analyzer port reaches CoreConstants::* through src/bs_core_constants.h, which fails closed (every query returns false/empty) because godot-cpp does not expose @GlobalScope constants the way an engine module can. The include is dropped; the adapter is the audited contract."
+			"resolution": "shimmed",
+			"shim_symbols": ["CoreConstants"],
+			"rationale": "The seam aliases CoreConstants to BSCoreConstants, defined in src/bs_core_constants.h and exercised by bs_platform_seam.cpp. GDExtension cannot enumerate this registry or utility signatures, so scripts/generate_global_api.py embeds the complete corresponding sections of pinned godot-cpp/gdextension/extension_api-4-7.json for both build paths. Exact int64 values and engine carrier names are retained; malformed producer input fails generation and unknown names remain absent."
 		},
 		{
 			"core_header": "core/error/error_macros.h",
@@ -165,7 +191,8 @@
 			"core_header": "core/io/resource_loader.h",
 			"sites": [
 				"fs_parser.cpp:40",
-				"fs_analyzer.cpp:49"
+				"fs_analyzer.cpp:49",
+				"fs_utility_functions.cpp:37"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -207,7 +234,8 @@
 				"fs_analyzer.cpp:51",
 				"fs_analyzer_call_validation.cpp:36",
 				"fs_analyzer_conformance.cpp:41",
-				"fs_conformance_registry.cpp:37"
+				"fs_conformance_registry.cpp:37",
+				"fs_utility_functions.cpp:38"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -223,7 +251,8 @@
 			"core_header": "core/object/object.h",
 			"sites": [
 				"fs_warning.h:35",
-				"fs_analyzer.h:39"
+				"fs_analyzer.h:39",
+				"fs_utility_functions.cpp:39"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -315,7 +344,8 @@
 			"core_header": "core/string/string_name.h",
 			"sites": [
 				"fs_parser.h:45",
-				"fs_conformance_registry.h:37"
+				"fs_conformance_registry.h:37",
+				"fs_utility_functions.h:33"
 			],
 			"resolution": "shimmed",
 			"godot_cpp_headers": [
@@ -392,7 +422,8 @@
 				"fs_warning.h:37",
 				"fs_cache.h:39",
 				"fs_cache.cpp:44",
-				"fs_conformance_registry.h:41"
+				"fs_conformance_registry.h:41",
+				"fs_utility_functions.cpp:41"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [
@@ -426,7 +457,8 @@
 				"fs_tokenizer.h:37",
 				"fs_parser.h:51",
 				"fs_warning.cpp:33",
-				"fs_builtin_sources.cpp:34"
+				"fs_builtin_sources.cpp:34",
+				"fs_utility_functions.h:34"
 			],
 			"resolution": "mapped",
 			"godot_cpp_headers": [

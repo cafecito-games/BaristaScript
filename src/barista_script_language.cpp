@@ -7,6 +7,7 @@
 /**************************************************************************/
 
 #include "barista_script_language.h"
+#include "bs_utility_functions.h"
 
 #include "barista_script.h"
 #include "bs_analyzer.h"
@@ -73,9 +74,7 @@ godot::List<godot::MethodInfo> BaristaScriptLanguage::get_public_function_list()
 	const godot::TypedArray<godot::Dictionary> published = language->_get_public_functions();
 	for (int i = 0; i < published.size(); i++) {
 		const godot::Dictionary entry = published[i];
-		godot::MethodInfo info;
-		info.name = entry.get("name", godot::String());
-		functions.push_back(info);
+		functions.push_back(godot::MethodInfo::from_dict(entry));
 	}
 	return functions;
 }
@@ -384,7 +383,11 @@ godot::PackedStringArray BaristaScriptLanguage::_get_recognized_extensions() con
 }
 
 godot::TypedArray<godot::Dictionary> BaristaScriptLanguage::_get_public_functions() const {
-	return {};
+	godot::TypedArray<godot::Dictionary> functions;
+	for (const godot::MethodInfo &info : BSUtilityFunctions::get_function_list()) {
+		functions.push_back(godot::Dictionary(info));
+	}
+	return functions;
 }
 
 godot::Dictionary BaristaScriptLanguage::_get_public_constants() const {

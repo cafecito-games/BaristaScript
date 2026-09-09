@@ -45,6 +45,9 @@
 #include <godot_cpp/variant/char_utils.hpp>
 // core/variant/variant.h
 #include <godot_cpp/variant/variant.hpp>
+// core/variant/callable.h -- analyzer-only utility identity, with no runtime registration.
+#include <godot_cpp/variant/callable.hpp>
+#include <godot_cpp/variant/callable_custom.hpp>
 
 // core/error/error_macros.h
 #include <godot_cpp/core/error_macros.hpp>
@@ -121,6 +124,12 @@
  * Foundry stays readable.
  */
 using namespace godot;
+
+namespace barista_script {
+// Definition lives in bs_core_constants.h; metadata comes from the pinned engine API producer.
+class BSCoreConstants;
+using CoreConstants = BSCoreConstants;
+} // namespace barista_script
 
 /**
  * `docs/foundry-reuse-plan.md` section 3 predicted that godot-cpp spells the error macros

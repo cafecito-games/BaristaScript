@@ -7,3 +7,10 @@
 /**************************************************************************/
 
 #include "bs_platform.h"
+
+#include "bs_core_constants.h"
+
+// Compile the complete mapped adapter; analyzer_test.gd exercises every producer entry at runtime.
+[[maybe_unused]] static bool global_constant_seam_proof(const StringName &p_name) {
+	return barista_script::CoreConstants::is_global_constant(p_name);
+}
