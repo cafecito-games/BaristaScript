@@ -49,6 +49,8 @@
 #include "bs_utility_functions.h"
 #include "bs_warning.h"
 
+#include <godot_cpp/core/gdextension_interface_loader.hpp>
+
 namespace barista_script {
 
 namespace {
@@ -67,6 +69,24 @@ static const BSParser::Node *_type_test_or_cast_type_origin(const BSParser::Type
 		return p_type->type_chain[p_type->type_chain.size() - 1];
 	}
 	return p_type;
+}
+
+static bool _construct_builtin_variant(Variant::Type p_target_type, const Variant &p_source, Variant &r_converted) {
+	// The core pin uses Variant::construct and checks Callable::CallError. The equivalent
+	// GDExtension operation is exposed through the generated interface loader rather than the
+	// godot-cpp Variant wrapper. Copy the constructed native value into the owning wrapper before
+	// destroying the temporary ABI value.
+	alignas(8) uint8_t storage[GODOT_CPP_VARIANT_SIZE]{};
+	const GDExtensionConstVariantPtr arguments[1] = { p_source._native_ptr() };
+	GDExtensionCallError error{};
+	gdextension_interface::variant_construct((GDExtensionVariantType)p_target_type,
+			(GDExtensionUninitializedVariantPtr)storage, arguments, 1, &error);
+	if (error.error != GDEXTENSION_CALL_OK) {
+		return false;
+	}
+	r_converted = Variant((GDExtensionConstVariantPtr)storage);
+	gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
+	return true;
 }
 
 static String _class_script_path_for_foreign_resolve(const BSParser::ClassNode *p_class) {
@@ -3233,13 +3253,23 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 	p_dictionary->set_datatype(type);
 }
 
-void BSAnalyzer::reduce_ternary(BSParser::TernaryOpNode *p_ternary) {
+void BSAnalyzer::reduce_ternary(BSParser::TernaryOpNode *p_ternary, bool p_is_root) {
 	if (p_ternary == nullptr) {
 		return;
 	}
 	reduce_expression(p_ternary->condition);
-	reduce_expression(p_ternary->true_expr);
-	reduce_expression(p_ternary->false_expr);
+	reduce_expression(p_ternary->true_expr, p_is_root);
+	reduce_expression(p_ternary->false_expr, p_is_root);
+	finalize_ternary_type(p_ternary);
+}
+
+void BSAnalyzer::finalize_ternary_type(BSParser::TernaryOpNode *p_ternary) {
+	if (p_ternary == nullptr) {
+		return;
+	}
+	p_ternary->is_constant = false;
+	p_ternary->reduced = false;
+	p_ternary->reduced_value = Variant();
 	if (p_ternary->condition != nullptr && p_ternary->condition->is_constant &&
 			p_ternary->true_expr != nullptr && p_ternary->true_expr->is_constant &&
 			p_ternary->false_expr != nullptr && p_ternary->false_expr->is_constant) {
@@ -3963,6 +3993,29 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	if (!declared_type.is_variant() && declared_type.kind != BSParser::DataType::UNION && String(p_usage) != "include") {
 		return true;
 	}
+	if (p_expected_type.kind != BSParser::DataType::BUILTIN &&
+			p_expected_type.kind != BSParser::DataType::ENUM &&
+			p_expected_type.kind != BSParser::DataType::UNION) {
+		// The reduced Variant value cannot turn a gradual carrier into a class/Self contract.
+		// Those targets remain the responsibility of their ordinary consumer and runtime check.
+		return true;
+	}
+	if (declared_type.is_variant() && strict_dynamic_checks) {
+		// Strict dynamic mode refuses the declared gradual carrier before its reduced value can
+		// refine it. Ordinary consumers keep their position-specific wording; a cast has no later
+		// assignment/return reporter, so the shared helper reports it here.
+		if (String(p_usage) == "cast") {
+			push_error(vformat(R"(Cannot cast a value of type "%s" as "%s".)", declared_type.to_string(), p_expected_type.to_string()), p_expression);
+			return false;
+		}
+		return true;
+	}
+	if (p_expected_type.is_nullable && p_expression->reduced_value.get_type() == Variant::NIL) {
+		BSParser::DataType published = p_expected_type;
+		published.is_constant = true;
+		p_expression->set_datatype(published);
+		return true;
+	}
 	BSParser::DataType comparison_type = declared_type;
 	if (declared_type.is_variant()) {
 		comparison_type = type_from_variant(p_expression->reduced_value);
@@ -3979,13 +4032,27 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 				p_expression);
 		return false;
 	}
-	if (p_expected_type.kind == BSParser::DataType::BUILTIN && comparison_type.kind == BSParser::DataType::BUILTIN) {
-		if (p_expected_type.builtin_type == comparison_type.builtin_type) {
-			BSParser::DataType published = p_expected_type;
-			published.is_constant = true;
-			p_expression->set_datatype(published);
-		}
+	if (p_expected_type.kind != BSParser::DataType::BUILTIN || comparison_type.kind != BSParser::DataType::BUILTIN) {
+		return true;
 	}
+
+	BSParser::DataType published = p_expected_type;
+	published.is_constant = true;
+	if (p_expected_type.builtin_type == comparison_type.builtin_type) {
+		p_expression->set_datatype(published);
+		return true;
+	}
+
+	// Foundry update_const_expression_builtin_type @ c9d5e35: compatibility admits the
+	// conversion, then the reduced value itself is constructed and published with the target
+	// carrier. Keep construction failure distinct from a compatibility refusal.
+	Variant converted;
+	if (!_construct_builtin_variant(p_expected_type.builtin_type, p_expression->reduced_value, converted)) {
+		push_error(vformat(R"(Failed to convert a value of type "%s" to "%s".)", comparison_type.to_string(), p_expected_type.to_string()), p_expression);
+		return false;
+	}
+	p_expression->reduced_value = converted;
+	p_expression->set_datatype(published);
 	return true;
 }
 
@@ -5882,6 +5949,7 @@ bool BSAnalyzer::resolve_contextual_enum_case(BSParser::ExpressionNode *p_expres
 		if (false_awaits) {
 			resolve_contextual_enum_case(ternary->false_expr, p_expected_type);
 		}
+		finalize_ternary_type(ternary);
 		return true;
 	}
 
@@ -6007,7 +6075,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			reduce_dictionary(static_cast<BSParser::DictionaryNode *>(p_expression));
 			break;
 		case BSParser::Node::TERNARY_OPERATOR:
-			reduce_ternary(static_cast<BSParser::TernaryOpNode *>(p_expression));
+			reduce_ternary(static_cast<BSParser::TernaryOpNode *>(p_expression), p_is_root);
 			break;
 		case BSParser::Node::CAST:
 			reduce_cast(static_cast<BSParser::CastNode *>(p_expression));
