@@ -84,6 +84,11 @@ func _init() -> void:
 	_test_complete_self_referential_enum_type(failures)
 	_test_self_contract_assign_return(failures)
 	_test_self_contract_gradual_union(failures)
+	_test_local_tuple_and_literal_consumers(failures)
+	_test_ordinary_assignment_and_return_consumers(failures)
+	_test_steps_1_5_repair_regressions(failures)
+	_test_steps_1_5_repair2_self_signatures(failures)
+	_test_local_enum_value_cycles(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -91,6 +96,16 @@ func _init() -> void:
 func _expect(failures: PackedStringArray, condition: bool, message: String) -> void:
 	if not condition:
 		failures.append(message)
+
+
+func _errors_are_exact(actual: Array, expected: Array) -> bool:
+	if actual.size() != expected.size():
+		return false
+	for i in range(expected.size()):
+		if str(actual[i].get("message", "")) != expected[i][0] or \
+				actual[i].get("line") != expected[i][1] or actual[i].get("column") != expected[i][2]:
+			return false
+	return true
 
 
 func _test_undeclared_identifier_diagnostic(failures: PackedStringArray) -> void:
@@ -4176,3 +4191,482 @@ func _test_self_contract_gradual_union(failures: PackedStringArray) -> void:
 	_expect(failures, index.get_record_count() == before,
 		"Self-contract gradual-union probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_local_tuple_and_literal_consumers(failures: PackedStringArray) -> void:
+	# Foundry tuple producer/consumer slice @ c9d5e35: local named tuples are nominal,
+	# anonymous tuples are structural, and contextual Self survives literal publication.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var tuple_ok := _src_class("TupleLocalOk extends Node\ntuple Pair(first: int, second: String)\nfunc use() -> void:\n\tvar named: Pair = Pair(1, \"ok\")\n\tvar by_index: int = named.0\n\tvar by_field: String = named.second\n\tvar anonymous: (int, String) = (2, \"two\")\n\tvar anonymous_index: String = anonymous.1\n")
+	var tuple_ok_report: Dictionary = probe.analyze_source(tuple_ok, "res://tests/tuple_local_ok.barista")
+	_expect(failures, tuple_ok_report.get("valid", false) == true,
+		"local named/anonymous tuple construction and access are valid: %s" % tuple_ok_report.get("errors"))
+
+	var tuple_bad := _src_class("TupleLocalBad extends Node\ntuple Pair(first: int, second: String)\nfunc use() -> void:\n\tvar wrong_arity := Pair(1)\n\tvar wrong_field := Pair(1, 2)\n")
+	var tuple_bad_report: Dictionary = probe.analyze_source(tuple_bad, "res://tests/tuple_local_bad.barista")
+	var tuple_bad_errors: PackedStringArray = tuple_bad_report.get("errors", PackedStringArray())
+	var tuple_bad_validate: Dictionary = probe.validate_source(tuple_bad, "res://tests/tuple_local_bad.barista", false)
+	var tuple_bad_positioned: Array = tuple_bad_validate.get("errors", [])
+	_expect(failures, tuple_bad_report.get("valid", true) == false, "named tuple arity/type mismatches are invalid")
+	_expect(failures, tuple_bad_positioned.size() == 2 and
+		str(tuple_bad_positioned[0].get("message", "")) == 'Tuple "Pair" expects 2 argument(s), but 1 were given.' and
+		tuple_bad_positioned[0].get("line") == 4 and tuple_bad_positioned[0].get("column") == 24 and
+		str(tuple_bad_positioned[1].get("message", "")) == 'Invalid argument 2 for tuple "Pair": should be "String" but is "int".' and
+		tuple_bad_positioned[1].get("line") == 5 and tuple_bad_positioned[1].get("column") == 32,
+		"named tuple constructor mismatches preserve full ordered messages and starts: %s" % [tuple_bad_positioned])
+
+	var self_tuple_ok := _src_class("TupleSelfLiteralOk extends Node\nfunc take(value: (Self, int)) -> void:\n\tpass\nfunc use() -> void:\n\ttake((self, 1))\n")
+	var self_tuple_ok_report: Dictionary = probe.analyze_source(self_tuple_ok, "res://tests/tuple_self_literal_ok.barista")
+	_expect(failures, self_tuple_ok_report.get("valid", false) == true,
+		"contextual tuple literal publishes analyzer-substituted Self")
+
+	var self_tuple_bad := _src_class("TupleSelfLiteralBad extends Node\nfunc take(value: (Self, int)) -> void:\n\tpass\nfunc use(other: TupleSelfLiteralBad) -> void:\n\ttake((other, 1))\n")
+	var self_tuple_bad_report: Dictionary = probe.analyze_source(self_tuple_bad, "res://tests/tuple_self_literal_bad.barista")
+	var self_tuple_bad_validate: Dictionary = probe.validate_source(self_tuple_bad, "res://tests/tuple_self_literal_bad.barista", false)
+	var self_tuple_bad_errors: Array = self_tuple_bad_validate.get("errors", [])
+	_expect(failures, self_tuple_bad_report.get("valid", true) == false and self_tuple_bad_errors.size() == 1 and
+		str(self_tuple_bad_errors[0].get("message", "")) == 'Invalid argument for "take()" function: argument 1 should be "(Self, int)" but is "(TupleSelfLiteralBad, int)".' and
+		self_tuple_bad_errors[0].get("line") == 5 and self_tuple_bad_errors[0].get("column") == 10,
+		"hand-written same-class tuple element cannot impersonate contextual Self: %s" % [self_tuple_bad_errors])
+
+	var tuple_write_source := "func test():\n\tvar pair := (1, 2)\n\tpair.0 = 5\n"
+	var tuple_write_report: Dictionary = probe.validate_source(tuple_write_source, "res://tests/tuple_write_bad.barista", false)
+	var tuple_write_errors: Array = tuple_write_report.get("errors", [])
+	_expect(failures, tuple_write_errors.size() == 1 and
+		str(tuple_write_errors[0].get("message", "")) == 'Cannot assign to an element of tuple "(int, int)"; tuples are immutable.' and
+		tuple_write_errors[0].get("line") == 3 and tuple_write_errors[0].get("column") == 5,
+		"tuple writes report the exact immutable error at the assignee: %s" % [tuple_write_errors])
+
+	var tuple_access_source := "tuple Vec2(x: float, y: float)\nfunc test():\n\tvar point := Vec2(1.0, 2.0)\n\tprint(point.z)\n\tprint((1, 2).2)\n"
+	var tuple_access_report: Dictionary = probe.validate_source(tuple_access_source, "res://tests/tuple_access_bad.barista", false)
+	var tuple_access_errors: Array = tuple_access_report.get("errors", [])
+	_expect(failures, tuple_access_errors.size() == 2 and
+		str(tuple_access_errors[0].get("message", "")) == 'Tuple "Vec2" has no field named "z".' and
+		tuple_access_errors[0].get("line") == 4 and tuple_access_errors[0].get("column") == 17 and
+		str(tuple_access_errors[1].get("message", "")) == 'Tuple index 2 is out of range for "(int, int)", which has 2 element(s).' and
+		tuple_access_errors[1].get("line") == 5 and tuple_access_errors[1].get("column") == 18,
+		"tuple field and range errors preserve their exact nodes: %s" % [tuple_access_errors])
+
+	var invalid_index_source := "func test():\n\t# Array indices must be integers.\n\tprint([0, 1][true])\n"
+	var invalid_index_report: Dictionary = probe.validate_source(invalid_index_source, "res://tests/invalid_array_index.barista", false)
+	var invalid_index_errors: Array = invalid_index_report.get("errors", [])
+	_expect(failures, invalid_index_errors.size() == 1 and
+		str(invalid_index_errors[0].get("message", "")) == 'Invalid index type "bool" for a base of type "Array".' and
+		invalid_index_errors[0].get("line") == 3 and invalid_index_errors[0].get("column") == 18,
+		"ordinary Array index checking reports the index expression: %s" % [invalid_index_errors])
+
+	var indexed_read_source := "func use(values: Array[int], lookup: Dictionary[String, int], i: int, key: String) -> void:\n\tvar from_array: int = values[i]\n\tvar from_dictionary: int = lookup[key]\n\tvalues[i] = from_dictionary\n\tlookup[key] = from_array\n"
+	var indexed_read_report: Dictionary = probe.analyze_source(indexed_read_source, "res://tests/indexed_read_types.barista")
+	_expect(failures, indexed_read_report.get("valid", false),
+		"Array element and Dictionary value types publish through indexed reads/writes: %s" % indexed_read_report.get("errors"))
+
+	var dictionary_index_source := "func test(d: Dictionary[String, int]):\n\tprint(d[true])\n"
+	var dictionary_index_errors: Array = probe.validate_source(dictionary_index_source, "res://tests/dictionary_index_bad.barista", false).get("errors", [])
+	_expect(failures, dictionary_index_errors.size() == 1 and
+		str(dictionary_index_errors[0].get("message", "")) == 'Invalid index type "bool" for a base of type "Dictionary[String, int]".' and
+		dictionary_index_errors[0].get("line") == 2 and dictionary_index_errors[0].get("column") == 13,
+		"typed Dictionary keys reject the wrong concrete index at its expression: %s" % [dictionary_index_errors])
+
+	var dynamic_base_source := "func test(value: Variant):\n\tprint(value[0])\n"
+	var dynamic_index_source := "func test(values: Array[int], index: Variant):\n\tprint(values[index])\n"
+	_expect(failures, probe.analyze_source(dynamic_base_source, "res://tests/dynamic_base_index.barista").get("valid", false) and
+		probe.analyze_source(dynamic_index_source, "res://tests/dynamic_index.barista").get("valid", false),
+		"dynamic base/index subscripts remain runtime-unsafe but valid outside strict mode")
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", true)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var dynamic_base_errors: Array = probe.validate_source(dynamic_base_source, "res://tests/dynamic_base_index.barista", false).get("errors", [])
+	var dynamic_index_errors: Array = probe.validate_source(dynamic_index_source, "res://tests/dynamic_index.barista", false).get("errors", [])
+	_expect(failures, dynamic_base_errors.size() == 1 and
+		str(dynamic_base_errors[0].get("message", "")) == "Cannot use subscript operator on Variant in strict dynamic mode." and
+		dynamic_base_errors[0].get("line") == 2 and dynamic_base_errors[0].get("column") == 11 and
+		dynamic_index_errors.size() == 1 and
+		str(dynamic_index_errors[0].get("message", "")) == 'Cannot use dynamic index of type "Variant" for base of type "Array[int]" in strict dynamic mode.' and
+		dynamic_index_errors[0].get("line") == 2 and dynamic_index_errors[0].get("column") == 18,
+		"strict dynamic subscript errors preserve full messages and base/index starts: %s / %s" % [dynamic_base_errors, dynamic_index_errors])
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	# Raw and typed Array alternatives both claim an array literal. Reordering the union must
+	# leave the same verdict, while two Self-bearing claimants use their elements to choose one.
+	var union_source := _src_class("TupleUnionClaimants extends Node\nfunc raw_first(v: Array | Array[Self]) -> void:\n\tpass\nfunc typed_first(v: Array[Self] | Array) -> void:\n\tpass\nfunc self_choice(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_first(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_reordered(v: Array[(Self, int)] | Array[Self]) -> void:\n\tpass\nfunc test() -> void:\n\traw_first([self])\n\ttyped_first([self])\n\tself_choice([self])\n\tambiguous_first([])\n\tambiguous_reordered([])\n")
+	var union_report: Dictionary = probe.analyze_source(union_source, "res://tests/tuple_union_claimants.barista")
+	_expect(failures, union_report.get("valid", false) == true,
+		"raw/typed and ambiguous claimant order is neutral; only the unique all-Self fit is selected: %s" % union_report.get("errors"))
+
+	# Reparse the same positive and negative source through every public surface. Default
+	# analysis remains read-only with respect to the declaration index.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var index_before := index.get_record_count()
+	var tuple_ok_repeat: Dictionary = probe.analyze_source(tuple_ok, "res://tests/tuple_local_ok.barista")
+	var tuple_bad_repeat: Dictionary = probe.analyze_source(tuple_bad, "res://tests/tuple_local_bad.barista")
+	_expect(failures, tuple_ok_repeat.get("errors", PackedStringArray()) == tuple_ok_report.get("errors", PackedStringArray()) and
+		tuple_bad_repeat.get("errors", PackedStringArray()) == tuple_bad_report.get("errors", PackedStringArray()),
+		"repeated tuple analysis preserves ordered diagnostics")
+	_expect(failures, probe.validate_source(tuple_ok, "res://tests/tuple_local_ok.barista", false).get("valid", false) and
+		probe.is_semantically_valid(tuple_ok, "res://tests/tuple_local_ok.barista"),
+		"tuple analyze/validate/is-valid surfaces agree")
+	var tuple_bad_script := BaristaScript.new()
+	tuple_bad_script.set_source_code(tuple_bad)
+	tuple_bad_script.resource_path = "res://tests/tuple_local_bad.barista"
+	_expect(failures, not tuple_bad_validate.get("valid", true) and
+		not probe.is_semantically_valid(tuple_bad, "res://tests/tuple_local_bad.barista") and
+		not tuple_bad_script.is_valid(),
+		"invalid tuple source agrees through validate/probe/script is-valid surfaces")
+	_expect(failures, index.get_record_count() == index_before,
+		"default repeated tuple analysis preserves the declaration index")
+
+	var identity_controls: Dictionary = probe.self_identity_controls()
+	var expected_identity_controls := [
+		"alpha_fixed_slot", "strict_fixed_slot", "strict_return_slot", "strict_async",
+		"strict_rest", "strict_nested", "strict_union", "strict_ignores_parser_wildcard",
+		"markers_match", "markers_fixed_slot", "markers_return_slot", "markers_rest_slot",
+		"parameter_variadic_to_fixed", "parameter_gradual_to_narrowed_rest",
+		"parameter_strict_return_mismatch", "parameter_fixed_receiver_identity",
+		"parameter_return_receiver_identity", "parameter_rest_receiver_identity",
+	]
+	var identity_complete := identity_controls.size() == expected_identity_controls.size()
+	for control in expected_identity_controls:
+		identity_complete = identity_complete and identity_controls.has(control)
+	for control in identity_controls:
+		identity_complete = identity_complete and bool(identity_controls[control])
+	_expect(failures, identity_complete,
+		"strict/alpha identity and substituted-Self markers traverse fixed/return/rest/nested/union slots: %s" % identity_controls)
+
+
+func _test_ordinary_assignment_and_return_consumers(failures: PackedStringArray) -> void:
+	# Foundry assignment/return ordinary compatibility gates @ c9d5e35.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var assignment_source := "func f(v: int):\n\tvar x: String = \"ok\"\n\tx = v\n"
+	var assignment_report: Dictionary = probe.validate_source(assignment_source, "res://tests/ordinary_assignment_bad.barista", false)
+	var assignment_errors: Array = assignment_report.get("errors", [])
+	_expect(failures, assignment_report.get("valid", true) == false, "ordinary assignment mismatch is invalid")
+	_expect(failures, assignment_errors.size() == 1 and
+		str(assignment_errors[0].get("message", "")) == 'Value of type "int" cannot be assigned to a variable of type "String".' and
+		assignment_errors[0].get("line") == 3 and assignment_errors[0].get("column") == 9,
+		"ordinary variable assignment preserves full wording and RHS start: %s" % [assignment_errors])
+
+	var return_source := "func f(v: String) -> int:\n\treturn v\n"
+	var return_report: Dictionary = probe.validate_source(return_source, "res://tests/ordinary_return_bad.barista", false)
+	var return_errors: Array = return_report.get("errors", [])
+	_expect(failures, return_report.get("valid", true) == false, "ordinary return mismatch is invalid")
+	_expect(failures, return_errors.size() == 1 and
+		str(return_errors[0].get("message", "")) == 'Cannot return value of type "String" because the function return type is "int".' and
+		return_errors[0].get("line") == 2 and return_errors[0].get("column") == 5,
+		"ordinary variable return preserves full wording and ReturnNode start: %s" % [return_errors])
+
+	var constant_source := "const TEXT: Variant = \"hello\"\n\nfunc take_int(v: int) -> int:\n\treturn v\n\nfunc give_int() -> int:\n\treturn TEXT\n\nfunc test():\n\ttake_int(TEXT)\n\tvar initialized: int = TEXT\n\tvar assigned: int = 0\n\tassigned = TEXT\n\tprint(initialized, assigned, give_int())\n"
+	var constant_report: Dictionary = probe.validate_source(constant_source, "res://tests/known_constant_consumers.barista", false)
+	var constant_errors: Array = constant_report.get("errors", [])
+	var constant_expectations := [
+		['Cannot return a value of type "String" as "int".', 7, 12],
+		['Cannot pass a value of type "String" as "int".', 10, 14],
+		['Cannot assign a value of type "String" as "int".', 11, 28],
+		['Cannot assign a value of type "String" as "int".', 13, 16],
+	]
+	var constants_exact := constant_errors.size() == constant_expectations.size()
+	for i in range(min(constant_errors.size(), constant_expectations.size())):
+		constants_exact = constants_exact and str(constant_errors[i].get("message", "")) == constant_expectations[i][0] and \
+			constant_errors[i].get("line") == constant_expectations[i][1] and constant_errors[i].get("column") == constant_expectations[i][2]
+	_expect(failures, constants_exact,
+		"known Variant constants retain value-specific wording and identifier starts: %s" % [constant_errors])
+
+	var return_shape_source := "func void_bad() -> void:\n\treturn 1\nfunc bare_bad() -> int:\n\treturn\n"
+	var return_shape_errors: Array = probe.validate_source(return_shape_source, "res://tests/return_shape_bad.barista", false).get("errors", [])
+	_expect(failures, return_shape_errors.size() == 2 and
+		str(return_shape_errors[0].get("message", "")) == "A void function cannot return a value." and
+		return_shape_errors[0].get("line") == 2 and return_shape_errors[0].get("column") == 5 and
+		str(return_shape_errors[1].get("message", "")) == 'Cannot return without a value because the function return type is "int".' and
+		return_shape_errors[1].get("line") == 4 and return_shape_errors[1].get("column") == 5,
+		"void-value and missing-value returns preserve full messages and ReturnNode starts: %s" % [return_shape_errors])
+
+	var direct_constant_source := "func test():\n\tconst TEST = 25\n\tTEST = 50\n"
+	var direct_constant_errors: Array = probe.validate_source(direct_constant_source, "res://tests/direct_constant_write.barista", false).get("errors", [])
+	_expect(failures, direct_constant_errors.size() == 1 and
+		str(direct_constant_errors[0].get("message", "")) == "Cannot assign a new value to a constant." and
+		direct_constant_errors[0].get("line") == 3 and direct_constant_errors[0].get("column") == 5,
+		"direct constant writes reject at the assignee: %s" % [direct_constant_errors])
+
+	var match_bind_source := "enum Box:\n\tValue(v: Variant)\nfunc inspect(box: Box) -> void:\n\tmatch box:\n\t\tBox.Value(b):\n\t\t\tif b is int:\n\t\t\t\tb = 5\n\t\t_:\n\t\t\tpass\n"
+	var match_bind_errors: Array = probe.validate_source(match_bind_source, "res://tests/match_bind_write.barista", false).get("errors", [])
+	_expect(failures, match_bind_errors.size() == 1 and
+		str(match_bind_errors[0].get("message", "")) == "Cannot assign a new value to a constant." and
+		match_bind_errors[0].get("line") == 7 and match_bind_errors[0].get("column") == 17,
+		"narrowed match binds remain read-only at the assignee: %s" % [match_bind_errors])
+
+
+func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var signal_source := "class_name SignalSelfProjectionHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tpass\nfunc test(receiver: Child, base_value: Base, child_value: Child) -> void:\n\treceiver.emit_signal(\"changed\", base_value)\n\treceiver.emit_signal(\"changed\", child_value)\n"
+	var signal_errors: Array = probe.validate_source(signal_source, "res://tests/review_signal_self_projection.barista", false).get("errors", [])
+	_expect(failures, signal_errors.size() == 1 and
+		str(signal_errors[0].get("message", "")) == 'Invalid argument for "emit_signal()" function: argument 2 should be "Child" but is "Base".' and
+		signal_errors[0].get("line") == 7 and signal_errors[0].get("column") == 37,
+		"inherited Signal Self projects to Child while rejecting Base: %s" % [signal_errors])
+
+	var lexical_tuple := "class_name LexicalTupleHost extends Node\ntuple Pair(left: int, right: int)\nclass Inner extends Node:\n\tfunc make() -> Pair:\n\t\treturn Pair(1, 2)\n"
+	_expect(failures, probe.validate_source(lexical_tuple, "res://tests/review_lexical_tuple.barista", false).get("valid", false),
+		"lexical parent tuple annotation and constructor resolve")
+	var receiver_tuple := "class_name ReceiverTupleHost extends Node\ntuple Owned(owner: Self, value: int)\nfunc construct_on(receiver: ReceiverTupleHost) -> Owned:\n\treturn receiver.Owned(receiver, 1)\n"
+	_expect(failures, probe.validate_source(receiver_tuple, "res://tests/review_receiver_tuple.barista", false).get("valid", false),
+		"typed receiver tuple construction preserves receiver-relative Self")
+
+	var dynamic_tuple := "func read(value: Variant) -> void:\n\tprint(value.0)\n"
+	_expect(failures, probe.validate_source(dynamic_tuple, "res://tests/review_dynamic_tuple_index.barista", false).get("valid", false),
+		"Variant tuple index remains gradual outside strict mode")
+	var dynamic_tuple_element := "func read(pair: (int, String), index: int) -> Variant:\n\treturn pair[index]\n"
+	_expect(failures, probe.validate_source(dynamic_tuple_element, "res://tests/review_dynamic_tuple_element.barista", false).get("valid", false),
+		"runtime integer tuple index remains gradual")
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", true)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var strict_dynamic_errors: Array = probe.validate_source(dynamic_tuple, "res://tests/review_dynamic_tuple_index.barista", false).get("errors", [])
+	_expect(failures, strict_dynamic_errors.size() == 1 and
+		str(strict_dynamic_errors[0].get("message", "")) == "Cannot use tuple index access on Variant in strict dynamic mode." and
+		strict_dynamic_errors[0].get("line") == 2 and strict_dynamic_errors[0].get("column") == 11,
+		"strict tuple index reports the gradual base: %s" % [strict_dynamic_errors])
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	var float_index := "func read(values: Array[int]) -> int:\n\treturn values[1.0]\n"
+	_expect(failures, probe.validate_source(float_index, "res://tests/review_float_array_index.barista", false).get("valid", false),
+		"Array float index preserves typed element result")
+
+	var local_constructor := "class_name LocalConstructorHost extends Node\nclass Item extends Node:\n\tfunc _init(value: int) -> void:\n\t\tpass\nfunc make() -> Item:\n\treturn Item.new(1)\n"
+	_expect(failures, probe.validate_source(local_constructor, "res://tests/review_local_constructor.barista", false).get("valid", false),
+		"local constructor validates declared initializer and preserves Item result")
+
+	var member_constant := "class_name MemberConstantWriteHost extends Node\nconst TOKEN := 1\nfunc overwrite() -> void:\n\tself.TOKEN = 2\n"
+	var member_constant_errors: Array = probe.validate_source(member_constant, "res://tests/review_member_constant_write.barista", false).get("errors", [])
+	_expect(failures, member_constant_errors.size() == 1 and
+		str(member_constant_errors[0].get("message", "")) == "Cannot assign a new value to a constant." and
+		member_constant_errors[0].get("line") == 4 and member_constant_errors[0].get("column") == 5,
+		"resolved member constants remain readonly: %s" % [member_constant_errors])
+
+	var tuple_nominal := "class_name TupleNominalConsumers extends Node\nclass Left:\n\ttuple Point(x: int, y: int)\nclass Right:\n\ttuple Point(x: int, y: int)\nfunc assign_bad(left: Left.Point, right: Right.Point) -> void:\n\tright = left\nfunc return_bad(left: Left.Point) -> Right.Point:\n\treturn left\n"
+	var nominal_errors: Array = probe.validate_source(tuple_nominal, "res://tests/review_tuple_nominal_consumers.barista", false).get("errors", [])
+	_expect(failures, nominal_errors.size() == 2 and
+		str(nominal_errors[0].get("message", "")) == 'Value of type "Point" cannot be assigned to a variable of type "Point". The value is declared by class "Left"; the variable\'s type is declared by class "Right".' and
+		nominal_errors[0].get("line") == 7 and nominal_errors[0].get("column") == 13 and
+		str(nominal_errors[1].get("message", "")) == 'Cannot return value of type "Point" because the function return type is "Point". The returned value is declared by class "Left"; the return type is declared by class "Right".' and
+		nominal_errors[1].get("line") == 9 and nominal_errors[1].get("column") == 5,
+		"ordinary tuple consumers explain identical rendered owners: %s" % [nominal_errors])
+
+	var ordinary_declaration := "func declare(v: int) -> void:\n\tvar value: String = v\n"
+	var declaration_errors: Array = probe.validate_source(ordinary_declaration, "res://tests/review_ordinary_declaration.barista", false).get("errors", [])
+	_expect(failures, declaration_errors.size() == 1 and
+		str(declaration_errors[0].get("message", "")) == 'Cannot assign a value of type "int" to a variable of type "String".' and
+		declaration_errors[0].get("line") == 2 and declaration_errors[0].get("column") == 25,
+		"ordinary declarations report at the initializer: %s" % [declaration_errors])
+
+	# The declaration's Signal[[Self]] signature projects through every existing member,
+	# Object API, and Signal(Object, name) consumer without changing its stored declaration.
+	var signal_member_source := "class_name SignalSelfMemberHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tfunc take_child(value: Child) -> void:\n\t\tpass\n\tfunc take_string(value: String) -> void:\n\t\tpass\n\tfunc check(child_value: Child, base_value: Base) -> void:\n\t\tchanged.emit(child_value)\n\t\tchanged.emit(base_value)\n\t\tself.changed.connect(take_child)\n\t\tself.changed.disconnect(take_child)\n\t\tself.changed.is_connected(take_child)\n\t\tself.changed.connect(take_string)\n"
+	var signal_member_errors: Array = probe.validate_source(signal_member_source, "res://tests/repair_signal_member.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(signal_member_errors, [
+		['Invalid argument for "emit()" function: argument 1 should be "Child" but is "Base".', 11, 22],
+		['Cannot connect signal "Signal[[Child]]" to callable "Callable[[String], void]": signal argument 1 of type "Child" cannot be passed to callable parameter of type "String".', 15, 30],
+	]), "bare/self inherited Signal Self consumer routes: %s" % [signal_member_errors])
+	var signal_nested_source := "class_name SignalNestedHost extends Node\nclass Base extends Node:\n\tsignal nested(values: Array[Self])\nclass Child extends Base:\n\tfunc check(child_values: Array[Child], base_values: Array[Base]) -> void:\n\t\tnested.emit(child_values)\n\t\tnested.emit(base_values)\n"
+	var signal_nested_errors: Array = probe.validate_source(signal_nested_source, "res://tests/repair_signal_nested.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(signal_nested_errors, [
+		['Invalid argument for "emit()" function: argument 1 should be "Array[Child]" but is "Array[Base]".', 7, 21],
+	]), "Signal Self projection traverses nested container parameters: %s" % [signal_nested_errors])
+
+	var signal_receiver_source := "class_name SignalSelfReceiverHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tpass\nfunc take_child(value: Child) -> void:\n\tpass\nfunc take_string(value: String) -> void:\n\tpass\nfunc check(receiver: Child, child_value: Child, base_value: Base) -> void:\n\treceiver.emit_signal(\"changed\", child_value)\n\treceiver.emit_signal(\"changed\", base_value)\n\treceiver.connect(\"changed\", take_child)\n\treceiver.disconnect(\"changed\", take_child)\n\treceiver.is_connected(\"changed\", take_child)\n\treceiver.connect(\"changed\", take_string)\n\tvar projected := Signal(receiver, \"changed\")\n\tprojected.emit(child_value)\n\tprojected.emit(base_value)\n"
+	var signal_receiver_errors: Array = probe.validate_source(signal_receiver_source, "res://tests/repair_signal_receiver.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(signal_receiver_errors, [
+		['Invalid argument for "emit_signal()" function: argument 2 should be "Child" but is "Base".', 12, 37],
+		['Cannot connect signal "Signal[[Child]]" to callable "Callable[[String], void]": signal argument 1 of type "Child" cannot be passed to callable parameter of type "String".', 16, 33],
+		['Invalid argument for "emit()" function: argument 1 should be "Child" but is "Base".', 19, 20],
+	]), "typed Object and Signal constructor preserve projected Self signatures: %s" % [signal_receiver_errors])
+
+	# Tuple lookup walks the precise receiver's inheritance chain and the current lexical
+	# chain. The nearest lexical declaration wins, while a foreign receiver keeps its method.
+	var tuple_spellings := "class_name TupleSpellings extends Node\ntuple Owned(owner: Self, value: int)\nclass Child extends TupleSpellings:\n\tfunc make(receiver: Child) -> Owned:\n\t\tvar a := Owned(self, 1)\n\t\tvar b := self.Owned(self, 2)\n\t\tvar c := Self.Owned(self, 3)\n\t\tvar d := Child.Owned(self, 4)\n\t\tvar e := receiver.Owned(receiver, 5)\n\t\treturn e\n"
+	_expect(failures, probe.validate_source(tuple_spellings, "res://tests/repair_tuple_spellings.barista", false).get("valid", false),
+		"unqualified/self/Self/class/instance inherited tuple constructors preserve owner-relative Self")
+	var tuple_shadow := "class_name TupleShadow extends Node\ntuple Item(left: int, right: int)\nclass Inner:\n\ttuple Item(left: String, right: String)\n\tfunc make() -> Item:\n\t\treturn Item(1, 2)\n"
+	var tuple_shadow_errors: Array = probe.validate_source(tuple_shadow, "res://tests/repair_tuple_shadow.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tuple_shadow_errors, [
+		['Invalid argument 1 for tuple "Item": should be "String" but is "int".', 6, 21],
+		['Invalid argument 2 for tuple "Item": should be "String" but is "int".', 6, 24],
+	]), "nearest lexical tuple declaration shadows its outer sibling: %s" % [tuple_shadow_errors])
+	var foreign_receiver := "class_name TupleForeign extends Node\nclass Owner:\n\ttuple Pair(left: int, right: int)\nclass Other:\n\tfunc Pair(left: int, right: int) -> String:\n\t\treturn \"method\"\nfunc bad(other: Other) -> Owner.Pair:\n\treturn other.Pair(1, 2)\n"
+	var foreign_errors: Array = probe.validate_source(foreign_receiver, "res://tests/repair_tuple_foreign.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(foreign_errors, [
+		['Cannot return value of type "String" because the function return type is "Pair".', 8, 5],
+	]), "foreign receiver method is not captured by lexical tuple construction: %s" % [foreign_errors])
+
+	var dynamic_tuple_report: Dictionary = probe.validate_source(dynamic_tuple, "res://tests/review_dynamic_tuple_index.barista", false, true)
+	var dynamic_element_report: Dictionary = probe.validate_source(dynamic_tuple_element, "res://tests/review_dynamic_tuple_element.barista", false, true)
+	var dynamic_tuple_safe: PackedInt32Array = dynamic_tuple_report.get("safe_lines", PackedInt32Array())
+	var dynamic_element_safe: PackedInt32Array = dynamic_element_report.get("safe_lines", PackedInt32Array())
+	_expect(failures, dynamic_tuple_report.get("valid", false) and 1 in dynamic_tuple_safe and 2 not in dynamic_tuple_safe and
+		dynamic_element_report.get("valid", false) and 1 in dynamic_element_safe and 2 not in dynamic_element_safe,
+		"gradual tuple base and runtime integer index are explicitly unsafe: %s / %s" % [dynamic_tuple_report, dynamic_element_report])
+	var tuple_index_source := "func check(pair: (int, String), wrong: String) -> void:\n\tprint(pair[wrong])\n\tprint(pair[2])\n"
+	var tuple_index_errors: Array = probe.validate_source(tuple_index_source, "res://tests/repair_tuple_index.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tuple_index_errors, [
+		['Only an integer can index tuple "(int, String)", but received "String".', 2, 16],
+		['Tuple index 2 is out of range for "(int, String)", which has 2 element(s).', 3, 16],
+	]), "tuple index type/range diagnostics use the index expression: %s" % [tuple_index_errors])
+	var nullable_tuple := "func read(pair: (int, String)?) -> int:\n\treturn pair[0]\n"
+	_expect(failures, probe.validate_source(nullable_tuple, "res://tests/repair_nullable_tuple.barista", false).get("valid", false),
+		"nullable tuple indexing preserves the selected element type")
+	var tuple_metatype := "tuple Pair(left: int, right: int)\nfunc bad() -> void:\n\tprint(Pair.0)\n"
+	var tuple_metatype_errors: Array = probe.validate_source(tuple_metatype, "res://tests/repair_tuple_metatype.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tuple_metatype_errors, [
+		['Cannot index the tuple type "Pair"; construct a value first.', 3, 11],
+	]), "tuple metatype index remains rejected at the subscript: %s" % [tuple_metatype_errors])
+
+	var array_index_source := "func check(values: Array[int], b: bool, text: String) -> void:\n\tvar a: int = values[1.0]\n\tvalues[2.0] = 3\n\tprint(values[b])\n\tvalues[text] = 4\n"
+	var array_index_errors: Array = probe.validate_source(array_index_source, "res://tests/repair_array_index.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(array_index_errors, [
+		['Invalid index type "bool" for a base of type "Array[int]".', 4, 18],
+		['Invalid index type "String" for a base of type "Array[int]".', 5, 12],
+	]), "Array reads/writes accept real indices and reject unrelated concrete indices: %s" % [array_index_errors])
+
+	var constructor_source := "class_name ConstructorCases extends Node\nclass Base:\n\tfunc _init(value: int, label: String = \"x\", ...rest: Array) -> void:\n\t\tpass\nclass Child extends Base:\n\tpass\nclass Empty:\n\tpass\nfunc ok() -> Child:\n\treturn Child.new(1, \"a\", 2, 3)\nfunc bad_type() -> Child:\n\treturn Child.new(\"bad\")\nfunc bad_arity() -> Child:\n\treturn Child.new()\nfunc bad_empty() -> Empty:\n\treturn Empty.new(1)\n"
+	var constructor_errors: Array = probe.validate_source(constructor_source, "res://tests/repair_constructors.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(constructor_errors, [
+		['Invalid argument for "new()" function: argument 1 should be "int" but is "String".', 12, 22],
+		['Too few arguments for "new()" call. Expected at least 1 but received 0.', 14, 12],
+		['Too many arguments for "new()" call. Expected at most 0 but received 1.', 16, 22],
+	]), "local inherited constructors preserve precise result and fixed/default/rest validation: %s" % [constructor_errors])
+
+	var constant_write_source := "class_name ConstantWrites extends Node\nconst TOKEN := 1\nconst CONTAINER := [1]\nvar mutable := 1\nclass Child extends ConstantWrites:\n\tfunc writes(receiver: Child) -> void:\n\t\tTOKEN = 2\n\t\tself.TOKEN = 2\n\t\tChild.TOKEN = 2\n\t\treceiver.TOKEN = 2\n\t\treceiver.CONTAINER[0] = 2\n\t\tmutable = 2\n"
+	var constant_write_errors: Array = probe.validate_source(constant_write_source, "res://tests/repair_member_constants.barista", false).get("errors", [])
+	var readonly_expected: Array = []
+	for line in range(7, 12):
+		readonly_expected.append(["Cannot assign a new value to a constant.", line, 9])
+	_expect(failures, _errors_are_exact(constant_write_errors, readonly_expected),
+		"direct/self/class/inherited/typed and nested member constant writes reject once: %s" % [constant_write_errors])
+
+	var nominal_sites := "class_name NominalSites extends Node\nclass Left:\n\ttuple Point(x: int, y: int)\nclass Right:\n\ttuple Point(x: int, y: int)\n\ttuple Wrapper(point: Point, count: int)\n\tenum Box:\n\t\tValue(value: Point)\nfunc fixed(value: Right.Point) -> void:\n\tpass\nfunc rest(...values: Array[Right.Point]) -> void:\n\tpass\nfunc sites(left: Left.Point) -> Right.Point:\n\tvar declared: Right.Point = left\n\tconst local: Right.Point = left\n\tvar assigned: Right.Point = Right.Point(1, 2)\n\tassigned = left\n\tfixed(left)\n\trest(left)\n\tvar tuple_payload := Right.Wrapper(left, 1)\n\tvar enum_payload := Right.Box.Value(left)\n\treturn left\n"
+	var nominal_site_errors: Array = probe.validate_source(nominal_sites, "res://tests/repair_nominal_sites.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(nominal_site_errors, [
+		['Cannot assign a value of type Point to variable "declared" with specified type Point. The value is declared by class "Left"; the specified type is declared by class "Right".', 14, 33],
+		['Cannot assign a value of type "Point" to a constant of type "Point". The value is declared by class "Left"; the specified type is declared by class "Right".', 15, 32],
+		['Value of type "Point" cannot be assigned to a variable of type "Point". The value is declared by class "Left"; the variable\'s type is declared by class "Right".', 17, 16],
+		['Invalid argument for "fixed()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 18, 11],
+		['Invalid argument for "rest()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 19, 10],
+		['Invalid argument 1 for tuple "Wrapper": should be "Point" but is "Point". The tuple field\'s type is declared by class "Right"; the argument is declared by class "Left".', 20, 40],
+		['Invalid argument 1 for enum case "Box.Value": should be "Point" but is "Point". The payload field\'s type is declared by class "Right"; the argument is declared by class "Left".', 21, 41],
+		['Cannot return value of type "Point" because the function return type is "Point". The returned value is declared by class "Left"; the return type is declared by class "Right".', 22, 5],
+	]), "same-rendered owners are explicit at declaration/constant/assignment/call/payload/return sites: %s" % [nominal_site_errors])
+
+	var origin_source := "class_name OriginCases extends Node\nvar member: String = 1\nconst MEMBER_CONST: String = 2\nfunc bad(v: int) -> String:\n\tvar local: String = v\n\tconst local_const: String = v\n\treturn v\n"
+	var origin_errors: Array = probe.validate_source(origin_source, "res://tests/repair_origins.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(origin_errors, [
+		['Cannot assign a value of type "int" to a variable of type "String".', 2, 22],
+		['Cannot assign a value of type "int" to a constant of type "String".', 3, 30],
+		['Cannot assign a value of type "int" to a variable of type "String".', 5, 25],
+		['Cannot assign a value of type "int" to a constant of type "String".', 6, 33],
+		['Cannot return value of type "int" because the function return type is "String".', 7, 5],
+	]), "ordinary declaration diagnostics use initializer origins while return stays on ReturnNode: %s" % [origin_errors])
+
+
+func _test_steps_1_5_repair2_self_signatures(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var static_source := "class_name Repair2Static extends Node\nstatic func fixed(value: Self) -> void:\n\tpass\nstatic func rest(...values: Array[Self]) -> void:\n\tpass\nstatic func check(good: Repair2Static, bad: String) -> void:\n\tfixed(good)\n\trest(good)\n\tfixed(bad)\n\trest(bad)\n\tfixed()\n"
+	var static_errors: Array = probe.validate_source(static_source, "res://tests/repair2_static_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(static_errors, [
+		['Invalid argument for "fixed()" function: argument 1 should be "Repair2Static" but is "String".', 9, 11],
+		['Invalid argument for "rest()" function: argument 1 should be "Repair2Static" but is "String".', 10, 10],
+		['Too few arguments for "fixed()" call. Expected at least 1 but received 0.', 11, 5],
+	]), "static fixed/rest Self share declaring-class substitution and exact diagnostics: %s" % [static_errors])
+
+	var constructor_source := "class_name Repair2Constructor extends Node\nclass Base:\n\tfunc _init(first: Self, ...rest: Array[Self]) -> void:\n\t\tpass\nclass Child extends Base:\n\tpass\nfunc check(a: Child, b: Child, base: Base) -> void:\n\tvar direct := Base.new(base, base)\n\tvar inherited := Child.new(a, b)\n\tChild.new(base, b)\n\tChild.new(a, base)\n"
+	var constructor_errors: Array = probe.validate_source(constructor_source, "res://tests/repair2_constructor_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(constructor_errors, [
+		['Invalid argument for "new()" function: argument 1 should be "Child" but is "Base".', 10, 15],
+		['Invalid argument for "new()" function: argument 2 should be "Child" but is "Base".', 11, 18],
+	]), "direct and inherited constructors select one concrete fixed/rest Self type: %s" % [constructor_errors])
+
+	var instance_rest_source := "class_name Repair2InstanceRest extends Node\nfunc take(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2InstanceRest) -> void:\n\ttake(self)\n\tother.take(self)\n"
+	var instance_rest_errors: Array = probe.validate_source(instance_rest_source, "res://tests/repair2_instance_rest_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(instance_rest_errors, [
+		['Invalid argument for "take()" function: argument 1 should be "Self" but is "Self". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 6, 16],
+	]), "ordinary instance rest Self stays receiver-relative: %s" % [instance_rest_errors])
+
+	var callable_direct_source := "class_name Repair2CallableDirect extends Node\nfunc fixed(value: Callable[[Self], void]) -> void:\n\tpass\nfunc returns(value: Callable[[], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self) -> void:\n\tpass\nfunc cb_return() -> Self:\n\treturn self\nfunc cb_rest(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableDirect) -> void:\n\tfixed(cb_fixed)\n\treturns(cb_return)\n\trests(cb_rest)\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n"
+	var callable_direct_errors: Array = probe.validate_source(callable_direct_source, "res://tests/repair2_callable_direct_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(callable_direct_errors, [
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self], void]" but is "Callable[[Self], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 18, 17],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[], Self]" but is "Callable[[], Self]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 19, 19],
+		['Invalid argument for "rests()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Self]], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 20, 17],
+	]), "callable fixed/return/rest Self accepts own receiver and rejects foreign receiver: %s" % [callable_direct_errors])
+	var callable_current_source := "class_name Repair2CallableCurrent extends Node\nfunc take(value: Callable[[Self], void]) -> void:\n\tpass\nfunc cb(value: Self) -> void:\n\tpass\nfunc through_self() -> void:\n\tself.take(cb)\nclass Child extends Repair2CallableCurrent:\n\tfunc through_super() -> void:\n\t\tsuper.take(cb)\n"
+	_expect(failures, probe.validate_source(callable_current_source, "res://tests/repair2_callable_current_self.barista", false).get("valid", false),
+		"explicit self and super callable Self calls retain current-receiver admission")
+
+	var callable_sibling_source := "class_name Repair2CallableSibling extends Node\nfunc fixed(value: Callable[[Self, int], void]) -> void:\n\tpass\nfunc returns(value: Callable[[int], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self, sibling: String) -> void:\n\tpass\nfunc cb_return(sibling: String) -> Self:\n\treturn self\nfunc cb_rest(sibling: String, ...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableSibling) -> void:\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n"
+	var callable_sibling_errors: Array = probe.validate_source(callable_sibling_source, "res://tests/repair2_callable_sibling_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(callable_sibling_errors, [
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self, int], void]" but is "Callable[[Self, String], void]". The parameter\'s "Self" at callable parameter 1 is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 15, 17],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[int], Self]" but is "Callable[[String], Self]". The parameter\'s "Self" at the callable return type is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 16, 19],
+		['Invalid argument for "rests()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable[[String, ...Array[Self]], void]". The parameter\'s "Self" at the callable rest parameter is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 17, 17],
+	]), "callable sibling mismatches retain fixed/return/rest receiver slot labels: %s" % [callable_sibling_errors])
+
+	var comparable_source := "class_name Repair2ComparableCallable extends Node\nfunc fixed(callback: Callable[[Self], void]) -> void:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc with_tail(owner: Self, ...rest: Array) -> void:\n\tpass\nfunc sink(...values: Array) -> void:\n\tpass\nfunc check(other: Repair2ComparableCallable) -> void:\n\tvar variadic: Callable[[Self, ...Array], void] = with_tail\n\tvar gradual: Callable[[...Array], void] = sink\n\tfixed(variadic)\n\tfan(gradual)\n\tother.fan(gradual)\n"
+	_expect(failures, probe.validate_source(comparable_source, "res://tests/repair2_callable_comparable.barista", false).get("valid", false),
+		"variadic-to-fixed and gradual-to-narrowed rest callable directions remain admitted")
+
+	var typed_tail_parameter := "class_name Repair3TailParameter extends Node\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc fan_nested(callback: Callable[[...Array[Array[Self]]], void]) -> void:\n\tpass\nfunc take_bound(...values: Array[Repair3TailParameter]) -> void:\n\tpass\nfunc take_super(...values: Array[Node]) -> void:\n\tpass\nfunc take_nested(...values: Array[Array[Repair3TailParameter]]) -> void:\n\tpass\nfunc check(other: Repair3TailParameter) -> void:\n\tfan(take_bound)\n\tother.fan(take_super)\n\tfan_nested(take_nested)\n"
+	_expect(failures, probe.validate_source(typed_tail_parameter, "res://tests/repair3_typed_tail_parameter.barista", false).get("valid", false),
+		"typed Callable rest tails accept the Self bound, a supertype, and a nested bound")
+	var typed_tail_declared_super := "class Super:\n\tpass\nclass Cell extends Super:\n\tfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\t\tpass\n\tfunc take_super(...values: Array[Super]) -> void:\n\t\tpass\n\tfunc check(other: Cell) -> void:\n\t\tother.fan(take_super)\n"
+	_expect(failures, probe.validate_source(typed_tail_declared_super, "res://tests/repair3_typed_tail_declared_super.barista", false).get("valid", false),
+		"typed Callable rest tails accept a same-source declared supertype through a foreign receiver")
+
+	var typed_tail_values := "class_name Repair3TailValue extends Node\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc take_bound(...values: Array[Repair3TailValue]) -> void:\n\tpass\nfunc take_super(...values: Array[Node]) -> void:\n\tpass\nfunc stored() -> Callable[[...Array[Self]], void]:\n\tvar bound: Callable[[...Array[Repair3TailValue]], void] = take_bound\n\treturn bound\nfunc check() -> void:\n\tvar declared: Callable[[...Array[Self]], void] = take_bound\n\tvar assigned: Callable[[...Array[Self]], void] = take_bound\n\tassigned = take_super\n\tfan(declared)\n\tfan(assigned)\n\tfan(stored())\n"
+	_expect(failures, probe.validate_source(typed_tail_values, "res://tests/repair3_typed_tail_values.barista", false).get("valid", false),
+		"typed Callable rest-tail admission is shared by declaration, assignment, return and parameter consumers")
+
+	var typed_tail_negatives := "class_name Repair3TailNegative extends Node\nclass Leaf extends Repair3TailNegative:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc fixed(callback: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc returns(callback: Callable[[...Array[Self]], int]) -> void:\n\tpass\nfunc take_narrow(...values: Array[Leaf]) -> void:\n\tpass\nfunc bad_fixed(value: String, ...values: Array[Node]) -> void:\n\tpass\nfunc bad_return(...values: Array[Node]) -> String:\n\treturn \"bad\"\nfunc self_tail(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair3TailNegative) -> void:\n\tfan(take_narrow)\n\tfixed(bad_fixed)\n\treturns(bad_return)\n\tother.fan(self_tail)\n"
+	var typed_tail_negative_errors: Array = probe.validate_source(typed_tail_negatives, "res://tests/repair3_typed_tail_negatives.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(typed_tail_negative_errors, [
+		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Leaf]], void]".', 19, 9],
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable[[String, ...Array[Node]], void]".', 20, 11],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[...Array[Self]], int]" but is "Callable[[...Array[Node]], String]".', 21, 13],
+		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Self]], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 22, 15],
+	]), "typed tail fallback preserves narrower, fixed, return and foreign-receiver negatives: %s" % [typed_tail_negative_errors])
+
+	var typed_tail_value_negatives := "class_name Repair3TailValueNegative extends Node\nclass Leaf extends Repair3TailValueNegative:\n\tpass\nfunc bad(wrong: Callable[[...Array[String]], void], narrow: Callable[[...Array[Leaf]], void]) -> Callable[[...Array[Self]], void]:\n\tvar declared: Callable[[...Array[Self]], void] = wrong\n\tvar slot: Callable[[...Array[Self]], void] = wrong\n\tslot = narrow\n\treturn wrong\n"
+	var typed_tail_value_errors: Array = probe.validate_source(typed_tail_value_negatives, "res://tests/repair3_typed_tail_value_negatives.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(typed_tail_value_errors, [
+		['Cannot assign a value of type "Callable[[...Array[String]], void]" to a variable of type "Callable[[...Array[Self]], void]".', 5, 54],
+		['Cannot assign a value of type "Callable[[...Array[String]], void]" to a variable of type "Callable[[...Array[Self]], void]".', 6, 50],
+		['Value of type "Callable[[...Array[Leaf]], void]" cannot be assigned to a variable of type "Callable[[...Array[Self]], void]".', 7, 12],
+		['Cannot return value of type "Callable[[...Array[String]], void]" because the function return type is "Callable[[...Array[Self]], void]".', 8, 5],
+	]), "typed tail value consumers retain unrelated and narrower exact diagnostics: %s" % [typed_tail_value_errors])
+
+
+func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:
+	# Local int-backed value cycles preserve the in-progress RESOLVING state instead of
+	# retrying the producer. Pin both complete ordered diagnostics in the guarded suite.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var mutual_cycle_source := "func test():\n\tprint(E1.V)\n\nenum E1:\n\tV = E2.V\nenum E2:\n\tV = E1.V\n"
+	var mutual_cycle_errors: Array = probe.validate_source(mutual_cycle_source, "res://tests/cyclic_ref_enum.barista", false).get("errors", [])
+	_expect(failures, mutual_cycle_errors.size() == 2 and
+		str(mutual_cycle_errors[0].get("message", "")) == 'Could not resolve member "E1": Cyclic reference.' and
+		mutual_cycle_errors[0].get("line") == 7 and mutual_cycle_errors[0].get("column") == 9 and
+		str(mutual_cycle_errors[1].get("message", "")) == "Enum values must be constant." and
+		mutual_cycle_errors[1].get("line") == 7 and mutual_cycle_errors[1].get("column") == 9,
+		"mutual enum value cycle emits the exact two-error block and starts: %s" % [mutual_cycle_errors])
+
+	var self_cycle_source := "enum Bad:\n\tA = Bad.B\n\tB = 1\n\nfunc test():\n\tprint(Bad.A)\n"
+	var self_cycle_errors: Array = probe.validate_source(self_cycle_source, "res://tests/enum_int_backed_self_referential_value.barista", false).get("errors", [])
+	_expect(failures, self_cycle_errors.size() == 2 and
+		str(self_cycle_errors[0].get("message", "")) == 'Could not resolve member "Bad": Cyclic reference.' and
+		self_cycle_errors[0].get("line") == 2 and self_cycle_errors[0].get("column") == 9 and
+		str(self_cycle_errors[1].get("message", "")) == "Enum values must be constant." and
+		self_cycle_errors[1].get("line") == 2 and self_cycle_errors[1].get("column") == 9,
+		"self-referential enum value emits the exact two-error block and starts: %s" % [self_cycle_errors])
+
+	# Legal recursive tagged payload identity is published before its payload fields resolve.
+	var source := _src_class("LegalRecursiveTagged extends Node\nenum Chain:\n\tEnd\n\tLink(next: Chain)\nfunc make() -> Chain:\n\treturn Chain.Link(Chain.End)\n")
+	var report: Dictionary = probe.analyze_source(source, "res://tests/legal_recursive_tagged.barista")
+	_expect(failures, report.get("valid", false) == true,
+		"legal recursive tagged payload remains valid while int-backed value cycles are rejected")

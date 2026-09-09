@@ -38,6 +38,8 @@ public:
 
 	/** Copied public metadata and boolean identity checks only; never returns or invokes markers. */
 	godot::Dictionary language_utility_metadata() const;
+	/** Source-independent concrete callable identity and Self-marker traversal controls. */
+	godot::Dictionary self_identity_controls() const;
 
 	/** Run `_validate`-equivalent analysis; returns valid + first error message. */
 	godot::Dictionary analyze_source(const godot::String &p_source, const godot::String &p_path) const;
@@ -46,7 +48,7 @@ public:
 	bool is_semantically_valid(const godot::String &p_source, const godot::String &p_path) const;
 
 	/** Language `_validate` dictionary for warning / error flag exercises. */
-	godot::Dictionary validate_source(const godot::String &p_source, const godot::String &p_path, bool p_warnings = true) const;
+	godot::Dictionary validate_source(const godot::String &p_source, const godot::String &p_path, bool p_warnings = true, bool p_safe_lines = false) const;
 
 	/**
 	 * After parse (no full analyze), report ConformanceVisibility::can_see for each path.

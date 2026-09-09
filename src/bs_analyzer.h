@@ -438,6 +438,11 @@ public:
 	static void set_bootstrap_allowed_dependency_root(const String &p_root);
 	static String get_bootstrap_allowed_dependency_root();
 
+#ifdef DEBUG_ENABLED
+	/** Source-independent step-3 strict/signature/Self-marker controls for the guarded suite. */
+	static Dictionary debug_self_identity_controls();
+#endif
+
 	BSParser *get_parser() const { return parser; }
 	AnalyzerPhase get_highest_completed_phase() const { return highest_completed_phase; }
 
@@ -567,6 +572,10 @@ private:
 	BSParser::DataType resolve_enum_values(BSParser::EnumNode *p_enum, const BSParser::DataType &p_enum_type, BSParser::ClassNode *p_owner);
 	/** Foundry make_class_enum_type shell used before resolve_enum_values. */
 	static BSParser::DataType make_class_enum_type(const StringName &p_enum_name, BSParser::ClassNode *p_class, const String &p_script_path, bool p_meta = true);
+	/** Foundry make_tuple_type: precise static tuple shape with read-only Array erasure. */
+	static BSParser::DataType make_tuple_type(const StringName &p_tuple_name, const String &p_owner_fqcn,
+			const String &p_script_path, const Vector<BSParser::DataType> &p_element_types,
+			const Vector<StringName> &p_field_names, bool p_meta);
 	/**
 	 * Foundry complete_self_referential_enum_type @ c9d5e35 (`fs_analyzer_surface.cpp`):
 	 * refill empty tagged-union identity shells from the declaration and recurse into nested
@@ -625,6 +634,7 @@ private:
 	/** Foundry reduce_lambda (@ c9d5e35): Callable type + body under `current_lambda`. */
 	void reduce_lambda(BSParser::LambdaNode *p_lambda);
 	void reduce_subscript(BSParser::SubscriptNode *p_subscript);
+	void reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple);
 	void reduce_array(BSParser::ArrayNode *p_array);
 	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);
 	void reduce_ternary(BSParser::TernaryOpNode *p_ternary);
@@ -693,11 +703,12 @@ private:
 	void register_contextual_enum_case(BSParser::ExpressionNode *p_expression);
 	void report_unqualified_contextual_enum_cases();
 	/**
-	 * Foundry update_container_literal_element_types @ c9d5e35 (contextual-`.Case` slice): push the
-	 * consumer's Array/Dictionary element types into literal elements so nested shorthands resolve.
-	 * Full Self / gradual / type-handle element checking remains follow-up under #60.
+	 * Foundry update_container_literal_element_types @ c9d5e35: select a unique concrete literal
+	 * target, patch Array/Dictionary/tuple elements, and preserve contextual Self provenance.
 	 */
 	bool update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
+	/** Value-aware constant retyping/reporting shared by assign/return/pass consumers. */
+	bool update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage);
 	void update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type);
 	void update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type);
 	/** resolve_contextual_enum_case + container-literal element descent for one consumer site. */
@@ -708,8 +719,13 @@ private:
 	 * complete_self_referential_enum_type on payload fields. open_union_members_collapse remains #60.
 	 */
 	void reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type);
+	bool find_named_tuple_meta_type(const BSParser::DataType &p_base_type, bool p_is_self, const StringName &p_name,
+			const BSParser::Node *p_source, BSParser::DataType &r_tuple_meta_type);
+	bool find_named_tuple_meta_type(const StringName &p_name, BSParser::DataType &r_tuple_meta_type);
+	void reduce_call_tuple_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_tuple_meta_type);
 	/** Foundry datatype_contains_self_type_parameter @ c9d5e35. */
 	bool datatype_contains_self_type_parameter(const BSParser::DataType &p_type) const;
+	bool datatype_strict_identity_equal(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_actual_type) const;
 	/**
 	 * Foundry self_contract_admits_value_type @ c9d5e35 (RETURN kind for assign/return/assignment;
 	 * PARAMETER delegates to the receiver-contract helpers).
@@ -727,10 +743,13 @@ private:
 	bool gradual_destination_is_undecidable(const BSParser::DataType &p_destination) const;
 	bool self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) const;
 	bool self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) const;
+	String self_parameter_receiver_identity_clause(const BSParser::DataType &p_expected_type,
+			const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call) const;
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);
-	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee);
+	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee,
+			BSParser::ClassNode *p_constructor_class = nullptr);
 	/** Foundry check_match_exhaustiveness @ c9d5e35: bool / tagged-union / plain-enum coverage. */
 	void check_match_exhaustiveness(BSParser::MatchNode *p_match);
 	bool suite_has_return(const BSParser::SuiteNode *p_suite) const;

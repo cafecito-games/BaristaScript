@@ -90,10 +90,11 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("corpus_state_controls"), &BaristaScriptAnalyzerProbe::corpus_state_controls);
 	ClassDB::bind_method(D_METHOD("corpus_format_controls"), &BaristaScriptAnalyzerProbe::corpus_format_controls);
 	ClassDB::bind_method(D_METHOD("language_utility_metadata"), &BaristaScriptAnalyzerProbe::language_utility_metadata);
+	ClassDB::bind_method(D_METHOD("self_identity_controls"), &BaristaScriptAnalyzerProbe::self_identity_controls);
 	ClassDB::bind_method(D_METHOD("fold_expression", "expression_source"), &BaristaScriptAnalyzerProbe::fold_expression);
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
 	ClassDB::bind_method(D_METHOD("is_semantically_valid", "source", "path"), &BaristaScriptAnalyzerProbe::is_semantically_valid);
-	ClassDB::bind_method(D_METHOD("validate_source", "source", "path", "warnings"), &BaristaScriptAnalyzerProbe::validate_source, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("validate_source", "source", "path", "warnings", "safe_lines"), &BaristaScriptAnalyzerProbe::validate_source, DEFVAL(true), DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("conformance_visibility_can_see", "source", "path", "candidates"),
 			&BaristaScriptAnalyzerProbe::conformance_visibility_can_see);
 	ClassDB::bind_method(D_METHOD("scoped_visibility_nest_restore"), &BaristaScriptAnalyzerProbe::scoped_visibility_nest_restore);
@@ -113,6 +114,10 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::witness_collision_arbitration);
 	ClassDB::bind_method(D_METHOD("complete_self_referential_enum_type"),
 			&BaristaScriptAnalyzerProbe::complete_self_referential_enum_type);
+}
+
+Dictionary BaristaScriptAnalyzerProbe::self_identity_controls() const {
+	return BSAnalyzer::debug_self_identity_controls();
 }
 
 namespace {
@@ -589,11 +594,11 @@ bool BaristaScriptAnalyzerProbe::is_semantically_valid(const godot::String &p_so
 	return ok;
 }
 
-godot::Dictionary BaristaScriptAnalyzerProbe::validate_source(const godot::String &p_source, const godot::String &p_path, bool p_warnings) const {
+godot::Dictionary BaristaScriptAnalyzerProbe::validate_source(const godot::String &p_source, const godot::String &p_path, bool p_warnings, bool p_safe_lines) const {
 	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
 	ERR_FAIL_COND_V(language == nullptr, godot::Dictionary());
 	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
-	return language->_validate(p_source, path, true, true, p_warnings, false);
+	return language->_validate(p_source, path, true, true, p_warnings, p_safe_lines);
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::conformance_visibility_can_see(const godot::String &p_source,

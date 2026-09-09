@@ -148,6 +148,9 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 	}
 	const BSParser::DataType par_type = p_expected_type;
 	analyzer->mark_coroutine_handle_capture(p_argument, par_type);
+	if (!analyzer->update_constant_expression_type(p_argument, par_type, "pass")) {
+		return;
+	}
 	const BSParser::DataType arg_type = p_argument->get_datatype();
 
 	if (!par_type.is_set() || par_type.is_variant()) {
@@ -162,7 +165,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 		if (!analyzer->self_parameter_contract_admits_argument_type(par_type, arg_type, p_call, p_argument) &&
 				!analyzer->self_parameter_satisfied_by_receiver_identity(par_type, p_argument, p_call)) {
 			analyzer->push_error(make_invalid_argument_error(p_function, p_argument_number, par_type, arg_type, false, false, p_argument) +
-							BSParser::DataType::same_rendered_name_clause(par_type, "parameter", arg_type, "argument"),
+							analyzer->self_parameter_receiver_identity_clause(par_type, arg_type, p_call),
 					p_argument);
 			return;
 		}
@@ -188,7 +191,9 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 	}
 
 	const bool nullable_mismatch = analyzer->strict_null_checks && arg_type.is_nullable && !par_type.is_nullable && !par_type.is_variant();
-	if (nullable_mismatch || !BSTypeCompatibility::check(par_type, arg_type, options).compatible) {
+	const bool tuple_identity_mismatch = (par_type.kind == BSParser::DataType::TUPLE || arg_type.kind == BSParser::DataType::TUPLE) &&
+			!analyzer->datatype_strict_identity_equal(par_type, arg_type);
+	if (nullable_mismatch || tuple_identity_mismatch || !BSTypeCompatibility::check(par_type, arg_type, options).compatible) {
 		analyzer->push_error(make_invalid_argument_error(p_function, p_argument_number, par_type, arg_type, false, nullable_mismatch, p_argument), p_argument);
 	}
 }
@@ -249,16 +254,36 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::explicit_signal_type_f
 }
 
 BSParser::DataType BSAnalyzer::CallSiteValidationContext::explicit_signal_type_from_node(const BSParser::SignalNode *p_signal, const BSParser::DataType &p_receiver_type, const BSParser::ClassNode *p_declaring_class) const {
-	(void)p_receiver_type;
-	(void)p_declaring_class;
 	BSParser::DataType signal_type = p_signal->get_datatype();
 	signal_type.method_parameter_types.clear();
 
-	// A signal's parameters are written in its declaring class's scope; inherited generic projection
-	// remains follow-up under #60 surface/conformance depth.
+	// A signal's parameters are written in its declaring class's scope. For an inherited signal,
+	// receiver-relative Self denotes the concrete receiver used to obtain the signal, including in
+	// nested container/callable slots. DataType::substitute is the shared recursive transformation;
+	// generic inherited argument projection remains follow-up under #60.
+	BSParser::DataType signal_self = p_receiver_type;
+	if (signal_self.kind == BSParser::DataType::TYPE_PARAMETER &&
+			signal_self.type_parameter_name == SNAME("@Self") && !signal_self.type_parameter_bound.is_empty()) {
+		signal_self = signal_self.type_parameter_bound[0];
+	}
+	if (signal_self.kind != BSParser::DataType::CLASS || signal_self.class_type == nullptr) {
+		signal_self = p_declaring_class != nullptr ? p_declaring_class->get_datatype() : BSParser::DataType();
+	}
+	signal_self.is_meta_type = false;
+	signal_self.is_type_handle_annotation = false;
+	signal_self.is_pseudo_type = false;
+	signal_self.is_constant = false;
+	signal_self.is_nullable = false;
+	HashMap<StringName, BSParser::DataType> self_binding;
+	if (signal_self.is_set() && !signal_self.is_variant()) {
+		self_binding.insert(SNAME("@Self"), signal_self);
+	}
 	for (BSParser::ParameterNode *parameter : p_signal->parameters) {
 		if (parameter != nullptr) {
-			signal_type.method_parameter_types.push_back(parameter->get_datatype());
+			const BSParser::DataType parameter_type = self_binding.is_empty()
+					? parameter->get_datatype()
+					: BSParser::DataType::substitute(parameter->get_datatype(), self_binding);
+			signal_type.method_parameter_types.push_back(parameter_type);
 		}
 	}
 	signal_type.has_method_signature = true;
