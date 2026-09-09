@@ -6323,6 +6323,15 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			if (constant->initializer != nullptr) {
 				qualify_contextual_enum_case_consumer(constant->initializer, declared);
 				mark_coroutine_handle_capture(constant->initializer, declared);
+				// Constant ternaries are fully decided by reduce_ternary. Reject this
+				// checkpoint's nonconstant result directly; step 138-07 owns the general
+				// make_expression_reduced_value fallback for other local-constant shapes.
+				if (constant->initializer->type == BSParser::Node::TERNARY_OPERATOR &&
+						!constant->initializer->is_constant) {
+					push_error(vformat(R"(Assigned value for constant "%s" isn't a constant expression.)",
+									   constant->identifier != nullptr ? String(constant->identifier->name) : String("<unknown>")),
+							constant->initializer);
+				}
 				if ((!declared.is_set() || declared.is_variant()) && constant->initializer->is_constant &&
 						!constant->initializer->get_datatype().is_set()) {
 					constant->initializer->set_datatype(type_from_variant(constant->initializer->reduced_value));

@@ -4763,6 +4763,18 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	var weak_errors: Array = probe.validate_source(weak_source, "res://tests/ternary_weak_infer.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(weak_errors, [["Cannot infer the type of \"result_hm_int\" variable because the value doesn't have a set type.", 4, 26]]),
 		"mixed hard/soft ternary preserves weak inference and initializer origin: %s" % [weak_errors])
+	var class_weak_source := "var right_weak = 2\nvar result := 1 if true else right_weak\n"
+	var class_weak_errors: Array = probe.validate_source(class_weak_source, "res://tests/ternary_class_weak_infer.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(class_weak_errors, [["Cannot infer the type of \"result\" variable because the value doesn't have a set type.", 2, 15]]),
+		"class-variable weak ternary inference uses the shared datatype rule: %s" % [class_weak_errors])
+	var class_constant_weak_source := "var right_weak = 2\nconst result := 1 if true else right_weak\n"
+	var class_constant_weak_errors: Array = probe.validate_source(class_constant_weak_source, "res://tests/ternary_class_constant_weak.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(class_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 2, 17]]),
+		"class-constant weak ternary rejects its nonconstant initializer: %s" % [class_constant_weak_errors])
+	var local_constant_weak_source := "func test():\n\tvar right_weak = 2\n\tconst result := 1 if true else right_weak\n"
+	var local_constant_weak_errors: Array = probe.validate_source(local_constant_weak_source, "res://tests/ternary_local_constant_weak.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(local_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 3, 21]]),
+		"local-constant weak ternary rejects its nonconstant initializer: %s" % [local_constant_weak_errors])
 
 	var constant_is_source := "const base := [0]\n\nfunc test():\n\tvar sub := 1\n\tif sub is String: pass\n"
 	var constant_is_errors: Array = probe.validate_source(constant_is_source, "res://tests/constant_subscript_type.barista", false).get("errors", [])
