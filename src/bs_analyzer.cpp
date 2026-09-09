@@ -71,7 +71,26 @@ static const BSParser::Node *_type_test_or_cast_type_origin(const BSParser::Type
 	return p_type;
 }
 
-static bool _construct_builtin_variant(Variant::Type p_target_type, const Variant &p_source, Variant &r_converted) {
+static bool _construct_builtin_variant(Variant::Type p_target_type, const Variant &p_source, Variant &r_converted, String *r_error_message = nullptr) {
+	if (p_target_type == Variant::INT && p_source.get_type() == Variant::FLOAT) {
+		const double value = p_source;
+		if (!Math::is_finite(value)) {
+			if (r_error_message != nullptr) {
+				*r_error_message = vformat(R"(Cannot convert %s to "int": it is not a finite number.)", p_source.stringify());
+			}
+			return false;
+		}
+		const double truncated = value < 0.0 ? Math::ceil(value) : Math::floor(value);
+		const double limit = Math::pow(2.0, 63.0);
+		if (truncated < -limit || truncated >= limit) {
+			if (r_error_message != nullptr) {
+				*r_error_message = vformat(R"(Cannot convert %s to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.)", p_source.stringify());
+			}
+			return false;
+		}
+		r_converted = (int64_t)truncated;
+		return true;
+	}
 	// The core pin uses Variant::construct and checks Callable::CallError. The equivalent
 	// GDExtension operation is exposed through the generated interface loader rather than the
 	// godot-cpp Variant wrapper. Copy the constructed native value into the owning wrapper before
@@ -3361,10 +3380,22 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 			p_cast->operand->set_datatype(cast_type);
 		} else if (operand_type.kind == BSParser::DataType::BUILTIN && cast_type.kind == BSParser::DataType::BUILTIN &&
 				Variant::can_convert(operand_type.builtin_type, cast_type.builtin_type)) {
-			Variant converted = UtilityFunctions::type_convert(p_cast->operand->reduced_value, (int64_t)cast_type.builtin_type);
-			if (converted.get_type() == cast_type.builtin_type) {
+			Variant converted;
+			String conversion_error;
+			if (_construct_builtin_variant(cast_type.builtin_type, p_cast->operand->reduced_value, converted, &conversion_error)) {
 				p_cast->operand->reduced_value = converted;
 				p_cast->operand->set_datatype(cast_type);
+#ifdef DEBUG_ENABLED
+				if (cast_type.builtin_type == Variant::INT && operand_type.builtin_type == Variant::FLOAT) {
+					Vector<String> symbols;
+					push_warning(p_cast->operand, BSWarning::NARROWING_CONVERSION, symbols);
+				}
+#endif
+			} else {
+				push_error(conversion_error.is_empty()
+								? vformat(R"(Failed to convert a value of type "%s" to "%s".)", operand_type.to_string(), cast_type.to_string())
+								: conversion_error,
+						p_cast->operand);
 			}
 		} else {
 			update_constant_expression_type(p_cast->operand, cast_type, "cast");
@@ -4025,7 +4056,11 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	options.strict_dynamic = strict_dynamic_checks;
 	options.strict_null = strict_null_checks;
 	options.constant_source_value = &p_expression->reduced_value;
-	if (!BSTypeCompatibility::check(p_expected_type, comparison_type, options).compatible) {
+	bool is_compatible = BSTypeCompatibility::check(p_expected_type, comparison_type, options).compatible;
+	if (String(p_usage) == "cast" && p_expected_type.kind == BSParser::DataType::BUILTIN && comparison_type.kind == BSParser::DataType::BUILTIN) {
+		is_compatible = Variant::can_convert(comparison_type.builtin_type, p_expected_type.builtin_type);
+	}
+	if (!is_compatible) {
 		const BSParser::DataType &reported_type = declared_type.is_variant() ? comparison_type : declared_type;
 		push_error(vformat(R"*(Cannot %s a value of type "%s" as "%s".)*",
 						   p_usage, reported_type.to_string(), p_expected_type.to_string()),
@@ -4047,12 +4082,22 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	// conversion, then the reduced value itself is constructed and published with the target
 	// carrier. Keep construction failure distinct from a compatibility refusal.
 	Variant converted;
-	if (!_construct_builtin_variant(p_expected_type.builtin_type, p_expression->reduced_value, converted)) {
-		push_error(vformat(R"(Failed to convert a value of type "%s" to "%s".)", comparison_type.to_string(), p_expected_type.to_string()), p_expression);
+	String conversion_error;
+	if (!_construct_builtin_variant(p_expected_type.builtin_type, p_expression->reduced_value, converted, &conversion_error)) {
+		push_error(conversion_error.is_empty()
+						? vformat(R"(Failed to convert a value of type "%s" to "%s".)", comparison_type.to_string(), p_expected_type.to_string())
+						: conversion_error,
+				p_expression);
 		return false;
 	}
 	p_expression->reduced_value = converted;
 	p_expression->set_datatype(published);
+#ifdef DEBUG_ENABLED
+	if (p_expected_type.builtin_type == Variant::INT && comparison_type.builtin_type == Variant::FLOAT) {
+		Vector<String> symbols;
+		push_warning(p_expression, BSWarning::NARROWING_CONVERSION, symbols);
+	}
+#endif
 	return true;
 }
 

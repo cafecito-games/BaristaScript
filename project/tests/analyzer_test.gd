@@ -4792,12 +4792,18 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	if probe.has_method("inspect_expression_source"):
 		var boxed_float: Dictionary = probe.call("inspect_expression_source", boxed_float_source, "res://tests/boxed_constant_float.barista")
 		var direct_float: Dictionary = probe.call("inspect_expression_source", "var probe_expression = 1 as float\n", "res://tests/direct_constant_float.barista")
+		var direct_fractional_cast: Dictionary = probe.call("inspect_expression_source", "var probe_expression = 1.5 as int\n", "res://tests/direct_fractional_cast.barista")
+		var boxed_fractional_cast: Dictionary = probe.call("inspect_expression_source", "const BOXED: Variant = 1.5\nvar probe_expression = BOXED as int\n", "res://tests/boxed_fractional_cast.barista")
 		var boxed_null: Dictionary = probe.call("inspect_expression_source", "const BOXED: Variant = null\nvar probe_expression = BOXED as String?\n", "res://tests/boxed_constant_nullable.barista")
 		var packed_conversion: Dictionary = probe.call("inspect_expression_source", "const BOXED: Variant = [\"bad\"]\nvar probe_expression = BOXED as PackedInt32Array\n", "res://tests/boxed_constant_packed_array.barista")
 		_expect(failures, _inspection_is_valid(boxed_float) and boxed_float.get("datatype") == "float" and boxed_float.get("is_hard_type") == true and boxed_float.get("is_constant") == true and boxed_float.get("value") == 1.0,
 			"Variant-carried int cast publishes a constant float value: %s" % [boxed_float])
 		_expect(failures, _inspection_is_valid(direct_float) and direct_float.get("datatype") == "float" and direct_float.get("is_hard_type") == true and direct_float.get("is_constant") == true and direct_float.get("value") == 1.0,
 			"direct int-to-float constant control remains folded: %s" % [direct_float])
+		_expect(failures, _inspection_is_valid(direct_fractional_cast) and direct_fractional_cast.get("datatype") == "int" and direct_fractional_cast.get("is_hard_type") == true and direct_fractional_cast.get("is_constant") == true and direct_fractional_cast.get("value") == 1,
+			"explicit direct float-to-int cast truncates toward zero and remains constant: %s" % [direct_fractional_cast])
+		_expect(failures, _inspection_is_valid(boxed_fractional_cast) and boxed_fractional_cast.get("datatype") == "int" and boxed_fractional_cast.get("is_hard_type") == true and boxed_fractional_cast.get("is_constant") == true and boxed_fractional_cast.get("value") == 1,
+			"explicit Variant-carried float-to-int cast truncates toward zero and remains constant: %s" % [boxed_fractional_cast])
 		_expect(failures, _inspection_is_valid(boxed_null) and boxed_null.get("datatype") == "String?" and boxed_null.get("is_constant") == true and boxed_null.get("value") == null,
 			"nullable target preserves a Variant-carried null without constructing String: %s" % [boxed_null])
 		_expect(failures, _inspection_is_valid(packed_conversion) and packed_conversion.get("datatype") == "PackedInt32Array" and packed_conversion.get("is_constant") == true and packed_conversion.get("value") == PackedInt32Array([0]),
@@ -4805,6 +4811,19 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	var boxed_float_report: Dictionary = probe.validate_source(boxed_float_source, "res://tests/boxed_constant_float_validate.barista", true)
 	_expect(failures, boxed_float_report.get("valid", false) and boxed_float_report.get("errors", []).is_empty() and boxed_float_report.get("warnings", []).is_empty(),
 		"Variant-carried constant conversion does not emit a false unsafe-cast warning: %s" % [boxed_float_report])
+	var fractional_cast_report: Dictionary = probe.validate_source("const BOXED: Variant = 1.5\nfunc test() -> void:\n\tprint(1.5 as int)\n\tprint(BOXED as int)\n", "res://tests/fractional_constant_cast_validate.barista", true)
+	_expect(failures, fractional_cast_report.get("valid", false) and fractional_cast_report.get("errors", []).is_empty() and _warnings_are_exact(fractional_cast_report.get("warnings", []), [
+		["NARROWING_CONVERSION", "Narrowing conversion (float is converted to int and loses precision).", 3, 11, 3, 14],
+		["NARROWING_CONVERSION", "Narrowing conversion (float is converted to int and loses precision).", 4, 11, 4, 16],
+	]), "direct and Variant-carried explicit float-to-int casts preserve ordered narrowing warnings without UNSAFE_CAST: %s" % [fractional_cast_report])
+	var checked_numeric_cast_source := "const BOXED_INF: Variant = 1e309\nconst BOXED_LARGE: Variant = 1e30\nfunc test() -> void:\n\tprint(1e309 as int)\n\tprint(1e30 as int)\n\tprint(BOXED_INF as int)\n\tprint(BOXED_LARGE as int)\n"
+	var checked_numeric_cast_errors: Array = probe.validate_source(checked_numeric_cast_source, "res://tests/checked_numeric_constant_cast.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(checked_numeric_cast_errors, [
+		['Cannot convert inf to "int": it is not a finite number.', 4, 11],
+		['Cannot convert 1000000000000000019884624838656.0 to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.', 5, 11],
+		['Cannot convert inf to "int": it is not a finite number.', 6, 11],
+		['Cannot convert 1000000000000000019884624838656.0 to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.', 7, 11],
+	]), "direct and Variant-carried explicit float-to-int casts reject non-finite and out-of-range constants before ABI construction: %s" % [checked_numeric_cast_errors])
 	var shared_constant_source := "const BOXED: Variant = 1\nfunc return_boxed() -> float:\n\treturn BOXED\nfunc test() -> void:\n\tvar declared: float = BOXED\n\tvar assigned: float = 0.0\n\tassigned = BOXED\n\tvar tupled: (float, float) = (BOXED, BOXED)\n\tvar arrayed: Array[float] = [BOXED]\n\tvar mapped: Dictionary[String, float] = {\"one\": BOXED}\n\tprint(declared, assigned, tupled, arrayed, mapped, return_boxed())\n"
 	var shared_constant_report: Dictionary = probe.validate_source(shared_constant_source, "res://tests/boxed_constant_shared_consumers.barista", true)
 	_expect(failures, shared_constant_report.get("valid", false) and shared_constant_report.get("errors", []).is_empty() and shared_constant_report.get("warnings", []).is_empty(),
