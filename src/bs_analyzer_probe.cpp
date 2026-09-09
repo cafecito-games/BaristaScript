@@ -90,6 +90,7 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("corpus_state_controls"), &BaristaScriptAnalyzerProbe::corpus_state_controls);
 	ClassDB::bind_method(D_METHOD("corpus_format_controls"), &BaristaScriptAnalyzerProbe::corpus_format_controls);
 	ClassDB::bind_method(D_METHOD("language_utility_metadata"), &BaristaScriptAnalyzerProbe::language_utility_metadata);
+	ClassDB::bind_method(D_METHOD("self_identity_controls"), &BaristaScriptAnalyzerProbe::self_identity_controls);
 	ClassDB::bind_method(D_METHOD("fold_expression", "expression_source"), &BaristaScriptAnalyzerProbe::fold_expression);
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
 	ClassDB::bind_method(D_METHOD("is_semantically_valid", "source", "path"), &BaristaScriptAnalyzerProbe::is_semantically_valid);
@@ -113,6 +114,10 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::witness_collision_arbitration);
 	ClassDB::bind_method(D_METHOD("complete_self_referential_enum_type"),
 			&BaristaScriptAnalyzerProbe::complete_self_referential_enum_type);
+}
+
+Dictionary BaristaScriptAnalyzerProbe::self_identity_controls() const {
+	return BSAnalyzer::debug_self_identity_controls();
 }
 
 namespace {

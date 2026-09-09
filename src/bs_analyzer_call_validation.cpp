@@ -148,6 +148,9 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 	}
 	const BSParser::DataType par_type = p_expected_type;
 	analyzer->mark_coroutine_handle_capture(p_argument, par_type);
+	if (!analyzer->update_constant_expression_type(p_argument, par_type, "pass")) {
+		return;
+	}
 	const BSParser::DataType arg_type = p_argument->get_datatype();
 
 	if (!par_type.is_set() || par_type.is_variant()) {
@@ -162,7 +165,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 		if (!analyzer->self_parameter_contract_admits_argument_type(par_type, arg_type, p_call, p_argument) &&
 				!analyzer->self_parameter_satisfied_by_receiver_identity(par_type, p_argument, p_call)) {
 			analyzer->push_error(make_invalid_argument_error(p_function, p_argument_number, par_type, arg_type, false, false, p_argument) +
-							BSParser::DataType::same_rendered_name_clause(par_type, "parameter", arg_type, "argument"),
+							analyzer->self_parameter_receiver_identity_clause(par_type, arg_type, p_call),
 					p_argument);
 			return;
 		}
@@ -188,7 +191,9 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 	}
 
 	const bool nullable_mismatch = analyzer->strict_null_checks && arg_type.is_nullable && !par_type.is_nullable && !par_type.is_variant();
-	if (nullable_mismatch || !BSTypeCompatibility::check(par_type, arg_type, options).compatible) {
+	const bool tuple_identity_mismatch = (par_type.kind == BSParser::DataType::TUPLE || arg_type.kind == BSParser::DataType::TUPLE) &&
+			!analyzer->datatype_strict_identity_equal(par_type, arg_type);
+	if (nullable_mismatch || tuple_identity_mismatch || !BSTypeCompatibility::check(par_type, arg_type, options).compatible) {
 		analyzer->push_error(make_invalid_argument_error(p_function, p_argument_number, par_type, arg_type, false, nullable_mismatch, p_argument), p_argument);
 	}
 }

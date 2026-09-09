@@ -84,6 +84,9 @@ func _init() -> void:
 	_test_complete_self_referential_enum_type(failures)
 	_test_self_contract_assign_return(failures)
 	_test_self_contract_gradual_union(failures)
+	_test_local_tuple_and_literal_consumers(failures)
+	_test_ordinary_assignment_and_return_consumers(failures)
+	_test_local_enum_value_cycles(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -4176,3 +4179,230 @@ func _test_self_contract_gradual_union(failures: PackedStringArray) -> void:
 	_expect(failures, index.get_record_count() == before,
 		"Self-contract gradual-union probes must not mutate declaration index")
 	BaristaScriptParseCache.clear_source_overrides()
+
+
+func _test_local_tuple_and_literal_consumers(failures: PackedStringArray) -> void:
+	# Foundry tuple producer/consumer slice @ c9d5e35: local named tuples are nominal,
+	# anonymous tuples are structural, and contextual Self survives literal publication.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var tuple_ok := _src_class("TupleLocalOk extends Node\ntuple Pair(first: int, second: String)\nfunc use() -> void:\n\tvar named: Pair = Pair(1, \"ok\")\n\tvar by_index: int = named.0\n\tvar by_field: String = named.second\n\tvar anonymous: (int, String) = (2, \"two\")\n\tvar anonymous_index: String = anonymous.1\n")
+	var tuple_ok_report: Dictionary = probe.analyze_source(tuple_ok, "res://tests/tuple_local_ok.barista")
+	_expect(failures, tuple_ok_report.get("valid", false) == true,
+		"local named/anonymous tuple construction and access are valid: %s" % tuple_ok_report.get("errors"))
+
+	var tuple_bad := _src_class("TupleLocalBad extends Node\ntuple Pair(first: int, second: String)\nfunc use() -> void:\n\tvar wrong_arity := Pair(1)\n\tvar wrong_field := Pair(1, 2)\n")
+	var tuple_bad_report: Dictionary = probe.analyze_source(tuple_bad, "res://tests/tuple_local_bad.barista")
+	var tuple_bad_errors: PackedStringArray = tuple_bad_report.get("errors", PackedStringArray())
+	var tuple_bad_validate: Dictionary = probe.validate_source(tuple_bad, "res://tests/tuple_local_bad.barista", false)
+	var tuple_bad_positioned: Array = tuple_bad_validate.get("errors", [])
+	_expect(failures, tuple_bad_report.get("valid", true) == false, "named tuple arity/type mismatches are invalid")
+	_expect(failures, tuple_bad_positioned.size() == 2 and
+		str(tuple_bad_positioned[0].get("message", "")) == 'Tuple "Pair" expects 2 argument(s), but 1 were given.' and
+		tuple_bad_positioned[0].get("line") == 4 and tuple_bad_positioned[0].get("column") == 24 and
+		str(tuple_bad_positioned[1].get("message", "")) == 'Invalid argument 2 for tuple "Pair": should be "String" but is "int".' and
+		tuple_bad_positioned[1].get("line") == 5 and tuple_bad_positioned[1].get("column") == 32,
+		"named tuple constructor mismatches preserve full ordered messages and starts: %s" % [tuple_bad_positioned])
+
+	var self_tuple_ok := _src_class("TupleSelfLiteralOk extends Node\nfunc take(value: (Self, int)) -> void:\n\tpass\nfunc use() -> void:\n\ttake((self, 1))\n")
+	var self_tuple_ok_report: Dictionary = probe.analyze_source(self_tuple_ok, "res://tests/tuple_self_literal_ok.barista")
+	_expect(failures, self_tuple_ok_report.get("valid", false) == true,
+		"contextual tuple literal publishes analyzer-substituted Self")
+
+	var self_tuple_bad := _src_class("TupleSelfLiteralBad extends Node\nfunc take(value: (Self, int)) -> void:\n\tpass\nfunc use(other: TupleSelfLiteralBad) -> void:\n\ttake((other, 1))\n")
+	var self_tuple_bad_report: Dictionary = probe.analyze_source(self_tuple_bad, "res://tests/tuple_self_literal_bad.barista")
+	var self_tuple_bad_validate: Dictionary = probe.validate_source(self_tuple_bad, "res://tests/tuple_self_literal_bad.barista", false)
+	var self_tuple_bad_errors: Array = self_tuple_bad_validate.get("errors", [])
+	_expect(failures, self_tuple_bad_report.get("valid", true) == false and self_tuple_bad_errors.size() == 1 and
+		str(self_tuple_bad_errors[0].get("message", "")) == 'Invalid argument for "take()" function: argument 1 should be "(Self, int)" but is "(TupleSelfLiteralBad, int)".' and
+		self_tuple_bad_errors[0].get("line") == 5 and self_tuple_bad_errors[0].get("column") == 10,
+		"hand-written same-class tuple element cannot impersonate contextual Self: %s" % [self_tuple_bad_errors])
+
+	var tuple_write_source := "func test():\n\tvar pair := (1, 2)\n\tpair.0 = 5\n"
+	var tuple_write_report: Dictionary = probe.validate_source(tuple_write_source, "res://tests/tuple_write_bad.barista", false)
+	var tuple_write_errors: Array = tuple_write_report.get("errors", [])
+	_expect(failures, tuple_write_errors.size() == 1 and
+		str(tuple_write_errors[0].get("message", "")) == 'Cannot assign to an element of tuple "(int, int)"; tuples are immutable.' and
+		tuple_write_errors[0].get("line") == 3 and tuple_write_errors[0].get("column") == 5,
+		"tuple writes report the exact immutable error at the assignee: %s" % [tuple_write_errors])
+
+	var tuple_access_source := "tuple Vec2(x: float, y: float)\nfunc test():\n\tvar point := Vec2(1.0, 2.0)\n\tprint(point.z)\n\tprint((1, 2).2)\n"
+	var tuple_access_report: Dictionary = probe.validate_source(tuple_access_source, "res://tests/tuple_access_bad.barista", false)
+	var tuple_access_errors: Array = tuple_access_report.get("errors", [])
+	_expect(failures, tuple_access_errors.size() == 2 and
+		str(tuple_access_errors[0].get("message", "")) == 'Tuple "Vec2" has no field named "z".' and
+		tuple_access_errors[0].get("line") == 4 and tuple_access_errors[0].get("column") == 17 and
+		str(tuple_access_errors[1].get("message", "")) == 'Tuple index 2 is out of range for "(int, int)", which has 2 element(s).' and
+		tuple_access_errors[1].get("line") == 5 and tuple_access_errors[1].get("column") == 18,
+		"tuple field and range errors preserve their exact nodes: %s" % [tuple_access_errors])
+
+	var invalid_index_source := "func test():\n\t# Array indices must be integers.\n\tprint([0, 1][true])\n"
+	var invalid_index_report: Dictionary = probe.validate_source(invalid_index_source, "res://tests/invalid_array_index.barista", false)
+	var invalid_index_errors: Array = invalid_index_report.get("errors", [])
+	_expect(failures, invalid_index_errors.size() == 1 and
+		str(invalid_index_errors[0].get("message", "")) == 'Invalid index type "bool" for a base of type "Array".' and
+		invalid_index_errors[0].get("line") == 3 and invalid_index_errors[0].get("column") == 18,
+		"ordinary Array index checking reports the index expression: %s" % [invalid_index_errors])
+
+	var indexed_read_source := "func use(values: Array[int], lookup: Dictionary[String, int], i: int, key: String) -> void:\n\tvar from_array: int = values[i]\n\tvar from_dictionary: int = lookup[key]\n\tvalues[i] = from_dictionary\n\tlookup[key] = from_array\n"
+	var indexed_read_report: Dictionary = probe.analyze_source(indexed_read_source, "res://tests/indexed_read_types.barista")
+	_expect(failures, indexed_read_report.get("valid", false),
+		"Array element and Dictionary value types publish through indexed reads/writes: %s" % indexed_read_report.get("errors"))
+
+	var dictionary_index_source := "func test(d: Dictionary[String, int]):\n\tprint(d[true])\n"
+	var dictionary_index_errors: Array = probe.validate_source(dictionary_index_source, "res://tests/dictionary_index_bad.barista", false).get("errors", [])
+	_expect(failures, dictionary_index_errors.size() == 1 and
+		str(dictionary_index_errors[0].get("message", "")) == 'Invalid index type "bool" for a base of type "Dictionary[String, int]".' and
+		dictionary_index_errors[0].get("line") == 2 and dictionary_index_errors[0].get("column") == 13,
+		"typed Dictionary keys reject the wrong concrete index at its expression: %s" % [dictionary_index_errors])
+
+	var dynamic_base_source := "func test(value: Variant):\n\tprint(value[0])\n"
+	var dynamic_index_source := "func test(values: Array[int], index: Variant):\n\tprint(values[index])\n"
+	_expect(failures, probe.analyze_source(dynamic_base_source, "res://tests/dynamic_base_index.barista").get("valid", false) and
+		probe.analyze_source(dynamic_index_source, "res://tests/dynamic_index.barista").get("valid", false),
+		"dynamic base/index subscripts remain runtime-unsafe but valid outside strict mode")
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", true)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var dynamic_base_errors: Array = probe.validate_source(dynamic_base_source, "res://tests/dynamic_base_index.barista", false).get("errors", [])
+	var dynamic_index_errors: Array = probe.validate_source(dynamic_index_source, "res://tests/dynamic_index.barista", false).get("errors", [])
+	_expect(failures, dynamic_base_errors.size() == 1 and
+		str(dynamic_base_errors[0].get("message", "")) == "Cannot use subscript operator on Variant in strict dynamic mode." and
+		dynamic_base_errors[0].get("line") == 2 and dynamic_base_errors[0].get("column") == 11 and
+		dynamic_index_errors.size() == 1 and
+		str(dynamic_index_errors[0].get("message", "")) == 'Cannot use dynamic index of type "Variant" for base of type "Array[int]" in strict dynamic mode.' and
+		dynamic_index_errors[0].get("line") == 2 and dynamic_index_errors[0].get("column") == 18,
+		"strict dynamic subscript errors preserve full messages and base/index starts: %s / %s" % [dynamic_base_errors, dynamic_index_errors])
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	# Raw and typed Array alternatives both claim an array literal. Reordering the union must
+	# leave the same verdict, while two Self-bearing claimants use their elements to choose one.
+	var union_source := _src_class("TupleUnionClaimants extends Node\nfunc raw_first(v: Array | Array[Self]) -> void:\n\tpass\nfunc typed_first(v: Array[Self] | Array) -> void:\n\tpass\nfunc self_choice(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_first(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_reordered(v: Array[(Self, int)] | Array[Self]) -> void:\n\tpass\nfunc test() -> void:\n\traw_first([self])\n\ttyped_first([self])\n\tself_choice([self])\n\tambiguous_first([])\n\tambiguous_reordered([])\n")
+	var union_report: Dictionary = probe.analyze_source(union_source, "res://tests/tuple_union_claimants.barista")
+	_expect(failures, union_report.get("valid", false) == true,
+		"raw/typed and ambiguous claimant order is neutral; only the unique all-Self fit is selected: %s" % union_report.get("errors"))
+
+	# Reparse the same positive and negative source through every public surface. Default
+	# analysis remains read-only with respect to the declaration index.
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var index_before := index.get_record_count()
+	var tuple_ok_repeat: Dictionary = probe.analyze_source(tuple_ok, "res://tests/tuple_local_ok.barista")
+	var tuple_bad_repeat: Dictionary = probe.analyze_source(tuple_bad, "res://tests/tuple_local_bad.barista")
+	_expect(failures, tuple_ok_repeat.get("errors", PackedStringArray()) == tuple_ok_report.get("errors", PackedStringArray()) and
+		tuple_bad_repeat.get("errors", PackedStringArray()) == tuple_bad_report.get("errors", PackedStringArray()),
+		"repeated tuple analysis preserves ordered diagnostics")
+	_expect(failures, probe.validate_source(tuple_ok, "res://tests/tuple_local_ok.barista", false).get("valid", false) and
+		probe.is_semantically_valid(tuple_ok, "res://tests/tuple_local_ok.barista"),
+		"tuple analyze/validate/is-valid surfaces agree")
+	var tuple_bad_script := BaristaScript.new()
+	tuple_bad_script.set_source_code(tuple_bad)
+	tuple_bad_script.resource_path = "res://tests/tuple_local_bad.barista"
+	_expect(failures, not tuple_bad_validate.get("valid", true) and
+		not probe.is_semantically_valid(tuple_bad, "res://tests/tuple_local_bad.barista") and
+		not tuple_bad_script.is_valid(),
+		"invalid tuple source agrees through validate/probe/script is-valid surfaces")
+	_expect(failures, index.get_record_count() == index_before,
+		"default repeated tuple analysis preserves the declaration index")
+
+	var identity_controls: Dictionary = probe.self_identity_controls()
+	var expected_identity_controls := [
+		"alpha_fixed_slot", "strict_fixed_slot", "strict_return_slot", "strict_async",
+		"strict_rest", "strict_nested", "strict_union", "strict_ignores_parser_wildcard",
+		"markers_match", "markers_fixed_slot", "markers_return_slot", "markers_rest_slot",
+	]
+	var identity_complete := identity_controls.size() == expected_identity_controls.size()
+	for control in expected_identity_controls:
+		identity_complete = identity_complete and identity_controls.has(control)
+	for control in identity_controls:
+		identity_complete = identity_complete and bool(identity_controls[control])
+	_expect(failures, identity_complete,
+		"strict/alpha identity and substituted-Self markers traverse fixed/return/rest/nested/union slots: %s" % identity_controls)
+
+
+func _test_ordinary_assignment_and_return_consumers(failures: PackedStringArray) -> void:
+	# Foundry assignment/return ordinary compatibility gates @ c9d5e35.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var assignment_source := "func f(v: int):\n\tvar x: String = \"ok\"\n\tx = v\n"
+	var assignment_report: Dictionary = probe.validate_source(assignment_source, "res://tests/ordinary_assignment_bad.barista", false)
+	var assignment_errors: Array = assignment_report.get("errors", [])
+	_expect(failures, assignment_report.get("valid", true) == false, "ordinary assignment mismatch is invalid")
+	_expect(failures, assignment_errors.size() == 1 and
+		str(assignment_errors[0].get("message", "")) == 'Value of type "int" cannot be assigned to a variable of type "String".' and
+		assignment_errors[0].get("line") == 3 and assignment_errors[0].get("column") == 9,
+		"ordinary variable assignment preserves full wording and RHS start: %s" % [assignment_errors])
+
+	var return_source := "func f(v: String) -> int:\n\treturn v\n"
+	var return_report: Dictionary = probe.validate_source(return_source, "res://tests/ordinary_return_bad.barista", false)
+	var return_errors: Array = return_report.get("errors", [])
+	_expect(failures, return_report.get("valid", true) == false, "ordinary return mismatch is invalid")
+	_expect(failures, return_errors.size() == 1 and
+		str(return_errors[0].get("message", "")) == 'Cannot return value of type "String" because the function return type is "int".' and
+		return_errors[0].get("line") == 2 and return_errors[0].get("column") == 5,
+		"ordinary variable return preserves full wording and ReturnNode start: %s" % [return_errors])
+
+	var constant_source := "const TEXT: Variant = \"hello\"\n\nfunc take_int(v: int) -> int:\n\treturn v\n\nfunc give_int() -> int:\n\treturn TEXT\n\nfunc test():\n\ttake_int(TEXT)\n\tvar initialized: int = TEXT\n\tvar assigned: int = 0\n\tassigned = TEXT\n\tprint(initialized, assigned, give_int())\n"
+	var constant_report: Dictionary = probe.validate_source(constant_source, "res://tests/known_constant_consumers.barista", false)
+	var constant_errors: Array = constant_report.get("errors", [])
+	var constant_expectations := [
+		['Cannot return a value of type "String" as "int".', 7, 12],
+		['Cannot pass a value of type "String" as "int".', 10, 14],
+		['Cannot assign a value of type "String" as "int".', 11, 28],
+		['Cannot assign a value of type "String" as "int".', 13, 16],
+	]
+	var constants_exact := constant_errors.size() == constant_expectations.size()
+	for i in range(min(constant_errors.size(), constant_expectations.size())):
+		constants_exact = constants_exact and str(constant_errors[i].get("message", "")) == constant_expectations[i][0] and \
+			constant_errors[i].get("line") == constant_expectations[i][1] and constant_errors[i].get("column") == constant_expectations[i][2]
+	_expect(failures, constants_exact,
+		"known Variant constants retain value-specific wording and identifier starts: %s" % [constant_errors])
+
+	var return_shape_source := "func void_bad() -> void:\n\treturn 1\nfunc bare_bad() -> int:\n\treturn\n"
+	var return_shape_errors: Array = probe.validate_source(return_shape_source, "res://tests/return_shape_bad.barista", false).get("errors", [])
+	_expect(failures, return_shape_errors.size() == 2 and
+		str(return_shape_errors[0].get("message", "")) == "A void function cannot return a value." and
+		return_shape_errors[0].get("line") == 2 and return_shape_errors[0].get("column") == 5 and
+		str(return_shape_errors[1].get("message", "")) == 'Cannot return without a value because the function return type is "int".' and
+		return_shape_errors[1].get("line") == 4 and return_shape_errors[1].get("column") == 5,
+		"void-value and missing-value returns preserve full messages and ReturnNode starts: %s" % [return_shape_errors])
+
+	var direct_constant_source := "func test():\n\tconst TEST = 25\n\tTEST = 50\n"
+	var direct_constant_errors: Array = probe.validate_source(direct_constant_source, "res://tests/direct_constant_write.barista", false).get("errors", [])
+	_expect(failures, direct_constant_errors.size() == 1 and
+		str(direct_constant_errors[0].get("message", "")) == "Cannot assign a new value to a constant." and
+		direct_constant_errors[0].get("line") == 3 and direct_constant_errors[0].get("column") == 5,
+		"direct constant writes reject at the assignee: %s" % [direct_constant_errors])
+
+	var match_bind_source := "enum Box:\n\tValue(v: Variant)\nfunc inspect(box: Box) -> void:\n\tmatch box:\n\t\tBox.Value(b):\n\t\t\tif b is int:\n\t\t\t\tb = 5\n\t\t_:\n\t\t\tpass\n"
+	var match_bind_errors: Array = probe.validate_source(match_bind_source, "res://tests/match_bind_write.barista", false).get("errors", [])
+	_expect(failures, match_bind_errors.size() == 1 and
+		str(match_bind_errors[0].get("message", "")) == "Cannot assign a new value to a constant." and
+		match_bind_errors[0].get("line") == 7 and match_bind_errors[0].get("column") == 17,
+		"narrowed match binds remain read-only at the assignee: %s" % [match_bind_errors])
+
+
+func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:
+	# Local int-backed value cycles preserve the in-progress RESOLVING state instead of
+	# retrying the producer. Pin both complete ordered diagnostics in the guarded suite.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var mutual_cycle_source := "func test():\n\tprint(E1.V)\n\nenum E1:\n\tV = E2.V\nenum E2:\n\tV = E1.V\n"
+	var mutual_cycle_errors: Array = probe.validate_source(mutual_cycle_source, "res://tests/cyclic_ref_enum.barista", false).get("errors", [])
+	_expect(failures, mutual_cycle_errors.size() == 2 and
+		str(mutual_cycle_errors[0].get("message", "")) == 'Could not resolve member "E1": Cyclic reference.' and
+		mutual_cycle_errors[0].get("line") == 7 and mutual_cycle_errors[0].get("column") == 9 and
+		str(mutual_cycle_errors[1].get("message", "")) == "Enum values must be constant." and
+		mutual_cycle_errors[1].get("line") == 7 and mutual_cycle_errors[1].get("column") == 9,
+		"mutual enum value cycle emits the exact two-error block and starts: %s" % [mutual_cycle_errors])
+
+	var self_cycle_source := "enum Bad:\n\tA = Bad.B\n\tB = 1\n\nfunc test():\n\tprint(Bad.A)\n"
+	var self_cycle_errors: Array = probe.validate_source(self_cycle_source, "res://tests/enum_int_backed_self_referential_value.barista", false).get("errors", [])
+	_expect(failures, self_cycle_errors.size() == 2 and
+		str(self_cycle_errors[0].get("message", "")) == 'Could not resolve member "Bad": Cyclic reference.' and
+		self_cycle_errors[0].get("line") == 2 and self_cycle_errors[0].get("column") == 9 and
+		str(self_cycle_errors[1].get("message", "")) == "Enum values must be constant." and
+		self_cycle_errors[1].get("line") == 2 and self_cycle_errors[1].get("column") == 9,
+		"self-referential enum value emits the exact two-error block and starts: %s" % [self_cycle_errors])
+
+	# Legal recursive tagged payload identity is published before its payload fields resolve.
+	var source := _src_class("LegalRecursiveTagged extends Node\nenum Chain:\n\tEnd\n\tLink(next: Chain)\nfunc make() -> Chain:\n\treturn Chain.Link(Chain.End)\n")
+	var report: Dictionary = probe.analyze_source(source, "res://tests/legal_recursive_tagged.barista")
+	_expect(failures, report.get("valid", false) == true,
+		"legal recursive tagged payload remains valid while int-backed value cycles are rejected")

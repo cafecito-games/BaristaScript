@@ -530,6 +530,28 @@ BSParser::DataType BSAnalyzer::make_class_enum_type(const StringName &p_enum_nam
 	return type;
 }
 
+BSParser::DataType BSAnalyzer::make_tuple_type(const StringName &p_tuple_name, const String &p_owner_fqcn,
+		const String &p_script_path, const Vector<BSParser::DataType> &p_element_types,
+		const Vector<StringName> &p_field_names, bool p_meta) {
+	BSParser::DataType type;
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	type.kind = BSParser::DataType::TUPLE;
+	type.builtin_type = Variant::ARRAY;
+	type.tuple_name = p_tuple_name;
+	if (p_tuple_name != StringName()) {
+		type.native_type = p_owner_fqcn.is_empty()
+				? p_tuple_name
+				: StringName(p_owner_fqcn + String(ENUM_SEPARATOR) + String(p_tuple_name));
+	}
+	type.script_path = p_script_path;
+	type.container_element_types = p_element_types;
+	type.tuple_field_names = p_field_names;
+	type.is_meta_type = p_meta;
+	type.is_constant = p_meta;
+	type.is_read_only = !p_meta;
+	return type;
+}
+
 BSParser::DataType BSAnalyzer::type_from_metatype(const BSParser::DataType &p_meta_type) {
 	BSParser::DataType result = p_meta_type;
 	result.is_meta_type = false;
@@ -1209,9 +1231,24 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				resolve_class_inheritance(member.m_class);
 			}
 		} break;
+		case BSParser::ClassNode::Member::TUPLE: {
+			if (member.m_tuple == nullptr || member.m_tuple->identifier == nullptr) {
+				break;
+			}
+			check_class_member_name_conflict(p_class, member.m_tuple->identifier->name, member.m_tuple);
+			member.m_tuple->set_datatype(resolving_datatype);
+
+			Vector<BSParser::DataType> element_types;
+			Vector<StringName> field_names;
+			for (const BSParser::TupleNode::Field &field : member.m_tuple->fields) {
+				element_types.push_back(type_from_metatype(datatype_from_type_node(field.type)));
+				field_names.push_back(field.identifier != nullptr ? field.identifier->name : StringName());
+			}
+			member.m_tuple->set_datatype(make_tuple_type(member.m_tuple->identifier->name, p_class->fqcn,
+					parser->script_path, element_types, field_names, true));
+		} break;
 		case BSParser::ClassNode::Member::ENUM_VALUE:
 		case BSParser::ClassNode::Member::GROUP:
-		case BSParser::ClassNode::Member::TUPLE:
 		case BSParser::ClassNode::Member::UNDEFINED:
 			break;
 		case BSParser::ClassNode::Member::TYPE_ALIAS: {
@@ -1250,6 +1287,11 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		class_type.is_meta_type = true;
 		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
 		p_identifier->set_datatype(class_type);
+		return true;
+	}
+	if (member.type == BSParser::ClassNode::Member::TUPLE && member.m_tuple != nullptr) {
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
+		p_identifier->set_datatype(member.m_tuple->get_datatype());
 		return true;
 	}
 	if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
@@ -1291,11 +1333,11 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 	}
 	if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
 		BSParser::DataType enum_meta = member.m_enum->get_datatype();
-		if (!enum_meta.is_set()) {
+		if (!enum_meta.is_set() && !enum_meta.is_resolving()) {
 			const String script_path = parser != nullptr ? parser->script_path : String();
 			enum_meta = resolve_enum_values(member.m_enum, make_class_enum_type(p_identifier->name, p_class, script_path, true), p_class);
 		}
-		if (enum_meta.is_set()) {
+		if (enum_meta.is_set() || enum_meta.is_resolving()) {
 			p_identifier->set_datatype(enum_meta);
 			p_identifier->is_constant = true;
 			return true;

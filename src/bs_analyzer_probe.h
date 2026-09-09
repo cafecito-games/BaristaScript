@@ -38,6 +38,8 @@ public:
 
 	/** Copied public metadata and boolean identity checks only; never returns or invokes markers. */
 	godot::Dictionary language_utility_metadata() const;
+	/** Source-independent concrete callable identity and Self-marker traversal controls. */
+	godot::Dictionary self_identity_controls() const;
 
 	/** Run `_validate`-equivalent analysis; returns valid + first error message. */
 	godot::Dictionary analyze_source(const godot::String &p_source, const godot::String &p_path) const;
