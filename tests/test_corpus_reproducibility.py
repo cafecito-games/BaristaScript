@@ -629,23 +629,70 @@ class FullProducer(unittest.TestCase):
 
     def test_real_wrapper_rejects_hidden_upstream_bytes_without_index_changes(self):
         import corpus_registry
-        source = self.root / "upstream"
-        subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(FOUNDRY), str(source)], check=True)
+        # CI supplies a depth-one blob-filtered checkout, not a complete clone.
+        # Borrow its available objects read-only; never clone/repack the source
+        # or request unrelated promisor blobs. Block transports even on Git
+        # versions that predate GIT_NO_LAZY_FETCH.
+        offline_env = {**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "",
+                       "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
-        def git(*arguments):
-            return subprocess.run(["git", "-C", str(source), *arguments], capture_output=True, text=True, check=True).stdout
+        def input_git(*arguments):
+            return subprocess.run(["git", "--no-optional-locks", "-C", str(FOUNDRY), *arguments],
+                                  capture_output=True, text=True, check=True, env=offline_env).stdout.strip()
 
         registry = corpus_registry.load_registry(ROOT)
-        git("remote", "set-url", "origin", "https://github.com/" + registry["repository"] + ".git")
-        git("sparse-checkout", "set", "--cone", *[item["source"] for item in registry["corpora"].values()])
-        git("checkout", "--quiet", "--detach", self.revision)
-        # A normal sparse checkout contains skip-worktree entries outside the
-        # consumed roots; those must remain legal and untouched.
-        corpus_registry.verify_checkout(source, registry, self.revision)
-        # Stop sparse-checkout's automatic clearing of a manually applied
-        # skip-worktree hint on a materialized file. This changes only the
-        # disposable clone; ordinary cone-mode validation was checked above.
-        git("config", "--worktree", "core.sparseCheckout", "false")
+        roots = [item["source"] for item in registry["corpora"].values()]
+        object_store = Path(input_git("rev-parse", "--path-format=absolute", "--git-path", "objects"))
+        original_index = Path(input_git("rev-parse", "--path-format=absolute", "--git-path", "index"))
+
+        def supplied_state():
+            return {
+                "roots": {root: self.snapshot(FOUNDRY / root) for root in roots},
+                "index": original_index.read_bytes(),
+                "objects": {path.relative_to(object_store).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns)
+                            for path in object_store.rglob("*") if path.is_file()},
+            }
+
+        before_source = supplied_state()
+        self.addCleanup(lambda: self.assertEqual(supplied_state(), before_source,
+                                               "supplied source bytes, index or object inventory changed"))
+        self.assertEqual(input_git("rev-parse", "HEAD"), self.revision)
+        origin = input_git("config", "--get", "remote.origin.url")
+        source = self.root / "upstream"
+        source.mkdir()
+
+        def git(*arguments, input=None):
+            return subprocess.run(["git", "-C", str(source), *arguments], input=input,
+                                  capture_output=True, text=True, check=True, env=offline_env).stdout
+
+        git("init", "--quiet")
+        (source / ".git/objects/info/alternates").write_text(str(object_store) + "\n")
+        git("remote", "add", "origin", origin)
+        # Preserve the actual pinned commit while bounding history to that
+        # commit. read-tree fills the index from tree metadata, without -u:
+        # no checkout, object transfer, filters or upstream code are executed.
+        (source / ".git/shallow").write_text(self.revision + "\n")
+        git("update-ref", "--no-deref", "HEAD", self.revision)
+        git("read-tree", self.revision)
+        git("config", "core.sparseCheckout", "true")
+        git("config", "core.sparseCheckoutCone", "false")
+        (source / ".git/info/sparse-checkout").write_text("".join(f"/{root}/\n" for root in roots))
+        outside = [path for path in git("ls-files", "-z").split("\0") if path
+                   and not any(path.startswith(root + "/") for root in roots)]
+        self.assertTrue(outside, "fixture must retain real sparse index coverage")
+        git("update-index", "--skip-worktree", "-z", "--stdin", input="\0".join(outside) + "\0")
+        for root in roots:
+            shutil.copytree(FOUNDRY / root, source / root)
+        self.assertEqual(git("rev-parse", "HEAD").strip(), self.revision)
+        self.assertEqual(git("remote", "get-url", "origin").strip(), origin)
+        self.assertTrue(git("ls-files", "-v", "--", outside[0]).startswith("S "))
+        # This is a normal sparse index with the registered roots materialized;
+        # missing outside blobs need not exist locally and cannot be fetched.
+        with patch.dict(os.environ, offline_env):
+            corpus_registry.verify_checkout(source, registry, self.revision)
+        # Disable sparse materialization's automatic hint clearing only in this
+        # disposable repository before exercising a manually set index hint.
+        git("config", "core.sparseCheckout", "false")
         relative = "modules/foundry_script/tests/scripts/parser/features/fixed_width_integer_literals.out"
         path = source / relative
         original = path.read_bytes()
@@ -658,7 +705,7 @@ class FullProducer(unittest.TestCase):
             self.assertEqual(git("status", "--porcelain", "--", relative).strip(), "")
             before = git("ls-files", "-v", "--", relative)
             result = subprocess.run([sys.executable, str(self.root / "scripts/check_corpus_reproducibility.py"),
-                "--foundry", str(source)], capture_output=True, text=True)
+                "--foundry", str(source)], capture_output=True, text=True, env=offline_env)
             print(f"HIDDEN SOURCE PROBE flag={flag} exit={result.returncode}: "
                   + (result.stdout + result.stderr).strip(), flush=True)
             self.assertEqual(git("ls-files", "-v", "--", relative), before)

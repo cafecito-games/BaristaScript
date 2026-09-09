@@ -139,7 +139,11 @@ python3 tests/test_corpus_reproducibility.py --foundry /path/to/Foundry
 CI supplies this checkout at `.upstream-foundry` using the wrapper's validated
 `--github-output "$GITHUB_OUTPUT"` outputs for repository, revision and sparse
 paths. It does not build or execute Foundry. The full tests mutate disposable
-copies and exercise the real parser importer; `--check` regenerates in temporary
+copies and exercise the real parser importer. Hidden-source mutation fixtures
+borrow the supplied checkout's available Git objects read-only and copy only the
+registered materialized roots, so shallow sparse partial checkouts need no
+additional object fetch. Fixture Git commands isolate global/system settings
+and disable transports. `--check` regenerates in temporary
 directories and never repairs committed files. Explicit parser regeneration
 without `--check` remains available to repair its generated tree. An unrelated
 `.foundry/autoload_index_cache.cfg` outside the consumed roots is left alone.
