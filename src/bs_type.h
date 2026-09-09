@@ -103,6 +103,15 @@ public:
 	static bool rest_parameter_accepts_required_argument(const BSParser::DataType *p_implementation_rest_array,
 			const BSParser::DataType &p_required_argument_type, bool p_strict_null);
 
+	// Invariant live projection evidence; UNKNOWN is never proof of conformance.
+	enum class ArgumentEvidence {
+		MATCH,
+		CONFLICT,
+		UNKNOWN,
+	};
+	static ArgumentEvidence compare_projected_argument(const BSParser::DataType &p_projected,
+			const BSParser::DataType &p_expected);
+
 	/**
 	 * Foundry recorded_arguments_conflict @ c9d5e35: true only when two flattened
 	 * recorded argument vectors are both confidently identified and disagree.
