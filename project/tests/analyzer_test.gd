@@ -5038,6 +5038,7 @@ func _test_pure_literal_constant_materialization(failures: PackedStringArray) ->
 	var positive_path := "res://tests/pure_constant_consumers.barista"
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before: Array = index.get_records().duplicate(true)
+	var generation_before: int = index.claim_refresh("res://tests/pure_generation_control.barista")
 	for iteration in range(2):
 		var analyzed: Dictionary = probe.analyze_source(positive_source, positive_path)
 		var validated: Dictionary = probe.validate_source(positive_source, positive_path, false)
@@ -5048,7 +5049,8 @@ func _test_pure_literal_constant_materialization(failures: PackedStringArray) ->
 		_expect(failures, not invalid_analyzed.get("valid", true) and invalid_analyzed.get("errors", []) == PackedStringArray([original_errors[0].message]) and
 			invalid_validated.get("errors", []) == original_errors and not probe.is_semantically_valid(original_source, "res://tests/original_constant_subscript_type.barista"),
 			"invalid constant type test has identical complete diagnostics on repeat %d" % iteration)
-	_expect(failures, before == index.get_records(), "pure constant analysis keeps declaration-index records and revision tokens unchanged by default")
+	_expect(failures, before == index.get_records() and index.claim_refresh("res://tests/pure_generation_control.barista") == generation_before + 1,
+		"pure constant analysis keeps declaration-index records and revision tokens unchanged by default")
 	for source: String in ["var value: int = 1\nvar probe_expression = [1, {\"value\": value}]\n", "func produce() -> int:\n\treturn 1\nvar probe_expression = [produce()]\n"]:
 		var inspected: Dictionary = probe.inspect_expression_source(source, "res://tests/pure_nonconstant_child.barista")
 		_expect(failures, _inspection_is_valid(inspected) and not inspected.get("is_constant", true) and inspected.get("value") == null,
@@ -5079,6 +5081,21 @@ func _test_pure_literal_constant_materialization(failures: PackedStringArray) ->
 		_expect(failures, warning_report.get("valid", false) and warning_report.get("errors", []).is_empty() and _warnings_are_exact(warning_report.get("warnings", []), [
 			["INFERENCE_ON_VARIANT", "The variable type is being inferred from a Variant value, so it will be typed as Variant.", 2, 5, 2, 26],
 		]), "hard Variant inference emits exactly one complete warning on repeat %d: %s" % [iteration, warning_report])
+	var ignored_variant_source := variant_source.replace("\tvar inferred", "\t@warning_ignore(\"inference_on_variant\")\n\tvar inferred")
+	for iteration in range(2):
+		var ignored_report: Dictionary = probe.validate_source(ignored_variant_source, "res://tests/pure_ignored_variant_inference.barista", true)
+		_expect(failures, ignored_report.get("valid", false) and ignored_report.get("errors", []).is_empty() and ignored_report.get("warnings", []).is_empty(),
+			"local inference warning honors its declaration annotation on repeat %d: %s" % [iteration, ignored_report])
+	for control: Array in [
+		["func test(value: Variant):\n\t@warning_ignore(\"inference_on_variant\")\n\tvar ignored := value\n\tvar inferred := value\n\tprint(ignored, inferred)\n", "variable", 4, 5, 4, 26],
+		["const VALUE: Variant = 1\n@warning_ignore(\"inference_on_variant\")\nvar ignored := VALUE\nvar inferred := VALUE\n", "variable", 4, 1, 4, 22],
+		["const VALUE: Variant = 1\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tconst ignored := VALUE\n\tconst inferred := VALUE\n\tprint(ignored, inferred)\n", "constant", 5, 5, 5, 28],
+		["const VALUE: Variant = 1\n@warning_ignore(\"inference_on_variant\")\nconst ignored := VALUE\nconst inferred := VALUE\n", "constant", 4, 1, 4, 24],
+	]:
+		var adjacent_report: Dictionary = probe.validate_source(control[0], "res://tests/pure_adjacent_variant_inference.barista", true)
+		_expect(failures, adjacent_report.get("valid", false) and adjacent_report.get("errors", []).is_empty() and _warnings_are_exact(adjacent_report.get("warnings", []), [
+			["INFERENCE_ON_VARIANT", "The %s type is being inferred from a Variant value, so it will be typed as Variant." % control[1], control[2], control[3], control[4], control[5]],
+		]), "class/local variable/constant suppression does not spill into the next declaration: %s" % [adjacent_report])
 	ProjectSettings.set_setting("debug/barista_script/warnings/inference_on_variant", previous_inference_warning)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
 

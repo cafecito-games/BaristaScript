@@ -6448,6 +6448,16 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 		reduce_expression(static_cast<BSParser::ExpressionNode *>(p_node), true);
 		return;
 	}
+	// Foundry resolve_suite @ c9d5e35:5334-5348 applies declaration annotations before
+	// resolve_assignable queues warnings. Reuse the parser's validated suppression spans.
+	if (p_node->type == BSParser::Node::VARIABLE || p_node->type == BSParser::Node::CONSTANT) {
+		for (BSParser::AnnotationNode *annotation : p_node->annotations) {
+			if (annotation != nullptr && annotation->name == SNAME("@warning_ignore")) {
+				resolve_annotation(annotation, p_node->type == BSParser::Node::VARIABLE ? BSParser::AnnotationDeclarationNode::TARGET_VARIABLE : BSParser::AnnotationDeclarationNode::TARGET_CONSTANT);
+				annotation->apply(parser, p_node, current_class);
+			}
+		}
+	}
 	switch (p_node->type) {
 		case BSParser::Node::VARIABLE: {
 			BSParser::VariableNode *variable = static_cast<BSParser::VariableNode *>(p_node);
