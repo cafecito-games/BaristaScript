@@ -59,7 +59,10 @@ var frontend_factory: Callable = func(): return ClassDB.instantiate("BaristaScri
 ## exactly one machine-readable summary line, so consecutive runs over an
 ## unchanged tree are byte-identical.
 func run(corpus_root: String, allow_empty: bool = false, update_expectations: bool = false) -> Dictionary:
-	corpus_root = corpus_root.simplify_path()
+	var identity := _path_identity(corpus_root)
+	if identity.has("error"):
+		return error_result("BS_ERROR " + identity.error)
+	corpus_root = identity.path
 	var output: Array[String] = []
 	if not DirAccess.dir_exists_absolute(corpus_root):
 		output.append("BS_ERROR corpus root is not a readable directory: %s" % corpus_root)
@@ -84,6 +87,9 @@ func run(corpus_root: String, allow_empty: bool = false, update_expectations: bo
 	var stage_error := _assign_stages(corpus_root, cases, update_expectations)
 	if not stage_error.is_empty():
 		return error_result("BS_ERROR " + stage_error)
+
+	if not discovery.get("discovery_errors", []).is_empty():
+		return error_result("BS_ERROR " + "; ".join(discovery.discovery_errors))
 
 	var failures: Array[Dictionary] = []
 	var passed := 0
@@ -168,6 +174,7 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 	var cases: Array[Dictionary] = []
 	var orphaned_expectations: Array[String] = []
 	var unreadable_directories: Array[String] = []
+	var discovery_errors: Array[String] = []
 	var skipped_count := 0
 	var pending: Array = [[corpus_root, false]]
 	while not pending.is_empty():
@@ -192,6 +199,9 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 		if not ignored and FileAccess.file_exists("%s/%s" % [directory_path, IGNORE_MARKER]):
 			ignored = true
 
+		if directory.is_link(IGNORE_MARKER):
+			discovery_errors.append("unsupported corpus symlink: %s/%s" % [directory_path, IGNORE_MARKER])
+
 		var subdirectories: Array[String] = []
 		var source_names: Array[String] = []
 		var expectation_names: Array[String] = []
@@ -199,6 +209,9 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 			if name == "." or name == "..":
 				continue
 			var entry_path := "%s/%s" % [directory_path, name]
+			if directory.is_link(entry_path):
+				discovery_errors.append("unsupported corpus symlink: %s" % entry_path)
+				continue
 			if DirAccess.dir_exists_absolute(entry_path):
 				subdirectories.append(entry_path)
 			elif name.ends_with(CASE_EXTENSION):
@@ -238,6 +251,7 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 		"cases": cases,
 		"orphaned_expectations": orphaned_expectations,
 		"unreadable_directories": unreadable_directories,
+		"discovery_errors": discovery_errors,
 		"skipped_count": skipped_count,
 	}
 
@@ -387,6 +401,20 @@ func _summary_line(passed: int, total: int, skipped_count: int) -> String:
 # Imported roots always use their own generated manifest, including descendant runs.
 # Local fixtures must explicitly choose a stage; this cannot bypass imported metadata.
 func _assign_stages(corpus_root: String, cases: Array, update: bool) -> String:
+	var identity := _path_identity(corpus_root)
+	if identity.has("error"):
+		return identity.error
+	corpus_root = identity.path
+	for case in cases:
+		identity = _path_identity(case.path)
+		if identity.has("error"):
+			return identity.error
+		case.path = identity.path
+		if case.has("expectation_path"):
+			identity = _path_identity(case.expectation_path)
+			if identity.has("error"):
+				return identity.error
+			case.expectation_path = identity.path
 	var registry_path := ProjectSettings.globalize_path("res://").path_join("../scripts/corpus_sources.json")
 	var registry := _read_unique_json(registry_path)
 	if registry.has("error"):
@@ -432,9 +460,15 @@ func _assign_stages(corpus_root: String, cases: Array, update: bool) -> String:
 
 
 func _validate_stage_manifest(stages: Dictionary, root: String, revision: String) -> Dictionary:
+	var identity := _path_identity(root)
+	if identity.has("error"):
+		return identity
+	root = identity.path
 	if stages.keys().size() != 3 or typeof(stages.get("schema_version")) not in [TYPE_INT, TYPE_FLOAT] or stages.get("schema_version") != 1 or stages.get("foundry_revision") != revision or not stages.get("cases") is Dictionary:
 		return {"error": "invalid/stale case stage manifest: %s" % root}
 	var discovery := _discover_corpus(root)
+	if not discovery.get("discovery_errors", []).is_empty():
+		return {"error": "; ".join(discovery.discovery_errors)}
 	if not discovery.unreadable_directories.is_empty():
 		return {"error": "unreadable imported directory: %s" % root}
 	var remaining: Dictionary = stages.cases.duplicate()
@@ -454,9 +488,11 @@ func _validate_stage_manifest(stages: Dictionary, root: String, revision: String
 
 
 func _under(path: String, root: String) -> bool:
-	path = path.simplify_path()
-	root = root.simplify_path()
-	return path == root or path.begins_with(root.trim_suffix("/") + "/")
+	var path_identity := _path_identity(path)
+	var root_identity := _path_identity(root)
+	if path_identity.has("error") or root_identity.has("error"):
+		return false
+	return _filesystem_under(ProjectSettings.globalize_path(path_identity.path), ProjectSettings.globalize_path(root_identity.path))
 
 
 func _valid_case_relative(path: String) -> bool:
@@ -466,6 +502,178 @@ func _valid_case_relative(path: String) -> bool:
 		if part in ["", ".", ".."]:
 			return false
 	return true
+
+
+# Map filesystem/resource/relative spellings to one case identity. Resolve root
+# aliases with the filesystem API; linked entries inside a discovered tree are
+# rejected separately so cycles or a linked expectation cannot hide ownership.
+var _filesystem_roots: Dictionary = {}
+
+func _resolve_filesystem_path(path: String, depth: int = 0) -> Dictionary:
+	if depth > 64:
+		return {"error": "cyclic or excessive filesystem links: %s" % path}
+	path = path.replace("\\", "/").simplify_path()
+	var parent := path.get_base_dir()
+	if parent == path or parent.is_empty():
+		return {"path": path}
+	var resolved := _resolve_filesystem_path(parent, depth + 1)
+	if resolved.has("error"):
+		return resolved
+	var candidate: String = resolved.path.path_join(path.get_file())
+	var directory := DirAccess.open(resolved.path)
+	if directory != null and directory.is_link(candidate):
+		var target := directory.read_link(candidate)
+		if target.is_empty():
+			return {"error": "unreadable filesystem link: %s" % candidate}
+		if not target.is_absolute_path():
+			target = String(resolved.path).path_join(target)
+		return _resolve_filesystem_path(target, depth + 1)
+	return {"path": candidate}
+
+
+func _filesystem_under(path: String, root: String) -> bool:
+	var directory := DirAccess.open(root)
+	if directory == null:
+		directory = DirAccess.open(root.get_base_dir())
+	if directory != null and not directory.is_case_sensitive(root):
+		path = path.to_lower()
+		root = root.to_lower()
+	return path == root or path.begins_with(root.trim_suffix("/") + "/")
+
+
+func _path_identity(path: String) -> Dictionary:
+	if path.begins_with("res://") or path.begins_with("user://"):
+		path = ProjectSettings.globalize_path(path)
+	elif not path.is_absolute_path():
+		var current := DirAccess.open(".")
+		if current == null:
+			return {"error": "cannot resolve relative corpus path: %s" % path}
+		path = current.get_current_dir().path_join(path)
+	var resolved := _resolve_filesystem_path(path)
+	if resolved.has("error"):
+		return resolved
+	for scheme in ["res://", "user://"]:
+		if not _filesystem_roots.has(scheme):
+			var root := _resolve_filesystem_path(ProjectSettings.globalize_path(scheme))
+			if root.has("error"):
+				return root
+			_filesystem_roots[scheme] = String(root.path).trim_suffix("/")
+		var root: String = _filesystem_roots[scheme]
+		if _filesystem_under(resolved.path, root):
+			return {"path": scheme + String(resolved.path).substr(root.length()).trim_prefix("/")}
+	return resolved
+
+
+# Godot's JSON parser accepts extensions such as trailing commas and literal
+# control characters. Validate JSON grammar and duplicate decoded keys before
+# accepting the deserialized document; a permissive parse is not manifest evidence.
+class StrictJSON:
+	var source: String
+	var position := 0
+	var problem := ""
+	var number := RegEx.new()
+
+	func validate(text: String) -> String:
+		source = text
+		number.compile("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")
+		if not _value(0):
+			return problem if not problem.is_empty() else "invalid strict JSON at character %d" % position
+		_space()
+		return "" if position == source.length() else "trailing JSON content at character %d" % position
+
+	func _space() -> void:
+		while position < source.length() and source[position] in [" ", "\t", "\r", "\n"]:
+			position += 1
+
+	func _take(token: String) -> bool:
+		_space()
+		if source.substr(position, token.length()) != token:
+			return false
+		position += token.length()
+		return true
+
+	func _string() -> bool:
+		if not _take('"'):
+			return false
+		while position < source.length():
+			var code := source.unicode_at(position)
+			position += 1
+			if code == 34:
+				return true
+			if code < 32:
+				return false
+			if code != 92:
+				continue
+			if position == source.length():
+				return false
+			var escape := source[position]
+			position += 1
+			if escape == "u":
+				for digit in 4:
+					if position == source.length() or not source[position] in "0123456789abcdefABCDEF":
+						return false
+					position += 1
+			elif not escape in ['"', "\\", "/", "b", "f", "n", "r", "t"]:
+				return false
+		return false
+
+	func _value(depth: int) -> bool:
+		_space()
+		if position == source.length() or depth > 256:
+			return false
+		match source[position]:
+			'"':
+				return _string()
+			"{":
+				return _object(depth + 1)
+			"[":
+				position += 1
+				if _take("]"):
+					return true
+				while _value(depth + 1):
+					if _take("]"):
+						return true
+					if not _take(","):
+						return false
+				return false
+		for literal in ["true", "false", "null"]:
+			if _take(literal):
+				return true
+		var matched := number.search(source, position)
+		if matched == null or matched.get_start() != position:
+			return false
+		position = matched.get_end()
+		return true
+
+	func _object(depth: int) -> bool:
+		position += 1
+		if _take("}"):
+			return true
+		var keys := {}
+		while true:
+			_space()
+			var start := position
+			if not _string():
+				return false
+			var key: String = JSON.parse_string(source.substr(start, position - start))
+			if keys.has(key):
+				problem = "duplicate JSON key %s" % key
+				return false
+			keys[key] = true
+			if not _take(":"):
+				return false
+			_space()
+			start = position
+			if not _value(depth):
+				return false
+			if key == "schema_version" and source.substr(start, position - start) != "1":
+				problem = "schema_version must be integer 1"
+				return false
+			if _take("}"):
+				return true
+			if not _take(","):
+				return false
+		return false
 
 
 func _read_unique_json(path: String) -> Dictionary:
@@ -478,42 +686,9 @@ func _read_unique_json(path: String) -> Dictionary:
 	var parser := JSON.new()
 	if parser.parse(text) != OK or not parser.data is Dictionary:
 		return {"error": "invalid JSON object: %s" % path}
-	# JSON.parse collapses duplicates. Scan string tokens independently, using the
-	# parser to decode escapes, and retain each object's keys before accepting it.
-	var objects: Array[Dictionary] = []
-	var index := 0
-	while index < text.length():
-		var ch := text[index]
-		if ch == "{":
-			objects.append({})
-		elif ch == "}":
-			objects.pop_back()
-		elif ch == '"':
-			var start := index
-			index += 1
-			while index < text.length():
-				if text[index] == "\\":
-					index += 2
-					continue
-				if text[index] == '"':
-					break
-				index += 1
-			var after := index + 1
-			while after < text.length() and text[after] in [" ", "\n", "\r", "\t"]:
-				after += 1
-			if after < text.length() and text[after] == ":":
-				var key: String = JSON.parse_string(text.substr(start, index - start + 1))
-				if objects.back().has(key):
-					return {"error": "duplicate JSON key %s: %s" % [key, path]}
-				objects.back()[key] = true
-				if key == "schema_version":
-					var value_start := after + 1
-					while text[value_start] in [" ", "\n", "\r", "\t"]:
-						value_start += 1
-					var value_end := value_start
-					while value_end < text.length() and not text[value_end] in [",", "}", " ", "\n", "\r", "\t"]:
-						value_end += 1
-					if text.substr(value_start, value_end - value_start) != "1":
-						return {"error": "schema_version must be integer 1: %s" % path}
-		index += 1
+	# Establish that strings can be decoded (including UTF-16 escape pairs),
+	# then reject the syntax extensions before using any decoded manifest data.
+	var complaint := StrictJSON.new().validate(text)
+	if not complaint.is_empty():
+		return {"error": "%s: %s" % [complaint, path]}
 	return {"document": parser.data}

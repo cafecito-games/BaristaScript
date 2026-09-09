@@ -17,6 +17,8 @@ func _initialize() -> void:
 	_test_comparator()
 	_test_bad_bytes_and_results()
 	_test_stages()
+	_test_filesystem_aliases()
+	_test_strict_json()
 	_test_frontend()
 	var frontend := Harness.new()
 	frontend.fixture_stages["res://tests/oracle_fixtures/frontend"] = "analyzer"
@@ -190,3 +192,99 @@ func _test_profile(probe: Object, path: String) -> void:
 			ProjectSettings.set_setting(key, saved[key][1])
 		elif ProjectSettings.has_setting(key):
 			ProjectSettings.clear(key)
+
+
+func _test_filesystem_aliases() -> void:
+	var imported := "res://tests/corpus/parser/warnings"
+	var original := {}
+	for file in DirAccess.get_files_at(imported):
+		original[file] = FileAccess.get_file_as_bytes(imported.path_join(file))
+	var directory := DirAccess.open("res://.godot")
+	for sample in [["res://.godot/repair1_alias", imported, ""], ["res://.godot/repair1_ancestor", "res://tests/corpus/parser", "/warnings"]]:
+		var alias: String = sample[0]
+		var created := directory.create_link(ProjectSettings.globalize_path(sample[1]), ProjectSettings.globalize_path(alias))
+		_expect(created == OK, "create disposable alias")
+		if created == OK:
+			var harness := Harness.new()
+			harness.fixture_stages[alias] = "parser"
+			var result := harness.run(alias + sample[2], false, true)
+			_expect(result.exit_code == Harness.ExitCode.HARNESS_ERROR, "imported alias update refused: %s" % result)
+			DirAccess.remove_absolute(alias)
+	var absolute := ProjectSettings.globalize_path(imported)
+	var harness := Harness.new()
+	harness.fixture_stages[absolute] = "analyzer"
+	var cases := [{"path": absolute.path_join("unused_variable.barista")}]
+	_expect(not harness._assign_stages(absolute, cases, true).is_empty(), "absolute imported update refused")
+	_expect(harness._assign_stages(absolute, cases, false).is_empty() and cases[0].stage == "parser", "absolute imported cases use manifest stage")
+	if not directory.is_case_sensitive(absolute):
+		var different_case := absolute.to_upper()
+		var case_harness := Harness.new()
+		case_harness.fixture_stages[different_case] = "parser"
+		_expect(case_harness.run(different_case, false, true).exit_code == Harness.ExitCode.HARNESS_ERROR, "case-insensitive imported alias refuses updates")
+	var local := "res://.godot/repair1_local"
+	DirAccess.make_dir_recursive_absolute(local)
+	for linked_name in ["case.barista", "case.out", "nested"]:
+		if linked_name != "nested":
+			FileAccess.open(local.path_join("case.barista"), FileAccess.WRITE).store_string("")
+			FileAccess.open(local.path_join("case.out"), FileAccess.WRITE).store_string(Harness.SUCCESS_SENTINEL + "\n")
+			DirAccess.remove_absolute(local.path_join(linked_name))
+		var target := imported if linked_name == "nested" else imported.path_join("unused_variable" + (".barista" if linked_name == "case.barista" else ".out"))
+		var created := directory.create_link(ProjectSettings.globalize_path(target), ProjectSettings.globalize_path(local.path_join(linked_name)))
+		_expect(created == OK, "create disposable linked corpus entry")
+		if created == OK:
+			var local_harness := Harness.new()
+			local_harness.fixture_stages[local] = "parser"
+			_expect(local_harness.run(local, false, true).exit_code == Harness.ExitCode.HARNESS_ERROR, "linked source/expectation/directory refused: " + linked_name)
+			DirAccess.remove_absolute(local.path_join(linked_name))
+		for file in ["case.barista", "case.out"]:
+			if FileAccess.file_exists(local.path_join(file)):
+				DirAccess.remove_absolute(local.path_join(file))
+	# Ordinary aliases of a real local fixture remain usable, including full updates.
+	var local_absolute := ProjectSettings.globalize_path(local)
+	var current := DirAccess.open(".").get_current_dir()
+	var relative := local_absolute.trim_prefix(current.trim_suffix("/") + "/")
+	_expect(not relative.is_absolute_path(), "local fixture has ordinary relative spelling")
+	for spelling in [local, local_absolute, relative]:
+		FileAccess.open(local.path_join("case.barista"), FileAccess.WRITE).store_string("")
+		FileAccess.open(local.path_join("case.out"), FileAccess.WRITE).store_string("old local expectation\n")
+		var local_harness := Harness.new()
+		local_harness.fixture_stages[spelling] = "parser"
+		var result := local_harness.run(spelling, false, true)
+		_expect(result.exit_code == 0, "ordinary local spelling update: %s: %s" % [spelling, result])
+		_expect(FileAccess.get_file_as_string(local.path_join("case.out")) == Harness.SUCCESS_SENTINEL + "\n", "local update writes complete block")
+	var local_alias := "res://.godot/repair1_local_alias"
+	var alias_created := directory.create_link("repair1_local", ProjectSettings.globalize_path(local_alias))
+	_expect(alias_created == OK, "create relative-target local root alias")
+	if alias_created == OK:
+		FileAccess.open(local.path_join("case.out"), FileAccess.WRITE).store_string("old local expectation\n")
+		var alias_harness := Harness.new()
+		alias_harness.fixture_stages[local_alias] = "parser"
+		_expect(alias_harness.run(local_alias, false, true).exit_code == 0, "safe local root alias retains normal updates")
+		DirAccess.remove_absolute(local_alias)
+	var cycle := local.path_join("cycle")
+	var cycle_created := directory.create_link(ProjectSettings.globalize_path(local), ProjectSettings.globalize_path(cycle))
+	_expect(cycle_created == OK, "create disposable directory cycle")
+	if cycle_created == OK:
+		var cycle_harness := Harness.new()
+		cycle_harness.fixture_stages[local] = "parser"
+		_expect(cycle_harness.run(local).exit_code == Harness.ExitCode.HARNESS_ERROR, "linked directory cycle is rejected without traversal")
+		DirAccess.remove_absolute(cycle)
+	for file in ["case.barista", "case.out"]:
+		DirAccess.remove_absolute(local.path_join(file))
+	DirAccess.remove_absolute(local)
+	for file in original:
+		_expect(FileAccess.get_file_as_bytes(imported.path_join(file)) == original[file], "imported bytes unchanged: " + file)
+
+
+func _test_strict_json() -> void:
+	var matrix: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/oracle_fixtures/json_contract.json"))
+	var harness := Harness.new()
+	for valid in matrix.valid:
+		_write("strict.json", valid.to_utf8_buffer())
+		_expect(not harness._read_unique_json(fixture_root.path_join("strict.json")).has("error"), "strict valid JSON accepted")
+	for invalid in matrix.invalid:
+		_write("strict.json", invalid.to_utf8_buffer())
+		_expect(harness._read_unique_json(fixture_root.path_join("strict.json")).has("error"), "strict malformed JSON rejected: " + invalid)
+	var revision: String = harness._read_unique_json("res://tests/corpus/parser/case_stages.json").document.foundry_revision
+	_write("strict.json", ('{"schema_version":1,"foundry_revision":"%s","cases":{"case.barista":"parser",},}' % revision).to_utf8_buffer())
+	_expect(harness._read_unique_json(fixture_root.path_join("strict.json")).has("error"), "malformed serialized stage manifest rejected before shape validation")

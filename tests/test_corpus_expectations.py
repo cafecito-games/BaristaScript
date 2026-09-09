@@ -108,6 +108,19 @@ class PublicationTest(unittest.TestCase):
             self.assertFalse((destination / 'replacement').exists())
             self.assertEqual(baseline_path.read_bytes(), before)
 
+    def test_shared_strict_json_serialized_controls(self):
+        matrix = json.loads((FIXTURES.parent / 'json_contract.json').read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'case_stages.json'
+            for valid in matrix['valid']:
+                path.write_text(valid)
+                self.assertIsInstance(read_json(path), dict)
+            for invalid in matrix['invalid']:
+                with self.subTest(invalid=invalid):
+                    path.write_text(invalid)
+                    with self.assertRaises(ValueError):
+                        read_json(path)
+
     def test_duplicate_stage_keys_rejected_before_collapse(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'case_stages.json'
