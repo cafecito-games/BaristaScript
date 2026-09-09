@@ -5357,3 +5357,22 @@ func _test_folded_tuple_child_and_failed_contextual_materialization(failures: Pa
 				_expect(failures, value is Array and value == [1.0, 2.0] and value.is_read_only() and typeof(value[0]) == TYPE_FLOAT and typeof(value[1]) == TYPE_FLOAT, "unrelated rejected expression does not poison an independent constant")
 			elif control.datatype == "(float, int)":
 				_expect(failures, value is Array and value == [1.0, 2] and value.is_read_only() and typeof(value[0]) == TYPE_FLOAT and typeof(value[1]) == TYPE_INT, "successful tuple context still converts and publishes exact carriers")
+
+	var arity_controls: Array = [
+		{"case": "cast_wrong_arity", "source": "var probe_expression = (1, 2) as (int, int, int)\n", "datatype": "(int, int, int)", "valid": false, "is_constant": false, "errors": [{"column": 31, "line": 1, "message": "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\"."}]},
+		{"case": "const_wrong_arity", "source": "const VALUE: (int, int, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(int, int, int)", "valid": false, "is_constant": true, "errors": [{"column": 32, "line": 1, "message": "Cannot assign a value of type \"(int, int)\" to a constant of type \"(int, int, int)\"."}]},
+		{"case": "cast_alias_wrong_arity", "source": "const VALUE = (1, 2) as (int, int, int)\nvar probe_expression = VALUE\n", "datatype": "(int, int, int)", "valid": false, "is_constant": false, "errors": [{"column": 15, "line": 1, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 22, "line": 1, "message": "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\"."}]},
+		{"case": "const_correct_arity", "source": "const VALUE: (int, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(int, int)", "valid": true, "is_constant": true, "errors": []},
+	]
+	for control: Dictionary in arity_controls:
+		var path := "res://tests/repair3_%s.barista" % control.case
+		var observed: Dictionary = probe.inspect_expression_source(control.source, path)
+		var report: Dictionary = probe.validate_source(control.source, path, true)
+		var expected_errors: Array = control.errors.duplicate(true)
+		for error: Dictionary in expected_errors:
+			error.path = path
+		_expect(failures, observed.get("found", false) and observed.get("is_hard_type", false) and observed.get("valid") == control.valid and observed.get("is_constant") == control.is_constant and observed.get("datatype") == control.datatype and report.get("valid") == control.valid and report.get("errors", []) == expected_errors and report.get("warnings", []).is_empty(), "tuple arity keeps literal constness separate from cast refusal: %s / %s" % [observed, report])
+		if control.is_constant:
+			_expect(failures, observed.value == [1, 2] and observed.value.is_read_only(), "unconverted tuple literal keeps its exact constant despite declaration mismatch")
+		else:
+			_expect(failures, observed.get("value") == null, "rejected tuple cast publishes no carrier")
