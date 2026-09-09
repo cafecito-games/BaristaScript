@@ -90,6 +90,7 @@ func _init() -> void:
 	_test_steps_1_5_repair2_self_signatures(failures)
 	_test_local_enum_value_cycles(failures)
 	_test_concrete_cast_ternary_and_type_test_reduction(failures)
+	_test_pure_literal_constant_materialization(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -4307,9 +4308,15 @@ func _test_local_tuple_and_literal_consumers(failures: PackedStringArray) -> voi
 	# Raw and typed Array alternatives both claim an array literal. Reordering the union must
 	# leave the same verdict, while two Self-bearing claimants use their elements to choose one.
 	var union_source := _src_class("TupleUnionClaimants extends Node\nfunc raw_first(v: Array | Array[Self]) -> void:\n\tpass\nfunc typed_first(v: Array[Self] | Array) -> void:\n\tpass\nfunc self_choice(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_first(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_reordered(v: Array[(Self, int)] | Array[Self]) -> void:\n\tpass\nfunc test() -> void:\n\traw_first([self])\n\ttyped_first([self])\n\tself_choice([self])\n\tambiguous_first([])\n\tambiguous_reordered([])\n")
-	var union_report: Dictionary = probe.analyze_source(union_source, "res://tests/tuple_union_claimants.barista")
-	_expect(failures, union_report.get("valid", false) == true,
-		"raw/typed and ambiguous claimant order is neutral; only the unique all-Self fit is selected: %s" % union_report.get("errors"))
+	var union_positive := union_source.replace("\tambiguous_first([])\n", "").replace("\tambiguous_reordered([])\n", "")
+	var union_positive_report: Dictionary = probe.validate_source(union_positive, "res://tests/tuple_union_positive.barista", false)
+	_expect(failures, union_positive_report.get("valid", false) and union_positive_report.get("errors", []).is_empty(),
+		"raw/typed alternatives and unique Self claimant pass independently: %s" % [union_positive_report])
+	var union_errors: Array = probe.validate_source(union_source, "res://tests/tuple_union_claimants.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(union_errors, [
+		['Invalid argument for "ambiguous_first()" function: argument 1 should be "Array[(Self, int)] | Array[Self]" but is "Array".', 16, 21],
+		['Invalid argument for "ambiguous_reordered()" function: argument 1 should be "Array[(Self, int)] | Array[Self]" but is "Array".', 17, 25],
+	]), "raw alternatives and unique Self fits pass; ambiguous hard Array literals reject in either order: %s" % [union_errors])
 
 	# Reparse the same positive and negative source through every public surface. Default
 	# analysis remains read-only with respect to the declaration index.
@@ -4564,6 +4571,7 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 	var nominal_site_errors: Array = probe.validate_source(nominal_sites, "res://tests/repair_nominal_sites.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(nominal_site_errors, [
 		['Cannot assign a value of type Point to variable "declared" with specified type Point. The value is declared by class "Left"; the specified type is declared by class "Right".', 14, 33],
+		['Assigned value for constant "local" isn\'t a constant expression.', 15, 32],
 		['Cannot assign a value of type "Point" to a constant of type "Point". The value is declared by class "Left"; the specified type is declared by class "Right".', 15, 32],
 		['Value of type "Point" cannot be assigned to a variable of type "Point". The value is declared by class "Left"; the variable\'s type is declared by class "Right".', 17, 16],
 		['Invalid argument for "fixed()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 18, 11],
@@ -4579,6 +4587,7 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 		['Cannot assign a value of type "int" to a variable of type "String".', 2, 22],
 		['Cannot assign a value of type "int" to a constant of type "String".', 3, 30],
 		['Cannot assign a value of type "int" to a variable of type "String".', 5, 25],
+		['Assigned value for constant "local_const" isn\'t a constant expression.', 6, 33],
 		['Cannot assign a value of type "int" to a constant of type "String".', 6, 33],
 		['Cannot return value of type "int" because the function return type is "String".', 7, 5],
 	]), "ordinary declaration diagnostics use initializer origins while return stays on ReturnNode: %s" % [origin_errors])
@@ -4914,11 +4923,11 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 		"class-variable weak ternary inference uses the shared datatype rule: %s" % [class_weak_errors])
 	var class_constant_weak_source := "var right_weak = 2\nconst result := 1 if true else right_weak\n"
 	var class_constant_weak_errors: Array = probe.validate_source(class_constant_weak_source, "res://tests/ternary_class_constant_weak.barista", false).get("errors", [])
-	_expect(failures, _errors_are_exact(class_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 2, 17]]),
+	_expect(failures, _errors_are_exact(class_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 2, 17], ["Cannot infer the type of \"result\" constant because the value doesn't have a set type.", 2, 17]]),
 		"class-constant weak ternary rejects its nonconstant initializer: %s" % [class_constant_weak_errors])
 	var local_constant_weak_source := "func test():\n\tvar right_weak = 2\n\tconst result := 1 if true else right_weak\n"
 	var local_constant_weak_errors: Array = probe.validate_source(local_constant_weak_source, "res://tests/ternary_local_constant_weak.barista", false).get("errors", [])
-	_expect(failures, _errors_are_exact(local_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 3, 21]]),
+	_expect(failures, _errors_are_exact(local_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 3, 21], ["Cannot infer the type of \"result\" constant because the value doesn't have a set type.", 3, 21]]),
 		"local-constant weak ternary rejects its nonconstant initializer: %s" % [local_constant_weak_errors])
 
 	var constant_is_source := "const base := [0]\n\nfunc test():\n\tvar sub := 1\n\tif sub is String: pass\n"
@@ -4927,10 +4936,10 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 		"constant non-enum type test rejects at the operand: %s" % [constant_is_errors])
 	if probe.has_method("inspect_expression_source"):
 		var subscript_producer: Dictionary = probe.call("inspect_expression_source", "const base := [0]\nvar probe_expression = base[0]\n", "res://tests/constant_subscript_producer_probe.barista")
-		_expect(failures, _inspection_is_valid(subscript_producer) and subscript_producer.get("datatype") == "Variant" and
-			subscript_producer.get("type_source") == 0 and subscript_producer.get("is_hard_type") == false and
-			subscript_producer.get("is_constant") == false,
-			"constant-subscript producer remains soft Variant/unreduced for step 138-07: %s" % [subscript_producer])
+		_expect(failures, _inspection_is_valid(subscript_producer) and subscript_producer.get("datatype") == "int" and
+			subscript_producer.get("is_hard_type") == true and
+			subscript_producer.get("is_constant") == true,
+			"constant-subscript producer publishes the selected int for inference: %s" % [subscript_producer])
 	var hard_is_source := "class A:\n\tfunc _init():\n\t\tpass\n\nclass B extends A: pass\nclass C extends A: pass\n\nfunc test():\n\tvar x := B.new()\n\tprint(x is C)\n"
 	var hard_is_errors: Array = probe.validate_source(hard_is_source, "res://tests/constructor_call_type.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(hard_is_errors, [['Expression is of type "B" so it can\'t be of type "C".', 10, 11]]),
@@ -4976,4 +4985,99 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	_expect(failures, not probe.validate_source(incompatible_source, "res://tests/incompatible_ternary.barista", true).get("valid", true),
 		"incompatible ternary warning obeys ERROR")
 	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_pure_literal_constant_materialization(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for control: Array in [["(1, 2)", [1, 2]], ["(1, 2).1", 2], ['{"outer": [10, 20]}["outer"][1]', 20], ['{"value": null}["value"]', null]]:
+		var folded: Dictionary = probe.fold_expression(control[0])
+		_expect(failures, folded.get("ok", false) and folded.get("errors", []).is_empty() and folded.get("value") == control[1],
+			"pure literal/subscript fold %s: %s" % [control[0], folded])
+	var nested: Dictionary = probe.fold_expression('{"outer": [1, {"inner": (2, 3)}]}')
+	_expect(failures, nested.get("ok", false) and nested.get("errors", []).is_empty(), "nested literal folds: %s" % [nested])
+	if nested.get("ok", false):
+		var outer: Dictionary = nested.value
+		var array: Array = outer.outer
+		var inner: Dictionary = array[1]
+		var tuple: Array = inner.inner
+		_expect(failures, outer.is_read_only() and array.is_read_only() and inner.is_read_only() and tuple.is_read_only(),
+			"every nested Dictionary/Array/tuple carrier is read-only")
+	var tuple_inspection: Dictionary = probe.inspect_expression_source("var probe_expression = (1, [2, 3])\n", "res://tests/pure_tuple_identity.barista")
+	_expect(failures, _inspection_is_valid(tuple_inspection) and tuple_inspection.get("datatype") == "(int, Array)" and tuple_inspection.get("is_constant"),
+		"tuple retains static identity independently of its Array carrier: %s" % [tuple_inspection])
+	var original_source := "const base := [0]\n\nfunc test():\n\tvar sub := base[0]\n\tif sub is String: pass\n"
+	var original_errors: Array = probe.validate_source(original_source, "res://tests/original_constant_subscript_type.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(original_errors, [['Expression is of type "int" so it can\'t be of type "String".', 5, 8]]),
+		"original pinned constant_subscript_type retains the subscript producer and full diagnostic: %s" % [original_errors])
+	for control: Array in [
+		["func test(value: int):\n\tconst BAD = [1, {\"value\": value}]\n", 'Assigned value for constant "BAD" isn\'t a constant expression.', 2, 17],
+		["func produce() -> int:\n\treturn 1\nfunc test():\n\tconst BAD = [produce()]\n", 'Assigned value for constant "BAD" isn\'t a constant expression.', 4, 17],
+		["func test():\n\tvar weak = 2\n\tvar result := weak\n", 'Cannot infer the type of "result" variable because the value doesn\'t have a set type.', 3, 19],
+		["func test():\n\tvar result := null\n", 'Cannot infer the type of "result" variable because the value is "null".', 2, 19],
+	]:
+		var errors: Array = probe.validate_source(control[0], "res://tests/pure_constant_refusal.barista", false).get("errors", [])
+		_expect(failures, _errors_are_exact(errors, [[control[1], control[2], control[3]]]), "pure constant/inferred refusal: %s" % [errors])
+	var invalid: Dictionary = probe.fold_expression("[1, 2][4]")
+	_expect(failures, not invalid.get("ok", true) and invalid.get("value") == null, "invalid index never fabricates a constant value: %s" % [invalid])
+
+	# Foundry c9d5e35's six static step-7 oracles retain their complete source layouts.
+	var pinned_cases: Array = [
+		["dictionary_duplicate_key_python", "func test():\n\tvar python_dict = {\n\t\t\"a\": 1,\n\t\t\"b\": 2,\n\t\t\"a\": 3, # Duplicate isn't allowed.\n\t}\n", "Key \"a\" was already used in this dictionary (at line 3).", 5, 9],
+		["dictionary_duplicate_key_lua", "func test():\n\tvar lua_dict = {\n\t\ta = 1,\n\t\tb = 2,\n\t\ta = 3, # Duplicate isn't allowed.\n\t}\n", "Key \"a\" was already used in this dictionary (at line 3).", 5, 9],
+		["dictionary_string_stringname_equivalent", "# https://github.com/godotengine/godot/issues/62957\n\nfunc test():\n\tvar dict = {\n\t\t&\"key\": \"StringName\",\n\t\t\"key\": \"String\"\n\t}\n\n\tprint(\"Invalid dictionary: %s\" % dict)\n", "Key \"key\" was already used in this dictionary (at line 5).", 6, 9],
+		["invalid_array_index", "func test():\n\t# Error here. Array indices must be integers.\n\tprint([0, 1][true])\n", "Invalid index type \"bool\" for a base of type \"Array\".", 3, 18],
+		["constant_subscript_type", "const base := [0]\n\nfunc test():\n\tvar sub := base[0]\n\tif sub is String: pass\n", "Expression is of type \"int\" so it can't be of type \"String\".", 5, 8],
+		["invalid_constant", "func test():\n\tvar i = 12\n\t# Constants must be made of a constant, deterministic expression.\n\t# A constant that depends on a variable's value is not a constant expression.\n\tconst TEST = 13 + i\n", "Assigned value for constant \"TEST\" isn't a constant expression.", 5, 18],
+	]
+	for control: Array in pinned_cases:
+		var report: Dictionary = probe.validate_source(control[1], "res://tests/%s.barista" % control[0], false)
+		_expect(failures, not report.get("valid", true) and _errors_are_exact(report.get("errors", []), [[control[2], control[3], control[4]]]),
+			"pinned static source and complete diagnostic %s: %s" % [control[0], report])
+	var positive_source := "enum Message:\n\tQuit\n\tMove(value: int)\nconst CLASS_VALUES: Array[Array[Message]] = [[.Quit]]\nconst CLASS_PICK := {\"values\": [1, 2]}[\"values\"][1]\nconst NULL_VALUE := [null][0]\nfunc test(value: int):\n\tconst LOCAL_VALUES: Dictionary[String, Array[Message]] = {\"values\": [.Quit]}\n\tconst LOCAL_PICK := ([10, 20], 3).0[1]\n\tvar inferred := [[value]]\n\tvar nested := ([1, 2], 3).0[1]\n\tprint(LOCAL_VALUES, LOCAL_PICK, inferred, nested)\n"
+	var positive_path := "res://tests/pure_constant_consumers.barista"
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before: Array = index.get_records().duplicate(true)
+	for iteration in range(2):
+		var analyzed: Dictionary = probe.analyze_source(positive_source, positive_path)
+		var validated: Dictionary = probe.validate_source(positive_source, positive_path, false)
+		_expect(failures, analyzed.get("valid", false) and analyzed.get("errors", []).is_empty() and validated.get("valid", false) and validated.get("errors", []).is_empty() and probe.is_semantically_valid(positive_source, positive_path),
+			"class/local contextual constant fallback and nested inference agree on repeat %d: %s / %s" % [iteration, analyzed, validated])
+		var invalid_analyzed: Dictionary = probe.analyze_source(original_source, "res://tests/original_constant_subscript_type.barista")
+		var invalid_validated: Dictionary = probe.validate_source(original_source, "res://tests/original_constant_subscript_type.barista", false)
+		_expect(failures, not invalid_analyzed.get("valid", true) and invalid_analyzed.get("errors", []) == PackedStringArray([original_errors[0].message]) and
+			invalid_validated.get("errors", []) == original_errors and not probe.is_semantically_valid(original_source, "res://tests/original_constant_subscript_type.barista"),
+			"invalid constant type test has identical complete diagnostics on repeat %d" % iteration)
+	_expect(failures, before == index.get_records(), "pure constant analysis keeps declaration-index records and revision tokens unchanged by default")
+	for source: String in ["var value: int = 1\nvar probe_expression = [1, {\"value\": value}]\n", "func produce() -> int:\n\treturn 1\nvar probe_expression = [produce()]\n"]:
+		var inspected: Dictionary = probe.inspect_expression_source(source, "res://tests/pure_nonconstant_child.barista")
+		_expect(failures, _inspection_is_valid(inspected) and not inspected.get("is_constant", true) and inspected.get("value") == null,
+			"nonconstant or user-call child leaves no partial trusted value: %s" % [inspected])
+	var nested_inference := "func test(value: int):\n\tvar result := [value][0]\n"
+	var nested_errors: Array = probe.validate_source(nested_inference, "res://tests/pure_nested_inference.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(nested_errors, [['Cannot infer the type of "result" variable because the value doesn\'t have a set type.', 2, 19]]),
+		"general inference gate reaches a nested nonconstant subscript: %s" % [nested_errors])
+	var typed: Dictionary = probe.inspect_expression_source("const VALUE: (float, Array[float]) = (1, [2])\nvar probe_expression = VALUE\n", "res://tests/pure_converted_carrier.barista")
+	_expect(failures, _inspection_is_valid(typed) and typed.get("datatype") == "(float, Array[float])" and typed.get("is_constant", false),
+		"contextual conversion publishes tuple type and constant together: %s" % [typed])
+	if _inspection_is_valid(typed) and typed.get("is_constant", false):
+		var carrier: Array = typed.value
+		_expect(failures, carrier.is_read_only() and typeof(carrier[0]) == TYPE_FLOAT and carrier[1].is_read_only() and typeof(carrier[1][0]) == TYPE_FLOAT,
+			"contextual scalar conversion refreshes all read-only materialized carriers")
+
+	var invalid_index_errors: Array = probe.validate_source("func test():\n\tconst BAD = [1, 2][4]\n", "res://tests/pure_invalid_constant_index.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(invalid_index_errors, [
+		['Assigned value for constant "BAD" isn\'t a constant expression.', 2, 17],
+		['Cannot get index "4" from "[1, 2]".', 2, 24],
+	]), "invalid constant index retains both errors in public source-position order: %s" % [invalid_index_errors])
+	var previous_inference_warning: Variant = ProjectSettings.get_setting("debug/barista_script/warnings/inference_on_variant")
+	ProjectSettings.set_setting("debug/barista_script/warnings/inference_on_variant", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var variant_source := "func test(value: Variant):\n\tvar inferred := value\n\tprint(inferred)\n"
+	for iteration in range(2):
+		var warning_report: Dictionary = probe.validate_source(variant_source, "res://tests/pure_variant_inference.barista", true)
+		_expect(failures, warning_report.get("valid", false) and warning_report.get("errors", []).is_empty() and _warnings_are_exact(warning_report.get("warnings", []), [
+			["INFERENCE_ON_VARIANT", "The variable type is being inferred from a Variant value, so it will be typed as Variant.", 2, 5, 2, 26],
+		]), "hard Variant inference emits exactly one complete warning on repeat %d: %s" % [iteration, warning_report])
+	ProjectSettings.set_setting("debug/barista_script/warnings/inference_on_variant", previous_inference_warning)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()

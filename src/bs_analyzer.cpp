@@ -3168,29 +3168,141 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 	p_subscript->set_datatype(type);
 }
 
+// Foundry make_expression_reduced_value and literal collectors @ c9d5e35:15187-15325.
+// Only pure literal/subscript structure is materialized here. CALL belongs to #141 S5;
+// runtime typed-container descriptors belong to M4/M5. Visitation is not constant success.
+Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced) {
+	r_reduced = false;
+	if (p_expression == nullptr) {
+		return Variant();
+	}
+	// Rebuild literal carriers even after eager reduction: contextual typing may have converted
+	// their children, and an already-constant outer container must not hide mutable descendants.
+	switch (p_expression->type) {
+		case BSParser::Node::ARRAY:
+		case BSParser::Node::TUPLE_LITERAL: {
+			const Vector<BSParser::ExpressionNode *> &elements = p_expression->type == BSParser::Node::ARRAY
+					? static_cast<BSParser::ArrayNode *>(p_expression)->elements
+					: static_cast<BSParser::TupleLiteralNode *>(p_expression)->elements;
+			Array values;
+			for (BSParser::ExpressionNode *element : elements) {
+				bool reduced = false;
+				Variant value = make_expression_reduced_value(element, reduced);
+				if (!reduced) {
+					return Variant();
+				}
+				values.push_back(value);
+			}
+			values.make_read_only();
+			r_reduced = true;
+			return values;
+		}
+		case BSParser::Node::DICTIONARY: {
+			Dictionary values;
+			for (const BSParser::DictionaryNode::Pair &element : static_cast<BSParser::DictionaryNode *>(p_expression)->elements) {
+				bool key_reduced = false;
+				Variant key = make_expression_reduced_value(element.key, key_reduced);
+				bool value_reduced = false;
+				Variant value = make_expression_reduced_value(element.value, value_reduced);
+				if (!key_reduced || !value_reduced) {
+					return Variant();
+				}
+				if (!values.has(key)) {
+					values[key] = value;
+				}
+			}
+			values.make_read_only();
+			r_reduced = true;
+			return values;
+		}
+		default:
+			break;
+	}
+	if (p_expression->is_constant) {
+		r_reduced = true;
+		return p_expression->reduced_value;
+	}
+	if (p_expression->type != BSParser::Node::SUBSCRIPT) {
+		return Variant();
+	}
+	BSParser::SubscriptNode *subscript = static_cast<BSParser::SubscriptNode *>(p_expression);
+	if (subscript->base == nullptr || subscript->base->get_datatype().is_meta_type) {
+		return Variant();
+	}
+	bool base_reduced = false;
+	Variant base = make_expression_reduced_value(subscript->base, base_reduced);
+	if (!base_reduced || base.get_type() == Variant::OBJECT) {
+		// Object properties can invoke script/native getters, which are not pure constants.
+		return Variant();
+	}
+	if (subscript->is_attribute) {
+		if (subscript->attribute == nullptr) {
+			return Variant();
+		}
+		return base.get_named(subscript->attribute->name, r_reduced);
+	}
+	bool index_reduced = false;
+	Variant index = make_expression_reduced_value(subscript->index, index_reduced);
+	if (!index_reduced) {
+		return Variant();
+	}
+	return base.get(index, &r_reduced);
+}
+
+void BSAnalyzer::materialize_constant_initializer(BSParser::ConstantNode *p_constant) {
+	if (p_constant->initializer == nullptr) {
+		return;
+	}
+	bool reduced = false;
+	Variant value = make_expression_reduced_value(p_constant->initializer, reduced);
+	if (reduced) {
+		p_constant->initializer->is_constant = true;
+		p_constant->initializer->reduced_value = value;
+	} else {
+		push_error(vformat(R"(Assigned value for constant "%s" isn't a constant expression.)",
+						   p_constant->identifier != nullptr ? p_constant->identifier->name : StringName()),
+				p_constant->initializer);
+	}
+}
+
+void BSAnalyzer::check_assignable_inference(BSParser::AssignableNode *p_assignable, const char *p_kind) {
+	if (p_assignable->initializer == nullptr) {
+		return;
+	}
+	const BSParser::DataType initializer_type = p_assignable->initializer->get_datatype();
+	const StringName name = p_assignable->identifier != nullptr ? p_assignable->identifier->name : StringName();
+	if (p_assignable->infer_datatype) {
+		if (!initializer_type.is_set() || initializer_type.has_no_type() || !initializer_type.is_hard_type()) {
+			push_error(vformat(R"(Cannot infer the type of "%s" %s because the value doesn't have a set type.)", name, p_kind), p_assignable->initializer);
+		} else if (initializer_type.kind == BSParser::DataType::BUILTIN && initializer_type.builtin_type == Variant::NIL &&
+				p_assignable->type != BSParser::Node::CONSTANT) {
+			push_error(vformat(R"(Cannot infer the type of "%s" %s because the value is "null".)", name, p_kind), p_assignable->initializer);
+		}
+#ifdef DEBUG_ENABLED
+		if (initializer_type.is_hard_type() && initializer_type.is_variant()) {
+			Vector<String> symbols;
+			symbols.push_back(p_kind);
+			push_warning(p_assignable, BSWarning::INFERENCE_ON_VARIANT, symbols);
+		}
+#endif
+	} else if (!initializer_type.is_set()) {
+		push_error(vformat(R"(Could not resolve type for %s "%s".)", p_kind, name), p_assignable->initializer);
+	}
+}
+
 void BSAnalyzer::reduce_array(BSParser::ArrayNode *p_array) {
 	if (p_array == nullptr) {
 		return;
 	}
-	bool all_constant = true;
-	Array values;
-	for (int i = 0; i < p_array->elements.size(); i++) {
-		reduce_expression(p_array->elements[i]);
-		if (p_array->elements[i] == nullptr || !p_array->elements[i]->is_constant) {
-			all_constant = false;
-		} else {
-			values.push_back(p_array->elements[i]->reduced_value);
-		}
+	for (BSParser::ExpressionNode *element : p_array->elements) {
+		reduce_expression(element);
 	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::BUILTIN;
 	type.builtin_type = Variant::ARRAY;
-	if (all_constant) {
-		p_array->is_constant = true;
-		p_array->reduced = true;
-		p_array->reduced_value = values;
-		type.is_constant = true;
-	}
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	p_array->reduced_value = make_expression_reduced_value(p_array, p_array->is_constant);
+	type.is_constant = p_array->is_constant;
 	p_array->set_datatype(type);
 }
 
@@ -3198,8 +3310,6 @@ void BSAnalyzer::reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple) {
 	if (p_tuple == nullptr) {
 		return;
 	}
-	bool all_constant = true;
-	Array values;
 	Vector<BSParser::DataType> element_types;
 	for (BSParser::ExpressionNode *element : p_tuple->elements) {
 		reduce_expression(element);
@@ -3212,19 +3322,10 @@ void BSAnalyzer::reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple) {
 			element_type.is_meta_type = false;
 		}
 		element_types.push_back(element_type);
-		if (element == nullptr || !element->is_constant) {
-			all_constant = false;
-		} else {
-			values.push_back(element->reduced_value);
-		}
 	}
 	BSParser::DataType tuple_type = make_tuple_type(StringName(), String(), String(), element_types, Vector<StringName>(), false);
-	if (all_constant) {
-		values.make_read_only();
-		p_tuple->is_constant = true;
-		p_tuple->reduced_value = values;
-		tuple_type.is_constant = true;
-	}
+	p_tuple->reduced_value = make_expression_reduced_value(p_tuple, p_tuple->is_constant);
+	tuple_type.is_constant = p_tuple->is_constant;
 	p_tuple->set_datatype(tuple_type);
 }
 
@@ -3236,8 +3337,6 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 	// are constants produced by the parser, while Python-dictionary keys remain expressions.
 	// Godot Dictionary supplies the same string/StringName key equivalence as Foundry's
 	// StringLikeVariantComparator, so it also preserves the first value line for diagnostics.
-	bool all_constant = true;
-	Dictionary values;
 	Dictionary first_value_lines;
 	for (int i = 0; i < p_dictionary->elements.size(); i++) {
 		const auto &element = p_dictionary->elements[i];
@@ -3255,21 +3354,13 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 				first_value_lines[element.key->reduced_value] = element.value != nullptr ? element.value->start_line : element.key->start_line;
 			}
 		}
-		if (element.key == nullptr || element.value == nullptr || !element.key->is_constant || !element.value->is_constant) {
-			all_constant = false;
-		} else if (!values.has(element.key->reduced_value)) {
-			values[element.key->reduced_value] = element.value->reduced_value;
-		}
 	}
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::BUILTIN;
 	type.builtin_type = Variant::DICTIONARY;
-	if (all_constant) {
-		p_dictionary->is_constant = true;
-		p_dictionary->reduced = true;
-		p_dictionary->reduced_value = values;
-		type.is_constant = true;
-	}
+	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	p_dictionary->reduced_value = make_expression_reduced_value(p_dictionary, p_dictionary->is_constant);
+	type.is_constant = p_dictionary->is_constant;
 	p_dictionary->set_datatype(type);
 }
 
@@ -4236,6 +4327,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 				BSParser::DataType published = datatype_contains_self_type_parameter(target_type)
 						? _substitute_self_type_parameter_with_bounds(target_type, true)
 						: target_type;
+				p_expression->reduced_value = make_expression_reduced_value(p_expression, p_expression->is_constant);
 				published.is_constant = p_expression->is_constant;
 				p_expression->set_datatype(published);
 				return true;
@@ -4254,6 +4346,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 				BSParser::DataType published = datatype_contains_self_type_parameter(target_type)
 						? _substitute_self_type_parameter_with_bounds(target_type, true)
 						: target_type;
+				p_expression->reduced_value = make_expression_reduced_value(p_expression, p_expression->is_constant);
 				published.is_constant = p_expression->is_constant;
 				p_expression->set_datatype(published);
 				return true;
@@ -4277,6 +4370,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 				element_types.push_back(element->get_datatype());
 			}
 			BSParser::DataType published = make_tuple_type(StringName(), String(), String(), element_types, Vector<StringName>(), false);
+			p_expression->reduced_value = make_expression_reduced_value(p_expression, p_expression->is_constant);
 			published.is_constant = p_expression->is_constant;
 			p_expression->set_datatype(published);
 			return true;
@@ -5037,20 +5131,14 @@ bool _self_parameter_contract_matched_argument(const BSParser::DataType &p_expec
 			BSAnalyzer::SelfContractKind::PARAMETER, p_argument, &r_matched_argument, p_options);
 }
 
+bool _self_contract_union_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value, const BSTypeCompatibility::Options &p_options);
+
 bool _self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument, const BSTypeCompatibility::Options &p_options) {
 	if (p_expected_type.kind == BSParser::DataType::UNION) {
-		for (const BSParser::DataType &member : p_expected_type.union_members) {
-			if (!_datatype_contains_self_type_parameter(member)) {
-				continue;
-			}
-			BSParser::DataType alternative = member;
-			alternative.is_nullable = p_expected_type.is_nullable;
-			if (_self_parameter_contract_admits_argument_type(alternative, p_argument_type, p_call, p_argument, p_options) ||
-					_self_parameter_satisfied_by_receiver_identity(alternative, p_argument, p_call, p_options)) {
-				return true;
-			}
-		}
-		return false;
+		// Foundry @ c9d5e35:19031: preserve self-free alternatives and the admitting
+		// alternative's receiver identity through the shared union gate.
+		return _self_contract_union_admits_value_type(p_expected_type, p_argument_type,
+				BSAnalyzer::SelfContractKind::PARAMETER, p_call, p_argument, nullptr, p_options);
 	}
 	BSParser::DataType matched_argument;
 	if (!_self_parameter_contract_matched_argument(p_expected_type, p_argument_type, p_argument, matched_argument, p_options)) {
@@ -6108,9 +6196,29 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::LAMBDA:
 			reduce_lambda(static_cast<BSParser::LambdaNode *>(p_expression));
 			break;
-		case BSParser::Node::SUBSCRIPT:
-			reduce_subscript(static_cast<BSParser::SubscriptNode *>(p_expression));
-			break;
+		case BSParser::Node::SUBSCRIPT: {
+			BSParser::SubscriptNode *subscript = static_cast<BSParser::SubscriptNode *>(p_expression);
+			const int error_count = parser->get_errors().size();
+			reduce_subscript(subscript);
+			if (!subscript->is_constant && parser->get_errors().size() == error_count) {
+				bool reduced = false;
+				Variant value = make_expression_reduced_value(subscript, reduced);
+				if (reduced) {
+					subscript->is_constant = true;
+					subscript->reduced_value = value;
+					BSParser::DataType type = subscript->get_datatype();
+					if (!type.is_set() || type.has_no_type()) {
+						type = type_from_variant(value);
+					}
+					type.is_constant = true;
+					subscript->set_datatype(type);
+				} else if (!subscript->is_attribute && subscript->base != nullptr && subscript->index != nullptr &&
+						subscript->base->is_constant && subscript->index->is_constant &&
+						!subscript->base->get_datatype().is_meta_type && subscript->base->reduced_value.get_type() != Variant::OBJECT) {
+					push_error(vformat(R"(Cannot get index "%s" from "%s".)", subscript->index->reduced_value, subscript->base->reduced_value), subscript->index);
+				}
+			}
+		} break;
 		case BSParser::Node::ARRAY:
 			reduce_array(static_cast<BSParser::ArrayNode *>(p_expression));
 			break;
@@ -6349,24 +6457,19 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				// Foundry assignable path: contextual `.Case` takes its union from the declared type.
 				qualify_contextual_enum_case_consumer(variable->initializer, declared);
 				mark_coroutine_handle_capture(variable->initializer, declared);
-				// Foundry resolve_assignable @ c9d5e35: `:=` preserves the initializer's complete
-				// analyzer type, including Callable/Signal signatures used by later calls.
-				if ((!declared.is_set() || declared.is_variant()) && variable->infer_datatype &&
-						variable->initializer->get_datatype().is_set()) {
-					// This checkpoint introduces soft ternary results. Apply the pinned inference
-					// failure to that producer here; step 138-07 still owns the soft-Variant
-					// subscript producers that prevent enabling the general gate without cascades.
-					if (variable->initializer->type == BSParser::Node::TERNARY_OPERATOR &&
-							!variable->initializer->get_datatype().is_hard_type()) {
-						push_error(vformat(R"(Cannot infer the type of "%s" variable because the value doesn't have a set type.)",
-										   variable->identifier != nullptr ? String(variable->identifier->name) : String("<unknown>")),
-								variable->initializer);
+				check_assignable_inference(variable, "variable");
+				if (variable->datatype_specifier == nullptr) {
+					declared = variable->initializer->get_datatype();
+					if (!declared.is_set() || (declared.is_hard_type() && declared.kind == BSParser::DataType::BUILTIN && declared.builtin_type == Variant::NIL)) {
+						declared = BSParser::DataType();
+						declared.kind = BSParser::DataType::VARIANT;
 					}
-					variable->set_datatype(variable->initializer->get_datatype());
-					declared = variable->get_datatype();
+					declared.type_source = variable->infer_datatype ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
+					declared.is_constant = false;
+					variable->set_datatype(declared);
 				}
 			}
-			if (declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
+			if (variable->datatype_specifier != nullptr && declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
 				const bool constant_type_ok = update_constant_expression_type(variable->initializer, declared, "assign");
 				const BSParser::DataType initializer_type = variable->initializer->get_datatype();
 				// Foundry assignable Self-contract RETURN gate @ c9d5e35.
@@ -6437,21 +6540,16 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			if (constant->initializer != nullptr) {
 				qualify_contextual_enum_case_consumer(constant->initializer, declared);
 				mark_coroutine_handle_capture(constant->initializer, declared);
-				// Constant ternaries are fully decided by reduce_ternary. Reject this
-				// checkpoint's nonconstant result directly; step 138-07 owns the general
-				// make_expression_reduced_value fallback for other local-constant shapes.
-				if (constant->initializer->type == BSParser::Node::TERNARY_OPERATOR &&
-						!constant->initializer->is_constant) {
-					push_error(vformat(R"(Assigned value for constant "%s" isn't a constant expression.)",
-									   constant->identifier != nullptr ? String(constant->identifier->name) : String("<unknown>")),
-							constant->initializer);
-				}
-				if ((!declared.is_set() || declared.is_variant()) && constant->initializer->is_constant &&
-						!constant->initializer->get_datatype().is_set()) {
-					constant->initializer->set_datatype(type_from_variant(constant->initializer->reduced_value));
-					constant->set_datatype(constant->initializer->get_datatype());
-				} else if ((!declared.is_set() || declared.is_variant()) && constant->initializer->get_datatype().is_set()) {
-					constant->set_datatype(constant->initializer->get_datatype());
+				materialize_constant_initializer(constant);
+				check_assignable_inference(constant, "constant");
+				if (constant->datatype_specifier == nullptr) {
+					BSParser::DataType type = constant->initializer->get_datatype();
+					if (!type.is_set()) {
+						type.kind = BSParser::DataType::VARIANT;
+					}
+					type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+					type.is_constant = true;
+					constant->set_datatype(type);
 				}
 			}
 			if (declared.is_set() && !declared.is_variant() && constant->initializer != nullptr && constant->initializer->get_datatype().is_set()) {
