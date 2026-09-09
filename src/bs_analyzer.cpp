@@ -1784,6 +1784,12 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 				p_binary_op->reduced_value = Variant();
 			}
 		}
+		// Array concatenation is already an eager pure fold. Its fresh carrier must obey
+		// the same read-only invariant as literal collectors before becoming their child.
+		if (p_binary_op->reduced_value.get_type() == Variant::ARRAY) {
+			Array values = p_binary_op->reduced_value;
+			values.make_read_only();
+		}
 		p_binary_op->set_datatype(type_from_variant(p_binary_op->reduced_value));
 		return;
 	}

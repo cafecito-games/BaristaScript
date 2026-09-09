@@ -5081,3 +5081,11 @@ func _test_pure_literal_constant_materialization(failures: PackedStringArray) ->
 		]), "hard Variant inference emits exactly one complete warning on repeat %d: %s" % [iteration, warning_report])
 	ProjectSettings.set_setting("debug/barista_script/warnings/inference_on_variant", previous_inference_warning)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	for expression: String in ["[1] + [2]", "[[1] + [2]]"]:
+		var concatenated: Dictionary = probe.fold_expression(expression)
+		_expect(failures, concatenated.get("ok", false) and concatenated.get("errors", []).is_empty(), "existing pure concatenation still folds: %s" % [concatenated])
+		if concatenated.get("ok", false):
+			var values: Array = concatenated.value
+			_expect(failures, values.is_read_only() and (expression != "[[1] + [2]]" or values[0].is_read_only()),
+				"already-folded Array child cannot bypass nested read-only materialization: %s" % expression)
