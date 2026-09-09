@@ -3984,6 +3984,8 @@ func _test_trait_target_assignability(failures: PackedStringArray) -> void:
 		_expect(failures, actual.get("evidence") == expected[case_name], "live projected tri-state: " + case_name)
 		_expect(failures, actual.get("projected", false), "live projection exists: " + case_name)
 		_expect(failures, actual.get("compatible") == (expected[case_name] != "CONFLICT"), "live projected compatibility: " + case_name)
+	_expect(failures, report.get("structured_nominal_projects", false), "matching live projection exists without nominal membership")
+	_expect(failures, report.get("unknown_nominal_projects", false), "unknown live projection exists without nominal membership")
 	_expect(failures, report.get("structured_nominal_rejects", false), "structured equality cannot create nominal membership")
 	_expect(failures, report.get("unknown_nominal_rejects", false), "missing evidence cannot create nominal membership")
 	_expect(failures, report.get("live_arity_no_evidence_accepts", false), "unequal live projection arity retains nominal compatibility")

@@ -2030,9 +2030,11 @@ godot::Dictionary BaristaScriptAnalyzerProbe::trait_target_assignability() const
 			godot::Dictionary observation;
 			observation["projected"] = BSTypeCompatibility::project_class_trait_arguments(source, &trait, projected) && projected.size() == 1;
 			observation["compatible"] = BSTypeCompatibility::check(target, source).compatible;
-			const auto evidence = BSTypeCompatibility::compare_projected_argument(p_projected, p_expected);
-			observation["evidence"] = evidence == BSTypeCompatibility::ArgumentEvidence::MATCH ? "MATCH" : evidence == BSTypeCompatibility::ArgumentEvidence::CONFLICT ? "CONFLICT"
-																																									   : "UNKNOWN";
+			if (projected.size() == 1) {
+				const auto evidence = BSTypeCompatibility::compare_projected_argument(projected[0], p_expected);
+				observation["evidence"] = evidence == BSTypeCompatibility::ArgumentEvidence::MATCH ? "MATCH" : evidence == BSTypeCompatibility::ArgumentEvidence::CONFLICT ? "CONFLICT"
+																																										   : "UNKNOWN";
+			}
 			observations[p_name] = observation;
 		};
 		const DataType integer = make_builtin(Variant::INT);
@@ -2257,24 +2259,28 @@ godot::Dictionary BaristaScriptAnalyzerProbe::trait_target_assignability() const
 		changed = callable;
 		changed.method_return_type.write[0] = integer;
 		observe("open_signature_conflict", open_callable, changed);
-		// UNKNOWN must not establish nominal membership either.
+		// A live projection is not nominal proof, even when its argument matches or stays UNKNOWN.
 		implementer.resolved_traits.clear();
-		implementer.used_traits.clear();
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = parameter;
 		target.type_arguments.write[0] = integer;
+		Vector<DataType> without_membership;
+		result["unknown_nominal_projects"] = BSTypeCompatibility::project_class_trait_arguments(source, &trait, without_membership) &&
+				without_membership.size() == 1 &&
+				BSTypeCompatibility::compare_projected_argument(without_membership[0], integer) == BSTypeCompatibility::ArgumentEvidence::UNKNOWN;
 		result["unknown_nominal_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+		target.type_arguments.write[0] = tuple;
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = tuple;
+		result["structured_nominal_projects"] = BSTypeCompatibility::project_class_trait_arguments(source, &trait, without_membership) &&
+				without_membership.size() == 1 &&
+				BSTypeCompatibility::compare_projected_argument(without_membership[0], tuple) == BSTypeCompatibility::ArgumentEvidence::MATCH;
+		result["structured_nominal_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
 		implementer.resolved_traits.push_back(&trait);
-		implementer.used_traits.push_back(use);
 		// A live one-argument projection with a two-argument target supplies no arity evidence.
 		implementer.used_traits.write[0].resolved_type_arguments.write[0] = string;
+		target.type_arguments.write[0] = integer;
 		target.type_arguments.push_back(integer);
 		result["live_arity_no_evidence_accepts"] = BSTypeCompatibility::check(target, source).compatible;
 		target.type_arguments.remove_at(1);
-
-		target.type_arguments.write[0] = tuple;
-		implementer.used_traits.write[0].resolved_type_arguments.write[0] = tuple;
-		implementer.resolved_traits.clear();
-		implementer.used_traits.clear();
-		result["structured_nominal_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
 		result["structured_arguments"] = observations;
 		target.type_arguments.write[0] = string;
 	}
