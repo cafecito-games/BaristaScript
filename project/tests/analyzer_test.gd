@@ -91,6 +91,7 @@ func _init() -> void:
 	_test_local_enum_value_cycles(failures)
 	_test_concrete_cast_ternary_and_type_test_reduction(failures)
 	_test_pure_literal_constant_materialization(failures)
+	_test_pure_constant_review_regressions(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -5106,3 +5107,72 @@ func _test_pure_literal_constant_materialization(failures: PackedStringArray) ->
 			var values: Array = concatenated.value
 			_expect(failures, values.is_read_only() and (expression != "[[1] + [2]]" or values[0].is_read_only()),
 				"already-folded Array child cannot bypass nested read-only materialization: %s" % expression)
+
+
+func _test_pure_constant_review_regressions(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for source: String in [
+		"var probe_expression = ([1, 2] as PackedInt32Array) as Array\n",
+		"var probe_expression = [([1, 2] as PackedInt32Array) as Array]\n",
+		"const VALUE = ([1, 2] as PackedInt32Array) as Array\nvar probe_expression = [VALUE]\n",
+		"const PACKED: Variant = [1, 2] as PackedInt32Array\nconst VALUE: Array = PACKED\nvar probe_expression = [VALUE]\n",
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(source, "res://tests/review_converted_readonly.barista")
+		var report: Dictionary = probe.validate_source(source, "res://tests/review_converted_readonly.barista", true)
+		_expect(failures, report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "converted constant full validation: %s" % [report])
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false), "converted constant inspection: %s" % [observed])
+		if _inspection_is_valid(observed) and observed.get("is_constant", false):
+			var values: Array = observed.value
+			_expect(failures, values.is_read_only() and (typeof(values[0]) != TYPE_ARRAY or values[0].is_read_only()), "converted constant and nested carriers are read-only: %s" % source)
+	for control: Array in [
+		["const BASE: Array[Variant] = [0]\nvar probe_expression = BASE[0]\n", "int", 0],
+		["const BASE: Array[int | String] = [0]\nvar probe_expression = BASE[0]\n", "int", 0],
+		['const BASE: Dictionary[String, int] = {"x": 1}\nvar probe_expression = BASE[&"x"]\n', "int", 1],
+		["const BASE: Array[Array[int]] = [[0]]\nvar probe_expression = BASE[0]\n", "Array[int]", [0]],
+		["const BASE: Array[(int, String)] = [(0, \"x\")]\nvar probe_expression = BASE[0]\n", "(int, String)", [0, "x"]],
+		['const BASE: Dictionary[String, Array[int]] = {"x": [0]}\nvar probe_expression = BASE["x"]\n', "Array[int]", [0]],
+		["const BASE: Variant = 0\nvar probe_expression = BASE\n", "Variant", 0],
+		["const BASE = [null]\nvar probe_expression = BASE[0]\n", "null", null],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_constant_selection.barista")
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2], "constant selected value retains the correct datatype: %s" % [observed])
+	for control: Array in [
+		["const BASE: Array[Variant] = [0]\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 5],
+		["const BASE: Array[int | String] = [0]\nfunc test():\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 4],
+		['const BASE: Dictionary[String, Variant] = {"x": 0}\nfunc test():\n\t@warning_ignore("inference_on_variant")\n\tvar sub := BASE["x"]\n\tif sub is String: pass\n', 5],
+	]:
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_selected_consumer.barista", true)
+		_expect(failures, not report.get("valid", true) and _errors_are_exact(report.get("errors", []), [['Expression is of type "int" so it can\'t be of type "String".', control[1], 8]]) and report.get("warnings", []).is_empty(), "selected concrete type reaches its consumer: %s" % [report])
+	for control: Array in [
+		["const BASE = [1]\nvar probe_expression = BASE[true]\n", [['Cannot get index "true" from "[1]".', 2, 29]]],
+		["var probe_expression = [1][true]\n", [['Invalid index type "bool" for a base of type "Array".', 1, 28]]],
+		["const VALUE = (1, 2)[-1]\nvar probe_expression = VALUE\n", [['Assigned value for constant "VALUE" isn\'t a constant expression.', 1, 15], ['Tuple index -1 is out of range for "(int, int)", which has 2 element(s).', 1, 22]]],
+		["const VALUE = (1, 2)[0.0]\nvar probe_expression = VALUE\n", [['Assigned value for constant "VALUE" isn\'t a constant expression.', 1, 15], ['Only an integer can index tuple "(int, int)", but received "float".', 1, 22]]],
+		["var probe_expression = [(1, 2)[-1]]\n", [['Tuple index -1 is out of range for "(int, int)", which has 2 element(s).', 1, 32]]],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_rejected_subscript.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_rejected_subscript.barista", false)
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null, "rejected subscript cannot materialize through a parent or identifier: %s" % [observed])
+		_expect(failures, not report.get("valid", true) and _errors_are_exact(report.get("errors", []), control[1]), "rejected subscript complete diagnostic distinction: %s" % [report])
+	for control: Array in [
+		["const VALUE: Array[PackedInt32Array] = [[1, 2]]\nvar probe_expression = VALUE\n", "Array[PackedInt32Array]", 0],
+		["const VALUE: (PackedInt32Array, int) = ([1, 2], 3)\nvar probe_expression = VALUE\n", "(PackedInt32Array, int)", 0],
+		['const VALUE: Dictionary[String, PackedInt32Array] = {"x": [1, 2]}\nvar probe_expression = VALUE\n', "Dictionary[String, PackedInt32Array]", "x"],
+		["const VALUE: (PackedInt32Array, int) = ([1, 2], 3)\nvar probe_expression = VALUE.0\n", "PackedInt32Array", null],
+		["var probe_expression = [1, 2] as PackedInt32Array\n", "PackedInt32Array", null],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_packed_carrier.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_packed_carrier.barista", true)
+		_expect(failures, report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "packed carrier full validation: %s" % [report])
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1], "converted carrier keeps static identity: %s" % [observed])
+		if _inspection_is_valid(observed) and observed.get("is_constant", false):
+			var selected: Variant = observed.value if control[2] == null else observed.value[control[2]]
+			_expect(failures, typeof(selected) == TYPE_PACKED_INT32_ARRAY and selected == PackedInt32Array([1, 2]), "converted packed value is not rebuilt as original Array syntax: %s" % [observed])
+			if control[2] != null:
+				_expect(failures, observed.value.is_read_only(), "converted parent's carrier remains read-only")
+	var runtime_source := "func source_value() -> Array:\n\treturn [1, 2]\nvar probe_expression = [source_value()]\n"
+	var runtime: Dictionary = probe.inspect_expression_source(runtime_source, "res://tests/review_runtime_child.barista")
+	_expect(failures, _inspection_is_valid(runtime) and not runtime.get("is_constant", true) and runtime.get("value") == null, "ordinary runtime Array child is not materialized or frozen: %s" % [runtime])
+	var local_source := "func test():\n\tconst PACKED: Variant = [1, 2] as PackedInt32Array\n\tconst VALUE: Array = PACKED\n\tconst NESTED: Array[PackedInt32Array] = [[1, 2]]\n\tprint(VALUE, NESTED)\n"
+	var local_report: Dictionary = probe.validate_source(local_source, "res://tests/review_local_conversion.barista", true)
+	_expect(failures, local_report.get("valid", false) and local_report.get("errors", []).is_empty() and local_report.get("warnings", []).is_empty(), "local constant conversion consumers remain valid: %s" % [local_report])

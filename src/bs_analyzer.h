@@ -487,6 +487,8 @@ private:
 	// shorthands reduced before their consumer supplies a union, then the end-of-body sweep.
 	LocalVector<BSParser::ExpressionNode *> reduced_contextual_enum_cases;
 	HashSet<const BSParser::ExpressionNode *> resolved_contextual_enum_cases;
+	// Parser-owned nodes rejected by subscript analysis; never retry their erased carriers.
+	HashSet<const BSParser::ExpressionNode *> failed_constant_subscripts;
 	/** Foundry transparent type-alias expansion cache / failure and cycle guards. */
 	HashMap<const BSParser::TypeAliasNode *, BSParser::DataType> resolved_type_aliases;
 	HashSet<const BSParser::TypeAliasNode *> failed_type_aliases;
@@ -639,6 +641,7 @@ private:
 	void reduce_subscript(BSParser::SubscriptNode *p_subscript);
 	void reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple);
 	Variant make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced);
+	void publish_constant_subscript(BSParser::SubscriptNode *p_subscript, const Variant &p_value);
 	void materialize_constant_initializer(BSParser::ConstantNode *p_constant);
 	void check_assignable_inference(BSParser::AssignableNode *p_assignable, const char *p_kind);
 	void reduce_array(BSParser::ArrayNode *p_array);
