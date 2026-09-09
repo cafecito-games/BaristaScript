@@ -86,6 +86,7 @@ func _init() -> void:
 	_test_self_contract_gradual_union(failures)
 	_test_local_tuple_and_literal_consumers(failures)
 	_test_ordinary_assignment_and_return_consumers(failures)
+	_test_steps_1_5_repair_regressions(failures)
 	_test_local_enum_value_cycles(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
@@ -94,6 +95,16 @@ func _init() -> void:
 func _expect(failures: PackedStringArray, condition: bool, message: String) -> void:
 	if not condition:
 		failures.append(message)
+
+
+func _errors_are_exact(actual: Array, expected: Array) -> bool:
+	if actual.size() != expected.size():
+		return false
+	for i in range(expected.size()):
+		if str(actual[i].get("message", "")) != expected[i][0] or \
+				actual[i].get("line") != expected[i][1] or actual[i].get("column") != expected[i][2]:
+			return false
+	return true
 
 
 func _test_undeclared_identifier_diagnostic(failures: PackedStringArray) -> void:
@@ -4377,6 +4388,178 @@ func _test_ordinary_assignment_and_return_consumers(failures: PackedStringArray)
 		str(match_bind_errors[0].get("message", "")) == "Cannot assign a new value to a constant." and
 		match_bind_errors[0].get("line") == 7 and match_bind_errors[0].get("column") == 17,
 		"narrowed match binds remain read-only at the assignee: %s" % [match_bind_errors])
+
+
+func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var signal_source := "class_name SignalSelfProjectionHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tpass\nfunc test(receiver: Child, base_value: Base, child_value: Child) -> void:\n\treceiver.emit_signal(\"changed\", base_value)\n\treceiver.emit_signal(\"changed\", child_value)\n"
+	var signal_errors: Array = probe.validate_source(signal_source, "res://tests/review_signal_self_projection.barista", false).get("errors", [])
+	_expect(failures, signal_errors.size() == 1 and
+		str(signal_errors[0].get("message", "")) == 'Invalid argument for "emit_signal()" function: argument 2 should be "Child" but is "Base".' and
+		signal_errors[0].get("line") == 7 and signal_errors[0].get("column") == 37,
+		"inherited Signal Self projects to Child while rejecting Base: %s" % [signal_errors])
+
+	var lexical_tuple := "class_name LexicalTupleHost extends Node\ntuple Pair(left: int, right: int)\nclass Inner extends Node:\n\tfunc make() -> Pair:\n\t\treturn Pair(1, 2)\n"
+	_expect(failures, probe.validate_source(lexical_tuple, "res://tests/review_lexical_tuple.barista", false).get("valid", false),
+		"lexical parent tuple annotation and constructor resolve")
+	var receiver_tuple := "class_name ReceiverTupleHost extends Node\ntuple Owned(owner: Self, value: int)\nfunc construct_on(receiver: ReceiverTupleHost) -> Owned:\n\treturn receiver.Owned(receiver, 1)\n"
+	_expect(failures, probe.validate_source(receiver_tuple, "res://tests/review_receiver_tuple.barista", false).get("valid", false),
+		"typed receiver tuple construction preserves receiver-relative Self")
+
+	var dynamic_tuple := "func read(value: Variant) -> void:\n\tprint(value.0)\n"
+	_expect(failures, probe.validate_source(dynamic_tuple, "res://tests/review_dynamic_tuple_index.barista", false).get("valid", false),
+		"Variant tuple index remains gradual outside strict mode")
+	var dynamic_tuple_element := "func read(pair: (int, String), index: int) -> Variant:\n\treturn pair[index]\n"
+	_expect(failures, probe.validate_source(dynamic_tuple_element, "res://tests/review_dynamic_tuple_element.barista", false).get("valid", false),
+		"runtime integer tuple index remains gradual")
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", true)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var strict_dynamic_errors: Array = probe.validate_source(dynamic_tuple, "res://tests/review_dynamic_tuple_index.barista", false).get("errors", [])
+	_expect(failures, strict_dynamic_errors.size() == 1 and
+		str(strict_dynamic_errors[0].get("message", "")) == "Cannot use tuple index access on Variant in strict dynamic mode." and
+		strict_dynamic_errors[0].get("line") == 2 and strict_dynamic_errors[0].get("column") == 11,
+		"strict tuple index reports the gradual base: %s" % [strict_dynamic_errors])
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	var float_index := "func read(values: Array[int]) -> int:\n\treturn values[1.0]\n"
+	_expect(failures, probe.validate_source(float_index, "res://tests/review_float_array_index.barista", false).get("valid", false),
+		"Array float index preserves typed element result")
+
+	var local_constructor := "class_name LocalConstructorHost extends Node\nclass Item extends Node:\n\tfunc _init(value: int) -> void:\n\t\tpass\nfunc make() -> Item:\n\treturn Item.new(1)\n"
+	_expect(failures, probe.validate_source(local_constructor, "res://tests/review_local_constructor.barista", false).get("valid", false),
+		"local constructor validates declared initializer and preserves Item result")
+
+	var member_constant := "class_name MemberConstantWriteHost extends Node\nconst TOKEN := 1\nfunc overwrite() -> void:\n\tself.TOKEN = 2\n"
+	var member_constant_errors: Array = probe.validate_source(member_constant, "res://tests/review_member_constant_write.barista", false).get("errors", [])
+	_expect(failures, member_constant_errors.size() == 1 and
+		str(member_constant_errors[0].get("message", "")) == "Cannot assign a new value to a constant." and
+		member_constant_errors[0].get("line") == 4 and member_constant_errors[0].get("column") == 5,
+		"resolved member constants remain readonly: %s" % [member_constant_errors])
+
+	var tuple_nominal := "class_name TupleNominalConsumers extends Node\nclass Left:\n\ttuple Point(x: int, y: int)\nclass Right:\n\ttuple Point(x: int, y: int)\nfunc assign_bad(left: Left.Point, right: Right.Point) -> void:\n\tright = left\nfunc return_bad(left: Left.Point) -> Right.Point:\n\treturn left\n"
+	var nominal_errors: Array = probe.validate_source(tuple_nominal, "res://tests/review_tuple_nominal_consumers.barista", false).get("errors", [])
+	_expect(failures, nominal_errors.size() == 2 and
+		str(nominal_errors[0].get("message", "")) == 'Value of type "Point" cannot be assigned to a variable of type "Point". The value is declared by class "Left"; the variable\'s type is declared by class "Right".' and
+		nominal_errors[0].get("line") == 7 and nominal_errors[0].get("column") == 13 and
+		str(nominal_errors[1].get("message", "")) == 'Cannot return value of type "Point" because the function return type is "Point". The returned value is declared by class "Left"; the return type is declared by class "Right".' and
+		nominal_errors[1].get("line") == 9 and nominal_errors[1].get("column") == 5,
+		"ordinary tuple consumers explain identical rendered owners: %s" % [nominal_errors])
+
+	var ordinary_declaration := "func declare(v: int) -> void:\n\tvar value: String = v\n"
+	var declaration_errors: Array = probe.validate_source(ordinary_declaration, "res://tests/review_ordinary_declaration.barista", false).get("errors", [])
+	_expect(failures, declaration_errors.size() == 1 and
+		str(declaration_errors[0].get("message", "")) == 'Cannot assign a value of type "int" to a variable of type "String".' and
+		declaration_errors[0].get("line") == 2 and declaration_errors[0].get("column") == 25,
+		"ordinary declarations report at the initializer: %s" % [declaration_errors])
+
+	# The declaration's Signal[[Self]] signature projects through every existing member,
+	# Object API, and Signal(Object, name) consumer without changing its stored declaration.
+	var signal_member_source := "class_name SignalSelfMemberHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tfunc take_child(value: Child) -> void:\n\t\tpass\n\tfunc take_string(value: String) -> void:\n\t\tpass\n\tfunc check(child_value: Child, base_value: Base) -> void:\n\t\tchanged.emit(child_value)\n\t\tchanged.emit(base_value)\n\t\tself.changed.connect(take_child)\n\t\tself.changed.disconnect(take_child)\n\t\tself.changed.is_connected(take_child)\n\t\tself.changed.connect(take_string)\n"
+	var signal_member_errors: Array = probe.validate_source(signal_member_source, "res://tests/repair_signal_member.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(signal_member_errors, [
+		['Invalid argument for "emit()" function: argument 1 should be "Child" but is "Base".', 11, 22],
+		['Cannot connect signal "Signal[[Child]]" to callable "Callable[[String], void]": signal argument 1 of type "Child" cannot be passed to callable parameter of type "String".', 15, 30],
+	]), "bare/self inherited Signal Self consumer routes: %s" % [signal_member_errors])
+	var signal_nested_source := "class_name SignalNestedHost extends Node\nclass Base extends Node:\n\tsignal nested(values: Array[Self])\nclass Child extends Base:\n\tfunc check(child_values: Array[Child], base_values: Array[Base]) -> void:\n\t\tnested.emit(child_values)\n\t\tnested.emit(base_values)\n"
+	var signal_nested_errors: Array = probe.validate_source(signal_nested_source, "res://tests/repair_signal_nested.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(signal_nested_errors, [
+		['Invalid argument for "emit()" function: argument 1 should be "Array[Child]" but is "Array[Base]".', 7, 21],
+	]), "Signal Self projection traverses nested container parameters: %s" % [signal_nested_errors])
+
+	var signal_receiver_source := "class_name SignalSelfReceiverHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tpass\nfunc take_child(value: Child) -> void:\n\tpass\nfunc take_string(value: String) -> void:\n\tpass\nfunc check(receiver: Child, child_value: Child, base_value: Base) -> void:\n\treceiver.emit_signal(\"changed\", child_value)\n\treceiver.emit_signal(\"changed\", base_value)\n\treceiver.connect(\"changed\", take_child)\n\treceiver.disconnect(\"changed\", take_child)\n\treceiver.is_connected(\"changed\", take_child)\n\treceiver.connect(\"changed\", take_string)\n\tvar projected := Signal(receiver, \"changed\")\n\tprojected.emit(child_value)\n\tprojected.emit(base_value)\n"
+	var signal_receiver_errors: Array = probe.validate_source(signal_receiver_source, "res://tests/repair_signal_receiver.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(signal_receiver_errors, [
+		['Invalid argument for "emit_signal()" function: argument 2 should be "Child" but is "Base".', 12, 37],
+		['Cannot connect signal "Signal[[Child]]" to callable "Callable[[String], void]": signal argument 1 of type "Child" cannot be passed to callable parameter of type "String".', 16, 33],
+		['Invalid argument for "emit()" function: argument 1 should be "Child" but is "Base".', 19, 20],
+	]), "typed Object and Signal constructor preserve projected Self signatures: %s" % [signal_receiver_errors])
+
+	# Tuple lookup walks the precise receiver's inheritance chain and the current lexical
+	# chain. The nearest lexical declaration wins, while a foreign receiver keeps its method.
+	var tuple_spellings := "class_name TupleSpellings extends Node\ntuple Owned(owner: Self, value: int)\nclass Child extends TupleSpellings:\n\tfunc make(receiver: Child) -> Owned:\n\t\tvar a := Owned(self, 1)\n\t\tvar b := self.Owned(self, 2)\n\t\tvar c := Self.Owned(self, 3)\n\t\tvar d := Child.Owned(self, 4)\n\t\tvar e := receiver.Owned(receiver, 5)\n\t\treturn e\n"
+	_expect(failures, probe.validate_source(tuple_spellings, "res://tests/repair_tuple_spellings.barista", false).get("valid", false),
+		"unqualified/self/Self/class/instance inherited tuple constructors preserve owner-relative Self")
+	var tuple_shadow := "class_name TupleShadow extends Node\ntuple Item(left: int, right: int)\nclass Inner:\n\ttuple Item(left: String, right: String)\n\tfunc make() -> Item:\n\t\treturn Item(1, 2)\n"
+	var tuple_shadow_errors: Array = probe.validate_source(tuple_shadow, "res://tests/repair_tuple_shadow.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tuple_shadow_errors, [
+		['Invalid argument 1 for tuple "Item": should be "String" but is "int".', 6, 21],
+		['Invalid argument 2 for tuple "Item": should be "String" but is "int".', 6, 24],
+	]), "nearest lexical tuple declaration shadows its outer sibling: %s" % [tuple_shadow_errors])
+	var foreign_receiver := "class_name TupleForeign extends Node\nclass Owner:\n\ttuple Pair(left: int, right: int)\nclass Other:\n\tfunc Pair(left: int, right: int) -> String:\n\t\treturn \"method\"\nfunc bad(other: Other) -> Owner.Pair:\n\treturn other.Pair(1, 2)\n"
+	var foreign_errors: Array = probe.validate_source(foreign_receiver, "res://tests/repair_tuple_foreign.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(foreign_errors, [
+		['Cannot return value of type "String" because the function return type is "Pair".', 8, 5],
+	]), "foreign receiver method is not captured by lexical tuple construction: %s" % [foreign_errors])
+
+	var dynamic_tuple_report: Dictionary = probe.validate_source(dynamic_tuple, "res://tests/review_dynamic_tuple_index.barista", false, true)
+	var dynamic_element_report: Dictionary = probe.validate_source(dynamic_tuple_element, "res://tests/review_dynamic_tuple_element.barista", false, true)
+	var dynamic_tuple_safe: PackedInt32Array = dynamic_tuple_report.get("safe_lines", PackedInt32Array())
+	var dynamic_element_safe: PackedInt32Array = dynamic_element_report.get("safe_lines", PackedInt32Array())
+	_expect(failures, dynamic_tuple_report.get("valid", false) and 1 in dynamic_tuple_safe and 2 not in dynamic_tuple_safe and
+		dynamic_element_report.get("valid", false) and 1 in dynamic_element_safe and 2 not in dynamic_element_safe,
+		"gradual tuple base and runtime integer index are explicitly unsafe: %s / %s" % [dynamic_tuple_report, dynamic_element_report])
+	var tuple_index_source := "func check(pair: (int, String), wrong: String) -> void:\n\tprint(pair[wrong])\n\tprint(pair[2])\n"
+	var tuple_index_errors: Array = probe.validate_source(tuple_index_source, "res://tests/repair_tuple_index.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tuple_index_errors, [
+		['Only an integer can index tuple "(int, String)", but received "String".', 2, 16],
+		['Tuple index 2 is out of range for "(int, String)", which has 2 element(s).', 3, 16],
+	]), "tuple index type/range diagnostics use the index expression: %s" % [tuple_index_errors])
+	var nullable_tuple := "func read(pair: (int, String)?) -> int:\n\treturn pair[0]\n"
+	_expect(failures, probe.validate_source(nullable_tuple, "res://tests/repair_nullable_tuple.barista", false).get("valid", false),
+		"nullable tuple indexing preserves the selected element type")
+	var tuple_metatype := "tuple Pair(left: int, right: int)\nfunc bad() -> void:\n\tprint(Pair.0)\n"
+	var tuple_metatype_errors: Array = probe.validate_source(tuple_metatype, "res://tests/repair_tuple_metatype.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tuple_metatype_errors, [
+		['Cannot index the tuple type "Pair"; construct a value first.', 3, 11],
+	]), "tuple metatype index remains rejected at the subscript: %s" % [tuple_metatype_errors])
+
+	var array_index_source := "func check(values: Array[int], b: bool, text: String) -> void:\n\tvar a: int = values[1.0]\n\tvalues[2.0] = 3\n\tprint(values[b])\n\tvalues[text] = 4\n"
+	var array_index_errors: Array = probe.validate_source(array_index_source, "res://tests/repair_array_index.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(array_index_errors, [
+		['Invalid index type "bool" for a base of type "Array[int]".', 4, 18],
+		['Invalid index type "String" for a base of type "Array[int]".', 5, 12],
+	]), "Array reads/writes accept real indices and reject unrelated concrete indices: %s" % [array_index_errors])
+
+	var constructor_source := "class_name ConstructorCases extends Node\nclass Base:\n\tfunc _init(value: int, label: String = \"x\", ...rest: Array) -> void:\n\t\tpass\nclass Child extends Base:\n\tpass\nclass Empty:\n\tpass\nfunc ok() -> Child:\n\treturn Child.new(1, \"a\", 2, 3)\nfunc bad_type() -> Child:\n\treturn Child.new(\"bad\")\nfunc bad_arity() -> Child:\n\treturn Child.new()\nfunc bad_empty() -> Empty:\n\treturn Empty.new(1)\n"
+	var constructor_errors: Array = probe.validate_source(constructor_source, "res://tests/repair_constructors.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(constructor_errors, [
+		['Invalid argument for "new()" function: argument 1 should be "int" but is "String".', 12, 22],
+		['Too few arguments for "new()" call. Expected at least 1 but received 0.', 14, 12],
+		['Too many arguments for "new()" call. Expected at most 0 but received 1.', 16, 22],
+	]), "local inherited constructors preserve precise result and fixed/default/rest validation: %s" % [constructor_errors])
+
+	var constant_write_source := "class_name ConstantWrites extends Node\nconst TOKEN := 1\nconst CONTAINER := [1]\nvar mutable := 1\nclass Child extends ConstantWrites:\n\tfunc writes(receiver: Child) -> void:\n\t\tTOKEN = 2\n\t\tself.TOKEN = 2\n\t\tChild.TOKEN = 2\n\t\treceiver.TOKEN = 2\n\t\treceiver.CONTAINER[0] = 2\n\t\tmutable = 2\n"
+	var constant_write_errors: Array = probe.validate_source(constant_write_source, "res://tests/repair_member_constants.barista", false).get("errors", [])
+	var readonly_expected: Array = []
+	for line in range(7, 12):
+		readonly_expected.append(["Cannot assign a new value to a constant.", line, 9])
+	_expect(failures, _errors_are_exact(constant_write_errors, readonly_expected),
+		"direct/self/class/inherited/typed and nested member constant writes reject once: %s" % [constant_write_errors])
+
+	var nominal_sites := "class_name NominalSites extends Node\nclass Left:\n\ttuple Point(x: int, y: int)\nclass Right:\n\ttuple Point(x: int, y: int)\n\ttuple Wrapper(point: Point, count: int)\n\tenum Box:\n\t\tValue(value: Point)\nfunc fixed(value: Right.Point) -> void:\n\tpass\nfunc rest(...values: Array[Right.Point]) -> void:\n\tpass\nfunc sites(left: Left.Point) -> Right.Point:\n\tvar declared: Right.Point = left\n\tconst local: Right.Point = left\n\tvar assigned: Right.Point = Right.Point(1, 2)\n\tassigned = left\n\tfixed(left)\n\trest(left)\n\tvar tuple_payload := Right.Wrapper(left, 1)\n\tvar enum_payload := Right.Box.Value(left)\n\treturn left\n"
+	var nominal_site_errors: Array = probe.validate_source(nominal_sites, "res://tests/repair_nominal_sites.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(nominal_site_errors, [
+		['Cannot assign a value of type Point to variable "declared" with specified type Point. The value is declared by class "Left"; the specified type is declared by class "Right".', 14, 33],
+		['Cannot assign a value of type "Point" to a constant of type "Point". The value is declared by class "Left"; the specified type is declared by class "Right".', 15, 32],
+		['Value of type "Point" cannot be assigned to a variable of type "Point". The value is declared by class "Left"; the variable\'s type is declared by class "Right".', 17, 16],
+		['Invalid argument for "fixed()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 18, 11],
+		['Invalid argument for "rest()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 19, 10],
+		['Invalid argument 1 for tuple "Wrapper": should be "Point" but is "Point". The tuple field\'s type is declared by class "Right"; the argument is declared by class "Left".', 20, 40],
+		['Invalid argument 1 for enum case "Box.Value": should be "Point" but is "Point". The payload field\'s type is declared by class "Right"; the argument is declared by class "Left".', 21, 41],
+		['Cannot return value of type "Point" because the function return type is "Point". The returned value is declared by class "Left"; the return type is declared by class "Right".', 22, 5],
+	]), "same-rendered owners are explicit at declaration/constant/assignment/call/payload/return sites: %s" % [nominal_site_errors])
+
+	var origin_source := "class_name OriginCases extends Node\nvar member: String = 1\nconst MEMBER_CONST: String = 2\nfunc bad(v: int) -> String:\n\tvar local: String = v\n\tconst local_const: String = v\n\treturn v\n"
+	var origin_errors: Array = probe.validate_source(origin_source, "res://tests/repair_origins.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(origin_errors, [
+		['Cannot assign a value of type "int" to a variable of type "String".', 2, 22],
+		['Cannot assign a value of type "int" to a constant of type "String".', 3, 30],
+		['Cannot assign a value of type "int" to a variable of type "String".', 5, 25],
+		['Cannot assign a value of type "int" to a constant of type "String".', 6, 33],
+		['Cannot return value of type "int" because the function return type is "String".', 7, 5],
+	]), "ordinary declaration diagnostics use initializer origins while return stays on ReturnNode: %s" % [origin_errors])
 
 
 func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:

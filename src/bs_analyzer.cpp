@@ -2186,15 +2186,11 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			// declaration before ordinary method lookup.
 			if (subscript->base != nullptr && p_call->function_name != StringName()) {
 				const BSParser::DataType owner_type = subscript->base->get_datatype();
-				if (owner_type.kind == BSParser::DataType::CLASS && owner_type.is_meta_type &&
-						owner_type.class_type != nullptr && owner_type.class_type->has_member(p_call->function_name)) {
-					BSParser::ClassNode *owner = owner_type.class_type;
-					const BSParser::ClassNode::Member member = owner->get_member(p_call->function_name);
-					if (member.type == BSParser::ClassNode::Member::TUPLE && member.m_tuple != nullptr) {
-						resolve_class_member(owner, p_call->function_name, subscript->attribute);
-						reduce_call_tuple_construction(p_call, member.m_tuple->get_datatype());
-						return;
-					}
+				BSParser::DataType tuple_meta_type;
+				if (find_named_tuple_meta_type(owner_type, is_self, p_call->function_name, subscript->attribute, tuple_meta_type)) {
+					p_call->receiver_is_current_self = is_self;
+					reduce_call_tuple_construction(p_call, tuple_meta_type);
+					return;
 				}
 			}
 
@@ -2214,9 +2210,14 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			if (subscript->base != nullptr && p_call->function_name == SNAME("new")) {
 				const BSParser::DataType class_meta_type = subscript->base->get_datatype();
 				if (class_meta_type.kind == BSParser::DataType::CLASS && class_meta_type.is_meta_type) {
-					call_site_validation.reject_named_call_arguments(p_call);
-					if (!p_call->arguments.is_empty()) {
-						push_error(vformat(R"*(Too many arguments for "new()" call. Expected at most 0 but received %d.)*", p_call->arguments.size()), p_call->arguments[0]);
+					BSParser::FunctionNode *initializer = find_class_function(class_meta_type.class_type, SNAME("_init"));
+					if (initializer != nullptr) {
+						validate_local_call(p_call, initializer);
+					} else {
+						call_site_validation.reject_named_call_arguments(p_call);
+						if (!p_call->arguments.is_empty()) {
+							push_error(vformat(R"*(Too many arguments for "new()" call. Expected at most 0 but received %d.)*", p_call->arguments.size()), p_call->arguments[0]);
+						}
 					}
 					BSParser::DataType value_type = class_meta_type;
 					value_type.is_meta_type = false;
@@ -2376,8 +2377,11 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	if (p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER) {
 		const StringName tuple_name = static_cast<BSParser::IdentifierNode *>(p_call->callee)->name;
 		BSParser::DataType tuple_meta_type;
-		if (find_named_tuple_meta_type(tuple_name, tuple_meta_type)) {
+		BSParser::DataType receiver_type = current_class != nullptr ? current_class->get_datatype() : BSParser::DataType();
+		receiver_type.is_meta_type = false;
+		if (find_named_tuple_meta_type(receiver_type, true, tuple_name, p_call, tuple_meta_type)) {
 			p_call->function_name = tuple_name;
+			p_call->receiver_is_current_self = true;
 			reduce_call_tuple_construction(p_call, tuple_meta_type);
 			return;
 		}
@@ -2426,7 +2430,11 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 																			  Variant::OBJECT, "", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_DEFAULT, SNAME("Object")),
 					true);
 			const BSParser::DataType name_type = type_from_property(PropertyInfo(Variant::STRING_NAME, ""), true);
-			valid_constructor = argument_matches(0, object_type) && argument_matches(1, name_type);
+			const BSParser::DataType receiver_type = p_call->arguments[0] != nullptr
+					? p_call->arguments[0]->get_datatype()
+					: BSParser::DataType();
+			const bool local_object_receiver = receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr;
+			valid_constructor = (local_object_receiver || argument_matches(0, object_type)) && argument_matches(1, name_type);
 		}
 		if (!valid_constructor) {
 			String signature = Variant::get_type_name(builtin_type) + "(";
@@ -2717,23 +2725,41 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 		reduce_expression(p_subscript->index);
 		BSParser::DataType result_type;
 		result_type.kind = BSParser::DataType::VARIANT;
-		if (tuple_base_type.kind != BSParser::DataType::TUPLE) {
-			push_error(vformat(R"*(Cannot use tuple index access on a value of type "%s".)*", tuple_base_type.to_string()), p_subscript);
-		} else if (tuple_base_type.is_meta_type) {
+		if (tuple_base_type.kind == BSParser::DataType::TUPLE && tuple_base_type.is_meta_type) {
 			push_error(vformat(R"*(Cannot index the tuple type "%s"; construct a value first.)*", tuple_base_type.to_string()), p_subscript);
-		} else if (p_subscript->index == nullptr || !p_subscript->index->is_constant ||
-				p_subscript->index->reduced_value.get_type() != Variant::INT) {
-			push_error(vformat(R"*(Only an integer can index tuple "%s".)*", tuple_base_type.to_string()), p_subscript->index);
-		} else {
-			const int64_t index = p_subscript->index->reduced_value;
-			if (index < 0 || index >= tuple_base_type.container_element_types.size()) {
-				push_error(vformat(R"*(Tuple index %d is out of range for "%s", which has %d element(s).)*",
-								   index, tuple_base_type.to_string(), tuple_base_type.container_element_types.size()),
+		} else if (tuple_base_type.kind == BSParser::DataType::TUPLE) {
+			const BSParser::DataType index_type = p_subscript->index != nullptr
+					? p_subscript->index->get_datatype()
+					: BSParser::DataType();
+			const bool has_constant_index = p_subscript->index != nullptr && p_subscript->index->is_constant &&
+					p_subscript->index->reduced_value.get_type() == Variant::INT;
+			if (!has_constant_index && index_type.is_hard_type() && !index_type.is_variant() &&
+					!(index_type.kind == BSParser::DataType::BUILTIN && index_type.builtin_type == Variant::INT)) {
+				push_error(vformat(R"*(Only an integer can index tuple "%s", but received "%s".)*",
+								   tuple_base_type.to_string(), index_type.to_string()),
 						p_subscript->index);
+			} else if (!has_constant_index) {
+				mark_node_unsafe(p_subscript);
 			} else {
-				result_type = tuple_base_type.get_container_element_type(index);
-				result_type.is_read_only = true;
+				const int64_t index = p_subscript->index->reduced_value;
+				if (index < 0 || index >= tuple_base_type.container_element_types.size()) {
+					push_error(vformat(R"*(Tuple index %d is out of range for "%s", which has %d element(s).)*",
+									   index, tuple_base_type.to_string(), tuple_base_type.container_element_types.size()),
+							p_subscript->index);
+				} else {
+					result_type = tuple_base_type.get_container_element_type(index);
+					result_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+					result_type.is_read_only = true;
+				}
 			}
+		} else if (tuple_base_type.is_variant() || !tuple_base_type.is_hard_type()) {
+			if (strict_dynamic_checks) {
+				push_error("Cannot use tuple index access on Variant in strict dynamic mode.", p_subscript->base);
+			} else {
+				mark_node_unsafe(p_subscript);
+			}
+		} else {
+			push_error(vformat(R"*(Cannot use tuple index access on a value of type "%s".)*", tuple_base_type.to_string()), p_subscript);
 		}
 		p_subscript->set_datatype(result_type);
 		return;
@@ -2873,6 +2899,65 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				}
 			}
 		}
+		// Resolve concrete local-class member values on an arbitrary typed receiver. The earlier
+		// self/class-name path records frame-specific finality; this path supplies the same destination
+		// evidence for typed instances and inherited members, including readonly constants.
+		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr) {
+			BSParser::DataType receiver_type = p_subscript->base->get_datatype();
+			if (_is_self_type_parameter(receiver_type) && !receiver_type.type_parameter_bound.is_empty()) {
+				receiver_type = receiver_type.type_parameter_bound[0];
+				receiver_type.is_meta_type = p_subscript->base->get_datatype().is_meta_type;
+			}
+			if (receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr) {
+				bool inherited = false;
+				HashSet<const BSParser::ClassNode *> visited;
+				for (BSParser::ClassNode *lookup = receiver_type.class_type; lookup != nullptr; lookup = lookup->base_type.class_type) {
+					if (visited.has(lookup)) {
+						break;
+					}
+					visited.insert(lookup);
+					if (!lookup->has_member(p_subscript->attribute->name)) {
+						inherited = true;
+						continue;
+					}
+					resolve_class_member(lookup, p_subscript->attribute->name, p_subscript->attribute);
+					const BSParser::ClassNode::Member member = lookup->get_member(p_subscript->attribute->name);
+					if (member.type == BSParser::ClassNode::Member::CONSTANT && member.constant != nullptr) {
+						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+						p_subscript->attribute->constant_source = member.constant;
+						member.constant->usages++;
+						p_subscript->attribute->set_datatype(member.constant->get_datatype());
+						p_subscript->set_datatype(member.constant->get_datatype());
+						if (member.constant->initializer != nullptr && member.constant->initializer->is_constant) {
+							p_subscript->is_constant = true;
+							p_subscript->reduced_value = member.constant->initializer->reduced_value;
+						}
+						return;
+					}
+					if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr &&
+							(!receiver_type.is_meta_type || member.variable->is_static)) {
+						p_subscript->attribute->source = member.variable->is_static
+								? BSParser::IdentifierNode::STATIC_VARIABLE
+								: (inherited ? BSParser::IdentifierNode::INHERITED_VARIABLE : BSParser::IdentifierNode::MEMBER_VARIABLE);
+						p_subscript->attribute->variable_source = member.variable;
+						member.variable->usages++;
+						p_subscript->attribute->set_datatype(member.variable->get_datatype());
+						p_subscript->set_datatype(member.variable->get_datatype());
+						return;
+					}
+					if (member.type == BSParser::ClassNode::Member::SIGNAL && member.signal != nullptr && !receiver_type.is_meta_type) {
+						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
+						p_subscript->attribute->signal_source = member.signal;
+						member.signal->usages++;
+						const BSParser::DataType signal_type = call_site_validation.explicit_signal_type_from_node(member.signal, receiver_type, lookup);
+						p_subscript->attribute->set_datatype(signal_type);
+						p_subscript->set_datatype(signal_type);
+						return;
+					}
+					break;
+				}
+			}
+		}
 		// Instance / class-handle / Self-handle `.Enum` for SelfFieldLeg spellings
 		// (`receiver.Message`, `Self.Message`) when the receiver is not the frame's own class_name.
 		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr) {
@@ -2914,18 +2999,27 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 		if (base_type.kind == BSParser::DataType::TUPLE) {
 			if (base_type.is_meta_type) {
 				push_error(vformat(R"*(Cannot index the tuple type "%s"; construct a value first.)*", base_type.to_string()), p_subscript);
-			} else if (p_subscript->index == nullptr || !p_subscript->index->is_constant ||
-					p_subscript->index->reduced_value.get_type() != Variant::INT) {
-				push_error(vformat(R"*(Only a constant integer can index tuple "%s".)*", base_type.to_string()), p_subscript->index);
 			} else {
-				const int64_t index = p_subscript->index->reduced_value;
-				if (index < 0 || index >= base_type.container_element_types.size()) {
-					push_error(vformat(R"*(Tuple index %d is out of range for "%s", which has %d element(s).)*",
-									   index, base_type.to_string(), base_type.container_element_types.size()),
+				const bool has_constant_index = p_subscript->index != nullptr && p_subscript->index->is_constant &&
+						p_subscript->index->reduced_value.get_type() == Variant::INT;
+				if (!has_constant_index && index_type.is_hard_type() && !index_type.is_variant() &&
+						!(index_type.kind == BSParser::DataType::BUILTIN && index_type.builtin_type == Variant::INT)) {
+					push_error(vformat(R"*(Only an integer can index tuple "%s", but received "%s".)*",
+									   base_type.to_string(), index_type.to_string()),
 							p_subscript->index);
+				} else if (!has_constant_index) {
+					mark_node_unsafe(p_subscript);
 				} else {
-					result_type = base_type.get_container_element_type(index);
-					result_type.is_read_only = true;
+					const int64_t index = p_subscript->index->reduced_value;
+					if (index < 0 || index >= base_type.container_element_types.size()) {
+						push_error(vformat(R"*(Tuple index %d is out of range for "%s", which has %d element(s).)*",
+										   index, base_type.to_string(), base_type.container_element_types.size()),
+								p_subscript->index);
+					} else {
+						result_type = base_type.get_container_element_type(index);
+						result_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+						result_type.is_read_only = true;
+					}
 				}
 			}
 			p_subscript->set_datatype(result_type);
@@ -2934,10 +3028,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 		if (base_type.kind == BSParser::DataType::BUILTIN &&
 				(base_type.builtin_type == Variant::ARRAY || base_type.builtin_type == Variant::DICTIONARY)) {
 			BSParser::DataType expected_index_type;
-			if (base_type.builtin_type == Variant::ARRAY) {
-				expected_index_type.kind = BSParser::DataType::BUILTIN;
-				expected_index_type.builtin_type = Variant::INT;
-			} else if (base_type.has_container_element_type(0)) {
+			if (base_type.builtin_type == Variant::DICTIONARY && base_type.has_container_element_type(0)) {
 				expected_index_type = base_type.get_container_element_type(0);
 			} else {
 				expected_index_type.kind = BSParser::DataType::VARIANT;
@@ -2946,8 +3037,14 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 			options.allow_implicit_conversion = false;
 			options.strict_dynamic = strict_dynamic_checks;
 			options.strict_null = strict_null_checks;
+			const bool array_index_is_number = base_type.builtin_type == Variant::ARRAY &&
+					index_type.kind == BSParser::DataType::BUILTIN &&
+					(index_type.builtin_type == Variant::INT || index_type.builtin_type == Variant::FLOAT);
+			const bool invalid_concrete_index = base_type.builtin_type == Variant::ARRAY
+					? !array_index_is_number
+					: !BSTypeCompatibility::check(expected_index_type, index_type, options).compatible;
 			if (p_subscript->index != nullptr && index_type.is_set() && !index_type.is_variant() &&
-					!BSTypeCompatibility::check(expected_index_type, index_type, options).compatible) {
+					invalid_concrete_index) {
 				push_error(vformat(R"*(Invalid index type "%s" for a base of type "%s".)*",
 								   index_type.to_string(), base_type.to_string()),
 						p_subscript->index);
@@ -5071,7 +5168,8 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 			}
 			if (!BSTypeCompatibility::check(field_type, argument_type, options).compatible) {
 				push_error(vformat(R"*(Invalid argument %d for enum case "%s.%s": should be "%s" but is "%s".)*",
-								   i + 1, p_enum_meta_type.enum_type, case_name, field_type.to_string(), argument_type.to_string()),
+								   i + 1, p_enum_meta_type.enum_type, case_name, field_type.to_string(), argument_type.to_string()) +
+								BSParser::DataType::same_rendered_name_clause(field_type, "payload field's type", argument_type, "argument"),
 						argument);
 				payload_is_bakeable = false;
 				continue;
@@ -5122,34 +5220,91 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	p_call->set_datatype(case_value_type);
 }
 
-bool BSAnalyzer::find_named_tuple_meta_type(const StringName &p_name, BSParser::DataType &r_tuple_meta_type) {
-	if (p_name == StringName() || current_class == nullptr) {
+bool BSAnalyzer::find_named_tuple_meta_type(const BSParser::DataType &p_base_type, bool p_is_self, const StringName &p_name,
+		const BSParser::Node *p_source, BSParser::DataType &r_tuple_meta_type) {
+	if (p_name == StringName()) {
 		return false;
 	}
-	HashSet<const BSParser::ClassNode *> visited;
-	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->base_type.class_type) {
-		if (visited.has(scope)) {
-			break;
+
+	BSParser::DataType receiver_type = p_base_type;
+	if (_is_self_type_parameter(receiver_type) && !receiver_type.type_parameter_bound.is_empty()) {
+		receiver_type = receiver_type.type_parameter_bound[0];
+		receiver_type.is_meta_type = p_base_type.is_meta_type;
+	}
+	BSParser::ClassNode *start = p_is_self ? current_class : receiver_type.class_type;
+	if (start == nullptr || (!p_is_self && receiver_type.kind != BSParser::DataType::CLASS)) {
+		return false;
+	}
+
+	const auto tuple_type_for_spelling = [&](const BSParser::DataType &p_tuple_type,
+												 BSParser::ClassNode *p_declaring_class) -> BSParser::DataType {
+		if (!_datatype_contains_self_type_parameter(p_tuple_type)) {
+			return p_tuple_type;
 		}
-		visited.insert(scope);
-		if (!scope->has_member(p_name)) {
-			continue;
+		if (!p_is_self) {
+			if (receiver_type.is_meta_type) {
+				BSParser::DataType declaring_value = receiver_type;
+				declaring_value.is_meta_type = false;
+				return _substitute_self_type_parameter(p_tuple_type, declaring_value);
+			}
+			BSParser::DataType receiver_self = _self_type_parameter_from_bound(receiver_type);
+			receiver_self.is_receiver_self_contract = true;
+			return _substitute_self_type_parameter(p_tuple_type, receiver_self);
 		}
-		resolve_class_member(scope, p_name);
-		const BSParser::ClassNode::Member member = scope->get_member(p_name);
-		if (member.type != BSParser::ClassNode::Member::TUPLE || member.m_tuple == nullptr) {
-			return false;
+
+		bool frame_is_declaring_instance = false;
+		if (current_function == nullptr || !current_function->is_static) {
+			HashSet<const BSParser::ClassNode *> visited;
+			for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->base_type.class_type) {
+				if (visited.has(scope)) {
+					break;
+				}
+				visited.insert(scope);
+				if (scope == p_declaring_class) {
+					frame_is_declaring_instance = true;
+					break;
+				}
+			}
 		}
-		r_tuple_meta_type = member.m_tuple->get_datatype();
-		return r_tuple_meta_type.kind == BSParser::DataType::TUPLE && r_tuple_meta_type.is_meta_type;
+		if (frame_is_declaring_instance) {
+			BSParser::DataType receiver_self = _self_type_parameter_from_bound(_self_type_for_class(current_class));
+			receiver_self.is_receiver_self_contract = true;
+			return _substitute_self_type_parameter(p_tuple_type, receiver_self);
+		}
+		return _substitute_self_type_parameter(p_tuple_type, _self_type_for_class(p_declaring_class));
+	};
+
+	for (BSParser::ClassNode *lexical = start; lexical != nullptr; lexical = p_is_self ? lexical->outer : nullptr) {
+		HashSet<const BSParser::ClassNode *> visited;
+		for (BSParser::ClassNode *scope = lexical; scope != nullptr; scope = scope->base_type.class_type) {
+			if (visited.has(scope)) {
+				break;
+			}
+			visited.insert(scope);
+			if (!scope->has_member(p_name)) {
+				continue;
+			}
+			resolve_class_member(scope, p_name, p_source);
+			const BSParser::ClassNode::Member member = scope->get_member(p_name);
+			if (member.type != BSParser::ClassNode::Member::TUPLE || member.m_tuple == nullptr) {
+				return false;
+			}
+			r_tuple_meta_type = tuple_type_for_spelling(member.m_tuple->get_datatype(), scope);
+			return r_tuple_meta_type.kind == BSParser::DataType::TUPLE && r_tuple_meta_type.is_meta_type;
+		}
 	}
 	return false;
+}
+
+bool BSAnalyzer::find_named_tuple_meta_type(const StringName &p_name, BSParser::DataType &r_tuple_meta_type) {
+	BSParser::DataType receiver_type = current_class != nullptr ? current_class->get_datatype() : BSParser::DataType();
+	receiver_type.is_meta_type = false;
+	return find_named_tuple_meta_type(receiver_type, true, p_name, nullptr, r_tuple_meta_type);
 }
 
 void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_tuple_meta_type) {
 	call_site_validation.reject_named_call_arguments(p_call);
 	p_call->is_tuple_construction = true;
-	p_call->receiver_is_current_self = true;
 	BSParser::DataType tuple_type = type_from_metatype(p_tuple_meta_type);
 	tuple_type.is_read_only = true;
 	const int expected_count = tuple_type.container_element_types.size();
@@ -5184,7 +5339,8 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 		}
 		if (!compatible) {
 			push_error(vformat(R"*(Invalid argument %d for tuple "%s": should be "%s" but is "%s".)*",
-							   i + 1, tuple_type.to_string(), field_type.to_string(), argument_type.to_string()),
+							   i + 1, tuple_type.to_string(), field_type.to_string(), argument_type.to_string()) +
+							BSParser::DataType::same_rendered_name_clause(field_type, "tuple field's type", argument_type, "argument"),
 					argument);
 		}
 		if (argument == nullptr || !argument->is_constant) {
@@ -5545,7 +5701,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
 						break;
 					}
-					if ((subscript->base != nullptr && subscript->base->is_constant) || base_type.is_constant) {
+					const bool resolved_constant_destination = subscript->get_datatype().is_constant ||
+							(subscript->attribute != nullptr && subscript->attribute->source == BSParser::IdentifierNode::MEMBER_CONSTANT);
+					if (resolved_constant_destination || (subscript->base != nullptr && subscript->base->is_constant) || base_type.is_constant) {
 						push_error("Cannot assign a new value to a constant.", assignment->assignee);
 						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
 						break;
@@ -5625,7 +5783,8 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 					}
 					if (!BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
 						push_error(vformat(R"*(Value of type "%s" cannot be assigned to a variable of type "%s".)*",
-										   assigned_value_type.to_string(), assignee_type.to_string()),
+										   assigned_value_type.to_string(), assignee_type.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type"),
 								assignment->assigned_value);
 					} else if (op_type.is_variant() || !op_type.is_hard_type()) {
 						mark_node_unsafe(assignment);
@@ -5712,8 +5871,9 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 									variable->initializer);
 						} else {
 							push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-											   initializer_type.to_string(), declared.to_string()),
-									variable);
+											   initializer_type.to_string(), declared.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+									variable->initializer);
 						}
 					}
 				}
@@ -5765,8 +5925,9 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					}
 					if (!BSTypeCompatibility::check(declared, initializer_type, options).compatible) {
 						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()),
-								constant);
+										   initializer_type.to_string(), declared.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+								constant->initializer);
 					}
 				}
 			}
@@ -5843,7 +6004,8 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					}
 					if (!BSTypeCompatibility::check(expected_return, result, options).compatible) {
 						push_error(vformat(R"*(Cannot return value of type "%s" because the function return type is "%s".)*",
-										   result.to_string(), expected_return.to_string()),
+										   result.to_string(), expected_return.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(result, "returned value", expected_return, "return type"),
 								ret);
 					} else if (result.is_variant() || !result.is_hard_type()) {
 						mark_node_unsafe(ret);

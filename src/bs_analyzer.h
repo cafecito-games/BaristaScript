@@ -719,6 +719,8 @@ private:
 	 * complete_self_referential_enum_type on payload fields. open_union_members_collapse remains #60.
 	 */
 	void reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type);
+	bool find_named_tuple_meta_type(const BSParser::DataType &p_base_type, bool p_is_self, const StringName &p_name,
+			const BSParser::Node *p_source, BSParser::DataType &r_tuple_meta_type);
 	bool find_named_tuple_meta_type(const StringName &p_name, BSParser::DataType &r_tuple_meta_type);
 	void reduce_call_tuple_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_tuple_meta_type);
 	/** Foundry datatype_contains_self_type_parameter @ c9d5e35. */

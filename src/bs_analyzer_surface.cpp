@@ -1085,8 +1085,9 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
 						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-										   initializer_type.to_string(), type.to_string()),
-								member.variable);
+										   initializer_type.to_string(), type.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
+								member.variable->initializer);
 					}
 				}
 			}
@@ -1147,8 +1148,9 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
 						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), type.to_string()),
-								member.constant);
+										   initializer_type.to_string(), type.to_string()) +
+										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
+								member.constant->initializer);
 					}
 				}
 			}
@@ -1320,7 +1322,9 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
 		p_identifier->signal_source = member.signal;
 		member.signal->usages++;
-		const BSParser::DataType owner_type = p_class->get_datatype().is_set() ? p_class->get_datatype() : (current_class != nullptr ? current_class->get_datatype() : BSParser::DataType());
+		const BSParser::DataType owner_type = current_class != nullptr && current_class->get_datatype().is_set()
+				? current_class->get_datatype()
+				: p_class->get_datatype();
 		p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_node(member.signal, owner_type, p_class));
 		return true;
 	}
