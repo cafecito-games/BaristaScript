@@ -256,7 +256,8 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
                 "python3 -m pip install -r tests/requirements.txt",
                 "python3 tests/validate_ci.py",
                 "python3 tests/test_run_gdscript_suites.py",
-                "python3 tests/test_corpus_baseline.py"))},
+                "python3 tests/test_corpus_baseline.py",
+                "python3 tests/test_corpus_expectations.py"))},
         ]
         if not isinstance(build_steps, list) or len(build_steps) < 3:
             return "build matrix requires setup-managed Python before offline validation"

@@ -11,6 +11,7 @@ const DEFAULT_CORPUS_ROOT := "res://tests/corpus"
 
 func _initialize() -> void:
 	var corpus_root := DEFAULT_CORPUS_ROOT
+	var stage := ""
 	var allow_empty := false
 	var update_expectations := false
 	var harness := Harness.new()
@@ -26,6 +27,12 @@ func _initialize() -> void:
 					_finish(harness.error_result("BS_ERROR --corpus requires a path"))
 					return
 				corpus_root = arguments[index]
+			"--stage":
+				index += 1
+				if index >= arguments.size() or not arguments[index] in ["parser", "analyzer"]:
+					_finish(harness.error_result("BS_ERROR --stage requires parser or analyzer"))
+					return
+				stage = arguments[index]
 			"--allow-empty":
 				allow_empty = true
 			"--update-expectations":
@@ -35,6 +42,8 @@ func _initialize() -> void:
 				return
 		index += 1
 
+	if not stage.is_empty():
+		harness.fixture_stages[corpus_root] = stage
 	_finish(harness.run(corpus_root, allow_empty, update_expectations))
 
 

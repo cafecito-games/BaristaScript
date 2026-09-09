@@ -286,6 +286,23 @@ class BSCache {
 	static void update_parser_dependencies(const String &p_path, const barista_script::BSParser *p_parser);
 
 public:
+#ifdef DEBUG_ENABLED
+	class ScopedCorpusState {
+		BSCache *previous;
+		BSCache *local;
+
+	public:
+		ScopedCorpusState();
+		~ScopedCorpusState();
+		ScopedCorpusState(const ScopedCorpusState &) = delete;
+		ScopedCorpusState &operator=(const ScopedCorpusState &) = delete;
+	};
+
+private:
+	static thread_local BSCache *corpus_state;
+
+public:
+#endif
 	static BSCache *get_singleton();
 
 	/**
@@ -342,16 +359,20 @@ public:
 };
 
 /**
- * RAII guard that installs a set of source overrides on construction and clears exactly those
- * paths on destruction, restoring the cache's override state. Ported verbatim from
- * fs_cache.h:239 (FSCacheSourceOverrideGuard).
+ * RAII guard that installs source overrides and restores each original presence/value on exit.
+ * Derived from fs_cache.h:239 (FSCacheSourceOverrideGuard); unlike its clear-only cleanup,
+ * nested overrides preserve an existing edited buffer, including an empty one.
  */
 class BSCacheSourceOverrideGuard {
+	HashMap<String, String> previous;
 	Vector<String> paths;
 
 public:
 	explicit BSCacheSourceOverrideGuard(const HashMap<String, String> &p_overrides) {
 		for (const KeyValue<String, String> &entry : p_overrides) {
+			if (BSCache::has_source_override(entry.key)) {
+				previous[entry.key] = BSCache::get_source_code(entry.key);
+			}
 			BSCache::set_source_override(entry.key, entry.value);
 			paths.push_back(entry.key);
 		}
@@ -359,7 +380,11 @@ public:
 
 	~BSCacheSourceOverrideGuard() {
 		for (const String &path : paths) {
-			BSCache::clear_source_override(path);
+			if (previous.has(path)) {
+				BSCache::set_source_override(path, previous[path]);
+			} else {
+				BSCache::clear_source_override(path);
+			}
 		}
 	}
 

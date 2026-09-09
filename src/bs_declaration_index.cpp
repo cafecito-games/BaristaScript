@@ -13,6 +13,31 @@
 #include <cstring>
 
 namespace barista_script {
+#ifdef DEBUG_ENABLED
+thread_local BSDeclarationIndex *BSDeclarationIndex::corpus_state = nullptr;
+BSDeclarationIndex::ScopedCorpusState::ScopedCorpusState(BSDeclarationIndex &p_ambient) {
+	previous = corpus_state;
+	local = memnew(BSDeclarationIndex);
+	{
+		std::lock_guard<std::mutex> generations_lock(p_ambient.generation_mutex);
+		std::lock_guard<std::mutex> lock(p_ambient.mutex);
+		local->by_path = p_ambient.by_path;
+		local->path_by_qualified_name = p_ambient.path_by_qualified_name;
+		local->conformance_files_by_namespace = p_ambient.conformance_files_by_namespace;
+		local->paths_by_annotation = p_ambient.paths_by_annotation;
+		local->generation_counter = p_ambient.generation_counter;
+		local->generation_floor = p_ambient.generation_floor;
+		local->generations = p_ambient.generations;
+		local->load_report = p_ambient.load_report;
+		local->last_load_status = p_ambient.last_load_status;
+	}
+	corpus_state = local;
+}
+BSDeclarationIndex::ScopedCorpusState::~ScopedCorpusState() {
+	corpus_state = previous;
+	memdelete(local);
+}
+#endif
 
 const char *const BSDeclarationIndex::STORE_MAGIC = "BSGI";
 

@@ -606,7 +606,32 @@ Vector<String> BSParseCache::evict_entries_with_missing_files() {
 // BSCache (the in-memory layer ported from Foundry's FSCache)
 // ---------------------------------------------------------------------------
 
+#ifdef DEBUG_ENABLED
+thread_local BSCache *BSCache::corpus_state = nullptr;
+BSCache::ScopedCorpusState::ScopedCorpusState() {
+	BSCache *ambient = get_singleton();
+	previous = corpus_state;
+	local = memnew(BSCache);
+	{
+		std::lock_guard<std::mutex> lock(ambient->mutex);
+		local->source_overrides = ambient->source_overrides;
+	}
+	corpus_state = local;
+}
+BSCache::ScopedCorpusState::~ScopedCorpusState() {
+	// Drop only the evaluation's ASTs while its cache is still current.
+	BSCache::clear();
+	corpus_state = previous;
+	memdelete(local);
+}
+#endif
+
 BSCache *BSCache::get_singleton() {
+#ifdef DEBUG_ENABLED
+	if (corpus_state != nullptr) {
+		return corpus_state;
+	}
+#endif
 	// Created lazily and deliberately never destroyed: the cache holds engine-backed Strings, and
 	// a destructor run during static destruction would call into the GDExtension interface after
 	// it has been unloaded -- the same hazard the seam documents for SNAME. One leaked singleton

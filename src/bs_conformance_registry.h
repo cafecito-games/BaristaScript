@@ -329,6 +329,22 @@ public:
 			String &r_source_file, StringName &r_trait_name) const;
 
 #ifdef DEBUG_ENABLED
+	class ScopedCorpusState {
+		BSConformanceRegistry *previous;
+		BSConformanceRegistry *local;
+
+	public:
+		ScopedCorpusState();
+		~ScopedCorpusState();
+		ScopedCorpusState(const ScopedCorpusState &) = delete;
+		ScopedCorpusState &operator=(const ScopedCorpusState &) = delete;
+	};
+
+private:
+	static thread_local BSConformanceRegistry *corpus_state;
+
+public:
+	HashSet<String> debug_get_loaded_files(const String &p_path) const;
 	/** Test surface for ScopedVisibility / in-flight hiding (wraps `_is_visible`). */
 	static bool debug_is_visible(const String &p_source_file) { return _is_visible(p_source_file); }
 #endif

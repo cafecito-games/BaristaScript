@@ -18,19 +18,17 @@ Upstream at this pin holds 344 runnable parser cases; the triage ledger in
 `tests/corpus_baseline.json` accounts for every non-import disposition so
 `upstream_total == imported + excluded + deferred`.
 
-Each `.out` holds one line: the success sentinel, or the exact diagnostic the front end must
-produce, compared byte for byte. Upstream's `.out` files carry a status word and then the *runtime*
-transcript of the case; neither survives the import, because M2 has no runtime to produce a
-transcript with and the status word is not a diagnostic.
+Each `.out` is a complete static diagnostic block followed by exactly one LF. The generated
+`case_stages.json` assigns each runnable case its explicit frontend stage; helpers have no entries.
+Do not use `--update-expectations` here: the importer owns sources, expectations and stages.
 
-## What these cases assert at M2
+## What these cases assert at oracle checkpoint A
 
-The harness evaluates a case through the tokenizer and the parser. So a `BS_TEST_OK` expectation
-here means **"this source parses without a diagnostic"**, not "this source behaves correctly" --
-the value it printed upstream is not checked, and neither are the warnings the `warnings/` cases are
-named for. That is not a gap this milestone can close: the analyzer does not exist until M3, and
-inventing warning expectations now would be inventing the analyzer's output. The 29 `warnings/`
-cases earn their place regardless: they are 29 more real sources the parser has to accept.
+All 340 cases remain at **parser** stage. A `BS_TEST_OK` expectation means this
+source parses without a diagnostic. It does not assert analyzer success or runtime behavior.
+The four analyzer-error debts and all 29 warning cases await #31 checkpoint B after semantic
+restoration. The static oracle is exercised separately by miniature analyzer fixtures. No upstream
+runtime transcript is compared, and no case function executes.
 
 ## Cases whose expectation M3 must restore
 

@@ -8,7 +8,7 @@ extends RefCounted
 ## Golden-file corpus harness for BaristaScript conformance runs.
 ##
 ## A corpus case is a `.barista` source paired with a `.out` expectation whose
-## first line is either the success sentinel or the exact expected diagnostic
+## complete block is either the success sentinel or the exact expected diagnostic
 ## text. Comparison is exact: differences that differ only in trailing whitespace
 ## or line endings are failures, never normalized away.
 
@@ -45,13 +45,13 @@ enum FailureReason {
 	INVALID_EXPECTATION,
 	UNREADABLE_SOURCE,
 	OUTPUT_MISMATCH,
+	INVALID_RESULT,
 }
 
-## Optional evaluator override: `func(case_path: String) -> Dictionary` returning
-## `{"ok": bool, "output": String}` and, when the source itself cannot be read,
-## `{"source_unreadable": true}`. Tests inject evaluators here; production runs
-## use the registered BaristaScript frontend via `_evaluate_with_language`.
+## Injection is transport-only. Results follow the native raw oracle schema.
 var case_evaluator: Callable
+var fixture_stages: Dictionary = {}
+var frontend_factory: Callable = func(): return ClassDB.instantiate("BaristaScriptAnalyzerProbe")
 
 
 ## Runs every discovered case under `corpus_root` and returns
@@ -59,6 +59,7 @@ var case_evaluator: Callable
 ## exactly one machine-readable summary line, so consecutive runs over an
 ## unchanged tree are byte-identical.
 func run(corpus_root: String, allow_empty: bool = false, update_expectations: bool = false) -> Dictionary:
+	corpus_root = corpus_root.simplify_path()
 	var output: Array[String] = []
 	if not DirAccess.dir_exists_absolute(corpus_root):
 		output.append("BS_ERROR corpus root is not a readable directory: %s" % corpus_root)
@@ -79,6 +80,10 @@ func run(corpus_root: String, allow_empty: bool = false, update_expectations: bo
 			output.append("BS_ERROR corpus directory is unreadable: %s" % unreadable)
 		output.append(_summary_line(0, 0, 0))
 		return {"exit_code": ExitCode.HARNESS_ERROR, "output": output}
+
+	var stage_error := _assign_stages(corpus_root, cases, update_expectations)
+	if not stage_error.is_empty():
+		return error_result("BS_ERROR " + stage_error)
 
 	var failures: Array[Dictionary] = []
 	var passed := 0
@@ -139,6 +144,9 @@ func run(corpus_root: String, allow_empty: bool = false, update_expectations: bo
 	if not failures.is_empty() or (cases.is_empty() and not allow_empty):
 		exit_code = ExitCode.CASES_FAILED
 
+	for failure in failures:
+		if failure.reason in [FailureReason.UNREADABLE_SOURCE, FailureReason.INVALID_RESULT]:
+			exit_code = ExitCode.HARNESS_ERROR
 	output.append(_summary_line(passed, cases.size(), skipped_count))
 	return {"exit_code": exit_code, "output": output}
 
@@ -234,9 +242,7 @@ func _discover_corpus(corpus_root: String) -> Dictionary:
 	}
 
 
-## Evaluates one case and compares its expectation byte-for-byte. The
-## expectation is the first line of the `.out` file with no normalization of
-## any kind: a trailing space or a `\r` survives into the comparison and fails.
+## Exact UTF-8 block comparison removes only the required final LF.
 func _run_case(case_info: Dictionary) -> Dictionary:
 	var expectation_path: String = case_info["expectation_path"]
 	if not FileAccess.file_exists(expectation_path):
@@ -257,13 +263,20 @@ func _run_case(case_info: Dictionary) -> Dictionary:
 			FailureReason.INVALID_EXPECTATION,
 			"expectation %s is not valid UTF-8" % expectation_path
 		)
-	var expected := _first_line(expectation_text)
+	if expectation_bytes.has(0) or not expectation_text.ends_with("\n") or expectation_text == "\n" or expectation_text.ends_with("\n\n") or expectation_text.contains("\r"):
+		return _failure(case_info, FailureReason.INVALID_EXPECTATION, "expectation %s requires a nonempty block with exactly one final LF, without CR or NUL" % expectation_path)
+	var expected := expectation_text.trim_suffix("\n")
 
-	var evaluation := _evaluate(case_info["path"])
+	var evaluation: Variant = _evaluate(case_info["path"], case_info["stage"])
+	var shape_error := _result_error(evaluation, case_info["stage"])
+	if not shape_error.is_empty():
+		return _failure(case_info, FailureReason.INVALID_RESULT, shape_error)
 	if evaluation.get("source_unreadable", false):
 		return _failure(case_info, FailureReason.UNREADABLE_SOURCE, evaluation["output"])
 
-	var actual: String = SUCCESS_SENTINEL if evaluation["ok"] else evaluation["output"]
+	if evaluation.infrastructure_error:
+		return _failure(case_info, FailureReason.INVALID_RESULT, evaluation.output)
+	var actual: String = evaluation["output"]
 	if expected != actual:
 		return _failure(
 			case_info,
@@ -275,39 +288,40 @@ func _run_case(case_info: Dictionary) -> Dictionary:
 	return {"passed": true}
 
 
-func _evaluate(case_path: String) -> Dictionary:
+func _evaluate(case_path: String, stage: String) -> Variant:
 	if case_evaluator.is_valid():
 		return case_evaluator.call(case_path)
-	return _evaluate_with_language(case_path)
+	return _evaluate_with_language(case_path, stage)
 
 
-## Production evaluation: run the case source through the BaristaScript
-## frontend and report its first diagnostic, or the success sentinel when it
-## reports none.
-##
-## The source is handed over as raw bytes rather than as a String on purpose. A
-## String has already been decoded, and malformed UTF-8 has already become
-## U+FFFD by then -- which is exactly the substitution the frontend must report
-## instead of absorbing.
-##
-## The frontend reaches the parser, which is what makes the imported corpus mean
-## anything: a tokenizer-only evaluation would have accepted every case whose
-## source lexes, and 340 of them do. Tokenizer diagnostics still arrive here --
-## the parser reports them as its own as it consumes the token stream -- so the
-## tokenizer contract fixtures are evaluated by the same one path as the corpus.
-func _evaluate_with_language(case_path: String) -> Dictionary:
+func _result_error(result: Variant, stage: String) -> String:
+	if not result is Dictionary:
+		return "malformed frontend result: expected Dictionary"
+	for key in ["ok", "analysis_ran", "infrastructure_error"]:
+		if not result.get(key) is bool:
+			return "malformed frontend result: Boolean %s required" % key
+	if not result.get("output") is String or result.output.is_empty():
+		return "malformed frontend result: nonempty output required"
+	if stage == "parser" and result.analysis_ran or result.infrastructure_error and result.ok or stage == "analyzer" and result.ok and not result.analysis_ran:
+		return "malformed frontend result: inconsistent stage/outcome"
+	if result.has("source_unreadable") and (not result.source_unreadable is bool or result.source_unreadable and (result.ok or not result.infrastructure_error)):
+		return "malformed frontend result: inconsistent unreadable source"
+	if result.output == SUCCESS_SENTINEL and not result.ok or stage == "parser" and result.ok and result.output != SUCCESS_SENTINEL:
+		return "malformed frontend result: contradictory success block"
+	if result.output.contains("\r") or result.output.ends_with("\n"):
+		return "malformed frontend result: invalid block terminator"
+	return ""
+
+
+func _evaluate_with_language(case_path: String, stage: String) -> Variant:
 	var source_bytes := FileAccess.get_file_as_bytes(case_path)
 	var open_error := FileAccess.get_open_error()
 	if open_error != OK:
-		return {
-			"ok": false,
-			"output": "source %s is unreadable (error %d)" % [case_path, open_error],
-			"source_unreadable": true,
-		}
-	var diagnostic: String = BaristaScriptParserProbe.new().first_parse_diagnostic(source_bytes, case_path)
-	if diagnostic.is_empty():
-		return {"ok": true, "output": ""}
-	return {"ok": false, "output": diagnostic}
+		return {"ok": false, "output": "source %s is unreadable (error %d)" % [case_path, open_error], "source_unreadable": true, "analysis_ran": false, "infrastructure_error": true}
+	var probe: Variant = frontend_factory.call()
+	if probe == null or not probe.has_method("evaluate_corpus"):
+		return {"ok": false, "output": "missing raw corpus frontend probe: %s" % case_path, "analysis_ran": false, "infrastructure_error": true}
+	return probe.evaluate_corpus(source_bytes, case_path, stage)
 
 
 func _failure(
@@ -340,13 +354,6 @@ func _write_expectation(expectation_path: String, actual: String) -> int:
 	return OK
 
 
-func _first_line(text: String) -> String:
-	var newline := text.find("\n")
-	if newline == -1:
-		return text
-	return text.substr(0, newline)
-
-
 ## Presentation-only escaping for OUTPUT_MISMATCH diagnostics. Remaining ASCII C0
 ## and DEL render as lowercase \\xNN escapes; comparison and --update-expectations
 ## stay on the raw values.
@@ -375,3 +382,138 @@ func _escape_mismatch_value(value: String) -> String:
 
 func _summary_line(passed: int, total: int, skipped_count: int) -> String:
 	return "%s %d/%d skipped=%d" % [SUMMARY_PREFIX, passed, total, skipped_count]
+
+
+# Imported roots always use their own generated manifest, including descendant runs.
+# Local fixtures must explicitly choose a stage; this cannot bypass imported metadata.
+func _assign_stages(corpus_root: String, cases: Array, update: bool) -> String:
+	var registry_path := ProjectSettings.globalize_path("res://").path_join("../scripts/corpus_sources.json")
+	var registry := _read_unique_json(registry_path)
+	if registry.has("error"):
+		return registry.error
+	var document: Dictionary = registry.document
+	if not document.get("corpora") is Dictionary or not document.get("revision") is String:
+		return "invalid corpus registry: %s" % registry_path
+	var owned := {}
+	for record in document.corpora.values():
+		if record.get("state") != "active":
+			continue
+		var root := "res://" + String(record.destination).trim_prefix("project/")
+		if not (_under(corpus_root, root) or _under(root, corpus_root)):
+			continue
+		if update:
+			return "--update-expectations refused: generated imported root %s is importer-owned" % root
+		var manifest := _read_unique_json(root.path_join("case_stages.json"))
+		if manifest.has("error"):
+			return manifest.error
+		var validated := _validate_stage_manifest(manifest.document, root, document.revision)
+		if validated.has("error"):
+			return validated.error
+		owned.merge(validated.stages)
+
+	for case in cases:
+		if owned.has(case.path):
+			case["stage"] = owned[case.path]
+			continue
+		if _under(case.path, "res://tests/corpus"):
+			return "unregistered imported case has no manifest: %s" % case.path
+		var selected := ""
+		for root in fixture_stages:
+			if _under(case.path, root):
+				if not selected.is_empty():
+					return "overlapping fixture stages: %s" % case.path
+				if not fixture_stages[root] is String or not fixture_stages[root] in ["parser", "analyzer"]:
+					return "invalid explicit fixture stage: %s" % case.path
+				selected = fixture_stages[root]
+		if not selected in ["parser", "analyzer"]:
+			return "explicit fixture stage required: %s" % case.path
+		case["stage"] = selected
+	return ""
+
+
+func _validate_stage_manifest(stages: Dictionary, root: String, revision: String) -> Dictionary:
+	if stages.keys().size() != 3 or typeof(stages.get("schema_version")) not in [TYPE_INT, TYPE_FLOAT] or stages.get("schema_version") != 1 or stages.get("foundry_revision") != revision or not stages.get("cases") is Dictionary:
+		return {"error": "invalid/stale case stage manifest: %s" % root}
+	var discovery := _discover_corpus(root)
+	if not discovery.unreadable_directories.is_empty():
+		return {"error": "unreadable imported directory: %s" % root}
+	var remaining: Dictionary = stages.cases.duplicate()
+	var owned := {}
+	for path in remaining:
+		if not path is String or not _valid_case_relative(path) or not remaining[path] in ["parser", "analyzer"]:
+			return {"error": "invalid case stage entry: %s/%s" % [root, str(path)]}
+	for case in discovery.cases:
+		var relative: String = case.path.trim_prefix(root + "/")
+		if not remaining.has(relative):
+			return {"error": "missing case stage entry: %s" % case.path}
+		owned[case.path] = remaining[relative]
+		remaining.erase(relative)
+	if not remaining.is_empty():
+		return {"error": "extra/helper case stage entries: %s" % root}
+	return {"stages": owned}
+
+
+func _under(path: String, root: String) -> bool:
+	path = path.simplify_path()
+	root = root.simplify_path()
+	return path == root or path.begins_with(root.trim_suffix("/") + "/")
+
+
+func _valid_case_relative(path: String) -> bool:
+	if not path.ends_with(CASE_EXTENSION) or path.ends_with(HELPER_SUFFIX) or path.contains("\\") or path.begins_with("/"):
+		return false
+	for part in path.split("/"):
+		if part in ["", ".", ".."]:
+			return false
+	return true
+
+
+func _read_unique_json(path: String) -> Dictionary:
+	var bytes := FileAccess.get_file_as_bytes(path)
+	if FileAccess.get_open_error() != OK:
+		return {"error": "missing/unreadable JSON: %s" % path}
+	var text := bytes.get_string_from_utf8()
+	if text.to_utf8_buffer() != bytes or bytes.has(0):
+		return {"error": "invalid UTF-8 JSON: %s" % path}
+	var parser := JSON.new()
+	if parser.parse(text) != OK or not parser.data is Dictionary:
+		return {"error": "invalid JSON object: %s" % path}
+	# JSON.parse collapses duplicates. Scan string tokens independently, using the
+	# parser to decode escapes, and retain each object's keys before accepting it.
+	var objects: Array[Dictionary] = []
+	var index := 0
+	while index < text.length():
+		var ch := text[index]
+		if ch == "{":
+			objects.append({})
+		elif ch == "}":
+			objects.pop_back()
+		elif ch == '"':
+			var start := index
+			index += 1
+			while index < text.length():
+				if text[index] == "\\":
+					index += 2
+					continue
+				if text[index] == '"':
+					break
+				index += 1
+			var after := index + 1
+			while after < text.length() and text[after] in [" ", "\n", "\r", "\t"]:
+				after += 1
+			if after < text.length() and text[after] == ":":
+				var key: String = JSON.parse_string(text.substr(start, index - start + 1))
+				if objects.back().has(key):
+					return {"error": "duplicate JSON key %s: %s" % [key, path]}
+				objects.back()[key] = true
+				if key == "schema_version":
+					var value_start := after + 1
+					while text[value_start] in [" ", "\n", "\r", "\t"]:
+						value_start += 1
+					var value_end := value_start
+					while value_end < text.length() and not text[value_end] in [",", "}", " ", "\n", "\r", "\t"]:
+						value_end += 1
+					if text.substr(value_start, value_end - value_start) != "1":
+						return {"error": "schema_version must be integer 1: %s" % path}
+		index += 1
+	return {"document": parser.data}

@@ -339,6 +339,10 @@ class WrapperContract(unittest.TestCase):
         destination = self.root / "project/tests/corpus/analyzer"
         destination.mkdir()
         (destination / "one.barista").write_text("func test(): pass")
+        from corpus_expectations import success_sentinel
+        (destination / "one.out").write_text(success_sentinel() + "\n")
+        from corpus_stages import write_stages
+        write_stages(destination, {"one.barista"}, set(), self.registry["revision"], "analyzer")
         self.baseline["corpora"]["analyzer"].update(imported=True, total=1, upstream_total=1)
         self.suites["extra_invocations"].append({"script": "res://tests/corpus_runner.gd",
             "args": ["--corpus", "res://tests/corpus/analyzer"], "expect": "^BS_CORPUS 1/1 skipped=0$"})
@@ -472,7 +476,7 @@ class OfflineProducer(unittest.TestCase):
 
     def test_real_producer_detects_same_count_bytes_additions_and_removals(self):
         self.assertEqual(self.importer.compare_trees(self.committed, self.fresh), [])
-        paths = [next(self.committed.rglob("*.barista")), next(self.committed.rglob("*.out")), self.committed / "README.md"]
+        paths = [next(self.committed.rglob("*.barista")), next(self.committed.rglob("*.out")), self.committed / "README.md", self.committed / "case_stages.json"]
         for path in paths:
             original = path.read_bytes()
             path.write_bytes(bytes([original[0] ^ 1]) + original[1:])
@@ -481,10 +485,6 @@ class OfflineProducer(unittest.TestCase):
                               self.importer.compare_trees(self.committed, self.fresh))
             path.write_bytes(original)
         extra = self.committed / "case_stages.json"
-        extra.write_text('{"future": "stage"}')
-        self.assertIn("only in the committed tree: case_stages.json", self.importer.compare_trees(self.committed, self.fresh))
-        # Generic comparison also covers the future manifest once a producer emits it.
-        (self.fresh / extra.name).write_bytes(extra.read_bytes())
         extra.write_text('{"future": "drift"}')
         self.assertIn("differs from a fresh import: case_stages.json", self.importer.compare_trees(self.committed, self.fresh))
         extra.unlink()
@@ -588,19 +588,27 @@ class FullProducer(unittest.TestCase):
             self.assertIn("differs from a fresh import: " + path.relative_to(destination).as_posix(), result.stdout)
             print("REAL SAME-COUNT DRIFT (expected failure): " + result.stdout.strip(), flush=True)
             path.write_bytes(original)
-        for relative in ("extra.txt", "case_stages.json"):
+        for relative in ("extra.txt",):
             extra = destination / relative
             extra.write_text("unexpected generated file")
             result = self.run_importer()
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn(relative, result.stdout)
+            self.assertIn(relative, result.stdout + result.stderr)
             extra.unlink()
+        manifest = destination / "case_stages.json"
+        original_stages = manifest.read_bytes()
+        for malformed in [b'{}', b'{"schema_version":1,"schema_version":1}', b'not json']:
+            manifest.write_bytes(malformed)
+            result = self.run_importer()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(result.stdout or result.stderr)
+        manifest.write_bytes(original_stages)
         missing = next(destination.rglob("*.out"))
         original = missing.read_bytes()
         missing.unlink()
         result = self.run_importer()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(missing.name, result.stdout)
+        self.assertIn(missing.name, result.stdout + result.stderr)
         missing.write_bytes(original)
         self.assertEqual(self.snapshot(ROOT / "project/tests/corpus/parser"), original_workspace)
 

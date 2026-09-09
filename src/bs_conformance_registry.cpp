@@ -206,7 +206,38 @@ bool BSConformanceRegistry::_is_visible(const String &p_source_file) {
 	return active_visibility == nullptr || active_visibility->can_see(p_source_file);
 }
 
+#ifdef DEBUG_ENABLED
+thread_local BSConformanceRegistry *BSConformanceRegistry::corpus_state = nullptr;
+HashSet<String> BSConformanceRegistry::debug_get_loaded_files(const String &p_path) const {
+	std::lock_guard<std::mutex> lock(mutex);
+	const HashSet<String> *files = loaded_files_by_file.getptr(p_path);
+	return files != nullptr ? HashSet<String>(*files) : HashSet<String>();
+}
+BSConformanceRegistry::ScopedCorpusState::ScopedCorpusState() {
+	BSConformanceRegistry *ambient = get_singleton();
+	previous = corpus_state;
+	local = memnew(BSConformanceRegistry);
+	{
+		std::lock_guard<std::mutex> lock(ambient->mutex);
+		local->conformances_by_file = ambient->conformances_by_file;
+		local->index = ambient->index;
+		local->trait_bindings_by_file = ambient->trait_bindings_by_file;
+		local->loaded_files_by_file = ambient->loaded_files_by_file;
+	}
+	corpus_state = local;
+}
+BSConformanceRegistry::ScopedCorpusState::~ScopedCorpusState() {
+	corpus_state = previous;
+	memdelete(local);
+}
+#endif
+
 BSConformanceRegistry *BSConformanceRegistry::get_singleton() {
+#ifdef DEBUG_ENABLED
+	if (corpus_state != nullptr) {
+		return corpus_state;
+	}
+#endif
 	if (singleton == nullptr) {
 		singleton = memnew(BSConformanceRegistry);
 	}

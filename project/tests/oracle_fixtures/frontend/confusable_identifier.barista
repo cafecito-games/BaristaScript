@@ -1,0 +1,6 @@
+extends Node
+
+func test():
+	var port = 0
+	var pοrt = 1
+	prints(port, pοrt)

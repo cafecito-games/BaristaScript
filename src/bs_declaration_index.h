@@ -76,6 +76,24 @@ String bs_declaration_index_load_status_name(BSDeclarationIndexLoadStatus p_stat
  */
 class BSDeclarationIndex {
 public:
+#ifdef DEBUG_ENABLED
+	class ScopedCorpusState {
+		BSDeclarationIndex *previous;
+		BSDeclarationIndex *local;
+
+	public:
+		explicit ScopedCorpusState(BSDeclarationIndex &p_ambient);
+		~ScopedCorpusState();
+		ScopedCorpusState(const ScopedCorpusState &) = delete;
+		ScopedCorpusState &operator=(const ScopedCorpusState &) = delete;
+	};
+	static BSDeclarationIndex *get_corpus_state() { return corpus_state; }
+
+private:
+	static thread_local BSDeclarationIndex *corpus_state;
+
+public:
+#endif
 	static const uint32_t FORMAT_VERSION = 1;
 	static const char *const STORE_MAGIC; // "BSGI"
 
