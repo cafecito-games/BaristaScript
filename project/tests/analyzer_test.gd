@@ -92,6 +92,7 @@ func _init() -> void:
 	_test_concrete_cast_ternary_and_type_test_reduction(failures)
 	_test_pure_literal_constant_materialization(failures)
 	_test_pure_constant_review_regressions(failures)
+	_test_constant_dictionary_key_conversion(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -5176,3 +5177,27 @@ func _test_pure_constant_review_regressions(failures: PackedStringArray) -> void
 	var local_source := "func test():\n\tconst PACKED: Variant = [1, 2] as PackedInt32Array\n\tconst VALUE: Array = PACKED\n\tconst NESTED: Array[PackedInt32Array] = [[1, 2]]\n\tprint(VALUE, NESTED)\n"
 	var local_report: Dictionary = probe.validate_source(local_source, "res://tests/review_local_conversion.barista", true)
 	_expect(failures, local_report.get("valid", false) and local_report.get("errors", []).is_empty() and local_report.get("warnings", []).is_empty(), "local constant conversion consumers remain valid: %s" % [local_report])
+
+
+func _test_constant_dictionary_key_conversion(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for source: String in [
+		"const BASE: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = BASE[1]\n",
+		"const BASE: Dictionary[int, int] = {1: 2}\nvar probe_expression = BASE[1.5]\n",
+		"const BASE: Dictionary[int, int] = {1: 2}\nvar probe_expression = BASE[true]\n",
+		"const BASE: Dictionary[bool, int] = {true: 2}\nvar probe_expression = BASE[1]\n",
+		'const BASE: Dictionary[String, int] = {"x": 2}\nvar probe_expression = BASE[&"x"]\n',
+		'const BASE: Dictionary[StringName, int] = {&"x": 2}\nvar probe_expression = BASE["x"]\n',
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(source, "res://tests/review_builtin_dictionary_key.barista")
+		var report: Dictionary = probe.validate_source(source, "res://tests/review_builtin_dictionary_key.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == "int" and observed.get("value") == 2 and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "declared builtin Dictionary key converts before pure lookup: %s / %s" % [observed, report])
+	for control: Array in [
+		["const BASE = {1.0: 2}\nvar probe_expression = BASE[1]\n", 'Cannot get index "1" from "{ 1.0: 2 }".'],
+		['const BASE: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = BASE["missing"]\n', 'Cannot get index "missing" from "{ 1.0: 2 }".'],
+		["const BASE: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = BASE[3]\n", 'Cannot get index "3" from "{ 1.0: 2 }".'],
+		["const BASE: Dictionary[int, int] = {1: 2}\nvar probe_expression = BASE[1e309]\n", 'Cannot get index "inf" from "{ 1: 2 }".'],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_rejected_dictionary_key.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_rejected_dictionary_key.barista", false)
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null and _errors_are_exact(report.get("errors", []), [[control[1], 2, 29]]), "raw/nonconvertible/missing/checked Dictionary key retains original index diagnostic and no value: %s / %s" % [observed, report])

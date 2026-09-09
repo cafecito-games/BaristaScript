@@ -3293,6 +3293,23 @@ Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_ex
 	if (!index_reduced) {
 		return Variant();
 	}
+	const BSParser::DataType base_type = subscript->base->get_datatype();
+	if (base.get_type() == Variant::DICTIONARY && base_type.kind == BSParser::DataType::BUILTIN &&
+			base_type.builtin_type == Variant::DICTIONARY && base_type.has_container_element_type(0)) {
+		// Pin Dictionary::getptr validates a copied key through ContainerTypeValidate.
+		// M3 omits runtime descriptors, but known builtin keys can use the same strict
+		// conversion before lookup. Keep the original index AST/value for diagnostics.
+		const BSParser::DataType key_type = base_type.get_container_element_type(0);
+		if (key_type.kind == BSParser::DataType::BUILTIN && key_type.builtin_type != Variant::NIL &&
+				key_type.builtin_type != Variant::OBJECT && key_type.builtin_type != index.get_type()) {
+			Variant converted;
+			if (!Variant::can_convert_strict(index.get_type(), key_type.builtin_type) ||
+					!_construct_builtin_variant(key_type.builtin_type, index, converted)) {
+				return Variant();
+			}
+			index = converted;
+		}
+	}
 	return base.get(index, &r_reduced);
 }
 
