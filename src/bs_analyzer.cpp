@@ -155,9 +155,11 @@ static bool _constant_container_source_type(BSParser::ExpressionNode *p_expressi
 			break;
 		case BSParser::Node::CALL: {
 			const BSParser::CallNode *call = static_cast<const BSParser::CallNode *>(p_expression);
-			// Existing concrete named-tuple construction already folded these arguments.
-			// Inspect its retained values only; do not make any other CALL reducible here.
-			if (call->is_tuple_construction && type.kind == BSParser::DataType::TUPLE &&
+			// These existing tuple/enum producers already folded their retained arguments.
+			// The marker and actual carrier exclude ordinary calls returning the same type.
+			const bool folded_container = (call->is_tuple_construction && type.kind == BSParser::DataType::TUPLE) ||
+					(call->is_enum_case_construction && type.is_tagged_union_type());
+			if (folded_container &&
 					!type.is_meta_type && call->reduced_value.get_type() == Variant::ARRAY) {
 				for (BSParser::ExpressionNode *argument : call->arguments) {
 					if (inspect(argument)) {
@@ -168,8 +170,18 @@ static bool _constant_container_source_type(BSParser::ExpressionNode *p_expressi
 		} break;
 		case BSParser::Node::CAST:
 			return inspect(static_cast<BSParser::CastNode *>(p_expression)->operand);
+		case BSParser::Node::AWAIT:
+			// Only the already-constant non-coroutine copy can reach this traversal.
+			return inspect(static_cast<BSParser::AwaitNode *>(p_expression)->to_await);
 		case BSParser::Node::SUBSCRIPT: {
 			BSParser::SubscriptNode *subscript = static_cast<BSParser::SubscriptNode *>(p_expression);
+			// Member access records the initializer on its attribute without reducing that
+			// identifier independently. Follow the retained source, never perform new lookup.
+			if (subscript->is_attribute && subscript->attribute != nullptr &&
+					subscript->attribute->source == BSParser::IdentifierNode::MEMBER_CONSTANT &&
+					subscript->attribute->constant_source != nullptr && inspect(subscript->attribute->constant_source->initializer)) {
+				return true;
+			}
 			return inspect(subscript->base) || (subscript->is_attribute && inspect(subscript->attribute));
 		}
 		case BSParser::Node::TERNARY_OPERATOR: {
