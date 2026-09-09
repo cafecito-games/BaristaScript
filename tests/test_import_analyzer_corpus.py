@@ -97,6 +97,66 @@ class AnalyzerImport(unittest.TestCase):
         path.unlink()
         path.write_bytes(original)
 
+    def test_required_paired_dependency_cannot_be_removed_by_policy(self):
+        consumer = self.source / 'analyzer/features/paired_consumer.fs'
+        provider = consumer.with_name('paired_provider.fs')
+        consumer.parent.mkdir(parents=True, exist_ok=True)
+        consumer.write_bytes(b'const Provider = preload("paired_provider.fs")\n')
+        provider.write_bytes(b'func test():\n\tpass\n')
+        for path in (consumer, provider):
+            path.with_suffix('.out').write_bytes(b'FS_TEST_OK\n')
+        self.inventory()
+        self.policy['deferred']['features/paired_provider.barista'] = 'M5 reviewed fixture control'
+        with self.assertRaisesRegex(ValueError, 'required.*dependency.*removed'):
+            self.inventory()
+
+    def test_case_source_edits_require_disjoint_disposition_and_valid_provenance(self):
+        path = 'analyzer/errors/preload_missing_relative_path.fs'
+        data = (self.source / path).read_bytes()
+        edit = self.m.change(data, 0, 1, data[:1].decode(), 'exact-control')
+        self.policy['source_edits'][path] = {'sha256': self.m.sha(data), 'patches': [edit]}
+        with self.assertRaisesRegex(ValueError, 'source edit requires'):
+            self.inventory()
+        self.policy['rewritten']['errors/preload_missing_relative_path.barista'] = 'Identity-preserving source control.'
+        self.inventory()
+        for key, value in [('line', 500), ('rule', ''), ('occurrences', True), ('after', '\0'), ('after', 'x\n')]:
+            old = edit[key]
+            edit[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                self.inventory()
+            edit[key] = old
+
+    def test_staging_validation_rejects_unlisted_files(self):
+        import run_corpus_triage as triage
+        inv = self.inventory()
+        destination = self.root / 'stage'
+        self.m.write_stage(inv, self.source, destination)
+        triage.validate_staging(destination, inv)
+        for extra in ['.baristaignore', '_support/.baristaignore', 'orphan.out']:
+            path = destination / extra
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'')
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'population'):
+                triage.validate_staging(destination, inv)
+            path.unlink()
+
+    def test_staging_removed_case_cannot_shrink_its_declared_population(self):
+        import run_corpus_triage as triage
+        inv = self.inventory()
+        destination = self.root / 'stage'
+        self.m.write_stage(inv, self.source, destination)
+        record = next(r for r in inv['sources'] if r['role'] == 'case' and r['disposition'] == 'imported')
+        inv['sources'].remove(record)
+        inv['ledger']['total'] -= 1
+        case = destination / record['imported_path']
+        case.unlink()
+        case.with_suffix('.out').unlink()
+        stages = self.m.read_json(destination / 'case_stages.json')
+        stages['cases'].pop(record['imported_path'])
+        (destination / 'case_stages.json').write_bytes(self.m.encoded(stages))
+        with self.assertRaisesRegex(ValueError, 'population|accounting'):
+            triage.validate_staging(destination, inv)
+
     def test_stage_replacement_is_deterministic_and_detects_byte_drift(self):
         inv = self.inventory()
         destination = self.root / 'stage'
@@ -133,6 +193,19 @@ class AnalyzerImport(unittest.TestCase):
         self.assertEqual(record['expected_block'].count('~~ WARNING'), 2)
         self.assertNotIn('runtime', record['expected_block'])
 
+    def test_registered_language_resource_identity_patches(self):
+        policy = self.m.default_policy()
+        output = 'analyzer/errors/retroactive_conformance_enum_target.out'
+        case = 'errors/retroactive_conformance_enum_target.barista'
+        self.policy['expectation_edits'][output] = policy['expectation_edits'][output]
+        self.policy['expectation_overrides'][case] = policy['expectation_overrides'][case]
+        records = {r['upstream_path']: r for r in self.inventory()['sources']}
+        self.assertIn('only BaristaScript class', records[output.replace('.out', '.fs')]['expected_block'])
+        source = 'analyzer/features/use_preload_script_as_type.fs'
+        record = records[source]
+        data = self.m.patch((self.source / source).read_bytes(), record['transformations'], source)
+        self.assertIn(b'const preloaded: BaristaScript = preload("fs_to_preload.notest.barista")', data)
+
     def test_d1_helper_patch_stale_hash_and_overlapping_spans(self):
         inv = self.inventory()
         record = next(r for r in inv['sources'] if r['upstream_path'] == 'utils.notest.fs')
@@ -160,7 +233,7 @@ class AnalyzerImport(unittest.TestCase):
         self.policy['rewritten']['features/generic_fixture.barista'] = 'duplicate disposition'
         with self.assertRaisesRegex(ValueError, 'overlapping'):
             self.inventory()
-        self.policy['rewritten'] = {}
+        self.policy['rewritten'].pop('features/generic_fixture.barista')
         source = self.source / 'analyzer/errors/preload_missing_relative_path.out'
         data = source.read_bytes()
         start = data.index(b'Could not') if b'Could not' in data else data.index(b'preload')
@@ -201,6 +274,12 @@ class AnalyzerImport(unittest.TestCase):
 
 
 class TriageGuard(unittest.TestCase):
+    def test_duplicate_result_fields_are_malformed(self):
+        import run_corpus_triage as triage
+        payload = '{"path":"res://fixture/case.barista","passed":false,"passed":true,"expected":"BS_TEST_OK","actual":"BS_TEST_OK"}'
+        process = {'output': 'BS_CASE_RESULT ' + payload + '\nBS_CASE_RAN case.barista\nBS_CORPUS 1/1 skipped=2\n', 'exit_code': 0, 'timed_out': False}
+        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['terminal'], 'malformed_result')
+
     def test_exit_zero_without_execution_is_failure(self):
         import run_corpus_triage as triage
         process = {'output': '', 'exit_code': 0, 'timed_out': False}

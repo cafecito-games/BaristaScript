@@ -385,6 +385,18 @@ class CheckoutContract(unittest.TestCase):
     def verify(self):
         self.module.verify_checkout(self.root, self.registry, self.registry["revision"])
 
+    def test_executable_mode_drift_without_byte_changes_fails(self):
+        paths = [record["source"] + "/input.fs" for record in self.registry["corpora"].values()]
+        paths += self.registry["auxiliary_sources"]
+        for relative in paths:
+            path = self.root / relative
+            mode = path.stat().st_mode
+            path.chmod(mode | stat.S_IXUSR)
+            with self.subTest(path=relative), self.assertRaisesRegex(ValueError, "mode"):
+                self.verify()
+            path.chmod(mode)
+        self.verify()
+
     def test_auxiliary_exact_bytes_missing_and_index_drift(self):
         for relative in self.registry["auxiliary_sources"]:
             path = self.root / relative

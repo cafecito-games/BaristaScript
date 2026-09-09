@@ -125,7 +125,7 @@
     "analyzer/errors/retroactive_conformance_enum_target.out": {
       "patches": [
         {
-          "after": "Barista Script",
+          "after": "BaristaScript",
           "before": "Foundry Script",
           "end": 95,
           "line": 2,
@@ -144,7 +144,7 @@
     "errors/named_call_argument_on_native_method.barista": "Hard-fork language identity: only the exact pinned diagnostic FoundryScript/Foundry Script brand becomes BaristaScript/Barista Script; semantic text and source unchanged.",
     "errors/named_call_argument_on_non_gdscript.barista": "Hard-fork language identity: only the exact pinned diagnostic FoundryScript/Foundry Script brand becomes BaristaScript/Barista Script; semantic text and source unchanged.",
     "errors/named_call_argument_on_unresolved_method.barista": "Hard-fork language identity: only the exact pinned diagnostic FoundryScript/Foundry Script brand becomes BaristaScript/Barista Script; semantic text and source unchanged.",
-    "errors/retroactive_conformance_enum_target.barista": "Hard-fork language identity: only the exact pinned diagnostic FoundryScript/Foundry Script brand becomes BaristaScript/Barista Script; semantic text and source unchanged."
+    "errors/retroactive_conformance_enum_target.barista": "Translate the exact pinned language name Foundry Script to the registered BaristaScript name; preserve every static diagnostic and source span."
   },
   "foundry_revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
   "owners": {
@@ -12079,9 +12079,25 @@
       "review_state": "source_slice_pending_execution"
     }
   },
-  "rewritten": {},
+  "rewritten": {
+    "features/use_preload_script_as_type.barista": "Translate the exact declared preload resource type FoundryScript to the registered BaristaScript class. Preserve the preload, type-use assertion, line positions and complete static success expectation."
+  },
   "schema_version": 1,
   "source_edits": {
+    "analyzer/features/use_preload_script_as_type.fs": {
+      "patches": [
+        {
+          "after": "BaristaScript",
+          "before": "FoundryScript",
+          "end": 30,
+          "line": 1,
+          "occurrences": 1,
+          "rule": "registered-language-resource-identity",
+          "start": 17
+        }
+      ],
+      "sha256": "e0d2e61f5512d5479a67a949c4476165644ffc8d4426c0f744896148c1516ef7"
+    },
     "utils.notest.fs": {
       "patches": [
         {

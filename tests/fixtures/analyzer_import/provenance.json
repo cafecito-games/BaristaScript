@@ -1,5 +1,4 @@
 {
-  "revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
   "files": {
     "analyzer/errors/annotation_duplicate_in_imported_lib.notest.fs": "795b6a98dbeeb6bbf692cb3d5c30429e5316c0ec9eeb4f41f7d26a882fca8d44",
     "analyzer/errors/annotation_duplicate_in_imported_usage.fs": "7d965bd282e5248818d2a46e1c5fd124753b56ba338c73c1719f030bbd4ab6ae",
@@ -35,16 +34,22 @@
     "analyzer/errors/issue_95_trait_namespace_ambiguous/issue_95_trait_ambiguous_beta.notest.fs": "94a1d3e530f5c3abf749717c11c3f7bd2d4b263aa875a7ea9da54923a7651927",
     "analyzer/errors/preload_missing_relative_path.fs": "89ef0858c09283aefc8e40a704b61acfa55465dcff45aa0282c5de92c54b9d5e",
     "analyzer/errors/preload_missing_relative_path.out": "96c4f01841a6f6477315700d63e165c2172e5a3b4bfde928eec1c983c9091568",
+    "analyzer/errors/retroactive_conformance_enum_target.fs": "f4fbc1fc5e633e214d5cb5eaf82d4a5b55b43911faec9e35f81d7fe6a7f41951",
+    "analyzer/errors/retroactive_conformance_enum_target.out": "0f7d9ec6acfd4c47194615c6ab1a3aafa1c25f51a157b94ae3644245fd67887d",
     "analyzer/errors/trait_body_declaration_error.fs": "0f1b3a5ddba796e1930673250ea8cceb288c44f9e11d0e8d1caaf39cebfa5a98",
     "analyzer/errors/trait_body_declaration_error.out": "c1660a6184643ff9a1f408bc053efae59b64233e7a75d8d377909468c8ec33f1",
     "analyzer/errors/trait_body_declaration_error_base.notest.fs": "8aeb96c6aa56d38a838e19887ce58d897b086b4ac1aa164c00e97fdc091740fd",
+    "analyzer/features/fs_to_preload.notest.fs": "99670c6c8f5f3c726112d8f5a9f40c7a5e010646030c4b34c3b9995ff981653e",
     "analyzer/features/typed_callable_bind_gapped_arity_rpc_id.fs": "fd807ec34ce6443ab221002a42d53a5b882e5225e99a6cef7b3ddbc549d201f7",
     "analyzer/features/typed_callable_bind_gapped_arity_rpc_id.out": "11f65f14fec86493caedb68e61ac159d3543f596de34ca45441466ff991594af",
     "analyzer/features/typed_callable_unbind_gapped_arity_rpc_id.fs": "e52c4218c2bc2610e1e24b5bb150d84c391188c9fd4cdac6b33e1607984959bc",
     "analyzer/features/typed_callable_unbind_gapped_arity_rpc_id.out": "11f65f14fec86493caedb68e61ac159d3543f596de34ca45441466ff991594af",
+    "analyzer/features/use_preload_script_as_type.fs": "e0d2e61f5512d5479a67a949c4476165644ffc8d4426c0f744896148c1516ef7",
+    "analyzer/features/use_preload_script_as_type.out": "0ee9742d50b10ce2aa6a67702cf1626fb0c0afcb331baba163b0a943fd7bc78b",
     "parser/features/tuple_name_declaration.norun.fs": "8e89d58daf8392d775de26c03fb00497dca37b2929a0d4ef1abc0fb8786fcbeb",
     "parser/features/tuple_name_declaration.norun.out": "a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d",
     "runtime/features/rtc_runtime_self_adoptable.notest.fs": "d0c8877bb8a38d5e9f4ad02683be51ceb881949f0f2c2534859ab8df8736a2a8",
     "utils.notest.fs": "8d6ca9203daed3ca56c75fd6fd52401b68f3171c1f92d7893bb8793d6cf952f4"
-  }
+  },
+  "revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6"
 }

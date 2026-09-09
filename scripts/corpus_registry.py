@@ -295,6 +295,8 @@ def verify_checkout(foundry: Path, registry: dict, requested: str) -> None:
             actual_id = hashlib.sha1(f"blob {len(contents)}\0".encode("ascii") + contents).hexdigest()
             if mode not in ("100644", "100755") or kind != "blob" or relative != record["source"] or actual_id != object_id:
                 raise ValueError(f"auxiliary source bytes/type differ from pinned revision {revision}: {source}")
+            if bool(source.stat().st_mode & stat.S_IXUSR) != (mode == "100755"):
+                raise ValueError(f"auxiliary source executable mode differs from pinned revision: {source}")
             continue
         if not source.is_dir():
             raise ValueError(f"corpus {name!r}: required sparse source root missing: {source}")
@@ -320,13 +322,15 @@ def verify_checkout(foundry: Path, registry: dict, requested: str) -> None:
                 raise ValueError(f"unsupported pinned source entry type {mode}: {relative}")
             if not relative.startswith(record["source"] + "/"):
                 raise ValueError(f"pinned source path escapes its registered root: {relative}")
-            pinned[relative[len(record["source"]) + 1:]] = object_id
+            pinned[relative[len(record["source"]) + 1:]] = (object_id, mode)
         actual_files = {path for path, kind in entries.items() if kind == "file"}
         for missing in sorted(pinned.keys() - actual_files):
             raise ValueError(f"pinned source file missing: {source / missing}")
         for extra in sorted(actual_files - pinned.keys()):
             raise ValueError(f"source file absent from pinned revision: {source / extra}")
-        for relative, object_id in sorted(pinned.items()):
+        for relative, (object_id, mode) in sorted(pinned.items()):
+            if bool((source / relative).stat().st_mode & stat.S_IXUSR) != (mode == "100755"):
+                raise ValueError(f"source executable mode differs from pinned revision: {source / relative}")
             contents = (source / relative).read_bytes()
             # The registry's full 40-character pin selects Git's SHA-1 object
             # format. Hash raw bytes, with no attribute filters or upstream code.

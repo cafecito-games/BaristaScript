@@ -30,6 +30,7 @@ import time
 from corpus_registry import ROOT, local_path, read_json, run_git, tree_entries
 from corpus_stages import validate_stages
 from corpus_expectations import decode_expectation
+from corpus_ledger import validate_triage_ledger
 
 
 def digest(path):
@@ -65,6 +66,15 @@ def supervise(command: list[str], timeout: float):
             'output': output.decode('utf-8', errors='replace')}
 
 
+def unique_result_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f'duplicate result field: {key}')
+        result[key] = value
+    return result
+
+
 def result_record(process, case, corpus, expected):
     lines = process['output'].splitlines()
     payloads = [line.removeprefix('BS_CASE_RESULT ') for line in lines if line.startswith('BS_CASE_RESULT ')]
@@ -76,7 +86,7 @@ def result_record(process, case, corpus, expected):
     malformed = False
     if len(payloads) == 1:
         try:
-            result = json.loads(payloads[0])
+            result = json.loads(payloads[0], object_pairs_hook=unique_result_pairs)
             if (not isinstance(result, dict) or result.get('path') != corpus + '/' + case
                     or type(result.get('passed')) is not bool
                     or result.get('expected') != expected or not isinstance(result.get('actual'), str)):
@@ -103,6 +113,38 @@ def result_record(process, case, corpus, expected):
             'actual_block': actual, 'frontend_result': result, 'passed': terminal == 'passed'}
 
 
+def validate_staging(root, inventory):
+    if (len({r['identity'] for r in inventory['sources']}) != len(inventory['sources'])
+            or len({r['imported_path'] for r in inventory['sources']}) != len(inventory['sources'])
+            or sum(r['role'] == 'case' for r in inventory['sources']) != inventory['counts']['cases']):
+        raise ValueError('staging source identity/population disagreement')
+    records = {record['imported_path']: record for record in inventory['sources']
+               if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
+    entries = tree_entries(root)
+    sources = {path for path, kind in entries.items() if kind == 'file' and path.endswith('.barista')}
+    helpers = {path for path in sources if path.endswith('.notest.barista')}
+    helper_records = {r['imported_path'] for r in inventory['sources'] if r['role'] in ('helper', 'support_helper')}
+    if len(records) != inventory['ledger']['total'] or helpers != helper_records or sources - helpers != set(records):
+        raise ValueError('staging inventory/population disagreement')
+    complaint = validate_triage_ledger('analyzer staging', inventory['ledger'], disk_cases=set(records), disk_helpers=helpers)
+    if complaint:
+        raise ValueError(f'staging population accounting: {complaint}')
+    validate_stages(read_json(root / 'case_stages.json'), set(records), helpers, inventory['foundry_revision'])
+    for record in inventory['sources']:
+        if record.get('disposition') in ('excluded', 'deferred'):
+            continue
+        path = root / record['imported_path']
+        if digest(path) != record['imported_sha256']:
+            raise ValueError(f'staged source hash drift: {path}')
+        if record['role'] == 'case' and decode_expectation(path.with_suffix('.out').read_bytes(), str(path)) != record['expected_block']:
+            raise ValueError(f'staged expectation drift: {path}')
+    expected_files = {'inventory.json', 'case_stages.json', 'README.md'} | sources
+    expected_files |= {str(Path(case).with_suffix('.out')) for case in records}
+    if {path for path, kind in entries.items() if kind == 'file'} != expected_files:
+        raise ValueError('staging inventory/file population disagreement')
+    return records
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--godot', type=Path, required=True)
@@ -122,23 +164,11 @@ def main(argv=None):
         inventory = read_json(root / 'inventory.json')
         if inventory.get('checkpoint') != 'discovery' or inventory.get('imported') is not False or inventory.get('root') != args.corpus:
             raise ValueError('not a pending discovery inventory')
-        records = {record['imported_path']: record for record in inventory['sources']
-                   if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
-        entries = tree_entries(root)
-        sources = {path for path, kind in entries.items() if kind == 'file' and path.endswith('.barista')}
-        helpers = {path for path in sources if path.endswith('.notest.barista')}
-        helper_records = {r['imported_path'] for r in inventory['sources'] if r['role'] in ('helper', 'support_helper')}
-        if len(records) != inventory['ledger']['total'] or helpers != helper_records or sources - helpers != set(records):
-            raise ValueError('staging inventory/population disagreement')
-        validate_stages(read_json(root / 'case_stages.json'), set(records), helpers, inventory['foundry_revision'])
-        for record in inventory['sources']:
-            if record.get('disposition') in ('excluded', 'deferred'):
-                continue
-            path = root / record['imported_path']
-            if digest(path) != record['imported_sha256']:
-                raise ValueError(f'staged source hash drift: {path}')
-            if record['role'] == 'case' and decode_expectation(path.with_suffix('.out').read_bytes(), str(path)) != record['expected_block']:
-                raise ValueError(f'staged expectation drift: {path}')
+        from import_analyzer_corpus import default_policy, encoded, sha
+        policy = default_policy()
+        if inventory['counts'] != policy['counts'] or inventory['policy_sha256'] != sha(encoded(policy)):
+            raise ValueError('staging inventory differs from the current pinned policy; regenerate staging')
+        records = validate_staging(root, inventory)
         if len(set(args.case)) != len(args.case) or set(args.case) - set(records):
             raise ValueError('duplicate or unknown exact case selection')
         selected = args.case or sorted(records)

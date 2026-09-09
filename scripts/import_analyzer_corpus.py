@@ -94,14 +94,25 @@ def resource_spans(data: bytes, path: str):
 
 def patch(data: bytes, changes: list[dict], path: str) -> bytes:
     end = 0
+    required = {'start', 'end', 'line', 'before', 'after', 'rule', 'occurrences'}
+    for item in changes:
+        if (not isinstance(item, dict) or not required <= item.keys()
+                or item.keys() - required - {'target'}
+                or any(not isinstance(item[k], str) or '\0' in item[k] for k in ('before', 'after', 'rule'))
+                or not item['rule'].strip()
+                or type(item['line']) is not int
+                or type(item['occurrences']) is not int or item['occurrences'] != 1
+                or type(item['start']) is not int or type(item['end']) is not int
+                or item['before'].count('\n') != item['after'].count('\n')):
+            raise ValueError(f'{path}: invalid patch provenance')
     for change in sorted(changes, key=lambda item: item['start']):
         start, stop = change['start'], change['end']
         if type(start) is not int or type(stop) is not int or start < end or stop <= start or stop > len(data):
             raise ValueError(f'{path}: overlapping/invalid patch span')
         if data[start:stop] != change['before'].encode('utf-8'):
             raise ValueError(f'{path}: patch preimage mismatch at {start}')
-        if change.get('occurrences') != 1:
-            raise ValueError(f'{path}: patch occurrence must be one exact span')
+        if change['line'] != data[:start].count(b'\n') + 1:
+            raise ValueError(f'{path}: patch line preimage mismatch at {start}')
         end = stop
     for change in sorted(changes, key=lambda item: item['start'], reverse=True):
         data = data[:change['start']] + change['after'].encode('utf-8') + data[change['end']:]
@@ -263,6 +274,10 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
         raise ValueError(f'pinned inventory count drift: expected {policy["counts"]}, actual {counts}')
     if set(policy['source_edits']) - set(sources + SUPPORT):
         raise ValueError('stale source edit policy')
+    for path in policy['source_edits']:
+        key = barista_path(path.removeprefix('analyzer/'))
+        if key in cases and key not in triage['rewritten'] and key not in triage['expectation_overrides']:
+            raise ValueError(f'{path}: source edit requires its disjoint rewrite or override disposition')
     if set(policy['expectation_edits']) - {p[:-3] + '.out' for p in sources if not p.endswith('.notest.fs')}:
         raise ValueError('stale expectation edit policy')
     for path in policy['expectation_edits']:
@@ -329,6 +344,15 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                            'semantic_owner': policy['owners'].get(relative)})
         records.append(record)
     included = cases - set(triage['excluded']) - set(triage['deferred'])
+    for record in records:
+        if record.get('disposition') in ('excluded', 'deferred'):
+            continue
+        for reference in record['references']:
+            target = reference['target']
+            if (target.startswith('analyzer/') and not reference['intentional_missing']
+                    and not target.endswith('.notest.fs')
+                    and barista_path(target.removeprefix('analyzer/')) not in included):
+                raise ValueError(f'{record["identity"]}: required paired dependency removed by policy: {target}')
     ledger = {'root': uri, 'foundry_revision': policy['foundry_revision'], 'upstream_total': len(cases),
               'upstream_helpers': len(helpers) + len(SUPPORT), 'upstream_sources': len(sources) + len(SUPPORT),
               'total': len(included), 'skipped': len(helpers) + len(SUPPORT), 'expected_failures': [], 'triage': triage}
