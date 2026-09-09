@@ -473,6 +473,9 @@ private:
 	bool update_declaration_index = false;
 	BSParser::ClassNode *current_class = nullptr;
 	BSParser::FunctionNode *current_function = nullptr;
+	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
+	BSParser::EnumNode *current_enum = nullptr;
+	BSParser::ClassNode *current_enum_owner = nullptr;
 	/** Foundry `current_lambda` (@ c9d5e35): set while reducing a lambda body for capture marking. */
 	BSParser::LambdaNode *current_lambda = nullptr;
 	/** Foundry pending_body_resolution_lambdas (@ c9d5e35): flush after each suite statement. */
@@ -637,7 +640,9 @@ private:
 	void reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple);
 	void reduce_array(BSParser::ArrayNode *p_array);
 	void reduce_dictionary(BSParser::DictionaryNode *p_dictionary);
-	void reduce_ternary(BSParser::TernaryOpNode *p_ternary);
+	void reduce_ternary(BSParser::TernaryOpNode *p_ternary, bool p_is_root = false);
+	/** Foundry finalize_ternary_op_type @ c9d5e35: shared by reduction and contextual case qualification. */
+	void finalize_ternary_type(BSParser::TernaryOpNode *p_ternary);
 	/** Foundry reduce_cast @ c9d5e35: cast type qualifies contextual `.Case` in operand position. */
 	void reduce_cast(BSParser::CastNode *p_cast);
 	/** Foundry reduce_type_test (@ c9d5e35): resolve `is T` + case-bind payload typing. */

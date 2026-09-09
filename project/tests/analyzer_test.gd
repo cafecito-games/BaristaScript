@@ -89,6 +89,7 @@ func _init() -> void:
 	_test_steps_1_5_repair_regressions(failures)
 	_test_steps_1_5_repair2_self_signatures(failures)
 	_test_local_enum_value_cycles(failures)
+	_test_concrete_cast_ternary_and_type_test_reduction(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -106,6 +107,23 @@ func _errors_are_exact(actual: Array, expected: Array) -> bool:
 				actual[i].get("line") != expected[i][1] or actual[i].get("column") != expected[i][2]:
 			return false
 	return true
+
+
+func _warnings_are_exact(actual: Array, expected: Array) -> bool:
+	if actual.size() != expected.size():
+		return false
+	for i in range(expected.size()):
+		if str(actual[i].get("string_code", "")) != expected[i][0] or \
+				str(actual[i].get("message", "")) != expected[i][1] or \
+				actual[i].get("start_line") != expected[i][2] or actual[i].get("start_column") != expected[i][3] or \
+				actual[i].get("end_line") != expected[i][4] or actual[i].get("end_column") != expected[i][5]:
+			return false
+	return true
+
+
+func _inspection_is_valid(report: Dictionary) -> bool:
+	return report.get("found", false) == true and report.get("valid", false) == true and \
+			report.get("errors", PackedStringArray()).is_empty()
 
 
 func _test_undeclared_identifier_diagnostic(failures: PackedStringArray) -> void:
@@ -4670,3 +4688,292 @@ func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:
 	var report: Dictionary = probe.analyze_source(source, "res://tests/legal_recursive_tagged.barista")
 	_expect(failures, report.get("valid", false) == true,
 		"legal recursive tagged payload remains valid while int-backed value cycles are rejected")
+
+
+func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringArray) -> void:
+	# Foundry reduce_cast / finalize_ternary_op_type / reduce_type_test @ c9d5e35.
+	# These adaptations preserve the pinned producer line layout and use .barista paths.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
+	ProjectSettings.set_setting("debug/barista_script/warnings/unsafe_cast", 1)
+	ProjectSettings.set_setting("debug/barista_script/warnings/int_as_enum_without_match", 1)
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	var cast_sources := [
+		["func test():\n\tvar integer := 1\n\tprint(integer as Array)\n", "res://tests/cast_int_to_array.barista", 'Invalid cast. Cannot convert from "int" to "Array".', 3, 22],
+		["func test():\n\tvar integer := 1\n\tprint(integer as Node)\n", "res://tests/cast_int_to_object.barista", 'Invalid cast. Cannot convert from "int" to "Node".', 3, 22],
+		["func test(object: RefCounted):\n\t# Typed parameter avoids the native-constructor metadata owned by #141.\n\tprint(object as int)\n", "res://tests/cast_object_to_int.barista", 'Invalid cast. Cannot convert from "RefCounted" to "int".', 3, 21],
+	]
+	for fixture in cast_sources:
+		var cast_report: Dictionary = probe.validate_source(fixture[0], fixture[1], false)
+		_expect(failures, _errors_are_exact(cast_report.get("errors", []), [[fixture[2], fixture[3], fixture[4]]]),
+			"invalid cast preserves the full diagnostic and TypeNode start for %s: %s" % [fixture[1], cast_report.get("errors", [])])
+
+	var union_source := "# The runtime has no union carrier.\ntype Scalar = int | String\n\n\nfunc test():\n\tvar value: Scalar = 1\n\tprint(value is Scalar)\n\tprint(value as Scalar)\n"
+	var union_errors: Array = probe.validate_source(union_source, "res://tests/type_union_runtime_type_operations.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(union_errors, [
+		['Cannot test against the type union "String | int", because it has no runtime type. Test one of its alternatives instead.', 7, 20],
+		['Cannot cast to the type union "String | int", because it has no runtime type. Cast to one of its alternatives instead.', 8, 20],
+	]), "union type-test/cast rejection remains ordered and exact: %s" % [union_errors])
+
+	var tagged_source := "enum Command:\n\tQuit\n\tMove(x: int, y: int)\n\nfunc test():\n\tvar message: Command = Command.Quit\n\tvar as_int: int = message\n\tprint(message + 1)\n\tprint(message as int)\n"
+	var tagged_errors: Array = probe.validate_source(tagged_source, "res://tests/tagged_union_in_int_context.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tagged_errors, [
+		['Cannot assign a value of type tagged_union_in_int_context.barista.Command to variable "as_int" with specified type int.', 7, 23],
+		['Operator "+" is not available on tagged union "Command"; its cases carry payloads, so its values are not integers. Match on the case first.', 8, 11],
+		['Tagged union "Command" is not int-backed, because its cases carry payloads; it cannot be converted to or from "int".', 9, 22],
+	]), "tagged-union/int boundary preserves the complete three-error block: %s" % [tagged_errors])
+
+	var unsafe_source := "# Analyze only.\nfunc no_exec_test():\n\tvar weak_int = 1\n\tprint(weak_int as Variant)\n\tprint(weak_int as int)\n\tprint(weak_int as Node)\n\n\tvar weak_node = Node.new()\n\tprint(weak_node as Variant)\n\tprint(weak_node as int)\n\tprint(weak_node as Node)\n\n\tvar weak_variant = null\n\tprint(weak_variant as Variant)\n\tprint(weak_variant as int)\n\tprint(weak_variant as Node)\n\n\tvar hard_variant: Variant = null\n\tprint(hard_variant as Variant)\n\tprint(hard_variant as int)\n\tprint(hard_variant as Node)\n\nfunc test():\n\tpass\n"
+	var unsafe_report: Dictionary = probe.validate_source(unsafe_source, "res://tests/unsafe_cast.barista", true)
+	var unsafe_warnings: Array = unsafe_report.get("warnings", [])
+	_expect(failures, unsafe_report.get("valid", false) and unsafe_report.get("errors", []).is_empty() and _warnings_are_exact(unsafe_warnings, [
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 5, 11, 5, 26],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 6, 11, 6, 27],
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 10, 11, 10, 27],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 11, 11, 11, 28],
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 15, 11, 15, 30],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 16, 11, 16, 31],
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 20, 11, 20, 30],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 21, 11, 21, 31],
+	]), "unsafe-cast warnings preserve the complete code/message/range block: %s" % [unsafe_warnings])
+
+	var enum_cast_source := "enum MyEnum:\n\tENUM_VALUE_1 = 0\n\tENUM_VALUE_2 = ENUM_VALUE_1 + 1\n\nfunc test():\n\tprint(2 as MyEnum)\n"
+	var enum_cast_report: Dictionary = probe.validate_source(enum_cast_source, "res://tests/cast_enum_bad_int.barista", true)
+	_expect(failures, enum_cast_report.get("valid", false) and _warnings_are_exact(enum_cast_report.get("warnings", []), [
+		["INT_AS_ENUM_WITHOUT_MATCH", 'Cannot cast 2 as Enum "cast_enum_bad_int.barista.MyEnum": no enum member has matching value.', 6, 11, 6, 12],
+	]), "unmatched constant int-to-enum cast warning is exact: %s" % [enum_cast_report.get("warnings", [])])
+	var enum_ok_source := "enum Foo:\n\tA = 0\n\tB = A + 1\n\tC = B + 1\nfunc test():\n\tvar as_int: int = Foo.A as int\n\tvar as_enum: Foo = 1 as Foo\n"
+	var enum_ok_report: Dictionary = probe.validate_source(enum_ok_source, "res://tests/plain_enum_casts.barista", true)
+	_expect(failures, enum_ok_report.get("valid", false) and enum_ok_report.get("errors", []).is_empty(),
+		"plain enum-to-int and matching int-to-enum casts remain valid")
+
+	var incompatible_source := "func test():\n\t# The ternary operator below returns values of different types and the\n\t# result is assigned to a typed variable. This will cause a run-time error\n\t# if the branch with the incompatible type is picked. Here, it won't happen\n\t# since the `false` condition never evaluates to `true`. Instead, a warning\n\t# will be emitted.\n\tvar __: int = 25\n\t__ = \"hello\" if false else -2\n"
+	var incompatible_report: Dictionary = probe.validate_source(incompatible_source, "res://tests/incompatible_ternary.barista", true)
+	_expect(failures, incompatible_report.get("valid", false) and _warnings_are_exact(incompatible_report.get("warnings", []), [
+		["INCOMPATIBLE_TERNARY", "Values of the ternary operator are not mutually compatible.", 8, 10, 8, 34],
+	]), "incompatible ternary warning preserves its full range: %s" % [incompatible_report.get("warnings", [])])
+	var ternary_source := "func choose(flag: bool, left: String, right: String) -> String:\n\treturn left if flag else right\nfunc nullable(flag: bool, value: String) -> String?:\n\treturn value if flag else null\n"
+	var ternary_report: Dictionary = probe.validate_source(ternary_source, "res://tests/ternary_concrete_types.barista", true)
+	_expect(failures, ternary_report.get("valid", false) and ternary_report.get("errors", []).is_empty() and ternary_report.get("warnings", []).is_empty(),
+		"compatible and nullable ternary arms retain concrete return types without warnings")
+	_expect(failures, probe.has_method("inspect_expression_source"),
+		"debug expression inspection is available for pure type/constant observations")
+	if probe.has_method("inspect_expression_source"):
+		var string_ternary: Dictionary = probe.call("inspect_expression_source", "var probe_expression = \"left\" if true else \"right\"\n", "res://tests/ternary_string_probe.barista")
+		var nullable_ternary: Dictionary = probe.call("inspect_expression_source", "var probe_expression = \"left\" if false else null\n", "res://tests/ternary_nullable_probe.barista")
+		_expect(failures, _inspection_is_valid(string_ternary) and string_ternary.get("datatype") == "String" and string_ternary.get("is_constant") == true and string_ternary.get("value") == "left",
+			"equal ternary arms retain String and fold only with all inputs constant: %s" % [string_ternary])
+		_expect(failures, _inspection_is_valid(nullable_ternary) and nullable_ternary.get("datatype") == "String?" and nullable_ternary.get("is_constant") == true and nullable_ternary.get("value") == null,
+			"null/String ternary retains nullable String and selected constant: %s" % [nullable_ternary])
+
+	# Repair R1: every consumer that supplies a tagged-union expectation must re-finalize the
+	# ternary after recursively qualifying its contextual arms.
+	var contextual_consumers_source := "enum Message:\n\tQuit\n\tMove(value: int)\n\nfunc take(message: Message) -> void:\n\tprint(message)\nfunc choose(flag: bool) -> Message:\n\treturn .Quit if flag else .Move(1)\nfunc test(flag: bool) -> void:\n\tvar declared: Message = .Quit if flag else .Move(2)\n\tdeclared = .Move(3) if flag else .Quit\n\ttake(.Quit if flag else .Move(4))\n\tvar nested: Array[Message] = [.Quit if flag else .Move(5)]\n\tprint(nested, declared, (.Quit if flag else .Move(6)) as Message)\n"
+	var contextual_consumers_report: Dictionary = probe.validate_source(contextual_consumers_source, "res://tests/contextual_ternary_consumers.barista", true)
+	_expect(failures, contextual_consumers_report.get("valid", false) and contextual_consumers_report.get("errors", []).is_empty() and contextual_consumers_report.get("warnings", []).is_empty(),
+		"contextual ternaries re-finalize through declaration/assignment/return/call/nested-literal/cast consumers: %s" % [contextual_consumers_report])
+	if probe.has_method("inspect_expression_source"):
+		var contextual_type_source := "enum Message:\n\tQuit\n\tMove(value: int)\n\nvar probe_expression: Message = .Quit if true else (.Move(1) if false else .Quit)\n"
+		var contextual_type: Dictionary = probe.call("inspect_expression_source", contextual_type_source, "res://tests/contextual_ternary_type.barista")
+		_expect(failures, _inspection_is_valid(contextual_type) and contextual_type.get("datatype") == "contextual_ternary_type.barista.Message" and contextual_type.get("is_hard_type") == true,
+			"recursive contextual ternaries publish the hard tagged-union result: %s" % [contextual_type])
+	var unqualified_context_source := "enum Message:\n\tQuit\n\tMove(value: int)\n\nfunc test():\n\tvar result := .Quit if true else .Move(1)\n"
+	var unqualified_context_errors: Array = probe.validate_source(unqualified_context_source, "res://tests/contextual_ternary_unqualified.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(unqualified_context_errors, [
+		['Contextual shorthand ".Quit" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .Quit".', 6, 19],
+		['Contextual shorthand ".Move" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .Move(...)".', 6, 38],
+	]), "unqualified contextual ternary keeps ordered case errors without a weak-inference cascade: %s" % [unqualified_context_errors])
+
+	# Repair R2: a constant carried by Variant is retyped and converted by the shared value-aware
+	# helper, including all existing declaration/assignment/return/container consumers.
+	var boxed_float_source := "const BOXED: Variant = 1\nvar probe_expression = BOXED as float\n"
+	if probe.has_method("inspect_expression_source"):
+		var boxed_float: Dictionary = probe.call("inspect_expression_source", boxed_float_source, "res://tests/boxed_constant_float.barista")
+		var direct_float: Dictionary = probe.call("inspect_expression_source", "var probe_expression = 1 as float\n", "res://tests/direct_constant_float.barista")
+		var direct_fractional_cast: Dictionary = probe.call("inspect_expression_source", "var probe_expression = 1.5 as int\n", "res://tests/direct_fractional_cast.barista")
+		var boxed_fractional_cast: Dictionary = probe.call("inspect_expression_source", "const BOXED: Variant = 1.5\nvar probe_expression = BOXED as int\n", "res://tests/boxed_fractional_cast.barista")
+		var boxed_null: Dictionary = probe.call("inspect_expression_source", "const BOXED: Variant = null\nvar probe_expression = BOXED as String?\n", "res://tests/boxed_constant_nullable.barista")
+		var packed_conversion: Dictionary = probe.call("inspect_expression_source", "const BOXED: Variant = [\"bad\"]\nvar probe_expression = BOXED as PackedInt32Array\n", "res://tests/boxed_constant_packed_array.barista")
+		_expect(failures, _inspection_is_valid(boxed_float) and boxed_float.get("datatype") == "float" and boxed_float.get("is_hard_type") == true and boxed_float.get("is_constant") == true and boxed_float.get("value") == 1.0,
+			"Variant-carried int cast publishes a constant float value: %s" % [boxed_float])
+		_expect(failures, _inspection_is_valid(direct_float) and direct_float.get("datatype") == "float" and direct_float.get("is_hard_type") == true and direct_float.get("is_constant") == true and direct_float.get("value") == 1.0,
+			"direct int-to-float constant control remains folded: %s" % [direct_float])
+		_expect(failures, _inspection_is_valid(direct_fractional_cast) and direct_fractional_cast.get("datatype") == "int" and direct_fractional_cast.get("is_hard_type") == true and direct_fractional_cast.get("is_constant") == true and direct_fractional_cast.get("value") == 1,
+			"explicit direct float-to-int cast truncates toward zero and remains constant: %s" % [direct_fractional_cast])
+		_expect(failures, _inspection_is_valid(boxed_fractional_cast) and boxed_fractional_cast.get("datatype") == "int" and boxed_fractional_cast.get("is_hard_type") == true and boxed_fractional_cast.get("is_constant") == true and boxed_fractional_cast.get("value") == 1,
+			"explicit Variant-carried float-to-int cast truncates toward zero and remains constant: %s" % [boxed_fractional_cast])
+		_expect(failures, _inspection_is_valid(boxed_null) and boxed_null.get("datatype") == "String?" and boxed_null.get("is_constant") == true and boxed_null.get("value") == null,
+			"nullable target preserves a Variant-carried null without constructing String: %s" % [boxed_null])
+		_expect(failures, _inspection_is_valid(packed_conversion) and packed_conversion.get("datatype") == "PackedInt32Array" and packed_conversion.get("is_constant") == true and packed_conversion.get("value") == PackedInt32Array([0]),
+			"Array-to-packed construction follows the pinned per-element Variant conversion: %s" % [packed_conversion])
+	var boxed_float_report: Dictionary = probe.validate_source(boxed_float_source, "res://tests/boxed_constant_float_validate.barista", true)
+	_expect(failures, boxed_float_report.get("valid", false) and boxed_float_report.get("errors", []).is_empty() and boxed_float_report.get("warnings", []).is_empty(),
+		"Variant-carried constant conversion does not emit a false unsafe-cast warning: %s" % [boxed_float_report])
+	var fractional_cast_report: Dictionary = probe.validate_source("const BOXED: Variant = 1.5\nfunc test() -> void:\n\tprint(1.5 as int)\n\tprint(BOXED as int)\n", "res://tests/fractional_constant_cast_validate.barista", true)
+	_expect(failures, fractional_cast_report.get("valid", false) and fractional_cast_report.get("errors", []).is_empty() and _warnings_are_exact(fractional_cast_report.get("warnings", []), [
+		["NARROWING_CONVERSION", "Narrowing conversion (float is converted to int and loses precision).", 3, 11, 3, 14],
+		["NARROWING_CONVERSION", "Narrowing conversion (float is converted to int and loses precision).", 4, 11, 4, 16],
+	]), "direct and Variant-carried explicit float-to-int casts preserve ordered narrowing warnings without UNSAFE_CAST: %s" % [fractional_cast_report])
+	var checked_numeric_cast_source := "const BOXED_INF: Variant = 1e309\nconst BOXED_LARGE: Variant = 1e30\nfunc test() -> void:\n\tprint(1e309 as int)\n\tprint(1e30 as int)\n\tprint(BOXED_INF as int)\n\tprint(BOXED_LARGE as int)\n"
+	var checked_numeric_cast_errors: Array = probe.validate_source(checked_numeric_cast_source, "res://tests/checked_numeric_constant_cast.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(checked_numeric_cast_errors, [
+		['Cannot convert inf to "int": it is not a finite number.', 4, 11],
+		['Cannot convert 1000000000000000019884624838656.0 to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.', 5, 11],
+		['Cannot convert inf to "int": it is not a finite number.', 6, 11],
+		['Cannot convert 1000000000000000019884624838656.0 to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.', 7, 11],
+	]), "direct and Variant-carried explicit float-to-int casts reject non-finite and out-of-range constants before ABI construction: %s" % [checked_numeric_cast_errors])
+	var shared_constant_source := "const BOXED: Variant = 1\nfunc return_boxed() -> float:\n\treturn BOXED\nfunc test() -> void:\n\tvar declared: float = BOXED\n\tvar assigned: float = 0.0\n\tassigned = BOXED\n\tvar tupled: (float, float) = (BOXED, BOXED)\n\tvar arrayed: Array[float] = [BOXED]\n\tvar mapped: Dictionary[String, float] = {\"one\": BOXED}\n\tprint(declared, assigned, tupled, arrayed, mapped, return_boxed())\n"
+	var shared_constant_report: Dictionary = probe.validate_source(shared_constant_source, "res://tests/boxed_constant_shared_consumers.barista", true)
+	_expect(failures, shared_constant_report.get("valid", false) and shared_constant_report.get("errors", []).is_empty() and shared_constant_report.get("warnings", []).is_empty(),
+		"shared constant retyping covers declaration/assignment/return/tuple/Array/Dictionary: %s" % [shared_constant_report])
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", true)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var strict_boxed_source := "const BOXED: Variant = 1\nfunc test() -> void:\n\tvar probe_expression: float = BOXED\n\tprint(probe_expression)\n"
+	var strict_boxed_errors: Array = probe.validate_source(strict_boxed_source, "res://tests/boxed_constant_strict_dynamic.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(strict_boxed_errors, [['Cannot assign a value of type "Variant" to a variable of type "float".', 3, 35]]),
+		"strict dynamic mode refuses the declared Variant carrier before value refinement: %s" % [strict_boxed_errors])
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var incompatible_boxed_source := "const BOXED: Variant = \"bad\"\nfunc test() -> void:\n\tvar probe_expression: int = BOXED\n\tprint(probe_expression)\n"
+	var incompatible_boxed_errors: Array = probe.validate_source(incompatible_boxed_source, "res://tests/boxed_constant_incompatible.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(incompatible_boxed_errors, [['Cannot assign a value of type "String" as "int".', 3, 33]]),
+		"Variant-carried incompatible constant keeps the value-aware diagnostic: %s" % [incompatible_boxed_errors])
+	var failed_conversion_source := "const BOXED: Variant = 1.5\nfunc test() -> void:\n\tvar probe_expression: int = BOXED\n\tprint(probe_expression)\n"
+	var failed_conversion_errors: Array = probe.validate_source(failed_conversion_source, "res://tests/boxed_constant_failed_conversion.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(failed_conversion_errors, [['Cannot assign a value of type "float" as "int".', 3, 33]]),
+		"Variant-carried fractional float is refused by the D1 implicit-assignment gate before construction: %s" % [failed_conversion_errors])
+	var direct_fractional_source := "func test() -> void:\n\tvar probe_expression: int = 1.5\n\tprint(probe_expression)\n"
+	var direct_fractional_errors: Array = probe.validate_source(direct_fractional_source, "res://tests/direct_fractional_constant.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(direct_fractional_errors, [['Cannot assign a value of type "float" to a variable of type "int".', 2, 33]]),
+		"direct fractional constant reaches the same D1 implicit-assignment refusal through the ordinary consumer: %s" % [direct_fractional_errors])
+	var class_boxed_consumers_source := "const BOXED: Variant = 1\nvar MEMBER: float = BOXED\nconst MEMBER_CONST: float = BOXED\n"
+	var class_boxed_consumers_report: Dictionary = probe.validate_source(class_boxed_consumers_source, "res://tests/boxed_constant_class_consumers.barista", true)
+	_expect(failures, class_boxed_consumers_report.get("valid", false) and class_boxed_consumers_report.get("errors", []).is_empty() and class_boxed_consumers_report.get("warnings", []).is_empty(),
+		"class variable and class constant consumers share boxed constant conversion: %s" % [class_boxed_consumers_report])
+	var class_boxed_refusal_source := "const BOXED: Variant = 1.5\nvar MEMBER: int = BOXED\nconst MEMBER_CONST: int = BOXED\n"
+	var class_boxed_refusal_errors: Array = probe.validate_source(class_boxed_refusal_source, "res://tests/boxed_constant_class_refusals.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(class_boxed_refusal_errors, [
+		['Cannot assign a value of type "float" as "int".', 2, 19],
+		['Cannot assign a value of type "float" as "int".', 3, 27],
+	]), "class variable and class constant consumers apply the value-aware D1 refusal: %s" % [class_boxed_refusal_errors])
+
+	# Repair R3: a root ternary forwards root position to both value arms, while its condition and
+	# value-producing consumers remain non-root.
+	ProjectSettings.set_setting("debug/barista_script/warnings/missing_await", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var root_async_source := "async func fetch() -> int:\n\treturn 1\nfunc test(flag: bool) -> void:\n\tfetch() if flag else fetch()\n"
+	var root_async_report: Dictionary = probe.validate_source(root_async_source, "res://tests/root_async_ternary.barista", true)
+	_expect(failures, root_async_report.get("valid", false) and root_async_report.get("errors", []).is_empty() and _warnings_are_exact(root_async_report.get("warnings", []), [
+		["STANDALONE_TERNARY", "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 33],
+		["MISSING_AWAIT", 'The call returns a "Coroutine[int]" whose result is discarded. Use "await", or store or pass the handle if it is awaited elsewhere.', 4, 5, 4, 12],
+		["MISSING_AWAIT", 'The call returns a "Coroutine[int]" whose result is discarded. Use "await", or store or pass the handle if it is awaited elsewhere.', 4, 26, 4, 33],
+	]), "root ternary preserves both ordered MISSING_AWAIT warnings and STANDALONE_TERNARY: %s" % [root_async_report.get("warnings", [])])
+	var nested_async_source := "async func fetch() -> int:\n\treturn 1\nfunc test(outer: bool, inner: bool) -> void:\n\tfetch() if outer else (fetch() if inner else fetch())\n"
+	var nested_async_report: Dictionary = probe.validate_source(nested_async_source, "res://tests/nested_root_async_ternary.barista", true)
+	_expect(failures, nested_async_report.get("valid", false) and nested_async_report.get("errors", []).is_empty() and _warnings_are_exact(nested_async_report.get("warnings", []), [
+		["STANDALONE_TERNARY", "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 58],
+		["MISSING_AWAIT", 'The call returns a "Coroutine[int]" whose result is discarded. Use "await", or store or pass the handle if it is awaited elsewhere.', 4, 5, 4, 12],
+		["MISSING_AWAIT", 'The call returns a "Coroutine[int]" whose result is discarded. Use "await", or store or pass the handle if it is awaited elsewhere.', 4, 28, 4, 35],
+		["MISSING_AWAIT", 'The call returns a "Coroutine[int]" whose result is discarded. Use "await", or store or pass the handle if it is awaited elsewhere.', 4, 50, 4, 57],
+	]), "nested root ternary forwards root position recursively without warning its condition: %s" % [nested_async_report.get("warnings", [])])
+	var held_async_source := "async func fetch() -> int:\n\treturn 1\nfunc test(flag: bool) -> void:\n\tvar work: Coroutine[int] = fetch() if flag else fetch()\n\tprint(work)\n"
+	var held_async_report: Dictionary = probe.validate_source(held_async_source, "res://tests/held_async_ternary.barista", true)
+	_expect(failures, held_async_report.get("valid", false) and held_async_report.get("errors", []).is_empty() and held_async_report.get("warnings", []).is_empty(),
+		"held ternary coroutine handles remain non-root: %s" % [held_async_report])
+	var void_async_source := "async func fire() -> void:\n\tpass\nfunc test(flag: bool) -> void:\n\tfire() if flag else fire()\n"
+	var void_async_report: Dictionary = probe.validate_source(void_async_source, "res://tests/void_async_ternary.barista", true)
+	_expect(failures, void_async_report.get("valid", false) and void_async_report.get("errors", []).is_empty() and _warnings_are_exact(void_async_report.get("warnings", []), [
+		["STANDALONE_TERNARY", "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 31],
+	]), "Coroutine[void] ternary arms remain exempt from MISSING_AWAIT: %s" % [void_async_report.get("warnings", [])])
+	var condition_async_source := "async func decide() -> bool:\n\treturn true\nfunc test() -> void:\n\t1 if decide() else 2\n"
+	var condition_async_report: Dictionary = probe.validate_source(condition_async_source, "res://tests/condition_async_ternary.barista", true)
+	_expect(failures, condition_async_report.get("valid", false) and condition_async_report.get("errors", []).is_empty() and _warnings_are_exact(condition_async_report.get("warnings", []), [
+		["STANDALONE_TERNARY", "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 25],
+	]), "ternary condition stays non-root and does not emit MISSING_AWAIT: %s" % [condition_async_report.get("warnings", [])])
+	var awaited_async_source := "async func fetch() -> int:\n\treturn 1\nfunc test(flag: bool) -> void:\n\tvar result: int = await (fetch() if flag else fetch())\n\tprint(result)\n"
+	var awaited_async_report: Dictionary = probe.validate_source(awaited_async_source, "res://tests/awaited_async_ternary.barista", true)
+	_expect(failures, awaited_async_report.get("valid", false) and awaited_async_report.get("errors", []).is_empty() and awaited_async_report.get("warnings", []).is_empty(),
+		"awaited ternary coroutine handles remain non-root and unwrap once: %s" % [awaited_async_report])
+
+	# Repair R4: expression observations are useful on invalid analysis, but cannot satisfy a
+	# positive semantic predicate unless found, valid, and error-free.
+	if probe.has_method("inspect_expression_source"):
+		var invalid_observation: Dictionary = probe.call("inspect_expression_source", "var broken: int = \"wrong\"\nvar probe_expression = \"left\" if true else \"right\"\n", "res://tests/invalid_positive_observation.barista")
+		_expect(failures, not _inspection_is_valid(invalid_observation) and invalid_observation.get("datatype") == "String" and invalid_observation.get("is_constant") == true and
+				invalid_observation.get("errors", PackedStringArray()) == PackedStringArray(['Cannot assign a value of type "String" to a variable of type "int".']),
+			"invalid analysis retains independent observation fields but fails the positive predicate: %s" % [invalid_observation])
+	var weak_source := "func test():\n\tvar left_hard_int := 1\n\tvar right_weak_int = 2\n\tvar result_hm_int := left_hard_int if true else right_weak_int\n\n\tprint('not ok')\n"
+	var weak_errors: Array = probe.validate_source(weak_source, "res://tests/ternary_weak_infer.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(weak_errors, [["Cannot infer the type of \"result_hm_int\" variable because the value doesn't have a set type.", 4, 26]]),
+		"mixed hard/soft ternary preserves weak inference and initializer origin: %s" % [weak_errors])
+	var class_weak_source := "var right_weak = 2\nvar result := 1 if true else right_weak\n"
+	var class_weak_errors: Array = probe.validate_source(class_weak_source, "res://tests/ternary_class_weak_infer.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(class_weak_errors, [["Cannot infer the type of \"result\" variable because the value doesn't have a set type.", 2, 15]]),
+		"class-variable weak ternary inference uses the shared datatype rule: %s" % [class_weak_errors])
+	var class_constant_weak_source := "var right_weak = 2\nconst result := 1 if true else right_weak\n"
+	var class_constant_weak_errors: Array = probe.validate_source(class_constant_weak_source, "res://tests/ternary_class_constant_weak.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(class_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 2, 17]]),
+		"class-constant weak ternary rejects its nonconstant initializer: %s" % [class_constant_weak_errors])
+	var local_constant_weak_source := "func test():\n\tvar right_weak = 2\n\tconst result := 1 if true else right_weak\n"
+	var local_constant_weak_errors: Array = probe.validate_source(local_constant_weak_source, "res://tests/ternary_local_constant_weak.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(local_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 3, 21]]),
+		"local-constant weak ternary rejects its nonconstant initializer: %s" % [local_constant_weak_errors])
+
+	var constant_is_source := "const base := [0]\n\nfunc test():\n\tvar sub := 1\n\tif sub is String: pass\n"
+	var constant_is_errors: Array = probe.validate_source(constant_is_source, "res://tests/constant_subscript_type.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(constant_is_errors, [['Expression is of type "int" so it can\'t be of type "String".', 5, 8]]),
+		"constant non-enum type test rejects at the operand: %s" % [constant_is_errors])
+	if probe.has_method("inspect_expression_source"):
+		var subscript_producer: Dictionary = probe.call("inspect_expression_source", "const base := [0]\nvar probe_expression = base[0]\n", "res://tests/constant_subscript_producer_probe.barista")
+		_expect(failures, _inspection_is_valid(subscript_producer) and subscript_producer.get("datatype") == "Variant" and
+			subscript_producer.get("type_source") == 0 and subscript_producer.get("is_hard_type") == false and
+			subscript_producer.get("is_constant") == false,
+			"constant-subscript producer remains soft Variant/unreduced for step 138-07: %s" % [subscript_producer])
+	var hard_is_source := "class A:\n\tfunc _init():\n\t\tpass\n\nclass B extends A: pass\nclass C extends A: pass\n\nfunc test():\n\tvar x := B.new()\n\tprint(x is C)\n"
+	var hard_is_errors: Array = probe.validate_source(hard_is_source, "res://tests/constructor_call_type.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(hard_is_errors, [['Expression is of type "B" so it can\'t be of type "C".', 10, 11]]),
+		"nonconstant hard incompatible type test rejects at the operand: %s" % [hard_is_errors])
+	var true_fold: Dictionary = probe.fold_expression("1 is int")
+	_expect(failures, true_fold.get("ok", false) and true_fold.get("value") == true,
+		"constant compatible non-enum type test folds from the reduced value: %s" % [true_fold])
+	if probe.has_method("inspect_expression_source"):
+		var enum_membership: Dictionary = probe.call("inspect_expression_source", "enum E:\n\tA = 0\nvar probe_expression = E.A is E\n", "res://tests/enum_membership_probe.barista")
+		_expect(failures, _inspection_is_valid(enum_membership) and enum_membership.get("datatype") == "bool" and enum_membership.get("is_constant") == false,
+			"plain-enum is remains an unfurled membership test despite its int carrier: %s" % [enum_membership])
+
+	var bind_source := "enum TernaryCaseMessage:\n\tQuit\n\tMove(x: int, y: int)\n\nfunc test():\n\tvar message: TernaryCaseMessage = TernaryCaseMessage.Quit\n\tprint(1 if message is TernaryCaseMessage.Move(x, y) else 0)\n"
+	var bind_errors: Array = probe.validate_source(bind_source, "res://tests/tagged_union_case_test_binds_in_ternary.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(bind_errors, [['Case payload binds are only allowed in the condition of "if", "elif", "while" or "assert", directly or as an "and" operand.', 7, 16]]),
+		"case-bind placement remains exact while ordinary type tests reduce: %s" % [bind_errors])
+
+	var invalid_source: String = cast_sources[0][0]
+	var invalid_path: String = cast_sources[0][1]
+	var invalid_first: Dictionary = probe.analyze_source(invalid_source, invalid_path)
+	var invalid_second: Dictionary = probe.analyze_source(invalid_source, invalid_path)
+	var valid_first: Dictionary = probe.analyze_source(ternary_source, "res://tests/ternary_concrete_repeat.barista")
+	var valid_second: Dictionary = probe.analyze_source(ternary_source, "res://tests/ternary_concrete_repeat.barista")
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var index_before := index.get_record_count()
+	_expect(failures, invalid_first.get("errors", PackedStringArray()) == invalid_second.get("errors", PackedStringArray()) and
+		not probe.validate_source(invalid_source, invalid_path, false).get("valid", true) and
+		not probe.is_semantically_valid(invalid_source, invalid_path),
+		"invalid cast is repeatable through analyze/validate/is-valid")
+	_expect(failures, valid_first.get("valid", false) and valid_second.get("valid", false) and
+		probe.validate_source(ternary_source, "res://tests/ternary_concrete_repeat.barista", false).get("valid", false) and
+		probe.is_semantically_valid(ternary_source, "res://tests/ternary_concrete_repeat.barista"),
+		"valid concrete ternaries are repeatable through analyze/validate/is-valid")
+	_expect(failures, index.get_record_count() == index_before,
+		"step-6 repeated analysis preserves declaration-index opt-in")
+
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 0)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	_expect(failures, probe.validate_source(incompatible_source, "res://tests/incompatible_ternary.barista", true).get("warnings", []).is_empty(),
+		"incompatible ternary warning obeys IGNORE")
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 2)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	_expect(failures, not probe.validate_source(incompatible_source, "res://tests/incompatible_ternary.barista", true).get("valid", true),
+		"incompatible ternary warning obeys ERROR")
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()

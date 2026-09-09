@@ -574,7 +574,11 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 	}
 
 	BSParser::ClassNode *previous_class = current_class;
+	BSParser::EnumNode *previous_enum = current_enum;
+	BSParser::ClassNode *previous_enum_owner = current_enum_owner;
 	current_class = p_owner;
+	current_enum = p_enum;
+	current_enum_owner = p_owner;
 
 	BSParser::DataType enum_type = p_enum_type;
 	enum_type.is_tagged_union = p_enum->is_tagged_union;
@@ -585,6 +589,8 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 		enum_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 		enum_type.kind = BSParser::DataType::ENUM;
 		p_enum->set_datatype(enum_type);
+		current_enum = previous_enum;
+		current_enum_owner = previous_enum_owner;
 		current_class = previous_class;
 		return enum_type;
 	}
@@ -632,6 +638,8 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 
 	p_enum->set_datatype(enum_type);
 	p_enum->dictionary = dictionary;
+	current_enum = previous_enum;
+	current_enum_owner = previous_enum_owner;
 	current_class = previous_class;
 	return enum_type;
 }
@@ -1049,6 +1057,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				reduce_expression(member.variable->initializer);
 				qualify_contextual_enum_case_consumer(member.variable->initializer, type);
 				mark_coroutine_handle_capture(member.variable->initializer, type);
+				const bool constant_type_ok = update_constant_expression_type(member.variable->initializer, type, "assign");
 				const BSParser::DataType initializer_type = member.variable->initializer->get_datatype();
 
 				if (member.variable->infer_datatype) {
@@ -1075,7 +1084,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 					} else {
 						type.type_source = BSParser::DataType::INFERRED;
 					}
-				} else if (type.is_set() && !type.is_variant() && initializer_type.is_set()) {
+				} else if (constant_type_ok && type.is_set() && !type.is_variant() && initializer_type.is_set()) {
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
@@ -1121,6 +1130,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				reduce_expression(member.constant->initializer);
 				qualify_contextual_enum_case_consumer(member.constant->initializer, type);
 				mark_coroutine_handle_capture(member.constant->initializer, type);
+				const bool constant_type_ok = update_constant_expression_type(member.constant->initializer, type, "assign");
 				if (!member.constant->initializer->is_constant) {
 					push_error(vformat(R"(Assigned value for constant "%s" isn't a constant expression.)", member.constant->identifier != nullptr ? member.constant->identifier->name : StringName()),
 							member.constant->initializer);
@@ -1138,7 +1148,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 						type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
 						type.is_constant = true;
 					}
-				} else if (type.is_set() && !type.is_variant() && initializer_type.is_set()) {
+				} else if (constant_type_ok && type.is_set() && !type.is_variant() && initializer_type.is_set()) {
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
