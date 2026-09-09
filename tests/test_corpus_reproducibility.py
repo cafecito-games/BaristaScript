@@ -13,6 +13,8 @@ import copy
 import hashlib
 import io
 import json
+import os
+import stat
 from pathlib import Path
 import shutil
 import subprocess
@@ -223,6 +225,27 @@ class WorkflowContract(unittest.TestCase):
     def test_current_workflow(self):
         self.assertIsNone(self.audit(self.workflow))
 
+    def test_setup_managed_python_precedes_dependency_installation(self):
+        for name in ("build", "corpus-reproducibility"):
+            steps = self.document["jobs"][name]["steps"]
+            setup = [index for index, step in enumerate(steps) if step.get("uses") == "actions/setup-python@v5"]
+            self.assertEqual(len(setup), 1, name)
+            install = next(index for index, step in enumerate(steps)
+                           if "pip install -r tests/requirements.txt" in step.get("run", ""))
+            self.assertLess(setup[0], install, name)
+            for mutation in ("missing", "late", "conditional"):
+                document = copy.deepcopy(self.document)
+                changed = document["jobs"][name]["steps"]
+                if mutation == "missing":
+                    changed.pop(setup[0])
+                elif mutation == "late":
+                    step = changed.pop(setup[0])
+                    changed.insert(install, step)
+                else:
+                    changed[setup[0]]["if"] = "false"
+                with self.subTest(job=name, mutation=mutation):
+                    self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)))
+
     def test_gate_omission_suppression_and_mutable_checkout(self):
         original = copy.deepcopy(self.document)
         mutations = [
@@ -362,6 +385,33 @@ class CheckoutContract(unittest.TestCase):
         self.verify()
         self.assertEqual(cache.read_text(), "not consumed")
 
+    def test_hidden_tracked_changes_and_materialized_sparse_flags(self):
+        relative = self.registry["corpora"]["parser"]["source"] + "/input.fs"
+        path = self.root / relative
+        for flag in ("assume-unchanged", "skip-worktree"):
+            self.git("update-index", "--" + flag, "--", relative)
+            # Clean materialized files are valid regardless of index hints.
+            self.verify()
+            flags = self.git("ls-files", "-v", "--", relative)
+            path.write_text("dirty but hidden")
+            self.assertEqual(self.git("status", "--porcelain", "--", relative), "")
+            with self.assertRaisesRegex(ValueError, "input.fs"):
+                self.verify()
+            self.assertEqual(self.git("ls-files", "-v", "--", relative), flags)
+            self.assertEqual(path.read_text(), "dirty but hidden")
+            path.write_text("data only")
+            self.git("update-index", "--no-" + flag, "--", relative)
+
+    def test_consumed_symlinks_are_rejected_without_following(self):
+        source = self.root / self.registry["corpora"]["parser"]["source"]
+        path = source / "foreign.fs"
+        for target in ("missing-target", str(self.root / ".git")):
+            path.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "foreign.fs"):
+                self.verify()
+            self.assertEqual(os.readlink(path), target)
+            path.unlink()
+
     def test_wrong_head_requested_revision_and_origin(self):
         with self.assertRaisesRegex(ValueError, "requested revision"):
             self.module.verify_checkout(self.root, self.registry, "main")
@@ -444,6 +494,27 @@ class OfflineProducer(unittest.TestCase):
         self.assertIn("only in a fresh import: " + path.relative_to(self.committed).as_posix(),
                       self.importer.compare_trees(self.committed, self.fresh))
 
+    def test_comparator_rejects_symlinks_and_special_entries_without_following(self):
+        for directory in (self.committed, self.fresh):
+            path = directory / "unexpected.out"
+            path.symlink_to("missing-target")
+            differences = self.importer.compare_trees(self.committed, self.fresh)
+            self.assertTrue(differences)
+            self.assertIn("unexpected.out", "\n".join(differences))
+            path.unlink()
+            foreign = self.root / "foreign"
+            foreign.mkdir(exist_ok=True)
+            path.symlink_to(foreign, target_is_directory=True)
+            with patch.object(self.importer.filecmp, "cmp", side_effect=AssertionError("followed an invalid tree")):
+                self.assertTrue(self.importer.compare_trees(self.committed, self.fresh))
+            path.unlink()
+            if hasattr(os, "mkfifo"):
+                os.mkfifo(path)
+                self.assertTrue(self.importer.compare_trees(self.committed, self.fresh))
+                path.unlink()
+        (self.committed / "unexpected-directory").mkdir()
+        self.assertIn("unexpected-directory", "\n".join(self.importer.compare_trees(self.committed, self.fresh)))
+
     def test_fixture_source_drift_changes_real_producer_bytes(self):
         source = next((self.root / self.importer.CORPUS_SUBPATH).rglob("*.notest.fs"))
         source.write_bytes(source.read_bytes() + b"\n# changed input\n")
@@ -481,8 +552,19 @@ class FullProducer(unittest.TestCase):
         self.revision = registry["revision"]
 
     def snapshot(self, root):
-        return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+        result = {}
+        for path in root.rglob("*"):
+            if "__pycache__" in path.parts:
+                continue
+            mode = path.lstat().st_mode
+            relative = path.relative_to(root).as_posix()
+            if stat.S_ISLNK(mode):
+                result[relative] = ("symlink", os.readlink(path))
+            elif stat.S_ISREG(mode):
+                result[relative] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+            else:
+                result[relative] = ("type", stat.S_IFMT(mode))
+        return result
 
     def run_importer(self):
         before = self.snapshot(self.root)
@@ -521,6 +603,70 @@ class FullProducer(unittest.TestCase):
         self.assertIn(missing.name, result.stdout)
         missing.write_bytes(original)
         self.assertEqual(self.snapshot(ROOT / "project/tests/corpus/parser"), original_workspace)
+
+    def test_real_cli_rejects_generated_symlinks_and_special_entries(self):
+        destination = self.root / "project/tests/corpus/parser"
+        outside = self.root / "foreign"
+        outside.mkdir()
+        (outside / "payload").write_text("foreign bytes must not be consumed")
+        for target in ("missing-target", str(outside / "payload"), str(outside)):
+            path = destination / "unexpected.out"
+            path.symlink_to(target)
+            result = self.run_importer()
+            print(f"SYMLINK PROBE target={target!r} exit={result.returncode}: "
+                  + (result.stdout + result.stderr).strip(), flush=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("unexpected.out", result.stdout + result.stderr)
+            self.assertEqual(os.readlink(path), target)
+            path.unlink()
+        if hasattr(os, "mkfifo"):
+            path = destination / "unexpected.fifo"
+            os.mkfifo(path)
+            result = self.run_importer()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unexpected.fifo", result.stdout + result.stderr)
+            path.unlink()
+
+    def test_real_wrapper_rejects_hidden_upstream_bytes_without_index_changes(self):
+        import corpus_registry
+        source = self.root / "upstream"
+        subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(FOUNDRY), str(source)], check=True)
+
+        def git(*arguments):
+            return subprocess.run(["git", "-C", str(source), *arguments], capture_output=True, text=True, check=True).stdout
+
+        registry = corpus_registry.load_registry(ROOT)
+        git("remote", "set-url", "origin", "https://github.com/" + registry["repository"] + ".git")
+        git("sparse-checkout", "set", "--cone", *[item["source"] for item in registry["corpora"].values()])
+        git("checkout", "--quiet", "--detach", self.revision)
+        # A normal sparse checkout contains skip-worktree entries outside the
+        # consumed roots; those must remain legal and untouched.
+        corpus_registry.verify_checkout(source, registry, self.revision)
+        # Stop sparse-checkout's automatic clearing of a manually applied
+        # skip-worktree hint on a materialized file. This changes only the
+        # disposable clone; ordinary cone-mode validation was checked above.
+        git("config", "--worktree", "core.sparseCheckout", "false")
+        relative = "modules/foundry_script/tests/scripts/parser/features/fixed_width_integer_literals.out"
+        path = source / relative
+        original = path.read_bytes()
+        changed = original.replace(b"42", b"43", 1)
+        self.assertNotEqual(original, changed)
+        self.assertEqual(len(original), len(changed))
+        for flag in ("assume-unchanged", "skip-worktree"):
+            git("update-index", "--" + flag, "--", relative)
+            path.write_bytes(changed)
+            self.assertEqual(git("status", "--porcelain", "--", relative).strip(), "")
+            before = git("ls-files", "-v", "--", relative)
+            result = subprocess.run([sys.executable, str(self.root / "scripts/check_corpus_reproducibility.py"),
+                "--foundry", str(source)], capture_output=True, text=True)
+            print(f"HIDDEN SOURCE PROBE flag={flag} exit={result.returncode}: "
+                  + (result.stdout + result.stderr).strip(), flush=True)
+            self.assertEqual(git("ls-files", "-v", "--", relative), before)
+            self.assertEqual(path.read_bytes(), changed)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(relative, result.stdout + result.stderr)
+            path.write_bytes(original)
+            git("update-index", "--no-" + flag, "--", relative)
 
     def test_explicit_regeneration_can_repair_a_missing_tree(self):
         shutil.rmtree(self.root / "project/tests/corpus/parser")

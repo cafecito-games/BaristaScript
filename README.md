@@ -104,7 +104,17 @@ corpus tree, ledger and exact suite invocation. Pending is not a passing corpus.
 The job changes no branch-protection settings.
 
 The wrapper and importers use only Python's standard library and Git. Offline
-CI configuration tests additionally use the pinned PyYAML parser:
+CI configuration tests additionally use the pinned PyYAML parser. CI provisions
+Python with `actions/setup-python` before installing it in both jobs, including
+every build-matrix platform. For local externally managed Python installations
+(such as Homebrew), create and activate a virtual environment first:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+```
+
+Then install the audit dependency and run the checks:
 
 ```sh
 python3 -m pip install -r tests/requirements.txt
@@ -133,6 +143,11 @@ copies and exercise the real parser importer; `--check` regenerates in temporary
 directories and never repairs committed files. Explicit parser regeneration
 without `--check` remains available to repair its generated tree. An unrelated
 `.foundry/autoload_index_cache.cfg` outside the consumed roots is left alone.
+Checks reject symlinks and special filesystem entries without following them.
+Consumed upstream bytes are compared directly with the pinned Git blob IDs, so
+`assume-unchanged` or `skip-worktree` index hints cannot hide drift; the check
+does not change the checkout or its index flags. Ordinary sparse checkouts with
+both complete registered roots remain supported.
 
 To deliver another corpus, register its allowlisted local importer and roots,
 transition its registry state and baseline `imported` boolean together, and pin

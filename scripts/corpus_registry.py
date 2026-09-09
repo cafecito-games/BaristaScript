@@ -13,7 +13,10 @@ are entirely local; checkout validation invokes only Git with argument lists.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import stat
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -67,6 +70,36 @@ def local_path(root: Path, relative: str) -> Path:
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"registry path escapes checkout: {relative}")
     return path
+
+
+def tree_entries(root: Path) -> dict[str, str]:
+    """Inventory regular files/directories without following any symlink.
+
+    Path.is_file() erases dangling links and follows live links outside the
+    corpus. Reject every unsupported type before consumers read file bytes.
+    """
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        raise ValueError(f"corpus tree is not a regular directory: {root}")
+    entries = {}
+
+    def visit(directory: Path) -> None:
+        with os.scandir(directory) as children:
+            ordered = sorted(children, key=lambda child: child.name)
+        for child in ordered:
+            path = directory / child.name
+            relative = path.relative_to(root).as_posix()
+            mode = child.stat(follow_symlinks=False).st_mode
+            if stat.S_ISDIR(mode):
+                entries[relative] = "directory"
+                visit(path)
+            elif stat.S_ISREG(mode):
+                entries[relative] = "file"
+            else:
+                kind = "symlink" if stat.S_ISLNK(mode) else "special file"
+                raise ValueError(f"unsupported {kind} in corpus tree: {path}")
+
+    visit(root)
+    return entries
 
 
 def load_registry(root: Path = ROOT) -> dict:
@@ -173,9 +206,12 @@ def validate_registration(root: Path = ROOT, *, baseline_path: Path | None = Non
             if complaint:
                 raise ValueError(complaint)
         else:
-            if not destination.is_dir() or not any(path.is_file() for path in destination.rglob("*")):
+            if not destination.is_dir():
                 raise ValueError(f"imported corpus {name!r}: generated tree is missing or empty: {destination}")
-            sources = {path.relative_to(destination).as_posix() for path in destination.rglob("*.barista")}
+            entries = tree_entries(destination)
+            if "file" not in entries.values():
+                raise ValueError(f"imported corpus {name!r}: generated tree is empty: {destination}")
+            sources = {path for path, kind in entries.items() if kind == "file" and path.endswith(".barista")}
             helpers = {path for path in sources if path.endswith(".notest.barista")}
             cases = sources - helpers
             if len(cases) != corpus["total"] or len(helpers) != corpus["skipped"]:
@@ -199,7 +235,7 @@ def validate_registration(root: Path = ROOT, *, baseline_path: Path | None = Non
 
 
 def run_git(repository: Path, *arguments: str) -> str:
-    completed = subprocess.run(["git", "-C", str(repository), *arguments],
+    completed = subprocess.run(["git", "--no-optional-locks", "-C", str(repository), *arguments],
                                capture_output=True, text=True, check=False)
     if completed.returncode:
         raise ValueError(f"git {' '.join(arguments)} failed in {repository}: {completed.stderr.strip()}")
@@ -223,6 +259,35 @@ def verify_checkout(foundry: Path, registry: dict, requested: str) -> None:
         source = local_path(foundry, record["source"])
         if not source.is_dir():
             raise ValueError(f"corpus {name!r}: required sparse source root missing: {source}")
+        entries = tree_entries(source)
         dirty = run_git(foundry, "status", "--porcelain", "--untracked-files=all", "--ignored", "--", record["source"])
         if dirty:
             raise ValueError(f"{source}: uncommitted changes at pinned revision {revision}:\n{dirty}")
+
+        # Git status trusts index hints such as assume-unchanged and
+        # skip-worktree. Compare all consumed bytes to immutable blob IDs,
+        # independent of those hints, without refreshing/changing the index.
+        pinned = {}
+        listing = run_git(foundry, "ls-tree", "-rz", revision, "--", record["source"])
+        for item in listing.split("\0"):
+            if not item:
+                continue
+            metadata, relative = item.split("\t", 1)
+            mode, kind, object_id = metadata.split()
+            if mode not in ("100644", "100755") or kind != "blob":
+                raise ValueError(f"unsupported pinned source entry type {mode}: {relative}")
+            if not relative.startswith(record["source"] + "/"):
+                raise ValueError(f"pinned source path escapes its registered root: {relative}")
+            pinned[relative[len(record["source"]) + 1:]] = object_id
+        actual_files = {path for path, kind in entries.items() if kind == "file"}
+        for missing in sorted(pinned.keys() - actual_files):
+            raise ValueError(f"pinned source file missing: {source / missing}")
+        for extra in sorted(actual_files - pinned.keys()):
+            raise ValueError(f"source file absent from pinned revision: {source / extra}")
+        for relative, object_id in sorted(pinned.items()):
+            contents = (source / relative).read_bytes()
+            # The registry's full 40-character pin selects Git's SHA-1 object
+            # format. Hash raw bytes, with no attribute filters or upstream code.
+            actual_id = hashlib.sha1(f"blob {len(contents)}\0".encode("ascii") + contents).hexdigest()
+            if actual_id != object_id:
+                raise ValueError(f"source bytes differ from pinned revision {revision}: {source / relative}")

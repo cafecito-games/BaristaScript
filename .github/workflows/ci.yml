@@ -20,6 +20,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: false
+      - name: Setup Python for offline audits
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
       - name: Install offline audit dependency
         shell: bash
         run: python3 -m pip install -r tests/requirements.txt
@@ -77,6 +81,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
+
+      - name: Setup Python for offline audits
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
 
       - name: Validate CI configuration
         shell: bash

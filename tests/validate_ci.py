@@ -224,10 +224,11 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
                 or job.get("permissions") != {"contents": "read"}):
             return "CI requires one unsuppressed Linux corpus-reproducibility job outside the matrix"
         steps = job.get("steps")
-        if not isinstance(steps, list) or len(steps) != 6:
-            return "corpus-reproducibility requires checkout, dependency, outputs, upstream checkout, tests and check steps"
+        if not isinstance(steps, list) or len(steps) != 7:
+            return "corpus-reproducibility requires checkout, Python setup, dependency, outputs, upstream checkout, tests and check steps"
         expected = [
             {"uses": "actions/checkout@v4", "with": {"persist-credentials": "false", "submodules": "false"}},
+            {"uses": "actions/setup-python@v5", "with": {"python-version": "3.x"}},
             {"shell": "bash", "run": "python3 -m pip install -r tests/requirements.txt"},
             {"id": "source", "shell": "bash", "run": 'python3 scripts/check_corpus_reproducibility.py --github-output "$GITHUB_OUTPUT"'},
             {"uses": "actions/checkout@v4", "with": {
@@ -246,6 +247,26 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
                       for key, value in step.items() if key != "name"}
             if actual != required:
                 return f"corpus-reproducibility step {index} must retain its validated inputs and unsuppressed command"
+        # The build matrix validates before setup-godot-cpp. Provision Python
+        # here too: hosted macOS's system/Homebrew pip is externally managed.
+        build_steps = jobs.get("build", {}).get("steps", [])
+        build_prefix = [
+            {"uses": "actions/setup-python@v5", "with": {"python-version": "3.x"}},
+            {"shell": "bash", "run": "\n".join((
+                "python3 -m pip install -r tests/requirements.txt",
+                "python3 tests/validate_ci.py",
+                "python3 tests/test_run_gdscript_suites.py",
+                "python3 tests/test_corpus_baseline.py"))},
+        ]
+        if not isinstance(build_steps, list) or len(build_steps) < 3:
+            return "build matrix requires setup-managed Python before offline validation"
+        for step, required in zip(build_steps[1:3], build_prefix):
+            if not isinstance(step, dict):
+                return "build matrix Python setup and validation steps must be mappings"
+            actual = {key: value.strip() if key == "run" and isinstance(value, str) else value
+                      for key, value in step.items() if key != "name"}
+            if actual != required:
+                return "build matrix requires unsuppressed setup-managed Python before offline validation"
         # Naming this command in another job would duplicate the gate per matrix
         # entry; only the dedicated job owns upstream acquisition/checking.
         for name, other in jobs.items():

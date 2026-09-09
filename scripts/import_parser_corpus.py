@@ -65,7 +65,7 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 from corpus_ledger import barista_path, build_triage_from_maps, validate_triage_ledger  # noqa: E402
 
-from corpus_registry import load_registry, validate_registration, verify_checkout  # noqa: E402
+from corpus_registry import load_registry, tree_entries, validate_registration, verify_checkout  # noqa: E402
 
 REGISTRY = load_registry(ROOT)
 FOUNDRY_REVISION = REGISTRY["revision"]
@@ -622,17 +622,19 @@ def write_baseline(summary: dict) -> None:
 def compare_trees(left: Path, right: Path) -> list[str]:
     differences: list[str] = []
 
-    def walk(directory: Path, root: Path) -> set[str]:
-        return {path.relative_to(root).as_posix() for path in directory.rglob("*") if path.is_file()}
-
-    left_files = walk(left, left)
-    right_files = walk(right, right)
-    for name in sorted(left_files - right_files):
+    try:
+        left_entries = tree_entries(left)
+        right_entries = tree_entries(right)
+    except (ValueError, OSError) as error:
+        return [str(error)]
+    for name in sorted(left_entries.keys() - right_entries.keys()):
         differences.append(f"only in the committed tree: {name}")
-    for name in sorted(right_files - left_files):
+    for name in sorted(right_entries.keys() - left_entries.keys()):
         differences.append(f"only in a fresh import: {name}")
-    for name in sorted(left_files & right_files):
-        if not filecmp.cmp(left / name, right / name, shallow=False):
+    for name in sorted(left_entries.keys() & right_entries.keys()):
+        if left_entries[name] != right_entries[name]:
+            differences.append(f"entry type differs from a fresh import: {name}")
+        elif left_entries[name] == "file" and not filecmp.cmp(left / name, right / name, shallow=False):
             differences.append(f"differs from a fresh import: {name}")
     return differences
 
