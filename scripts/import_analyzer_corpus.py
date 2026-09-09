@@ -196,8 +196,28 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                 or any(type(n) is not int or n not in (42, 45, 60, 138, 139, 140, 141) for n in owner['prerequisites'])
                 or len(set(owner['prerequisites'])) != len(owner['prerequisites'])
                 or owner['primary_issue'] in owner['prerequisites']
-                or owner.get('review_state') not in ('source_slice_pending_execution', 'execution_reviewed')):
+                or owner.get('review_state') not in ('source_slice_pending_execution', 'execution_reviewed', 'source_reviewed_deferred')):
             raise ValueError(f'invalid bounded owner record: {path}')
+        if owner['review_state'] == 'source_reviewed_deferred' and path not in policy['deferred']:
+            raise ValueError(f'invalid deferred owner: {path}')
+        if owner['review_state'] == 'execution_reviewed':
+            evidence = owner.get('execution_evidence')
+            hashes = ('report_sha256', 'source_sha256', 'staged_source_sha256',
+                      'expectation_sha256', 'expected_block_sha256', 'actual_block_sha256')
+            if (not isinstance(evidence, dict)
+                    or any(not isinstance(evidence.get(key), str)
+                           or not re.fullmatch(r'[0-9a-f]{64}', evidence[key]) for key in hashes)
+                    or not isinstance(evidence.get('revision'), str)
+                    or not re.fullmatch(r'[0-9a-f]{40}', evidence['revision'])
+                    or not isinstance(evidence.get('report'), str)
+                    or Path(evidence['report']).name != evidence['report']
+                    or evidence.get('terminal') not in ('passed', 'mismatch', 'crash', 'timeout', 'malformed_result', 'missing_guard', 'missing_summary', 'infrastructure_error')
+                    or type(evidence.get('guard')) is not bool
+                    or (evidence['terminal'] in ('passed', 'mismatch') and not evidence['guard'])
+                    or not isinstance(owner.get('source_review'), dict)
+                    or not owner['source_review'].get('assertion')
+                    or not isinstance(owner.get('code_symbols'), list) or not owner['code_symbols']):
+                raise ValueError(f'invalid reviewed owner execution evidence: {path}')
     files = {}
     for scope in ['analyzer', 'parser']:
         root = scripts / scope

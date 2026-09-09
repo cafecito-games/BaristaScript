@@ -72,3 +72,30 @@ baseline to absorb a selected passing subset. Offline miniature regression
 fixtures retain pinned bytes and hashes in
 `tests/fixtures/analyzer_import/provenance.json`; `--foundry` additionally runs
 the full real producer, same-count drift and removed-case checks.
+
+The discovery policy records all 1,342 static observations as
+`execution_reviewed` and the four exact later-stage cases as
+`source_reviewed_deferred`. Each static owner has a source assertion, bounded
+code family, prerequisites, and hashes of its original full report, source,
+expectation and complete expected/actual blocks. Six disjoint source reviews
+cover all 1,346 pairs and their identified providers. Source scope observations
+remain distinct from actual execution and from checkpoint B eligibility.
+
+The complete frozen run at `13983c45b63b9dbe9da5b72f959814f19aaad1ae`
+produced 372 passes, 966 mismatches and four crashes. Two exact language identity
+corrections were separately executed at
+`fa6380c0602883310f82176de7eb7909a0a1139b`: the registered `BaristaScript`
+resource type in `features/use_preload_script_as_type`, and the canonical
+language name in `errors/retroactive_conformance_enum_target`. Both still have
+guarded semantic mismatches. Their replacement observations retain their own
+execution revision and hashes; no later metadata commit claims a new full run.
+
+The enum cycle crashes belong to #138 local enum constant/member resolution.
+The trait metatype assignment crash is assigned by its closed compatibility
+assertion to #138 with #141 metadata; the builtin-conformance crash belongs to
+#141 with #138 and separately preserved M5 bound checking. Only the enum pair
+has a symbolic crash-origin diagnosis. No crash is a pass or a missing-source
+exemption. ScriptRunner's engine-only hook and the closed special `create_proxy`
+assertions stay visible for #141 S7 and #45 stock-surface disposition review.
+The original five-line `match_with_subscript` fixture retains its line-seven
+oracle: pinned null-origin errors use the parser's previous-token fallback.

@@ -40,6 +40,23 @@ class AnalyzerImport(unittest.TestCase):
     def inventory(self):
         return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus_staging/analyzer')
 
+    def test_reviewed_owner_requires_execution_and_source_evidence(self):
+        path = 'errors/preload_missing_relative_path.barista'
+        owner = dict(self.m.default_policy()['owners'][path])
+        self.policy['owners'][path] = owner
+        self.inventory()
+        owner.pop('execution_evidence')
+        with self.assertRaisesRegex(ValueError, 'execution evidence'):
+            self.inventory()
+        owner.update(self.m.default_policy()['owners'][path])
+        owner['execution_evidence'] = dict(owner['execution_evidence'], guard=False)
+        with self.assertRaisesRegex(ValueError, 'execution evidence'):
+            self.inventory()
+        owner.update(self.m.default_policy()['owners'][path])
+        owner['review_state'] = 'source_reviewed_deferred'
+        with self.assertRaisesRegex(ValueError, 'deferred owner'):
+            self.inventory()
+
     def test_pinned_bytes_full_blocks_and_dependency_identities(self):
         provenance = json.loads((ROOT / 'tests/fixtures/analyzer_import/provenance.json').read_text())
         for path, digest in provenance['files'].items():
