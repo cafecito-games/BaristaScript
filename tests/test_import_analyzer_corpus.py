@@ -85,6 +85,15 @@ class AnalyzerImport(unittest.TestCase):
         for case in other_available_producers:
             with self.subTest(case=case):
                 self.assertNotIn(141, owners[case]['prerequisites'])
+        noreturn_paths = owners['features/noreturn_paths.norun.barista']
+        self.assertEqual(noreturn_paths['primary_issue'], 139)
+        self.assertNotIn(141, noreturn_paths['prerequisites'])
+        self.assertEqual(noreturn_paths['code_symbols'], [
+            'src/bs_analyzer.cpp:BSAnalyzer::node_terminates',
+            'src/bs_analyzer.cpp:BSAnalyzer::suite_has_return',
+            'src/bs_analyzer.cpp:BSAnalyzer::check_function_flow_finality',
+        ])
+        self.assertIn('constant-true WHILE exit-summary gap', noreturn_paths['reason'])
         missing_producers = (
             'errors/abstract_method_in_non_abstract_head.barista',
             'errors/external_signal_nested_callable_enum_mismatch.barista',

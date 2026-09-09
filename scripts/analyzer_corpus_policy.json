@@ -36529,7 +36529,8 @@
     },
     "features/noreturn_paths.norun.barista": {
       "code_symbols": [
-        "src/bs_analyzer.cpp:BSAnalyzer::resolve_match_pattern",
+        "src/bs_analyzer.cpp:BSAnalyzer::node_terminates",
+        "src/bs_analyzer.cpp:BSAnalyzer::suite_has_return",
         "src/bs_analyzer.cpp:BSAnalyzer::check_function_flow_finality"
       ],
       "execution_evidence": {
@@ -36546,11 +36547,9 @@
       },
       "family": "R27 no-return flow propagation",
       "observed_result": "Complete guarded static block differs; exact expected and actual blocks retained in execution evidence.",
-      "prerequisites": [
-        141
-      ],
+      "prerequisites": [],
       "primary_issue": 139,
-      "reason": "Actual extra not-all-paths-return error at line 30 conflicts with source-proven no-return call flow; retain no-return metadata as #141 prerequisite.",
+      "reason": "The actual extra not-all-paths-return error at function line 30 is the #139 constant-true WHILE exit-summary gap; push_fatal noreturn metadata is already produced and consumed.",
       "review_state": "execution_reviewed",
       "source_review": {
         "advisory_report": "45-source-features_remaining.json",
