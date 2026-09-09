@@ -14,20 +14,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
-from corpus_ledger import validate_triage_ledger  # noqa: E402
+from corpus_registry import validate_registration  # noqa: E402
 
 SUITE_RUNNER = "tests/run_gdscript_suites.py"
 
 BASELINE_PATH = ROOT / "tests" / "corpus_baseline.json"
 SUITES_MANIFEST_PATH = ROOT / "tests" / "gdscript_suites.json"
-
-# Printed by project/tests/corpus_harness.gd, which reads it from
-# src/bs_corpus_sentinels.h. Read from the same header here so the pattern this
-# file derives cannot drift from the line the harness prints.
-SENTINEL_HEADER = ROOT / "src" / "bs_corpus_sentinels.h"
-
-CASE_EXTENSION = ".barista"
-HELPER_SUFFIX = ".notest" + CASE_EXTENSION
 
 # Godot's `--script`, its documented `-s` alias, and the quoting a workflow author may add.
 DIRECT_SUITE_INVOCATION = re.compile(r"""(?:--script|(?<![\w-])-s)\s+['"]?res://\S+""")
@@ -163,39 +155,6 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
     return None
 
 
-def summary_prefix() -> str:
-    match = re.search(
-        r'SUMMARY_PREFIX\s*=\s*"([^"]+)"', SENTINEL_HEADER.read_text(encoding="utf-8")
-    )
-    if match is None:
-        raise SystemExit(f"could not read SUMMARY_PREFIX from {SENTINEL_HEADER}")
-    return match.group(1)
-
-
-def list_corpus_paths(root: Path) -> tuple[set[str], set[str]]:
-    """Return ``(cases, helpers)`` as relative posix paths under ``root``."""
-    cases: set[str] = set()
-    helpers: set[str] = set()
-    for path in root.rglob("*" + CASE_EXTENSION):
-        relative = path.relative_to(root).as_posix()
-        if path.name.endswith(HELPER_SUFFIX):
-            helpers.add(relative)
-        else:
-            cases.add(relative)
-    return cases, helpers
-
-
-def count_corpus(root: Path) -> tuple[int, int]:
-    """The cases and the skipped helpers actually on disk under `root`.
-
-    Counted the way project/tests/corpus_harness.gd counts them, so the number
-    committed in the baseline is checked against the tree rather than against
-    another copy of itself.
-    """
-    cases, helpers = list_corpus_paths(root)
-    return len(cases), len(helpers)
-
-
 def check_corpus_baseline() -> str | None:
     """Return a complaint when the corpus baseline, the tree and the CI pin disagree.
 
@@ -213,83 +172,89 @@ def check_corpus_baseline() -> str | None:
     disposition, and that every rewrite/expectation override names an imported
     case with a non-empty reason.
     """
-    baseline = json.loads(BASELINE_PATH.read_text())
-    manifest = json.loads(SUITES_MANIFEST_PATH.read_text())
-    expectations = {
-        entry.get("script", "") + " " + " ".join(entry.get("args", [])): entry.get("expect", "")
-        for entry in manifest.get("extra_invocations", [])
-    }
-    prefix = summary_prefix()
+    try:
+        validate_registration(ROOT, baseline_path=BASELINE_PATH, suites_path=SUITES_MANIFEST_PATH)
+    except (ValueError, OSError) as error:
+        return str(error)
+    return None
 
-    for name, corpus in sorted(baseline["corpora"].items()):
-        imported = bool(corpus.get("imported", True))
-        root_uri = corpus.get("root")
-        if not isinstance(root_uri, str) or not root_uri.startswith("res://"):
-            return f"corpus {name!r} root {root_uri!r} is not a res:// path"
 
-        if not imported:
-            complaint = validate_triage_ledger(name, corpus)
-            if complaint is not None:
-                return complaint
-            continue
+def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
+    """Audit the executable job structure, including acquisition and failure propagation.
 
-        root = ROOT / "project" / root_uri[len("res://") :]
-        if not root.is_dir():
-            return f"corpus {name!r} root {root} does not exist"
+    BaseLoader retains YAML scalar spellings (not YAML 1.1's boolean `on`).
+    A narrow command allowlist makes shell wrappers, mutable refs and hidden
+    status suppression reviewable changes instead of substring matches.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return "CI audit requires PyYAML: python3 -m pip install -r tests/requirements.txt"
 
-        disk_cases, disk_helpers = list_corpus_paths(root)
-        cases, helpers = len(disk_cases), len(disk_helpers)
-        if cases != corpus["total"] or helpers != corpus["skipped"]:
-            return (
-                f"corpus {name!r} holds {cases} cases and {helpers} skipped helpers, but "
-                f"{BASELINE_PATH.name} records {corpus['total']} and {corpus['skipped']}; a case "
-                "that vanishes must never shrink the corpus quietly"
-            )
+    class UniqueLoader(yaml.BaseLoader):
+        def construct_mapping(self, node, deep=False):
+            result = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if not isinstance(key, str) or key in result:
+                    raise ValueError("duplicate or non-string YAML mapping key")
+                result[key] = self.construct_object(value_node, deep=deep)
+            return result
 
-        complaint = validate_triage_ledger(
-            name,
-            corpus,
-            disk_cases=disk_cases,
-            disk_helpers=disk_helpers,
-        )
-        if complaint is not None:
-            return complaint
-
-        expected_failures = corpus["expected_failures"]
-        unknown = sorted(set(expected_failures) - disk_cases)
-        if unknown:
-            return (
-                f"corpus {name!r} records expected failures that are not cases: "
-                + ", ".join(unknown)
-            )
-
-        passing = corpus["total"] - len(expected_failures)
-        required = (
-            f"^{re.escape(prefix)} {passing}/{corpus['total']} "
-            f"skipped={corpus['skipped']}$"
-        )
-        key = f"{root_uri} --corpus {root_uri}"
-        pinned = expectations.get(key)
-        if pinned is None:
-            pinned = next(
-                (
-                    expect
-                    for invocation, expect in expectations.items()
-                    if root_uri in invocation
-                ),
-                None,
-            )
-        if pinned is None:
-            return (
-                f"{SUITES_MANIFEST_PATH.name} has no invocation running corpus {name!r} at "
-                f"{root_uri}; an unrun corpus is not a baseline"
-            )
-        if pinned != required:
-            return (
-                f"corpus {name!r} is pinned as {pinned!r} but the baseline requires {required!r}; "
-                "the pin is what makes the number mean anything, so it may not be a loose match "
-                "and it may not lag the baseline"
-            )
+    try:
+        document = yaml.load(workflow, Loader=UniqueLoader)
+        if not isinstance(document, dict):
+            return "CI workflow must be a mapping"
+        events = document.get("on")
+        if (not isinstance(events, dict)
+                or set(events) != {"push", "pull_request", "merge_group", "workflow_call"}
+                or events["push"] != {"branches": ["main"]}
+                or any(events[event] not in ("", None, {})
+                       for event in ("pull_request", "merge_group", "workflow_call"))):
+            return "CI must preserve main push, pull_request, merge_group and workflow_call events without filters"
+        if "defaults" in document or "env" in document:
+            return "corpus-reproducibility must not inherit workflow shell or environment overrides"
+        jobs = document.get("jobs", {})
+        if not isinstance(jobs, dict):
+            return "CI jobs must be a mapping"
+        job = jobs.get("corpus-reproducibility")
+        if (not isinstance(job, dict) or set(job) - {"name", "runs-on", "permissions", "steps"}
+                or job.get("name", "corpus-reproducibility") != "corpus-reproducibility"
+                or job.get("runs-on") != "ubuntu-22.04"
+                or job.get("permissions") != {"contents": "read"}):
+            return "CI requires one unsuppressed Linux corpus-reproducibility job outside the matrix"
+        steps = job.get("steps")
+        if not isinstance(steps, list) or len(steps) != 6:
+            return "corpus-reproducibility requires checkout, dependency, outputs, upstream checkout, tests and check steps"
+        expected = [
+            {"uses": "actions/checkout@v4", "with": {"persist-credentials": "false", "submodules": "false"}},
+            {"shell": "bash", "run": "python3 -m pip install -r tests/requirements.txt"},
+            {"id": "source", "shell": "bash", "run": 'python3 scripts/check_corpus_reproducibility.py --github-output "$GITHUB_OUTPUT"'},
+            {"uses": "actions/checkout@v4", "with": {
+                "repository": "${{ steps.source.outputs.repository }}",
+                "ref": "${{ steps.source.outputs.revision }}",
+                "path": ".upstream-foundry", "submodules": "false",
+                "persist-credentials": "false", "fetch-depth": "1",
+                "sparse-checkout": "${{ steps.source.outputs.sparse_paths }}"}},
+            {"shell": "bash", "run": "python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry"},
+            {"shell": "bash", "run": "python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry"},
+        ]
+        for index, (step, required) in enumerate(zip(steps, expected), 1):
+            if not isinstance(step, dict):
+                return f"corpus-reproducibility step {index} must be a mapping"
+            actual = {key: value.strip() if key == "run" and isinstance(value, str) else value
+                      for key, value in step.items() if key != "name"}
+            if actual != required:
+                return f"corpus-reproducibility step {index} must retain its validated inputs and unsuppressed command"
+        # Naming this command in another job would duplicate the gate per matrix
+        # entry; only the dedicated job owns upstream acquisition/checking.
+        for name, other in jobs.items():
+            if name != "corpus-reproducibility" and isinstance(other, dict):
+                if any(isinstance(step, dict) and "scripts/check_corpus_reproducibility.py" in step.get("run", "")
+                       for step in other.get("steps", [])):
+                    return "corpus reproducibility must run only in its dedicated job"
+    except (yaml.YAMLError, ValueError, TypeError) as error:
+        return f"invalid CI YAML: {error}"
     return None
 
 
@@ -314,6 +279,11 @@ def main() -> int:
 
     if "  push:\n    branches: [main]\n" not in workflow:
         print("CI push events must be limited to main to avoid duplicating pull request runs")
+        return 1
+
+    corpus_wiring_complaint = check_corpus_reproducibility_wiring(workflow)
+    if corpus_wiring_complaint is not None:
+        print(corpus_wiring_complaint)
         return 1
 
     suite_wiring_complaint = check_gdscript_suite_wiring(workflow)

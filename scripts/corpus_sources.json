@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "repository": "cafecito-games/Foundry",
+  "revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
+  "corpora": {
+    "parser": {
+      "state": "active",
+      "source": "modules/foundry_script/tests/scripts/parser",
+      "destination": "project/tests/corpus/parser",
+      "importer": "scripts/import_parser_corpus.py"
+    },
+    "analyzer": {
+      "state": "pending",
+      "source": "modules/foundry_script/tests/scripts/analyzer",
+      "destination": "project/tests/corpus/analyzer",
+      "importer": null
+    }
+  }
+}

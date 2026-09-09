@@ -92,3 +92,49 @@ its source, and cannot instantiate.
 - `src/register_types.*` owns GDExtension startup and shutdown.
 - `project/` is the Godot 4.7 recognition fixture and smoke test.
 - `godot-cpp/` is the pinned bindings submodule.
+
+## Verify corpus reproducibility
+
+The `corpus-reproducibility` status check runs once on Linux for each existing CI
+workflow event, outside the build matrix. It validates
+`scripts/corpus_sources.json`, checks out the public Foundry repository at that
+registry's immutable revision, and checks every active importer. The parser is
+active; the analyzer is explicitly pending until #45 delivers its importer,
+corpus tree, ledger and exact suite invocation. Pending is not a passing corpus.
+The job changes no branch-protection settings.
+
+The wrapper and importers use only Python's standard library and Git. Offline
+CI configuration tests additionally use the pinned PyYAML parser:
+
+```sh
+python3 -m pip install -r tests/requirements.txt
+python3 tests/test_corpus_reproducibility.py
+python3 tests/test_corpus_baseline.py
+python3 tests/validate_ci.py
+```
+
+The default reproducibility tests need no network or credentials. They include
+real parser generation from a small set of byte-faithful upstream fixtures;
+full pinned-source integration tests are explicitly skipped without `--foundry`.
+To run the full checks, use a local Foundry checkout at the revision in
+`scripts/corpus_sources.json`, with its `origin` pointing to
+`cafecito-games/Foundry` on GitHub and both registered parser/analyzer source
+roots present and clean:
+
+```sh
+python3 scripts/check_corpus_reproducibility.py --foundry /path/to/Foundry
+python3 tests/test_corpus_reproducibility.py --foundry /path/to/Foundry
+```
+
+CI supplies this checkout at `.upstream-foundry` using the wrapper's validated
+`--github-output "$GITHUB_OUTPUT"` outputs for repository, revision and sparse
+paths. It does not build or execute Foundry. The full tests mutate disposable
+copies and exercise the real parser importer; `--check` regenerates in temporary
+directories and never repairs committed files. Explicit parser regeneration
+without `--check` remains available to repair its generated tree. An unrelated
+`.foundry/autoload_index_cache.cfg` outside the consumed roots is left alone.
+
+To deliver another corpus, register its allowlisted local importer and roots,
+transition its registry state and baseline `imported` boolean together, and pin
+its exact runner invocation. CI derives the importer list and Foundry revision
+from the registry; no additional YAML importer command or revision is needed.

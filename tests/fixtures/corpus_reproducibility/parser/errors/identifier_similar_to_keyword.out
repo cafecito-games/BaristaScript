@@ -1,0 +1,2 @@
+FS_TEST_PARSER_ERROR
+Identifier "аs" is visually similar to the FoundryScript keyword "as" and thus not allowed.

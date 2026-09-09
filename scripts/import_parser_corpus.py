@@ -55,7 +55,6 @@ import filecmp
 import json
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -66,17 +65,17 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 from corpus_ledger import barista_path, build_triage_from_maps, validate_triage_ledger  # noqa: E402
 
-# The Foundry revision this import is pinned to. Foundry moves; an import that
-# ran against a different tree would produce a corpus whose provenance is a
-# guess, so the script refuses rather than warns.
-FOUNDRY_REVISION = "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6"
+from corpus_registry import load_registry, validate_registration, verify_checkout  # noqa: E402
+
+REGISTRY = load_registry(ROOT)
+FOUNDRY_REVISION = REGISTRY["revision"]
 
 # Upstream runnable-case count at FOUNDRY_REVISION for modules/.../parser
 # (helpers are counted separately and never contribute to this total).
 PARSER_UPSTREAM_TOTAL = 344
 
-CORPUS_SUBPATH = Path("modules/foundry_script/tests/scripts/parser")
-DESTINATION = ROOT / "project" / "tests" / "corpus" / "parser"
+CORPUS_SUBPATH = Path(REGISTRY["corpora"]["parser"]["source"])
+DESTINATION = ROOT / REGISTRY["corpora"]["parser"]["destination"]
 BASELINE_PATH = ROOT / "tests" / "corpus_baseline.json"
 SENTINEL_HEADER = ROOT / "src" / "bs_corpus_sentinels.h"
 
@@ -333,7 +332,7 @@ def analyzer_scaffold_entry() -> dict:
     """
     return {
         "imported": False,
-        "root": "res://tests/corpus/analyzer",
+        "root": "res://" + REGISTRY["corpora"]["analyzer"]["destination"][len("project/"):],
         "foundry_revision": FOUNDRY_REVISION,
         "upstream_total": 1346,
         "upstream_helpers": 250,
@@ -357,43 +356,14 @@ def analyzer_scaffold_entry() -> dict:
     }
 
 
-def run_git(repository: Path, *arguments: str) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repository), *arguments],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise SystemExit(
-            f"git {' '.join(arguments)} failed in {repository}: {completed.stderr.strip()}"
-        )
-    return completed.stdout.strip()
-
-
-def verify_revision(foundry: Path, requested: str) -> None:
-    """Refuse to import from anything but the pinned revision.
-
-    A corpus imported from an unrecorded tree cannot be re-derived, and the
-    revision is cited case by case in the PR that lands it.
-    """
-    if requested != FOUNDRY_REVISION:
-        raise SystemExit(
-            f"--revision {requested} is not the pinned revision {FOUNDRY_REVISION}; this import "
-            "reproduces one corpus, and a different revision would produce a different one"
-        )
-    head = run_git(foundry, "rev-parse", "HEAD")
-    if head != FOUNDRY_REVISION:
-        raise SystemExit(
-            f"{foundry} is at {head}, not the pinned revision {FOUNDRY_REVISION}; check it out "
-            "before importing"
-        )
-    dirty = run_git(foundry, "status", "--porcelain", "--", str(CORPUS_SUBPATH))
-    if dirty:
-        raise SystemExit(
-            f"{foundry / CORPUS_SUBPATH} has uncommitted changes; the import would record a tree "
-            f"that is not {FOUNDRY_REVISION}:\n{dirty}"
-        )
+def verify_revision(foundry: Path, requested: str, *, rebuilding: bool = False) -> None:
+    """Validate shared delivery registration and the consumed upstream checkout."""
+    try:
+        registry = validate_registration(ROOT, baseline_path=BASELINE_PATH,
+                                         rebuilding="parser" if rebuilding else None)
+        verify_checkout(foundry, registry, requested)
+    except (ValueError, OSError) as error:
+        raise SystemExit(str(error)) from error
 
 
 def read_bytes(path: Path) -> bytes:
@@ -602,7 +572,8 @@ def parser_baseline_entry(summary: dict) -> dict:
     """The parser corpus ledger entry, including triage derived from the tables."""
     triage = parser_triage_ledger()
     entry = {
-        "root": "res://tests/corpus/parser",
+        "imported": True,
+        "root": "res://" + REGISTRY["corpora"]["parser"]["destination"][len("project/"):],
         "total": len(summary["cases"]),
         "skipped": len(summary["helpers"]),
         "expected_failures": [],
@@ -678,7 +649,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     foundry = Path(arguments.foundry).resolve()
-    verify_revision(foundry, arguments.revision)
+    verify_revision(foundry, arguments.revision, rebuilding=not arguments.check)
 
     if arguments.check:
         with tempfile.TemporaryDirectory() as temporary:

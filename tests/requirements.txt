@@ -1,0 +1,2 @@
+# YAML structure parsing for validate_ci.py and its offline regression tests.
+PyYAML==6.0.3

@@ -1,0 +1,2 @@
+FS_TEST_PARSER_ERROR
+Cannot write a negative "ulong" literal: the "UL" suffix selects an unsigned type.
