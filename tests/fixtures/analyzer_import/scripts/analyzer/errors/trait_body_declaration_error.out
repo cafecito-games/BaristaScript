@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 4: Could not resolve body of trait "CafecitoBadRequirement" applied by "trait_body_declaration_error.fs". The trait is declared in "res://analyzer/errors/trait_body_declaration_error_base.notest.fs", which has errors, the first at line 6: A function must either have a ":" followed by a body, or be marked as "abstract".

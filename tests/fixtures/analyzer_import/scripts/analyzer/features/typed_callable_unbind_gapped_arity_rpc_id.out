@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+>> ERROR: Condition "!is_inside_tree()" is true. Returning: ERR_UNCONFIGURED
+>> ERROR: Condition "!is_inside_tree()" is true. Returning: ERR_UNCONFIGURED

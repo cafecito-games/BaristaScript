@@ -157,3 +157,7 @@ To deliver another corpus, register its allowlisted local importer and roots,
 transition its registry state and baseline `imported` boolean together, and pin
 its exact runner invocation. CI derives the importer list and Foundry revision
 from the registry; no additional YAML importer command or revision is needed.
+
+Analyzer corpus discovery and exact-case reproduction are documented in
+[the checkpoint A guide](docs/analyzer-discovery.md). The final analyzer corpus
+remains pending until its complete included population passes.

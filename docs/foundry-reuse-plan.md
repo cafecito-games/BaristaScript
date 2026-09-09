@@ -55,13 +55,13 @@ exact diagnostic text).
 
 | Directory | Files | Reuse |
 |---|---:|---|
-| `analyzer/errors` | 971 | High — most diagnostics are unchanged |
+| `analyzer/errors` | 991 (861 cases + 130 helpers) | High — most diagnostics are unchanged |
 | `runtime/features` | 557 | High |
-| `analyzer/features` | 529 | High |
+| `analyzer/features` | 534 (417 cases + 117 helpers) | High |
 | `runtime/errors` | 259 | High |
 | `parser/errors` | 182 | **Verbatim** — the parser is unchanged |
 | `parser/features` | 133 | **Verbatim** (135 `.fs`, two of them `.notest.fs` helpers) |
-| `analyzer/warnings` | 71 | High |
+| `analyzer/warnings` | 71 (68 cases + 3 helpers) | High |
 | `refactor` | 60 | Medium — depends on editor integration |
 | `lsp` | 44 | Medium |
 | `parser/warnings` | 29 | **Verbatim** |

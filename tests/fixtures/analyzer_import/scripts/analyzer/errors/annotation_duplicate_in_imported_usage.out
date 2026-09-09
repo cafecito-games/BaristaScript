@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 3: Ambiguous annotation "@twice": the canonical identity "cafecito.dupsamefile.twice" has multiple declarations.

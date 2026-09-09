@@ -34,6 +34,8 @@ func _initialize() -> void:
 	_test_unreadable_corpus_root_is_harness_error(failures)
 	_test_unreadable_directory_is_harness_error(failures)
 	_test_runner_process_arguments(failures)
+	_test_exact_case_selection(failures)
+	_test_production_fixture_run_isolation(failures)
 
 	if failures.is_empty():
 		print("corpus harness fail-closed contract: all assertions passed")
@@ -532,3 +534,79 @@ func _remove_directory(path: String) -> void:
 		else:
 			DirAccess.remove_absolute(child)
 	DirAccess.remove_absolute(path)
+
+
+func _test_exact_case_selection(failures: Array[String]) -> void:
+	var harness := Harness.new()
+	harness.fixture_stages[FIXTURES_ROOT] = "parser"
+	var root := FIXTURES_ROOT + "/passing"
+	var selected := harness.run(root, false, false, "paired_ok.barista")
+	_expect(failures, selected.exit_code == 0 and selected.get("results", []).size() == 1, "exact case must execute once with result")
+	var missing := harness.run(root, false, false, "missing.barista")
+	_expect(failures, missing.exit_code == Harness.ExitCode.HARNESS_ERROR, "missing exact case must fail")
+	var helper := harness.run(root, false, false, "helper.notest.barista")
+	_expect(failures, helper.exit_code == Harness.ExitCode.HARNESS_ERROR, "helper must not be executable")
+
+
+func _test_production_fixture_run_isolation(failures: Array[String]) -> void:
+	# This owns only a newly created stage. Never replace an author's real stage.
+	var staging := "res://tests/corpus_staging/analyzer"
+	if DirAccess.dir_exists_absolute(staging):
+		failures.append("harness isolation control requires absent owned analyzer staging")
+		return
+	var harness := Harness.new()
+	var parser := "res://tests/corpus/parser"
+	var parser_case := "errors/abstract_header_modifier_repeated.barista"
+	var first_a := harness.run(parser, false, false, parser_case)
+	_expect(failures, first_a.exit_code == Harness.ExitCode.PASSED, "production A must pass before staging")
+	var registry: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../scripts/corpus_sources.json"))
+	var manifest := JSON.stringify({"schema_version": 1, "foundry_revision": registry.revision, "cases": {"case.barista": "analyzer"}})
+	DirAccess.make_dir_recursive_absolute(staging)
+	_write_isolation_file(staging.path_join("case.barista"), "func test():\n\tpass\n", failures)
+	_write_isolation_file(staging.path_join("case.out"), Harness.SUCCESS_SENTINEL + "\n", failures)
+	_write_isolation_file(staging.path_join("case_stages.json"), manifest, failures)
+	var first_b := harness.run(staging)
+	_expect(failures, first_b.exit_code == Harness.ExitCode.PASSED and first_b.get("results", []).size() == 1, "production staged B must execute: " + _text(first_b))
+	_expect(failures, first_b.get("results", [{}])[0].get("fixture_index", {}).get("sources", 0) > 1, "staged B must use real fixture declarations")
+	var second_a := harness.run(parser, false, false, parser_case)
+	_expect(failures, second_a == first_a, "same-Harness A-B-A must restore ordinary fixture environment: " + _text(second_a))
+	var second_b := harness.run(staging)
+	_expect(failures, second_b == first_b, "same-Harness B-A-B must retain deterministic staging results")
+
+	# Repopulate staging before each transition; all errors must leave the next
+	# ordinary run independent. Assertions accumulate so cleanup always executes.
+	for transition in ["invalid-root", "missing-root", "invalid-manifest", "missing-case", "update-refusal"]:
+		harness.run(staging)
+		var rejected: Dictionary
+		match transition:
+			"invalid-root":
+				rejected = harness.run("res://../outside-project")
+			"missing-root":
+				rejected = harness.run("res://tests/corpus_staging/missing-isolation-control")
+			"invalid-manifest":
+				_write_isolation_file(staging.path_join("case_stages.json"), "{}", failures)
+				rejected = harness.run(staging)
+				_write_isolation_file(staging.path_join("case_stages.json"), manifest, failures)
+			"missing-case":
+				rejected = harness.run(staging, false, false, "missing.barista")
+			"update-refusal":
+				rejected = harness.run(staging, false, true)
+		_expect(failures, rejected.exit_code == Harness.ExitCode.HARNESS_ERROR, transition + " must reject")
+		var after_error := harness.run(parser, false, false, parser_case)
+		_expect(failures, after_error == first_a, transition + " must not leak fixture state: " + _text(after_error))
+
+	harness.run(staging)
+	_remove_directory(staging)
+	var after_removal := harness.run(parser, false, false, parser_case)
+	_expect(failures, after_removal == first_a, "removing staging must not poison the same Harness: " + _text(after_removal))
+	_expect(failures, not DirAccess.dir_exists_absolute(staging), "isolation control must remove only its owned stage")
+	print("production fixture isolation transitions executed")
+
+
+func _write_isolation_file(path: String, content: String, failures: Array[String]) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		failures.append("cannot write isolation fixture: " + path)
+		return
+	file.store_string(content)
+	file.close()

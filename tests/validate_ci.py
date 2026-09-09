@@ -236,8 +236,9 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
                 "ref": "${{ steps.source.outputs.revision }}",
                 "path": ".upstream-foundry", "submodules": "false",
                 "persist-credentials": "false", "fetch-depth": "1",
+                "sparse-checkout-cone-mode": "false",
                 "sparse-checkout": "${{ steps.source.outputs.sparse_paths }}"}},
-            {"shell": "bash", "run": "python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry"},
+            {"shell": "bash", "run": "python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry\npython3 tests/test_import_analyzer_corpus.py --foundry .upstream-foundry"},
             {"shell": "bash", "run": "python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry"},
         ]
         for index, (step, required) in enumerate(zip(steps, expected), 1):

@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 3: Preload file "res://analyzer/errors/preload_missing_relative_target.notest.fs" does not exist.

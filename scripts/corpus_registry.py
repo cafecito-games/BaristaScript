@@ -142,7 +142,23 @@ def load_registry(root: Path = ROOT) -> dict:
                 seen[key].add(value)
     if not any(record["state"] == "active" for record in corpora.values()):
         raise ValueError("corpus registry has zero active corpora")
+    auxiliary = registry.get("auxiliary_sources", [])
+    if not isinstance(auxiliary, list) or not all(isinstance(path, str) for path in auxiliary) or auxiliary != sorted(set(auxiliary)):
+        raise ValueError("auxiliary sources must be sorted unique paths")
+    for path in auxiliary:
+        normalized_path(path, "modules/foundry_script/tests/scripts/")
+        if not path.endswith(".notest.fs") or any(path == record["source"] or path.startswith(record["source"] + "/") for record in corpora.values()):
+            raise ValueError(f"invalid auxiliary helper source: {path}")
     return registry
+
+
+def source_paths(registry: dict) -> list[str]:
+    return sorted([record["source"] for record in registry["corpora"].values()] + registry.get("auxiliary_sources", []))
+
+
+def sparse_patterns(registry: dict) -> list[str]:
+    directories = {record["source"] for record in registry["corpora"].values()}
+    return ["/" + path + ("/" if path in directories else "") for path in source_paths(registry)]
 
 
 def validate_registration(root: Path = ROOT, *, baseline_path: Path | None = None,
@@ -260,15 +276,38 @@ def verify_checkout(foundry: Path, registry: dict, requested: str) -> None:
     head = run_git(foundry, "rev-parse", "HEAD")
     if head != revision:
         raise ValueError(f"{foundry}: HEAD {head} is not the pinned revision {revision}")
-    for name, record in sorted(registry["corpora"].items()):
+    inputs = [(name, record, False) for name, record in sorted(registry["corpora"].items())]
+    inputs += [("support_helper", {"source": path}, True) for path in registry.get("auxiliary_sources", [])]
+    for name, record, single_file in inputs:
         source = local_path(foundry, record["source"])
+        if single_file:
+            if not source.is_file():
+                raise ValueError(f"required auxiliary source missing: {source}")
+            dirty = run_git(foundry, "diff-index", "--cached", "--name-status", "--no-renames", revision, "--", record["source"])
+            if dirty:
+                raise ValueError(f"{source}: uncommitted changes at pinned revision {revision}:\n{dirty}")
+            listing = run_git(foundry, "ls-tree", revision, "--", record["source"])
+            if not listing:
+                raise ValueError(f"auxiliary source absent from pin: {source}")
+            metadata, relative = listing.split("\t", 1)
+            mode, kind, object_id = metadata.split()
+            contents = source.read_bytes()
+            actual_id = hashlib.sha1(f"blob {len(contents)}\0".encode("ascii") + contents).hexdigest()
+            if mode not in ("100644", "100755") or kind != "blob" or relative != record["source"] or actual_id != object_id:
+                raise ValueError(f"auxiliary source bytes/type differ from pinned revision {revision}: {source}")
+            if bool(source.stat().st_mode & stat.S_IXUSR) != (mode == "100755"):
+                raise ValueError(f"auxiliary source executable mode differs from pinned revision: {source}")
+            continue
         if not source.is_dir():
             raise ValueError(f"corpus {name!r}: required sparse source root missing: {source}")
         entries = tree_entries(source)
-        dirty = run_git(foundry, "status", "--porcelain", "--untracked-files=all", "--ignored", "--", record["source"])
+        dirty = run_git(foundry, "diff-index", "--cached", "--name-status", "--no-renames", revision, "--", record["source"])
         if dirty:
             raise ValueError(f"{source}: uncommitted changes at pinned revision {revision}:\n{dirty}")
 
+        # Cached index comparison requires no ignore/attribute blobs outside
+        # the registered sparse inputs. Complete filesystem enumeration below
+        # catches ignored/untracked files too, without git status's lazy fetch.
         # Git status trusts index hints such as assume-unchanged and
         # skip-worktree. Compare all consumed bytes to immutable blob IDs,
         # independent of those hints, without refreshing/changing the index.
@@ -283,16 +322,18 @@ def verify_checkout(foundry: Path, registry: dict, requested: str) -> None:
                 raise ValueError(f"unsupported pinned source entry type {mode}: {relative}")
             if not relative.startswith(record["source"] + "/"):
                 raise ValueError(f"pinned source path escapes its registered root: {relative}")
-            pinned[relative[len(record["source"]) + 1:]] = object_id
+            pinned[relative[len(record["source"]) + 1:]] = (object_id, mode)
         actual_files = {path for path, kind in entries.items() if kind == "file"}
         for missing in sorted(pinned.keys() - actual_files):
             raise ValueError(f"pinned source file missing: {source / missing}")
         for extra in sorted(actual_files - pinned.keys()):
             raise ValueError(f"source file absent from pinned revision: {source / extra}")
-        for relative, object_id in sorted(pinned.items()):
+        for relative, (object_id, mode) in sorted(pinned.items()):
+            if bool((source / relative).stat().st_mode & stat.S_IXUSR) != (mode == "100755"):
+                raise ValueError(f"source executable mode differs from pinned revision: {source / relative}")
             contents = (source / relative).read_bytes()
             # The registry's full 40-character pin selects Git's SHA-1 object
             # format. Hash raw bytes, with no attribute filters or upstream code.
             actual_id = hashlib.sha1(f"blob {len(contents)}\0".encode("ascii") + contents).hexdigest()
             if actual_id != object_id:
-                raise ValueError(f"source bytes differ from pinned revision {revision}: {source / relative}")
+                raise ValueError(f"uncommitted source bytes differ from pinned revision {revision}: {source / relative}")
