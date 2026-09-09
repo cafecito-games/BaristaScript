@@ -22,6 +22,8 @@ import re
 import subprocess
 
 from corpus_ledger import validate_triage_ledger
+from corpus_stages import validate_stages
+from corpus_expectations import decode_expectation
 
 ROOT = Path(__file__).resolve().parents[1]
 TRUSTED_REPOSITORY = "cafecito-games/Foundry"
@@ -220,6 +222,9 @@ def validate_registration(root: Path = ROOT, *, baseline_path: Path | None = Non
             complaint = validate_triage_ledger(name, corpus, disk_cases=cases, disk_helpers=helpers)
             if complaint:
                 raise ValueError(complaint)
+            validate_stages(read_json(destination / "case_stages.json"), cases, helpers, registry["revision"])
+            for case in cases:
+                decode_expectation((destination / case).with_suffix(".out").read_bytes(), case)
             unknown = sorted(set(failures) - cases)
             if unknown:
                 raise ValueError(f"corpus {name!r} records expected failures that are not cases: {', '.join(unknown)}")

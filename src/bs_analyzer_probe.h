@@ -25,6 +25,10 @@ protected:
 	static void _bind_methods();
 
 public:
+	/** Static raw-byte corpus oracle; never compiles or executes script code. */
+	godot::Dictionary evaluate_corpus(const godot::PackedByteArray &p_bytes, const godot::String &p_path, const godot::String &p_stage) const;
+	godot::Dictionary corpus_format_controls() const;
+	godot::Dictionary corpus_state_controls() const;
 	/**
 	 * Parse `return <expr>` inside a throwaway function, analyze, and return a Dictionary:
 	 * `ok`, `value`, `value_type`, `has_unary_sign`, `errors` (PackedStringArray).

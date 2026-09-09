@@ -94,6 +94,7 @@ jobs:
           python3 tests/validate_ci.py
           python3 tests/test_run_gdscript_suites.py
           python3 tests/test_corpus_baseline.py
+          python3 tests/test_corpus_expectations.py
 
       - name: Audit the platform seam
         shell: bash

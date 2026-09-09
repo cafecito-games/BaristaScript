@@ -18,7 +18,7 @@
     {
       "name": "corpus_runner (tokenizer fixtures)",
       "script": "res://tests/corpus_runner.gd",
-      "args": ["--corpus", "res://tests/corpus_fixtures/tokenizer"],
+      "args": ["--corpus", "res://tests/corpus_fixtures/tokenizer", "--stage", "parser"],
       "expect": "^BS_CORPUS 24/24 skipped=0$"
     },
     {

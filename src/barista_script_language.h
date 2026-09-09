@@ -126,8 +126,22 @@ public:
 	static const BaristaScriptInternedStrings &get_interned_strings();
 
 	/** The private declaration index owned by this language (#44). */
-	BSDeclarationIndex &get_declaration_index() { return declaration_index; }
-	const BSDeclarationIndex &get_declaration_index() const { return declaration_index; }
+	BSDeclarationIndex &get_declaration_index() {
+#ifdef DEBUG_ENABLED
+		if (BSDeclarationIndex::get_corpus_state() != nullptr) {
+			return *BSDeclarationIndex::get_corpus_state();
+		}
+#endif
+		return declaration_index;
+	}
+	const BSDeclarationIndex &get_declaration_index() const {
+#ifdef DEBUG_ENABLED
+		if (BSDeclarationIndex::get_corpus_state() != nullptr) {
+			return *BSDeclarationIndex::get_corpus_state();
+		}
+#endif
+		return declaration_index;
+	}
 
 	Vector<String> get_conformance_files_in_namespace(const String &p_namespace) const;
 	/** Commit/remove helpers used by probes and the #43 analyzer seam. */

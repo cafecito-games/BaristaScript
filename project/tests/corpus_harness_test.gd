@@ -111,7 +111,7 @@ func _test_trailing_whitespace_drift_fails(failures: Array[String]) -> void:
 		false,
 		false,
 		func(_case_path: String) -> Dictionary:
-			return {"ok": true, "output": ""}
+			return {"ok": true, "output": Harness.SUCCESS_SENTINEL}
 	)
 	_expect(failures, result["exit_code"] == Harness.ExitCode.CASES_FAILED, "trailing-whitespace-only drift must fail")
 	_expect(
@@ -128,14 +128,14 @@ func _test_line_ending_drift_fails(failures: Array[String]) -> void:
 		false,
 		false,
 		func(_case_path: String) -> Dictionary:
-			return {"ok": true, "output": ""}
+			return {"ok": true, "output": Harness.SUCCESS_SENTINEL}
 	)
 	_expect(failures, result["exit_code"] == Harness.ExitCode.CASES_FAILED, "line-ending-only drift must fail")
 	var text := _text(result)
 	_expect(
 		failures,
-		text.contains('expected: "%s\\r"' % Harness.SUCCESS_SENTINEL),
-		"a carriage return in the expectation must render as a visible \\r escape: %s" % text
+		text.contains("without CR or NUL"),
+		"CRLF expectation must be rejected before comparison: %s" % text
 	)
 	_expect(
 		failures,
@@ -284,13 +284,14 @@ func _test_update_expectations_refuses_non_mismatch(failures: Array[String]) -> 
 func _test_update_expectations_rewrites_mismatches(failures: Array[String]) -> void:
 	var temporary_root := "user://bs_corpus_update_test"
 	_copy_fixture_directory("%s/trailing_whitespace_drift" % FIXTURES_ROOT, temporary_root)
-	var updated := _run_harness(temporary_root, false, true)
+	var evaluator := func(_path: String) -> Dictionary: return {"ok": true, "output": Harness.SUCCESS_SENTINEL}
+	var updated := _run_harness(temporary_root, false, true, evaluator)
 	_expect(
 		failures,
 		updated["exit_code"] == Harness.ExitCode.PASSED,
 		"update mode must succeed when every failure is an output mismatch: %s" % _text(updated)
 	)
-	var rerun := _run_harness(temporary_root)
+	var rerun := _run_harness(temporary_root, false, false, evaluator)
 	_expect(
 		failures,
 		rerun["exit_code"] == Harness.ExitCode.PASSED and _last_line(rerun) == "%s 1/1 skipped=0" % Harness.SUMMARY_PREFIX,
@@ -441,8 +442,13 @@ func _run_harness(
 	evaluator: Callable = Callable()
 ) -> Dictionary:
 	var harness := Harness.new()
+	harness.fixture_stages[corpus_root] = "parser"
 	if evaluator.is_valid():
-		harness.case_evaluator = evaluator
+		harness.case_evaluator = func(path: String) -> Dictionary:
+			var result: Dictionary = evaluator.call(path)
+			result["analysis_ran"] = false
+			result["infrastructure_error"] = false
+			return result
 	return harness.run(corpus_root, allow_empty, update_expectations)
 
 

@@ -131,7 +131,7 @@ void BaristaScriptLanguage::_finish() {
 	if (BSParserHost::get_singleton() == parser_host) {
 		BSParserHost::set_singleton(nullptr);
 	}
-	declaration_index.clear();
+	get_declaration_index().clear();
 }
 
 godot::PackedStringArray BaristaScriptLanguage::_get_reserved_words() const {
@@ -429,16 +429,16 @@ godot::Dictionary BaristaScriptLanguage::_get_global_class_name(const godot::Str
 }
 
 Vector<String> BaristaScriptLanguage::get_conformance_files_in_namespace(const String &p_namespace) const {
-	return declaration_index.get_conformance_files_in_namespace(p_namespace);
+	return get_declaration_index().get_conformance_files_in_namespace(p_namespace);
 }
 
 uint64_t BaristaScriptLanguage::claim_declaration_refresh(const String &p_path) {
-	return declaration_index.claim_refresh(p_path);
+	return get_declaration_index().claim_refresh(p_path);
 }
 
 bool BaristaScriptLanguage::commit_declaration_record(uint64_t p_token, const BSDeclarationRecord &p_record) {
 	Vector<String> changed;
-	const bool committed = declaration_index.commit_record(p_token, p_record, &changed);
+	const bool committed = get_declaration_index().commit_record(p_token, p_record, &changed);
 	if (committed) {
 		notify_conformance_namespaces_changed(changed);
 	}
@@ -447,7 +447,7 @@ bool BaristaScriptLanguage::commit_declaration_record(uint64_t p_token, const BS
 
 bool BaristaScriptLanguage::remove_declaration_path(const String &p_path, uint64_t p_token) {
 	Vector<String> changed;
-	const bool removed = declaration_index.remove_path(p_path, p_token, &changed);
+	const bool removed = get_declaration_index().remove_path(p_path, p_token, &changed);
 	if (removed) {
 		notify_conformance_namespaces_changed(changed);
 	}
@@ -466,9 +466,9 @@ void BaristaScriptLanguage::synchronize_declaration_path_from_source(const Strin
 	analyzer.set_update_declaration_index(true);
 	Error err = parser.parse(p_source, path, false);
 	if (err != OK) {
-		const uint64_t token = declaration_index.claim_refresh(path);
+		const uint64_t token = get_declaration_index().claim_refresh(path);
 		Vector<String> changed;
-		declaration_index.remove_path(path, token, &changed);
+		get_declaration_index().remove_path(path, token, &changed);
 		notify_conformance_namespaces_changed(changed);
 		if (!path.is_empty()) {
 			BSCache::clear_source_override(path);
@@ -485,7 +485,7 @@ bool BaristaScriptLanguage::try_resolve_declaration(const String &p_qualified_na
 	if (p_qualified_name.is_empty()) {
 		return false;
 	}
-	if (!declaration_index.try_get_by_qualified_name(p_qualified_name, r_record)) {
+	if (!get_declaration_index().try_get_by_qualified_name(p_qualified_name, r_record)) {
 		return false;
 	}
 	const String source = BSCache::get_source_code(r_record.path);
@@ -499,22 +499,22 @@ bool BaristaScriptLanguage::try_resolve_declaration(const String &p_qualified_na
 	}
 	// Stale metadata cannot resolve (#44 leftover / #58): discard and schedule reanalysis.
 	const String path = r_record.path;
-	const uint64_t token = declaration_index.claim_refresh(path);
+	const uint64_t token = get_declaration_index().claim_refresh(path);
 	Vector<String> changed;
-	declaration_index.remove_path(path, token, &changed);
+	get_declaration_index().remove_path(path, token, &changed);
 	notify_conformance_namespaces_changed(changed);
 	synchronize_declaration_path_from_source(path, source);
-	return declaration_index.try_get_by_qualified_name(p_qualified_name, r_record);
+	return get_declaration_index().try_get_by_qualified_name(p_qualified_name, r_record);
 }
 
 Error BaristaScriptLanguage::flush_declaration_index(const String &p_store_path) {
 	const String path = p_store_path.is_empty() ? BSDeclarationIndex::get_default_store_path() : p_store_path;
-	return declaration_index.flush(path);
+	return get_declaration_index().flush(path);
 }
 
 BSDeclarationIndexLoadStatus BaristaScriptLanguage::load_declaration_index(const String &p_store_path) {
 	const String path = p_store_path.is_empty() ? BSDeclarationIndex::get_default_store_path() : p_store_path;
-	return declaration_index.load(path);
+	return get_declaration_index().load(path);
 }
 
 void BaristaScriptLanguage::notify_conformance_namespaces_changed(const Vector<String> &p_namespaces) {

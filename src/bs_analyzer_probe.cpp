@@ -16,10 +16,13 @@
 #include "bs_analyzer.h"
 #include "bs_cache.h"
 #include "bs_conformance_registry.h"
+#include "bs_corpus_sentinels.h"
 #include "bs_diagnostic_names.h"
 #include "bs_parser.h"
+#include "bs_tokenizer.h"
 #include "bs_type.h"
 #include "bs_utility_functions.h"
+#include <godot_cpp/classes/project_settings.hpp>
 
 namespace barista_script {
 
@@ -81,6 +84,9 @@ const BSParser::ExpressionNode *_find_fold_expression(const BSParser::ClassNode 
 } // namespace
 
 void BaristaScriptAnalyzerProbe::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("evaluate_corpus", "bytes", "path", "stage"), &BaristaScriptAnalyzerProbe::evaluate_corpus);
+	ClassDB::bind_method(D_METHOD("corpus_state_controls"), &BaristaScriptAnalyzerProbe::corpus_state_controls);
+	ClassDB::bind_method(D_METHOD("corpus_format_controls"), &BaristaScriptAnalyzerProbe::corpus_format_controls);
 	ClassDB::bind_method(D_METHOD("language_utility_metadata"), &BaristaScriptAnalyzerProbe::language_utility_metadata);
 	ClassDB::bind_method(D_METHOD("fold_expression", "expression_source"), &BaristaScriptAnalyzerProbe::fold_expression);
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
@@ -105,6 +111,276 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 			&BaristaScriptAnalyzerProbe::witness_collision_arbitration);
 	ClassDB::bind_method(D_METHOD("complete_self_referential_enum_type"),
 			&BaristaScriptAnalyzerProbe::complete_self_referential_enum_type);
+}
+
+namespace {
+// Synchronous corpus evaluation never yields with this process-global profile installed.
+class CorpusWarningProfile {
+	struct Setting {
+		String path;
+		bool present;
+		Variant value;
+	};
+	Vector<Setting> saved;
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	void remember(const String &p_path) {
+		Setting entry;
+		entry.path = p_path;
+		entry.present = settings->has_setting(p_path);
+		entry.value = entry.present ? settings->get_setting(p_path) : Variant();
+		if (entry.value.get_type() == Variant::DICTIONARY) {
+			entry.value = Dictionary(entry.value).duplicate(true);
+		}
+		if (entry.value.get_type() == Variant::ARRAY) {
+			entry.value = Array(entry.value).duplicate(true);
+		}
+		saved.push_back(entry);
+	}
+
+public:
+	CorpusWarningProfile() {
+		HashMap<String, Variant> profile;
+		profile["debug/barista_script/warnings/enable"] = true;
+		profile["debug/barista_script/warnings/directory_rules"] = Dictionary();
+		profile["debug/barista_script/analysis/strict_null_checks"] = false;
+		profile["debug/barista_script/analysis/strict_dynamic_checks"] = false;
+		for (int code = 0; code < BSWarning::WARNING_MAX; code++) {
+			profile[BSWarning::get_setting_path_from_code((BSWarning::Code)code)] =
+					code == BSWarning::UNTYPED_DECLARATION || code == BSWarning::INFERRED_DECLARATION ? BSWarning::IGNORE : BSWarning::WARN;
+		}
+		const Array properties = settings->get_property_list();
+		for (int i = 0; i < properties.size(); i++) {
+			const String path = Dictionary(properties[i])["name"];
+			for (const KeyValue<String, Variant> &entry : profile) {
+				if (path.begins_with(entry.key + String("."))) {
+					remember(path);
+					settings->clear(path);
+					break;
+				}
+			}
+		}
+		for (const KeyValue<String, Variant> &entry : profile) {
+			remember(entry.key);
+			settings->set_setting(entry.key, entry.value);
+		}
+		BSParser::update_project_settings();
+	}
+	~CorpusWarningProfile() {
+		for (const Setting &entry : saved) {
+			if (entry.present) {
+				settings->set_setting(entry.path, entry.value);
+			} else {
+				settings->clear(entry.path);
+			}
+		}
+		BSParser::update_project_settings();
+		// Refresh declares missing base warning settings; restore their absence afterward.
+		for (const Setting &entry : saved) {
+			if (!entry.present && settings->has_setting(entry.path)) {
+				settings->clear(entry.path);
+			}
+		}
+	}
+};
+
+Dictionary corpus_result(const String &p_output, bool p_ok, bool p_analysis_ran, bool p_infrastructure = false) {
+	Dictionary result;
+	result["output"] = p_output;
+	result["ok"] = p_ok;
+	result["analysis_ran"] = p_analysis_ran;
+	result["infrastructure_error"] = p_infrastructure;
+	return result;
+}
+
+Dictionary format_corpus_result(const BSParser &p_parser, Error p_error, bool p_analysis_ran) {
+	PackedStringArray lines;
+	if (!p_parser.get_errors().is_empty()) {
+		if (!p_analysis_ran) {
+			return corpus_result(p_parser.get_errors().front()->get().message, false, false);
+		}
+		for (const BSParser::ParserError *error : p_parser.get_errors_in_source_order()) {
+			lines.push_back(vformat(">> ERROR at line %d: %s", error->line, error->message));
+		}
+		return corpus_result(String("\n").join(lines), false, true);
+	}
+	if (p_error != OK) {
+		return corpus_result("Frontend failed without a diagnostic.", false, p_analysis_ran, true);
+	}
+	if (p_analysis_ran) {
+		for (const BSWarning &warning : p_parser.get_warnings()) {
+			lines.push_back(vformat("~~ WARNING at line %d: (%s) %s", warning.start_line, warning.get_name(), warning.get_message()));
+		}
+	}
+	return corpus_result(lines.is_empty() ? String(BaristaScriptCorpusSentinels::SUCCESS_SENTINEL) : String("\n").join(lines), true, p_analysis_ran);
+}
+} // namespace
+
+Dictionary BaristaScriptAnalyzerProbe::evaluate_corpus(const PackedByteArray &p_bytes, const String &p_path, const String &p_stage) const {
+	if ((p_stage != "parser" && p_stage != "analyzer") || !p_path.begins_with("res://") || p_path != p_path.simplify_path() || !p_path.ends_with(".barista")) {
+		return corpus_result("Invalid corpus stage or res:// case path: " + p_path, false, false, true);
+	}
+	String source;
+	String diagnostic;
+	if (!BSTokenizer::decode_source(p_bytes, &source, &diagnostic)) {
+		return corpus_result(diagnostic, false, false);
+	}
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	if (language == nullptr || ProjectSettings::get_singleton() == nullptr) {
+		return corpus_result("Missing frontend language/settings.", false, false, true);
+	}
+	CorpusWarningProfile profile;
+	BSDeclarationIndex::ScopedCorpusState declarations(language->get_declaration_index());
+	BSConformanceRegistry::ScopedCorpusState conformances;
+	BSCache::ScopedCorpusState cache;
+	HashMap<String, String> overrides;
+	overrides[p_path] = source;
+	BSCacheSourceOverrideGuard override_guard(overrides);
+	BSParser parser;
+	Error error = parser.parse(source, p_path, false);
+	if (error != OK || !parser.get_errors().is_empty() || p_stage == "parser") {
+		return format_corpus_result(parser, error, false);
+	}
+	BSAnalyzer analyzer(&parser);
+	error = analyzer.analyze();
+	return format_corpus_result(parser, error, true);
+}
+
+Dictionary BaristaScriptAnalyzerProbe::corpus_format_controls() const {
+	Dictionary results;
+	BSParser parser;
+	results["failure_without_diagnostic"] = format_corpus_result(parser, ERR_BUG, true);
+	List<BSParser::ParserError> &errors = const_cast<List<BSParser::ParserError> &>(parser.get_errors());
+	for (int i = 0; i < 4; i++) {
+		BSParser::ParserError error;
+		error.line = i == 0 ? 3 : 1;
+		error.column = i == 0 ? 2 : (i == 1 ? 8 : 3);
+		error.message = String::num_int64(i);
+		errors.push_back(error);
+	}
+	results["ordered_errors"] = format_corpus_result(parser, ERR_PARSE_ERROR, true);
+	errors.clear();
+	List<BSWarning> &warnings = const_cast<List<BSWarning> &>(parser.get_warnings());
+	for (int line : { 9, 2 }) {
+		BSWarning warning;
+		warning.code = BSWarning::INTEGER_DIVISION;
+		warning.start_line = line;
+		warnings.push_back(warning);
+	}
+	results["ordered_warnings"] = format_corpus_result(parser, OK, true);
+	BSParser::ParserError error;
+	error.line = 1;
+	error.column = 1;
+	error.message = "synthetic transport error";
+	errors.push_back(error);
+	results["errors_suppress_warnings"] = format_corpus_result(parser, ERR_PARSE_ERROR, true);
+	return results;
+}
+
+Dictionary BaristaScriptAnalyzerProbe::corpus_state_controls() const {
+	Dictionary result;
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	// The fixture itself also owns a scope, preserving any live editor state around it.
+	BSDeclarationIndex::ScopedCorpusState declarations(language->get_declaration_index());
+	BSConformanceRegistry::ScopedCorpusState conformances;
+	BSCache::ScopedCorpusState cache;
+	const String path = "res://tests/oracle_existing.barista";
+	const String unrelated = "res://tests/oracle_unrelated.barista";
+	const String original = "class_name OracleExisting\n";
+	BSCache::set_source_override(path, original);
+	BSCache::set_source_override(unrelated, "");
+	{
+		HashMap<String, String> temporary;
+		temporary[path] = "temporary";
+		temporary[unrelated] = "temporary";
+		BSCacheSourceOverrideGuard guard(temporary);
+	}
+	result["override_guard_restores_presence_value"] = BSCache::has_source_override(path) && BSCache::get_source_code(path) == original && BSCache::has_source_override(unrelated) && BSCache::get_source_code(unrelated).is_empty();
+	BSCache::record_dependency(path, unrelated);
+	Error error = OK;
+	Ref<BSParserRef> cached = BSCache::get_parser(path, BSParserRef::PARSED, error);
+	const BSParser *ast = cached->get_parser();
+	BSDeclarationIndex &index = language->get_declaration_index();
+	BSDeclarationRecord record;
+	record.path = path;
+	record.qualified_name = "OracleExisting";
+	record.kind = BSDeclarationKind::CLASS;
+	record.source_digest = BSDeclarationIndex::compute_source_digest(original);
+	const uint64_t committed_token = index.claim_refresh(path);
+	const bool committed = index.commit_record(committed_token, record);
+	BSDeclarationRecord unrelated_record;
+	unrelated_record.path = unrelated;
+	unrelated_record.qualified_name = "OracleUnrelated";
+	unrelated_record.kind = BSDeclarationKind::CLASS;
+	const bool unrelated_committed = index.commit_record(index.claim_refresh(unrelated), unrelated_record);
+	const uint64_t pending_token = index.claim_refresh(unrelated);
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	BSConformanceRegistry::Conformance conformance;
+	conformance.source_file = path;
+	conformance.target_keys.push_back("OracleTarget");
+	conformance.target_fqcn = "OracleTarget";
+	conformance.trait_name = "OracleTrait";
+	conformance.witnesses["witness"] = true;
+	BSConformanceRegistry::ClassTraitBinding binding;
+	binding.source_file = path;
+	binding.target_fqcn = "OtherTarget";
+	binding.trait_name = "OtherTrait";
+	HashSet<String> loaded;
+	loaded.insert(unrelated);
+	registry->try_replace_file_conformances(path, { conformance }, { binding }, loaded);
+	BSConformanceRegistry::Conformance unrelated_conformance = conformance;
+	unrelated_conformance.source_file = unrelated;
+	unrelated_conformance.target_keys.clear();
+	unrelated_conformance.target_keys.push_back("UnrelatedTarget");
+	unrelated_conformance.target_fqcn = "UnrelatedTarget";
+	unrelated_conformance.trait_name = "UnrelatedTrait";
+	HashSet<String> reverse_loaded;
+	reverse_loaded.insert(path);
+	registry->try_replace_file_conformances(unrelated, { unrelated_conformance }, {}, reverse_loaded);
+	const String a = "func test():\n\tvar unused = 1\n";
+	const String b = "class_name OracleReplacement\nfunc test():\n\tpass\n";
+	const Dictionary first = evaluate_corpus(a.to_utf8_buffer(), path, "analyzer");
+	bool stable = true;
+	for (const String &source : { b, a, a, b, a }) {
+		const Dictionary current = evaluate_corpus(source.to_utf8_buffer(), path, "analyzer");
+		if (source == a) {
+			stable = stable && current == first;
+		}
+	}
+	evaluate_corpus(String("func test(:\n").to_utf8_buffer(), path, "analyzer");
+	evaluate_corpus(String("func test():\n\t_123\n").to_utf8_buffer(), path, "analyzer");
+	evaluate_corpus(PackedByteArray(), path, "invalid");
+	PackedByteArray invalid_utf8;
+	invalid_utf8.push_back(255);
+	evaluate_corpus(invalid_utf8, path, "analyzer");
+	Error after_error = OK;
+	const Ref<BSParserRef> after = BSCache::get_parser(path, BSParserRef::PARSED, after_error);
+	BSDeclarationRecord restored;
+	result["order_independent"] = stable;
+	result["cache_identity_status"] = error == OK && after_error == OK && after == cached && after->get_parser() == ast && after->get_status() == BSParserRef::PARSED;
+	result["source_overrides"] = BSCache::has_source_override(path) && BSCache::get_source_code(path) == original && BSCache::has_source_override(unrelated) && BSCache::get_source_code(unrelated).is_empty();
+	result["dependency_edges"] = BSCache::get_inverse_dependencies(path).has(unrelated);
+	result["declaration_record"] = committed && index.try_get_by_path(path, restored) && restored.source_digest == record.source_digest && restored.qualified_name == record.qualified_name;
+	result["unrelated_declaration_record"] = unrelated_committed && index.try_get_by_path(unrelated, restored) && restored.qualified_name == unrelated_record.qualified_name;
+	BSDeclarationRecord pending;
+	pending.path = unrelated;
+	result["generation_tokens"] = index.commit_record(pending_token, pending) && index.commit_record(committed_token, record);
+	const Vector<BSConformanceRegistry::Conformance> restored_conformances = registry->get_file_conformances(path);
+	const Vector<BSConformanceRegistry::ClassTraitBinding> restored_bindings = registry->get_file_trait_bindings(path);
+	result["conformance_values"] = restored_conformances.size() == 1 && restored_conformances[0].trait_name == conformance.trait_name && restored_conformances[0].witnesses.has("witness") && restored_bindings.size() == 1 && restored_bindings[0].target_fqcn == binding.target_fqcn;
+	result["loaded_file_edges"] = registry->debug_get_loaded_files(path).has(unrelated) && registry->debug_get_loaded_files(unrelated).has(path);
+	const Vector<BSConformanceRegistry::Conformance> unrelated_restored = registry->get_file_conformances(unrelated);
+	result["unrelated_conformance_values"] = unrelated_restored.size() == 1 && unrelated_restored[0].trait_name == unrelated_conformance.trait_name && unrelated_restored[0].witnesses.has("witness");
+	// Explicitly exercise stale indirect declaration refresh inside the isolated view.
+	{
+		BSDeclarationIndex::ScopedCorpusState nested_declarations(index);
+		BSConformanceRegistry::ScopedCorpusState nested_conformances;
+		BSCache::ScopedCorpusState nested_cache;
+		BSCache::set_source_override(path, b);
+		BSDeclarationRecord ignored;
+		language->try_resolve_declaration("OracleExisting", ignored);
+	}
+	result["indirect_refresh_isolated"] = index.try_get_by_path(path, restored) && restored.qualified_name == "OracleExisting" && restored.source_digest == record.source_digest && registry->debug_get_loaded_files(path).has(unrelated) && BSCache::get_source_code(path) == original;
+	return result;
 }
 
 godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::String &p_expression_source) const {

@@ -1,0 +1,6 @@
+>> ERROR at line 17: Contextual shorthand ".Ok" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .Ok(...)".
+>> ERROR at line 18: Contextual shorthand ".None" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .None".
+>> ERROR at line 19: Contextual shorthand ".Ok" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .Ok(...)".
+>> ERROR at line 19: Contextual shorthand ".Err" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .Err(...)".
+>> ERROR at line 20: Contextual shorthand ".Ok" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .Ok(...)".
+>> ERROR at line 20: Contextual shorthand ".Err" needs an expected tagged-union type; annotate the target, e.g. "var x: Result[int, String] = .Err(...)".

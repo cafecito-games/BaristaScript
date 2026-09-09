@@ -25,17 +25,13 @@ What the import does, and why each part of it is not a judgement call:
   * `.fs` becomes `.barista`; `.notest.fs` becomes `.notest.barista` and stays
     uncounted, because it is a helper source the runner imports, not a case
     (`modules/foundry_script/tests/fs_test_runner.cpp:539-540`).
-  * A `.out` is rewritten to the one line the harness compares. Upstream's first
-    line is a status word and the rest is the *runtime* transcript of a language
-    BaristaScript cannot yet run; keeping either would be asserting something no
-    M2 build can produce. `FS_TEST_OK` becomes the success sentinel, and
-    `FS_TEST_PARSER_ERROR` becomes upstream's own message line, which is what
-    `BSParser` is a hard fork of and must therefore reproduce verbatim.
-  * `FS_TEST_ANALYZER_ERROR` cases parse cleanly and fail analysis, and there is
-    no analyzer until M3. Their expectation is the parse outcome, and every one
-    of them is listed in the baseline under `analyzer_deferred` with the
-    upstream diagnostic it will be restored to, so M3 has an exact list rather
-    than a memory.
+  * The shared static extractor validates pinned status/diagnostic blocks and
+    excludes runtime transcripts. At #31 checkpoint A every imported case is
+    explicitly parser stage: parser errors retain their first diagnostic,
+    while analyzer-error and successful warning cases retain parser acceptance.
+  * The four analyzer-error blocks remain verbatim in `analyzer_deferred`.
+    Checkpoint B restores those four and the 29 warning cases after their
+    semantic owners pass; this importer does not manufacture analyzer evidence.
   * Upstream's `.fsignore` is not copied. It is an empty file that opts the
     parser scripts out of Foundry's *runtime* suite; imported into a harness
     that honours it, it would silently skip all 340 cases at exit code 0. The
@@ -52,8 +48,8 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import os
 import json
-import re
 import shutil
 import sys
 import tempfile
@@ -63,6 +59,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
+from corpus_expectations import success_sentinel, extract_static_block  # noqa: E402
+from corpus_stages import write_stages  # noqa: E402
 from corpus_ledger import barista_path, build_triage_from_maps, validate_triage_ledger  # noqa: E402
 
 from corpus_registry import load_registry, tree_entries, validate_registration, verify_checkout  # noqa: E402
@@ -77,32 +75,12 @@ PARSER_UPSTREAM_TOTAL = 344
 CORPUS_SUBPATH = Path(REGISTRY["corpora"]["parser"]["source"])
 DESTINATION = ROOT / REGISTRY["corpora"]["parser"]["destination"]
 BASELINE_PATH = ROOT / "tests" / "corpus_baseline.json"
-SENTINEL_HEADER = ROOT / "src" / "bs_corpus_sentinels.h"
 
 CATEGORIES = ("features", "errors", "warnings")
 
 UPSTREAM_OK = "FS_TEST_OK"
 UPSTREAM_PARSER_ERROR = "FS_TEST_PARSER_ERROR"
 UPSTREAM_ANALYZER_ERROR = "FS_TEST_ANALYZER_ERROR"
-
-
-def success_sentinel() -> str:
-    """The expectation text, read from the compiled extension's own header.
-
-    Restating the literal here would put a second spelling of it in a third
-    language, and a corpus whose 340 expectations disagree with the harness by
-    one character fails in a way that looks like a port defect.
-    """
-    match = re.search(
-        r'SUCCESS_SENTINEL\s*=\s*"([^"]+)"', SENTINEL_HEADER.read_text(encoding="utf-8")
-    )
-    if match is None:
-        raise SystemExit(
-            f"could not read SUCCESS_SENTINEL from {SENTINEL_HEADER}; the corpus expectations "
-            "have no definition to be written from"
-        )
-    return match.group(1)
-
 
 # --------------------------------------------------------------------------
 # The D1 triage table.
@@ -376,22 +354,14 @@ def expectation_line(upstream_out: bytes, path: str, sentinel: str) -> tuple[str
     Returns (expectation, deferred_upstream_diagnostic). The second is non-None
     only for an analyzer case, whose real expectation M3 has to restore.
     """
-    text = upstream_out.decode("utf-8")
-    lines = text.split("\n")
-    status = lines[0]
-    if status == UPSTREAM_OK:
-        return sentinel, None
-    if status == UPSTREAM_PARSER_ERROR:
-        if len(lines) < 2 or not lines[1]:
-            raise SystemExit(f"{path}: upstream parser-error expectation has no message line")
-        return lines[1], None
+    try:
+        block = extract_static_block(upstream_out, path)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    status = upstream_out.split(b"\n", 1)[0].decode("utf-8")
     if status == UPSTREAM_ANALYZER_ERROR:
-        deferred = "\n".join(line for line in lines[1:] if line)
-        return sentinel, deferred
-    raise SystemExit(
-        f"{path}: unrecognized upstream status {status!r}. The import refuses to guess what a "
-        "status word it has never seen means for a parser-only evaluation"
-    )
+        return sentinel, block
+    return (block if status == UPSTREAM_PARSER_ERROR else sentinel), None
 
 
 def apply_edits(source: bytes, path: str, edits: list[tuple[str, str]]) -> bytes:
@@ -407,7 +377,7 @@ def apply_edits(source: bytes, path: str, edits: list[tuple[str, str]]) -> bytes
     return text.encode("utf-8")
 
 
-def import_corpus(foundry: Path, destination: Path) -> dict:
+def _generate_corpus(foundry: Path, destination: Path) -> dict:
     sentinel = success_sentinel()
     corpus_root = foundry / CORPUS_SUBPATH
     if not corpus_root.is_dir():
@@ -507,11 +477,50 @@ def import_corpus(foundry: Path, destination: Path) -> dict:
             f"overrides {missing_overrides}, replacement applied {replacement_applied}"
         )
 
+    write_stages(destination, cases, helpers, FOUNDRY_REVISION)
     return {
         "cases": sorted(cases),
         "helpers": sorted(helpers),
         "analyzer_deferred": analyzer_deferred,
     }
+
+
+def import_corpus(foundry: Path, destination: Path, *, publish_baseline: bool = False) -> dict:
+    """Validate all output before publication; roll back both owned outputs on failure."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".parser-import-", dir=destination.parent) as temporary:
+        staging = Path(temporary)
+        fresh = staging / "fresh"
+        summary = _generate_corpus(foundry, fresh)
+        write_readme(fresh, summary)
+        candidate_baseline = staging / "baseline.json"
+        if publish_baseline:
+            parser_baseline_entry(summary)
+            write_baseline(summary, candidate_baseline)
+        old_baseline = BASELINE_PATH.read_bytes() if BASELINE_PATH.exists() else None
+        backup = staging / "previous"
+        moved = False
+        published = False
+        try:
+            if destination.exists():
+                os.replace(destination, backup)
+                moved = True
+            os.replace(fresh, destination)
+            published = True
+            if publish_baseline:
+                os.replace(candidate_baseline, BASELINE_PATH)
+        except BaseException:
+            if published:
+                shutil.rmtree(destination)
+            if moved:
+                os.replace(backup, destination)
+            if publish_baseline:
+                if old_baseline is None:
+                    BASELINE_PATH.unlink(missing_ok=True)
+                else:
+                    BASELINE_PATH.write_bytes(old_baseline)
+            raise
+        return summary
 
 
 def write_readme(destination: Path, summary: dict) -> None:
@@ -541,19 +550,17 @@ Upstream at this pin holds {PARSER_UPSTREAM_TOTAL} runnable parser cases; the tr
 `tests/corpus_baseline.json` accounts for every non-import disposition so
 `upstream_total == imported + excluded + deferred`.
 
-Each `.out` holds one line: the success sentinel, or the exact diagnostic the front end must
-produce, compared byte for byte. Upstream's `.out` files carry a status word and then the *runtime*
-transcript of the case; neither survives the import, because M2 has no runtime to produce a
-transcript with and the status word is not a diagnostic.
+Each `.out` is a complete static diagnostic block followed by exactly one LF. The generated
+`case_stages.json` assigns each runnable case its explicit frontend stage; helpers have no entries.
+Do not use `--update-expectations` here: the importer owns sources, expectations and stages.
 
-## What these cases assert at M2
+## What these cases assert at oracle checkpoint A
 
-The harness evaluates a case through the tokenizer and the parser. So a `{sentinel}` expectation
-here means **"this source parses without a diagnostic"**, not "this source behaves correctly" --
-the value it printed upstream is not checked, and neither are the warnings the `warnings/` cases are
-named for. That is not a gap this milestone can close: the analyzer does not exist until M3, and
-inventing warning expectations now would be inventing the analyzer's output. The 29 `warnings/`
-cases earn their place regardless: they are 29 more real sources the parser has to accept.
+All {len(summary["cases"])} cases remain at **parser** stage. A `{sentinel}` expectation means this
+source parses without a diagnostic. It does not assert analyzer success or runtime behavior.
+The four analyzer-error debts and all 29 warning cases await #31 checkpoint B after semantic
+restoration. The static oracle is exercised separately by miniature analyzer fixtures. No upstream
+runtime transcript is compared, and no case function executes.
 
 ## Cases whose expectation M3 must restore
 
@@ -593,7 +600,7 @@ def parser_baseline_entry(summary: dict) -> dict:
     return entry
 
 
-def write_baseline(summary: dict) -> None:
+def write_baseline(summary: dict, destination: Path | None = None) -> None:
     """Write the baseline, preserving any non-parser corpus entries already present."""
     existing: dict = {}
     if BASELINE_PATH.is_file():
@@ -616,7 +623,7 @@ def write_baseline(summary: dict) -> None:
         ],
         "corpora": corpora,
     }
-    BASELINE_PATH.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    (destination or BASELINE_PATH).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
 def compare_trees(left: Path, right: Path) -> list[str]:
@@ -691,9 +698,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    summary = import_corpus(foundry, DESTINATION)
-    write_readme(DESTINATION, summary)
-    write_baseline(summary)
+    summary = import_corpus(foundry, DESTINATION, publish_baseline=True)
     print(
         f"imported {len(summary['cases'])} cases and {len(summary['helpers'])} helpers "
         f"from {FOUNDRY_REVISION}"
