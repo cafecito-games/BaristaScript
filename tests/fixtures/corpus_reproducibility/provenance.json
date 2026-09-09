@@ -1,0 +1,146 @@
+{
+  "repository": "cafecito-games/Foundry",
+  "revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
+  "files": {
+    "errors/fixed_width_integer_long_below_min.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_long_below_min.fs",
+      "sha256": "7ba64ee1f5b4b118184b574f6f576446f1f3f527231c0a9bf0349ebf79ce31f8"
+    },
+    "errors/fixed_width_integer_long_below_min.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_long_below_min.out",
+      "sha256": "a1f6ed694125d66c2549d33d791783b18e053847cbd485a38d30e131475daeb5"
+    },
+    "errors/fixed_width_integer_negative_unsigned.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_negative_unsigned.fs",
+      "sha256": "1567100e5d0d6f08ba7012258880a6dca5af160ed67249818d162d55c87b206f"
+    },
+    "errors/fixed_width_integer_negative_unsigned.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_negative_unsigned.out",
+      "sha256": "855f06829a4694daf89f521c747189503b4da6a334298ab2ebab0bea6bdf409c"
+    },
+    "errors/fixed_width_integer_suffix_lowercase.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_lowercase.fs",
+      "sha256": "9f4be0de0218f8f9846ba8f4570d98f04cd6c5ef7c2753df066469a59d221ec8"
+    },
+    "errors/fixed_width_integer_suffix_lowercase.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_lowercase.out",
+      "sha256": "3baeb00a1860f988278abac872f1417e72d06c4e416bf11a424e43a0957e9cfa"
+    },
+    "errors/fixed_width_integer_suffix_mixed_case.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_mixed_case.fs",
+      "sha256": "5e08982d5028602ecba8cccd0991bcf1d86e029ffaaf74e4fddef015ee791c4c"
+    },
+    "errors/fixed_width_integer_suffix_mixed_case.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_mixed_case.out",
+      "sha256": "2183d1d65633a39614fa0a3328bb7402860bdecb514e59e5b3beef62600c6efa"
+    },
+    "errors/fixed_width_integer_suffix_order.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_order.fs",
+      "sha256": "af11d7e908b0bfc28aa25339ee626f66ea0f85b53225da9356bc95e6f4e64572"
+    },
+    "errors/fixed_width_integer_suffix_order.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_order.out",
+      "sha256": "c3adbff79d871337426666d5ff89f9496ee6089efe3f21d2e5e8a1ee93ba8d9b"
+    },
+    "errors/fixed_width_integer_suffix_out_of_range.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_out_of_range.fs",
+      "sha256": "8a2a8d0c8c586723d6517fb1e609da953ec23bcfcefac95ab0173d484427dd56"
+    },
+    "errors/fixed_width_integer_suffix_out_of_range.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_suffix_out_of_range.out",
+      "sha256": "e4a302fc821aabb94a6f3ea0f5a5280b4e4b29b48447a622c0594de92969f930"
+    },
+    "errors/fixed_width_integer_ulong_above_max.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_ulong_above_max.fs",
+      "sha256": "aea6794a225d20c7936e1c630b6fa4a087a1e5a2eac6ea5a9af717f6de7fb0fd"
+    },
+    "errors/fixed_width_integer_ulong_above_max.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_ulong_above_max.out",
+      "sha256": "32afb8478a22df74070000a69bb105ddf9ba5dba0ff0702b192ab2d1510b0d60"
+    },
+    "errors/fixed_width_integer_unsuffixed_overflow.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_unsuffixed_overflow.fs",
+      "sha256": "b78d2fe6f696dab12b3bdbdad002932f01afc6153ed3ac366ebca810c936e79b"
+    },
+    "errors/fixed_width_integer_unsuffixed_overflow.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_unsuffixed_overflow.out",
+      "sha256": "b93f50f3c4344ffab781662894ab167f014c7def6849e609bd08f2149bc2ee4c"
+    },
+    "errors/identifier_similar_to_keyword.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/identifier_similar_to_keyword.fs",
+      "sha256": "91b771f4f9f1fc28ff45c4b67a4bba7e9228b7d34e4ab93818eaf2db4a5dd449"
+    },
+    "errors/identifier_similar_to_keyword.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/identifier_similar_to_keyword.out",
+      "sha256": "f0abf7e11ff8b171ae297b16dd4e463b2a0799fcb8a22fa293d48e323bc6df10"
+    },
+    "errors/type_alias_duplicate_name.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/type_alias_duplicate_name.fs",
+      "sha256": "375e2b128505461683c91c77d2243c6d5a2ae58cffcb81f926387ad55f20edc2"
+    },
+    "errors/type_alias_duplicate_name.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/type_alias_duplicate_name.out",
+      "sha256": "1754b8ca0b1c0bf8eab9a669080597839ac216f2a101aed52a39bc16ffd7f52b"
+    },
+    "errors/type_alias_union_missing_member.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/type_alias_union_missing_member.fs",
+      "sha256": "751e9fe1237bcb59254ac781a38a1cbce4714603157a5776368b6a7fcb72b95d"
+    },
+    "errors/type_alias_union_missing_member.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/type_alias_union_missing_member.out",
+      "sha256": "a5c19a2823ea4b07f6570ca3ab7f0977cb6300262b19dfce441f08ebb27797ba"
+    },
+    "features/abstract_keyword_top_level_class_name.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/abstract_keyword_top_level_class_name.norun.fs",
+      "sha256": "020713ddc53bd607f7506568ad58d3b41b9f94e8f4cbde5d769dc76dc58c0f72"
+    },
+    "features/abstract_keyword_top_level_class_name.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/abstract_keyword_top_level_class_name.norun.out",
+      "sha256": "a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d"
+    },
+    "features/enum_host_functions.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/enum_host_functions.norun.fs",
+      "sha256": "a74188e290b0b358e8cb806d998947094f3456af38f2c32c895d46a317faae8c"
+    },
+    "features/enum_host_functions.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/enum_host_functions.norun.out",
+      "sha256": "a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d"
+    },
+    "features/enum_name_host_functions.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/enum_name_host_functions.norun.fs",
+      "sha256": "34e8539243131dccb59700a610d8e6c0b64dbd1044860eb04af328e8e9992268"
+    },
+    "features/enum_name_host_functions.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/enum_name_host_functions.norun.out",
+      "sha256": "a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d"
+    },
+    "features/export_variable_global.notest.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/export_variable_global.notest.fs",
+      "sha256": "d818169383ad7cdf61e8c476324d38ab50efee66bba16a47e4499fa6e9d5bf3f"
+    },
+    "features/fixed_width_integer_literals.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/fixed_width_integer_literals.fs",
+      "sha256": "8aa2eeb9ff1f6f39c789ba171f632afd25212814e022f8e3284283448995bdae"
+    },
+    "features/fixed_width_integer_literals.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/fixed_width_integer_literals.out",
+      "sha256": "0585e91e15ce38fca8975b53cdaeca56a6aa8936553b5c240ba6d8841bb4902c"
+    },
+    "features/type_alias_declarations.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/type_alias_declarations.fs",
+      "sha256": "621ff35a41eeb8ccb6570a6bfd73a7f08819d95759b34cc0e19a1f6b8e0979c9"
+    },
+    "features/type_alias_declarations.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/type_alias_declarations.out",
+      "sha256": "3179dd97a1cf8f32b9e6bd5eeadacb87b6e0930cdd6bd1904a335dbadc607d4c"
+    },
+    "warnings/static_called_on_instance.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/static_called_on_instance.fs",
+      "sha256": "980a1ecb0ce4884c96db16036c49842c7b09daf4120d99aafca318ac0ce41373"
+    },
+    "warnings/static_called_on_instance.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/static_called_on_instance.out",
+      "sha256": "5776e1b42044bd2a042fc185f6e1b8fec11e2881c4e7067d40c796bfc9ddfa5d"
+    }
+  }
+}

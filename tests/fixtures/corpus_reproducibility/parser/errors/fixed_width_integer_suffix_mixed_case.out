@@ -1,0 +1,2 @@
+FS_TEST_PARSER_ERROR
+Invalid integer suffix "uL". Integer suffixes are uppercase "U", "L", or "UL"; write "1UL".

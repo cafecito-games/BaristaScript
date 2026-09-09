@@ -10,6 +10,7 @@
   ],
   "corpora": {
     "parser": {
+      "imported": true,
       "root": "res://tests/corpus/parser",
       "total": 340,
       "skipped": 2,

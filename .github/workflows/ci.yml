@@ -10,6 +10,44 @@ on:
   merge_group:
 
 jobs:
+  corpus-reproducibility:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout BaristaScript
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Setup Python for offline audits
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+      - name: Install offline audit dependency
+        shell: bash
+        run: python3 -m pip install -r tests/requirements.txt
+      - name: Validate corpus source registration
+        id: source
+        shell: bash
+        run: python3 scripts/check_corpus_reproducibility.py --github-output "$GITHUB_OUTPUT"
+      - name: Checkout pinned public Foundry source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.revision }}
+          path: .upstream-foundry
+          submodules: false
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: ${{ steps.source.outputs.sparse_paths }}
+      - name: Test reproducibility failure modes
+        shell: bash
+        run: python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry
+      - name: Check all imported corpora
+        shell: bash
+        run: python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry
+
   build:
     strategy:
       fail-fast: false
@@ -44,12 +82,18 @@ jobs:
         with:
           submodules: true
 
+      - name: Setup Python for offline audits
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
       - name: Validate CI configuration
         shell: bash
         run: |
-          python tests/validate_ci.py
-          python tests/test_run_gdscript_suites.py
-          python tests/test_corpus_baseline.py
+          python3 -m pip install -r tests/requirements.txt
+          python3 tests/validate_ci.py
+          python3 tests/test_run_gdscript_suites.py
+          python3 tests/test_corpus_baseline.py
 
       - name: Audit the platform seam
         shell: bash
