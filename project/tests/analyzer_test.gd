@@ -4613,6 +4613,35 @@ func _test_steps_1_5_repair2_self_signatures(failures: PackedStringArray) -> voi
 	_expect(failures, probe.validate_source(comparable_source, "res://tests/repair2_callable_comparable.barista", false).get("valid", false),
 		"variadic-to-fixed and gradual-to-narrowed rest callable directions remain admitted")
 
+	var typed_tail_parameter := "class_name Repair3TailParameter extends Node\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc fan_nested(callback: Callable[[...Array[Array[Self]]], void]) -> void:\n\tpass\nfunc take_bound(...values: Array[Repair3TailParameter]) -> void:\n\tpass\nfunc take_super(...values: Array[Node]) -> void:\n\tpass\nfunc take_nested(...values: Array[Array[Repair3TailParameter]]) -> void:\n\tpass\nfunc check(other: Repair3TailParameter) -> void:\n\tfan(take_bound)\n\tother.fan(take_super)\n\tfan_nested(take_nested)\n"
+	_expect(failures, probe.validate_source(typed_tail_parameter, "res://tests/repair3_typed_tail_parameter.barista", false).get("valid", false),
+		"typed Callable rest tails accept the Self bound, a supertype, and a nested bound")
+	var typed_tail_declared_super := "class Super:\n\tpass\nclass Cell extends Super:\n\tfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\t\tpass\n\tfunc take_super(...values: Array[Super]) -> void:\n\t\tpass\n\tfunc check(other: Cell) -> void:\n\t\tother.fan(take_super)\n"
+	_expect(failures, probe.validate_source(typed_tail_declared_super, "res://tests/repair3_typed_tail_declared_super.barista", false).get("valid", false),
+		"typed Callable rest tails accept a same-source declared supertype through a foreign receiver")
+
+	var typed_tail_values := "class_name Repair3TailValue extends Node\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc take_bound(...values: Array[Repair3TailValue]) -> void:\n\tpass\nfunc take_super(...values: Array[Node]) -> void:\n\tpass\nfunc stored() -> Callable[[...Array[Self]], void]:\n\tvar bound: Callable[[...Array[Repair3TailValue]], void] = take_bound\n\treturn bound\nfunc check() -> void:\n\tvar declared: Callable[[...Array[Self]], void] = take_bound\n\tvar assigned: Callable[[...Array[Self]], void] = take_bound\n\tassigned = take_super\n\tfan(declared)\n\tfan(assigned)\n\tfan(stored())\n"
+	_expect(failures, probe.validate_source(typed_tail_values, "res://tests/repair3_typed_tail_values.barista", false).get("valid", false),
+		"typed Callable rest-tail admission is shared by declaration, assignment, return and parameter consumers")
+
+	var typed_tail_negatives := "class_name Repair3TailNegative extends Node\nclass Leaf extends Repair3TailNegative:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc fixed(callback: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc returns(callback: Callable[[...Array[Self]], int]) -> void:\n\tpass\nfunc take_narrow(...values: Array[Leaf]) -> void:\n\tpass\nfunc bad_fixed(value: String, ...values: Array[Node]) -> void:\n\tpass\nfunc bad_return(...values: Array[Node]) -> String:\n\treturn \"bad\"\nfunc self_tail(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair3TailNegative) -> void:\n\tfan(take_narrow)\n\tfixed(bad_fixed)\n\treturns(bad_return)\n\tother.fan(self_tail)\n"
+	var typed_tail_negative_errors: Array = probe.validate_source(typed_tail_negatives, "res://tests/repair3_typed_tail_negatives.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(typed_tail_negative_errors, [
+		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Leaf]], void]".', 19, 9],
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable[[String, ...Array[Node]], void]".', 20, 11],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[...Array[Self]], int]" but is "Callable[[...Array[Node]], String]".', 21, 13],
+		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Self]], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 22, 15],
+	]), "typed tail fallback preserves narrower, fixed, return and foreign-receiver negatives: %s" % [typed_tail_negative_errors])
+
+	var typed_tail_value_negatives := "class_name Repair3TailValueNegative extends Node\nclass Leaf extends Repair3TailValueNegative:\n\tpass\nfunc bad(wrong: Callable[[...Array[String]], void], narrow: Callable[[...Array[Leaf]], void]) -> Callable[[...Array[Self]], void]:\n\tvar declared: Callable[[...Array[Self]], void] = wrong\n\tvar slot: Callable[[...Array[Self]], void] = wrong\n\tslot = narrow\n\treturn wrong\n"
+	var typed_tail_value_errors: Array = probe.validate_source(typed_tail_value_negatives, "res://tests/repair3_typed_tail_value_negatives.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(typed_tail_value_errors, [
+		['Cannot assign a value of type "Callable[[...Array[String]], void]" to a variable of type "Callable[[...Array[Self]], void]".', 5, 54],
+		['Cannot assign a value of type "Callable[[...Array[String]], void]" to a variable of type "Callable[[...Array[Self]], void]".', 6, 50],
+		['Value of type "Callable[[...Array[Leaf]], void]" cannot be assigned to a variable of type "Callable[[...Array[Self]], void]".', 7, 12],
+		['Cannot return value of type "Callable[[...Array[String]], void]" because the function return type is "Callable[[...Array[Self]], void]".', 8, 5],
+	]), "typed tail value consumers retain unrelated and narrower exact diagnostics: %s" % [typed_tail_value_errors])
+
 
 func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:
 	# Local int-backed value cycles preserve the in-progress RESOLVING state instead of
