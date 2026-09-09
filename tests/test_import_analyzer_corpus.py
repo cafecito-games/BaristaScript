@@ -57,6 +57,46 @@ class AnalyzerImport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'deferred owner'):
             self.inventory()
 
+    def test_only_missing_metadata_producers_are_prerequisites(self):
+        owners = self.m.default_policy()['owners']
+        local_consumers = (
+            'variant_constant_known_value_rejected',
+            'union_constant_known_alternative_rejected',
+            'type_self_tuple_argument_sibling_element_mismatch',
+            'type_self_tuple_parameter_wrong_arity',
+            'tuple_construction_argument_type',
+            'typed_array_pass_differently_to_typed',
+            'explicit_callable_nullable_parameter_shape',
+            'trait_meta_type_assignment',
+        )
+        for case in local_consumers:
+            with self.subTest(case=case):
+                owner = owners[f'errors/{case}.barista']
+                self.assertEqual(owner['primary_issue'], 138)
+                self.assertNotIn(141, owner['prerequisites'])
+        other_available_producers = (
+            'errors/argument_byte_width_diagnostic.barista',
+            'errors/external_callable_signature_container_param.barista',
+            'errors/final_static_var_reassigned_qualified.barista',
+            'errors/issue_70_namespace_ambiguous_import.barista',
+            'errors/retroactive_conformance_hidden_cold_registry.barista',
+            'features/use_preload_script_as_type.barista',
+        )
+        for case in other_available_producers:
+            with self.subTest(case=case):
+                self.assertNotIn(141, owners[case]['prerequisites'])
+        missing_producers = (
+            'errors/abstract_method_in_non_abstract_head.barista',
+            'errors/external_signal_nested_callable_enum_mismatch.barista',
+            'errors/signal_value_connect_lambda_mismatch.barista',
+            'errors/typed_container_mutation_methods.barista',
+            'features/assymetric_assignment_good.barista',
+            'features/type_alias_in_conformance_witness.barista',
+        )
+        for case in missing_producers:
+            with self.subTest(case=case):
+                self.assertIn(141, owners[case]['prerequisites'])
+
     def test_pinned_bytes_full_blocks_and_dependency_identities(self):
         provenance = json.loads((ROOT / 'tests/fixtures/analyzer_import/provenance.json').read_text())
         for path, digest in provenance['files'].items():

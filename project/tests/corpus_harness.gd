@@ -51,6 +51,7 @@ enum FailureReason {
 ## Injection is transport-only. Results follow the native raw oracle schema.
 var case_evaluator: Callable
 var fixture_stages: Dictionary = {}
+## Run-owned staging inputs, rebuilt automatically; not caller configuration.
 var fixture_paths: PackedStringArray = []
 var frontend_factory: Callable = func(): return ClassDB.instantiate("BaristaScriptAnalyzerProbe")
 
@@ -60,6 +61,7 @@ var frontend_factory: Callable = func(): return ClassDB.instantiate("BaristaScri
 ## exactly one machine-readable summary line, so consecutive runs over an
 ## unchanged tree are byte-identical.
 func run(corpus_root: String, allow_empty: bool = false, update_expectations: bool = false, exact_case: String = "") -> Dictionary:
+	fixture_paths.clear()
 	var identity := _path_identity(corpus_root)
 	if identity.has("error"):
 		return error_result("BS_ERROR " + identity.error)
