@@ -466,13 +466,19 @@ class FullProducer(unittest.TestCase):
         self.root = Path(self.temp.name)
         for directory in ("scripts", "tests", "src"):
             (self.root / directory).mkdir()
-        for name in ("import_parser_corpus.py", "corpus_registry.py", "corpus_ledger.py", "corpus_sources.json"):
-            shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
+        # Importer dependencies and pending staged importers evolve together.
+        # Copy the reviewed local producer tree, never code from Foundry.
+        shutil.copytree(ROOT / "scripts", self.root / "scripts", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         for name in ("corpus_baseline.json", "gdscript_suites.json"):
             shutil.copy2(ROOT / "tests" / name, self.root / "tests" / name)
         shutil.copy2(ROOT / "src/bs_corpus_sentinels.h", self.root / "src/bs_corpus_sentinels.h")
-        shutil.copytree(ROOT / "project/tests/corpus/parser", self.root / "project/tests/corpus/parser")
-        self.revision = json.loads((self.root / "scripts/corpus_sources.json").read_text())["revision"]
+        registry = json.loads((self.root / "scripts/corpus_sources.json").read_text())
+        for record in registry["corpora"].values():
+            destination = record["destination"]
+            if (ROOT / destination).is_dir():
+                shutil.copytree(ROOT / destination, self.root / destination)
+        self.revision = registry["revision"]
 
     def snapshot(self, root):
         return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
