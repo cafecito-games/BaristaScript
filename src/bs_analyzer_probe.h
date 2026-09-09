@@ -35,6 +35,8 @@ public:
 	 * Walks the parser AST only — does not re-tokenize for sign semantics (#49).
 	 */
 	godot::Dictionary fold_expression(const godot::String &p_expression_source) const;
+	/** Inspect the named top-level `probe_expression` initializer without requiring a fold. */
+	godot::Dictionary inspect_expression_source(const godot::String &p_source, const godot::String &p_path) const;
 
 	/** Copied public metadata and boolean identity checks only; never returns or invokes markers. */
 	godot::Dictionary language_utility_metadata() const;

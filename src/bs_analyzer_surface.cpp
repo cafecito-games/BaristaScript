@@ -574,7 +574,11 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 	}
 
 	BSParser::ClassNode *previous_class = current_class;
+	BSParser::EnumNode *previous_enum = current_enum;
+	BSParser::ClassNode *previous_enum_owner = current_enum_owner;
 	current_class = p_owner;
+	current_enum = p_enum;
+	current_enum_owner = p_owner;
 
 	BSParser::DataType enum_type = p_enum_type;
 	enum_type.is_tagged_union = p_enum->is_tagged_union;
@@ -585,6 +589,8 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 		enum_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 		enum_type.kind = BSParser::DataType::ENUM;
 		p_enum->set_datatype(enum_type);
+		current_enum = previous_enum;
+		current_enum_owner = previous_enum_owner;
 		current_class = previous_class;
 		return enum_type;
 	}
@@ -632,6 +638,8 @@ BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, c
 
 	p_enum->set_datatype(enum_type);
 	p_enum->dictionary = dictionary;
+	current_enum = previous_enum;
+	current_enum_owner = previous_enum_owner;
 	current_class = previous_class;
 	return enum_type;
 }

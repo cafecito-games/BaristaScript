@@ -92,6 +92,7 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("language_utility_metadata"), &BaristaScriptAnalyzerProbe::language_utility_metadata);
 	ClassDB::bind_method(D_METHOD("self_identity_controls"), &BaristaScriptAnalyzerProbe::self_identity_controls);
 	ClassDB::bind_method(D_METHOD("fold_expression", "expression_source"), &BaristaScriptAnalyzerProbe::fold_expression);
+	ClassDB::bind_method(D_METHOD("inspect_expression_source", "source", "path"), &BaristaScriptAnalyzerProbe::inspect_expression_source);
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
 	ClassDB::bind_method(D_METHOD("is_semantically_valid", "source", "path"), &BaristaScriptAnalyzerProbe::is_semantically_valid);
 	ClassDB::bind_method(D_METHOD("validate_source", "source", "path", "warnings", "safe_lines"), &BaristaScriptAnalyzerProbe::validate_source, DEFVAL(true), DEFVAL(false));
@@ -516,6 +517,50 @@ godot::Dictionary BaristaScriptAnalyzerProbe::fold_expression(const godot::Strin
 	result["ok"] = true;
 	result["value"] = reduced_value;
 	result["value_type"] = (int)reduced_value.get_type();
+	return result;
+}
+
+godot::Dictionary BaristaScriptAnalyzerProbe::inspect_expression_source(const godot::String &p_source, const godot::String &p_path) const {
+	godot::Dictionary result;
+	result["found"] = false;
+	result["valid"] = false;
+	result["datatype"] = String();
+	result["datatype_kind"] = -1;
+	result["type_source"] = -1;
+	result["is_hard_type"] = false;
+	result["is_constant"] = false;
+	result["value"] = Variant();
+	godot::PackedStringArray errors;
+	Error err = ERR_BUG;
+	const String path = p_path.is_empty() ? String("res://tests/expression_probe.barista") : p_path;
+	{
+		BSCache::set_source_override(path, p_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		err = parser.parse(p_source, path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		for (const BSParser::ParserError &error : parser.get_errors()) {
+			errors.push_back(error.message);
+		}
+		const BSParser::ExpressionNode *expression = _find_fold_expression(parser.get_tree());
+		if (expression != nullptr) {
+			const BSParser::DataType &datatype = expression->get_datatype();
+			result["found"] = true;
+			result["datatype"] = datatype.to_string();
+			result["datatype_kind"] = (int)datatype.kind;
+			result["type_source"] = (int)datatype.type_source;
+			result["is_hard_type"] = datatype.is_hard_type();
+			result["is_constant"] = expression->is_constant;
+			if (expression->is_constant) {
+				result["value"] = expression->reduced_value;
+			}
+		}
+	}
+	BSCache::clear_source_override(path);
+	result["valid"] = err == OK && errors.is_empty();
+	result["errors"] = errors;
 	return result;
 }
 

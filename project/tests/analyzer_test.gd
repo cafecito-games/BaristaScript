@@ -89,6 +89,7 @@ func _init() -> void:
 	_test_steps_1_5_repair_regressions(failures)
 	_test_steps_1_5_repair2_self_signatures(failures)
 	_test_local_enum_value_cycles(failures)
+	_test_concrete_cast_ternary_and_type_test_reduction(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -104,6 +105,18 @@ func _errors_are_exact(actual: Array, expected: Array) -> bool:
 	for i in range(expected.size()):
 		if str(actual[i].get("message", "")) != expected[i][0] or \
 				actual[i].get("line") != expected[i][1] or actual[i].get("column") != expected[i][2]:
+			return false
+	return true
+
+
+func _warnings_are_exact(actual: Array, expected: Array) -> bool:
+	if actual.size() != expected.size():
+		return false
+	for i in range(expected.size()):
+		if str(actual[i].get("string_code", "")) != expected[i][0] or \
+				str(actual[i].get("message", "")) != expected[i][1] or \
+				actual[i].get("start_line") != expected[i][2] or actual[i].get("start_column") != expected[i][3] or \
+				actual[i].get("end_line") != expected[i][4] or actual[i].get("end_column") != expected[i][5]:
 			return false
 	return true
 
@@ -4670,3 +4683,140 @@ func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:
 	var report: Dictionary = probe.analyze_source(source, "res://tests/legal_recursive_tagged.barista")
 	_expect(failures, report.get("valid", false) == true,
 		"legal recursive tagged payload remains valid while int-backed value cycles are rejected")
+
+
+func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringArray) -> void:
+	# Foundry reduce_cast / finalize_ternary_op_type / reduce_type_test @ c9d5e35.
+	# These adaptations preserve the pinned producer line layout and use .barista paths.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
+	ProjectSettings.set_setting("debug/barista_script/warnings/unsafe_cast", 1)
+	ProjectSettings.set_setting("debug/barista_script/warnings/int_as_enum_without_match", 1)
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	var cast_sources := [
+		["func test():\n\tvar integer := 1\n\tprint(integer as Array)\n", "res://tests/cast_int_to_array.barista", 'Invalid cast. Cannot convert from "int" to "Array".', 3, 22],
+		["func test():\n\tvar integer := 1\n\tprint(integer as Node)\n", "res://tests/cast_int_to_object.barista", 'Invalid cast. Cannot convert from "int" to "Node".', 3, 22],
+		["func test(object: RefCounted):\n\t# Typed parameter avoids the native-constructor metadata owned by #141.\n\tprint(object as int)\n", "res://tests/cast_object_to_int.barista", 'Invalid cast. Cannot convert from "RefCounted" to "int".', 3, 21],
+	]
+	for fixture in cast_sources:
+		var cast_report: Dictionary = probe.validate_source(fixture[0], fixture[1], false)
+		_expect(failures, _errors_are_exact(cast_report.get("errors", []), [[fixture[2], fixture[3], fixture[4]]]),
+			"invalid cast preserves the full diagnostic and TypeNode start for %s: %s" % [fixture[1], cast_report.get("errors", [])])
+
+	var union_source := "# The runtime has no union carrier.\ntype Scalar = int | String\n\n\nfunc test():\n\tvar value: Scalar = 1\n\tprint(value is Scalar)\n\tprint(value as Scalar)\n"
+	var union_errors: Array = probe.validate_source(union_source, "res://tests/type_union_runtime_type_operations.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(union_errors, [
+		['Cannot test against the type union "String | int", because it has no runtime type. Test one of its alternatives instead.', 7, 20],
+		['Cannot cast to the type union "String | int", because it has no runtime type. Cast to one of its alternatives instead.', 8, 20],
+	]), "union type-test/cast rejection remains ordered and exact: %s" % [union_errors])
+
+	var tagged_source := "enum Command:\n\tQuit\n\tMove(x: int, y: int)\n\nfunc test():\n\tvar message: Command = Command.Quit\n\tvar as_int: int = message\n\tprint(message + 1)\n\tprint(message as int)\n"
+	var tagged_errors: Array = probe.validate_source(tagged_source, "res://tests/tagged_union_in_int_context.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tagged_errors, [
+		['Cannot assign a value of type tagged_union_in_int_context.barista.Command to variable "as_int" with specified type int.', 7, 23],
+		['Operator "+" is not available on tagged union "Command"; its cases carry payloads, so its values are not integers. Match on the case first.', 8, 11],
+		['Tagged union "Command" is not int-backed, because its cases carry payloads; it cannot be converted to or from "int".', 9, 22],
+	]), "tagged-union/int boundary preserves the complete three-error block: %s" % [tagged_errors])
+
+	var unsafe_source := "# Analyze only.\nfunc no_exec_test():\n\tvar weak_int = 1\n\tprint(weak_int as Variant)\n\tprint(weak_int as int)\n\tprint(weak_int as Node)\n\n\tvar weak_node = Node.new()\n\tprint(weak_node as Variant)\n\tprint(weak_node as int)\n\tprint(weak_node as Node)\n\n\tvar weak_variant = null\n\tprint(weak_variant as Variant)\n\tprint(weak_variant as int)\n\tprint(weak_variant as Node)\n\n\tvar hard_variant: Variant = null\n\tprint(hard_variant as Variant)\n\tprint(hard_variant as int)\n\tprint(hard_variant as Node)\n\nfunc test():\n\tpass\n"
+	var unsafe_warnings: Array = probe.validate_source(unsafe_source, "res://tests/unsafe_cast.barista", true).get("warnings", [])
+	_expect(failures, _warnings_are_exact(unsafe_warnings, [
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 5, 11, 5, 26],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 6, 11, 6, 27],
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 10, 11, 10, 27],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 11, 11, 11, 28],
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 15, 11, 15, 30],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 16, 11, 16, 31],
+		["UNSAFE_CAST", 'Casting "Variant" to "int" is unsafe.', 20, 11, 20, 30],
+		["UNSAFE_CAST", 'Casting "Variant" to "Node" is unsafe.', 21, 11, 21, 31],
+	]), "unsafe-cast warnings preserve the complete code/message/range block: %s" % [unsafe_warnings])
+
+	var enum_cast_source := "enum MyEnum:\n\tENUM_VALUE_1 = 0\n\tENUM_VALUE_2 = ENUM_VALUE_1 + 1\n\nfunc test():\n\tprint(2 as MyEnum)\n"
+	var enum_cast_report: Dictionary = probe.validate_source(enum_cast_source, "res://tests/cast_enum_bad_int.barista", true)
+	_expect(failures, enum_cast_report.get("valid", false) and _warnings_are_exact(enum_cast_report.get("warnings", []), [
+		["INT_AS_ENUM_WITHOUT_MATCH", 'Cannot cast 2 as Enum "cast_enum_bad_int.barista.MyEnum": no enum member has matching value.', 6, 11, 6, 12],
+	]), "unmatched constant int-to-enum cast warning is exact: %s" % [enum_cast_report.get("warnings", [])])
+	var enum_ok_source := "enum Foo:\n\tA = 0\n\tB = A + 1\n\tC = B + 1\nfunc test():\n\tvar as_int: int = Foo.A as int\n\tvar as_enum: Foo = 1 as Foo\n"
+	_expect(failures, probe.validate_source(enum_ok_source, "res://tests/plain_enum_casts.barista", true).get("valid", false),
+		"plain enum-to-int and matching int-to-enum casts remain valid")
+
+	var incompatible_source := "func test():\n\t# The ternary operator below returns values of different types and the\n\t# result is assigned to a typed variable. This will cause a run-time error\n\t# if the branch with the incompatible type is picked. Here, it won't happen\n\t# since the `false` condition never evaluates to `true`. Instead, a warning\n\t# will be emitted.\n\tvar __: int = 25\n\t__ = \"hello\" if false else -2\n"
+	var incompatible_report: Dictionary = probe.validate_source(incompatible_source, "res://tests/incompatible_ternary.barista", true)
+	_expect(failures, incompatible_report.get("valid", false) and _warnings_are_exact(incompatible_report.get("warnings", []), [
+		["INCOMPATIBLE_TERNARY", "Values of the ternary operator are not mutually compatible.", 8, 10, 8, 34],
+	]), "incompatible ternary warning preserves its full range: %s" % [incompatible_report.get("warnings", [])])
+	var ternary_source := "func choose(flag: bool, left: String, right: String) -> String:\n\treturn left if flag else right\nfunc nullable(flag: bool, value: String) -> String?:\n\treturn value if flag else null\n"
+	_expect(failures, probe.validate_source(ternary_source, "res://tests/ternary_concrete_types.barista", true).get("valid", false),
+		"compatible and nullable ternary arms retain concrete return types without warnings")
+	_expect(failures, probe.has_method("inspect_expression_source"),
+		"debug expression inspection is available for pure type/constant observations")
+	if probe.has_method("inspect_expression_source"):
+		var string_ternary: Dictionary = probe.call("inspect_expression_source", "var probe_expression = \"left\" if true else \"right\"\n", "res://tests/ternary_string_probe.barista")
+		var nullable_ternary: Dictionary = probe.call("inspect_expression_source", "var probe_expression = \"left\" if false else null\n", "res://tests/ternary_nullable_probe.barista")
+		_expect(failures, string_ternary.get("datatype") == "String" and string_ternary.get("is_constant") == true and string_ternary.get("value") == "left",
+			"equal ternary arms retain String and fold only with all inputs constant: %s" % [string_ternary])
+		_expect(failures, nullable_ternary.get("datatype") == "String?" and nullable_ternary.get("is_constant") == true and nullable_ternary.get("value") == null,
+			"null/String ternary retains nullable String and selected constant: %s" % [nullable_ternary])
+	var weak_source := "func test():\n\tvar left_hard_int := 1\n\tvar right_weak_int = 2\n\tvar result_hm_int := left_hard_int if true else right_weak_int\n\n\tprint('not ok')\n"
+	var weak_errors: Array = probe.validate_source(weak_source, "res://tests/ternary_weak_infer.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(weak_errors, [["Cannot infer the type of \"result_hm_int\" variable because the value doesn't have a set type.", 4, 26]]),
+		"mixed hard/soft ternary preserves weak inference and initializer origin: %s" % [weak_errors])
+
+	var constant_is_source := "const base := [0]\n\nfunc test():\n\tvar sub := 1\n\tif sub is String: pass\n"
+	var constant_is_errors: Array = probe.validate_source(constant_is_source, "res://tests/constant_subscript_type.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(constant_is_errors, [['Expression is of type "int" so it can\'t be of type "String".', 5, 8]]),
+		"constant non-enum type test rejects at the operand: %s" % [constant_is_errors])
+	if probe.has_method("inspect_expression_source"):
+		var subscript_producer: Dictionary = probe.call("inspect_expression_source", "const base := [0]\nvar probe_expression = base[0]\n", "res://tests/constant_subscript_producer_probe.barista")
+		_expect(failures, subscript_producer.get("valid") == true and subscript_producer.get("datatype") == "Variant" and
+			subscript_producer.get("type_source") == 0 and subscript_producer.get("is_hard_type") == false and
+			subscript_producer.get("is_constant") == false,
+			"constant-subscript producer remains soft Variant/unreduced for step 138-07: %s" % [subscript_producer])
+	var hard_is_source := "class A:\n\tfunc _init():\n\t\tpass\n\nclass B extends A: pass\nclass C extends A: pass\n\nfunc test():\n\tvar x := B.new()\n\tprint(x is C)\n"
+	var hard_is_errors: Array = probe.validate_source(hard_is_source, "res://tests/constructor_call_type.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(hard_is_errors, [['Expression is of type "B" so it can\'t be of type "C".', 10, 11]]),
+		"nonconstant hard incompatible type test rejects at the operand: %s" % [hard_is_errors])
+	var true_fold: Dictionary = probe.fold_expression("1 is int")
+	_expect(failures, true_fold.get("ok", false) and true_fold.get("value") == true,
+		"constant compatible non-enum type test folds from the reduced value: %s" % [true_fold])
+	if probe.has_method("inspect_expression_source"):
+		var enum_membership: Dictionary = probe.call("inspect_expression_source", "enum E:\n\tA = 0\nvar probe_expression = E.A is E\n", "res://tests/enum_membership_probe.barista")
+		_expect(failures, enum_membership.get("datatype") == "bool" and enum_membership.get("is_constant") == false,
+			"plain-enum is remains an unfurled membership test despite its int carrier: %s" % [enum_membership])
+
+	var bind_source := "enum TernaryCaseMessage:\n\tQuit\n\tMove(x: int, y: int)\n\nfunc test():\n\tvar message: TernaryCaseMessage = TernaryCaseMessage.Quit\n\tprint(1 if message is TernaryCaseMessage.Move(x, y) else 0)\n"
+	var bind_errors: Array = probe.validate_source(bind_source, "res://tests/tagged_union_case_test_binds_in_ternary.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(bind_errors, [['Case payload binds are only allowed in the condition of "if", "elif", "while" or "assert", directly or as an "and" operand.', 7, 16]]),
+		"case-bind placement remains exact while ordinary type tests reduce: %s" % [bind_errors])
+
+	var invalid_source: String = cast_sources[0][0]
+	var invalid_path: String = cast_sources[0][1]
+	var invalid_first: Dictionary = probe.analyze_source(invalid_source, invalid_path)
+	var invalid_second: Dictionary = probe.analyze_source(invalid_source, invalid_path)
+	var valid_first: Dictionary = probe.analyze_source(ternary_source, "res://tests/ternary_concrete_repeat.barista")
+	var valid_second: Dictionary = probe.analyze_source(ternary_source, "res://tests/ternary_concrete_repeat.barista")
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var index_before := index.get_record_count()
+	_expect(failures, invalid_first.get("errors", PackedStringArray()) == invalid_second.get("errors", PackedStringArray()) and
+		not probe.validate_source(invalid_source, invalid_path, false).get("valid", true) and
+		not probe.is_semantically_valid(invalid_source, invalid_path),
+		"invalid cast is repeatable through analyze/validate/is-valid")
+	_expect(failures, valid_first.get("valid", false) and valid_second.get("valid", false) and
+		probe.validate_source(ternary_source, "res://tests/ternary_concrete_repeat.barista", false).get("valid", false) and
+		probe.is_semantically_valid(ternary_source, "res://tests/ternary_concrete_repeat.barista"),
+		"valid concrete ternaries are repeatable through analyze/validate/is-valid")
+	_expect(failures, index.get_record_count() == index_before,
+		"step-6 repeated analysis preserves declaration-index opt-in")
+
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 0)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	_expect(failures, probe.validate_source(incompatible_source, "res://tests/incompatible_ternary.barista", true).get("warnings", []).is_empty(),
+		"incompatible ternary warning obeys IGNORE")
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 2)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	_expect(failures, not probe.validate_source(incompatible_source, "res://tests/incompatible_ternary.barista", true).get("valid", true),
+		"incompatible ternary warning obeys ERROR")
+	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()

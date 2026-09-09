@@ -53,6 +53,22 @@ namespace barista_script {
 
 namespace {
 
+static bool _enum_has_value(const BSParser::DataType &p_type, int64_t p_value) {
+	for (const KeyValue<StringName, int64_t> &entry : p_type.enum_values) {
+		if (entry.value == p_value) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static const BSParser::Node *_type_test_or_cast_type_origin(const BSParser::TypeNode *p_type) {
+	if (p_type != nullptr && !p_type->type_chain.is_empty() && p_type->type_chain[p_type->type_chain.size() - 1] != nullptr) {
+		return p_type->type_chain[p_type->type_chain.size() - 1];
+	}
+	return p_type;
+}
+
 static String _class_script_path_for_foreign_resolve(const BSParser::ClassNode *p_class) {
 	if (p_class == nullptr) {
 		return String();
@@ -1810,6 +1826,31 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (p_identifier == nullptr) {
 		return;
 	}
+	// Foundry reduce_identifier @ c9d5e35: a plain-enum value initializer may name an
+	// earlier member without qualifying it through the enum. Unresolved members include
+	// forward references and cycles and retain the established declaration-order error.
+	if (current_enum != nullptr && current_enum_owner == current_class) {
+		for (const BSParser::EnumNode::Value &element : current_enum->values) {
+			if (element.identifier == nullptr || element.identifier->name != p_identifier->name) {
+				continue;
+			}
+			BSParser::DataType type;
+			if (current_enum->get_datatype().is_set()) {
+				type = type_from_metatype(current_enum->get_datatype());
+			} else {
+				const StringName enum_name = current_enum->identifier != nullptr ? current_enum->identifier->name : StringName("<unnamed enum>");
+				type = make_class_enum_type(enum_name, current_class, parser->script_path, false);
+			}
+			p_identifier->set_datatype(type);
+			if (element.resolved) {
+				p_identifier->is_constant = true;
+				p_identifier->reduced_value = element.value;
+			} else {
+				push_error(R"(Cannot use another enum element before it was declared.)", p_identifier);
+			}
+			return;
+		}
+	}
 	// Parser-produced pattern/case binds already carry their declaration even when their branch
 	// suite is not the identifier's retained suite. Foundry starts from this source tag before
 	// attempting broader lookup (`fs_analyzer.cpp:12551-12614` @ c9d5e35).
@@ -3199,20 +3240,54 @@ void BSAnalyzer::reduce_ternary(BSParser::TernaryOpNode *p_ternary) {
 	reduce_expression(p_ternary->condition);
 	reduce_expression(p_ternary->true_expr);
 	reduce_expression(p_ternary->false_expr);
-	if (p_ternary->condition != nullptr && p_ternary->condition->is_constant) {
+	if (p_ternary->condition != nullptr && p_ternary->condition->is_constant &&
+			p_ternary->true_expr != nullptr && p_ternary->true_expr->is_constant &&
+			p_ternary->false_expr != nullptr && p_ternary->false_expr->is_constant) {
 		const bool take_true = p_ternary->condition->reduced_value.booleanize();
 		BSParser::ExpressionNode *chosen = take_true ? p_ternary->true_expr : p_ternary->false_expr;
-		if (chosen != nullptr && chosen->is_constant) {
-			p_ternary->is_constant = true;
-			p_ternary->reduced = true;
-			p_ternary->reduced_value = chosen->reduced_value;
-			p_ternary->set_datatype(type_from_variant(chosen->reduced_value));
-			return;
+		p_ternary->is_constant = true;
+		p_ternary->reduced = true;
+		p_ternary->reduced_value = chosen->reduced_value;
+	}
+
+	BSParser::DataType true_type;
+	if (p_ternary->true_expr != nullptr) {
+		true_type = p_ternary->true_expr->get_datatype();
+	} else {
+		true_type.kind = BSParser::DataType::VARIANT;
+	}
+	BSParser::DataType false_type;
+	if (p_ternary->false_expr != nullptr) {
+		false_type = p_ternary->false_expr->get_datatype();
+	} else {
+		false_type.kind = BSParser::DataType::VARIANT;
+	}
+
+	const bool true_is_null = true_type.kind == BSParser::DataType::BUILTIN && true_type.builtin_type == Variant::NIL;
+	const bool false_is_null = false_type.kind == BSParser::DataType::BUILTIN && false_type.builtin_type == Variant::NIL;
+	BSParser::DataType result;
+	if (true_is_null != false_is_null) {
+		result = true_is_null ? false_type : true_type;
+		result.is_nullable = true;
+	} else if (true_type.is_variant() || false_type.is_variant()) {
+		result.kind = BSParser::DataType::VARIANT;
+	} else {
+		result = true_type;
+		if (!BSTypeCompatibility::check(true_type, false_type).compatible) {
+			result = false_type;
+			if (!BSTypeCompatibility::check(false_type, true_type).compatible) {
+				result = BSParser::DataType();
+				result.kind = BSParser::DataType::VARIANT;
+#ifdef DEBUG_ENABLED
+				push_warning(p_ternary, BSWarning::INCOMPATIBLE_TERNARY);
+#endif
+			}
 		}
 	}
-	BSParser::DataType type;
-	type.kind = BSParser::DataType::VARIANT;
-	p_ternary->set_datatype(type);
+	result.type_source = true_type.is_hard_type() && false_type.is_hard_type()
+			? BSParser::DataType::ANNOTATED_INFERRED
+			: BSParser::DataType::INFERRED;
+	p_ternary->set_datatype(result);
 }
 
 void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
@@ -3225,27 +3300,100 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 
 	BSParser::DataType cast_type = datatype_from_type_node(p_cast->cast_type);
 	if (!cast_type.is_set()) {
+		mark_node_unsafe(p_cast);
 		return;
 	}
 	if (cast_type.is_union()) {
 		// A cast is a runtime operation and the runtime has no union carrier.
-		push_error(vformat(R"(Cannot cast to the type union "%s", because it has no runtime type. Cast to one of its alternatives instead.)", cast_type.to_string()), p_cast->cast_type);
+		push_error(vformat(R"(Cannot cast to the type union "%s", because it has no runtime type. Cast to one of its alternatives instead.)", cast_type.to_string()), _type_test_or_cast_type_origin(p_cast->cast_type));
+		mark_node_unsafe(p_cast);
 		return;
 	}
 
-	qualify_contextual_enum_case_consumer(p_cast->operand, cast_type);
+	resolve_contextual_enum_case(p_cast->operand, cast_type);
 	p_cast->set_datatype(cast_type);
 	if (p_cast->operand != nullptr && p_cast->operand->is_constant) {
-		p_cast->is_constant = true;
-		p_cast->reduced = true;
-		p_cast->reduced_value = p_cast->operand->reduced_value;
+		BSParser::DataType operand_type = p_cast->operand->get_datatype();
+		if (cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union &&
+				operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT) {
+#ifdef DEBUG_ENABLED
+			if (!_enum_has_value(cast_type, p_cast->operand->reduced_value)) {
+				Vector<String> symbols;
+				symbols.push_back("cast");
+				symbols.push_back(p_cast->operand->reduced_value.stringify());
+				symbols.push_back(cast_type.to_string());
+				push_warning(p_cast->operand, BSWarning::INT_AS_ENUM_WITHOUT_MATCH, symbols);
+			}
+#endif
+			p_cast->operand->set_datatype(cast_type);
+		} else if (operand_type.kind == BSParser::DataType::ENUM && !operand_type.is_tagged_union &&
+				cast_type.kind == BSParser::DataType::BUILTIN && cast_type.builtin_type == Variant::INT) {
+			p_cast->operand->set_datatype(cast_type);
+		} else if (operand_type.kind == BSParser::DataType::BUILTIN && cast_type.kind == BSParser::DataType::BUILTIN &&
+				Variant::can_convert(operand_type.builtin_type, cast_type.builtin_type)) {
+			Variant converted = UtilityFunctions::type_convert(p_cast->operand->reduced_value, (int64_t)cast_type.builtin_type);
+			if (converted.get_type() == cast_type.builtin_type) {
+				p_cast->operand->reduced_value = converted;
+				p_cast->operand->set_datatype(cast_type);
+			}
+		} else {
+			update_constant_expression_type(p_cast->operand, cast_type, "cast");
+		}
+		if (cast_type.is_variant() || p_cast->operand->get_datatype() == cast_type) {
+			p_cast->is_constant = true;
+			p_cast->reduced = true;
+			p_cast->reduced_value = p_cast->operand->reduced_value;
+		}
+	}
+	update_container_literal_element_types(p_cast->operand, cast_type);
+
+	if (cast_type.is_variant() || p_cast->operand == nullptr) {
+		return;
+	}
+	const BSParser::DataType operand_type = p_cast->operand->get_datatype();
+	if (operand_type.is_variant() || !operand_type.is_hard_type()) {
+		mark_node_unsafe(p_cast);
+#ifdef DEBUG_ENABLED
+		Vector<String> symbols;
+		symbols.push_back(cast_type.to_string());
+		push_warning(p_cast, BSWarning::UNSAFE_CAST, symbols);
+#endif
+		return;
+	}
+
+	bool valid = false;
+	if (operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT &&
+			cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union) {
+		mark_node_unsafe(p_cast);
+		valid = true;
+	} else if (operand_type.kind == BSParser::DataType::ENUM && !operand_type.is_tagged_union &&
+			cast_type.kind == BSParser::DataType::BUILTIN && cast_type.builtin_type == Variant::INT) {
+		valid = true;
+	} else if (operand_type.kind == BSParser::DataType::BUILTIN && cast_type.kind == BSParser::DataType::BUILTIN) {
+		valid = Variant::can_convert(operand_type.builtin_type, cast_type.builtin_type);
+	} else if (operand_type.kind != BSParser::DataType::BUILTIN && cast_type.kind != BSParser::DataType::BUILTIN) {
+		valid = BSTypeCompatibility::check(cast_type, operand_type).compatible ||
+				BSTypeCompatibility::check(operand_type, cast_type).compatible;
+	}
+	if (!valid) {
+		const bool tagged_to_int = operand_type.is_tagged_union_type() && cast_type.kind == BSParser::DataType::BUILTIN && cast_type.builtin_type == Variant::INT;
+		const bool int_to_tagged = cast_type.is_tagged_union_type() && operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT;
+		if (tagged_to_int || int_to_tagged) {
+			push_error(vformat(R"(Tagged union "%s" is not int-backed, because its cases carry payloads; it cannot be converted to or from "int".)",
+							   tagged_to_int ? operand_type.enum_type : cast_type.enum_type),
+					_type_test_or_cast_type_origin(p_cast->cast_type));
+		} else {
+			push_error(vformat(R"(Invalid cast. Cannot convert from "%s" to "%s".)", operand_type.to_string(), cast_type.to_string()) +
+							BSParser::DataType::same_rendered_name_clause(operand_type, "operand's type", cast_type, "cast target type"),
+					_type_test_or_cast_type_origin(p_cast->cast_type));
+		}
 	}
 }
 
 void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
 	// Foundry reduce_type_test @ c9d5e35: resolve the tested type (including contextual
 	// `.Case` shorthand against the operand) and type case-bind payload identifiers.
-	// Constant folding of non-enum type tests remains #60.
+	// Fold concrete constant values, while enum `is` remains a runtime membership test.
 	if (p_type_test == nullptr) {
 		return;
 	}
@@ -3285,7 +3433,7 @@ void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
 	p_type_test->test_datatype = test_type;
 
 	if (test_type.is_union()) {
-		push_error(vformat(R"(Cannot test against the type union "%s", because it has no runtime type. Test one of its alternatives instead.)", test_type.to_string()), p_type_test->test_type);
+		push_error(vformat(R"(Cannot test against the type union "%s", because it has no runtime type. Test one of its alternatives instead.)", test_type.to_string()), _type_test_or_cast_type_origin(p_type_test->test_type));
 		test_type = BSParser::DataType();
 		p_type_test->test_datatype = test_type;
 	}
@@ -3302,7 +3450,37 @@ void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
 		return;
 	}
 
+	BSParser::DataType compatibility_type = test_type;
+	compatibility_type.enum_case_name = StringName();
+
 	resolve_type_test_case_binds(p_type_test, test_type);
+
+	if (p_type_test->operand->is_constant && test_type.kind != BSParser::DataType::ENUM) {
+		p_type_test->is_constant = true;
+		p_type_test->reduced = true;
+		p_type_test->reduced_value = false;
+		if (!BSTypeCompatibility::check(compatibility_type, operand_type).compatible) {
+			push_error(vformat(R"(Expression is of type "%s" so it can't be of type "%s".)", operand_type.to_string(), test_type.to_string()), p_type_test->operand);
+		} else {
+			const BSParser::DataType value_type = type_from_variant(p_type_test->operand->reduced_value);
+			if (value_type.is_set() && BSTypeCompatibility::check(compatibility_type, value_type).compatible) {
+				p_type_test->reduced_value = test_type.builtin_type != Variant::OBJECT ||
+						p_type_test->operand->reduced_value.get_type() != Variant::NIL;
+			}
+		}
+		return;
+	}
+
+	if (!BSTypeCompatibility::check(compatibility_type, operand_type).compatible &&
+			!BSTypeCompatibility::check(operand_type, compatibility_type).compatible) {
+		if (operand_type.is_hard_type()) {
+			push_error(vformat(R"(Expression is of type "%s" so it can't be of type "%s".)", operand_type.to_string(), test_type.to_string()), p_type_test->operand);
+		} else {
+			BSParser::DataType downgraded = operand_type;
+			downgraded.type_source = BSParser::DataType::INFERRED;
+			p_type_test->operand->set_datatype(downgraded);
+		}
+	}
 }
 
 void BSAnalyzer::resolve_type_test_case_binds(BSParser::TypeTestNode *p_type_test, const BSParser::DataType &p_test_type) {
@@ -6061,6 +6239,15 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 				// analyzer type, including Callable/Signal signatures used by later calls.
 				if ((!declared.is_set() || declared.is_variant()) && variable->infer_datatype &&
 						variable->initializer->get_datatype().is_set()) {
+					// This checkpoint introduces soft ternary results. Apply the pinned inference
+					// failure to that producer here; step 138-07 still owns the soft-Variant
+					// subscript producers that prevent enabling the general gate without cascades.
+					if (variable->initializer->type == BSParser::Node::TERNARY_OPERATOR &&
+							!variable->initializer->get_datatype().is_hard_type()) {
+						push_error(vformat(R"(Cannot infer the type of "%s" variable because the value doesn't have a set type.)",
+										   variable->identifier != nullptr ? String(variable->identifier->name) : String("<unknown>")),
+								variable->initializer);
+					}
 					variable->set_datatype(variable->initializer->get_datatype());
 					declared = variable->get_datatype();
 				}
@@ -6100,7 +6287,13 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						compatible = false;
 					}
 					if (!compatible) {
-						if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+						if (initializer_type.is_tagged_union_type() && declared.kind == BSParser::DataType::BUILTIN && declared.builtin_type == Variant::INT) {
+							push_error(vformat(R"(Cannot assign a value of type %s to variable "%s" with specified type %s.)",
+											   initializer_type.to_string(),
+											   variable->identifier != nullptr ? String(variable->identifier->name) : String("<unknown>"),
+											   declared.to_string()),
+									variable->initializer);
+						} else if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
 							push_error(vformat(R"(Cannot assign a value of type %s to variable "%s" with specified type %s.)",
 											   initializer_type.to_string(),
 											   variable->identifier != nullptr ? String(variable->identifier->name) : String("<unknown>"),
