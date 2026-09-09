@@ -87,6 +87,7 @@ func _init() -> void:
 	_test_local_tuple_and_literal_consumers(failures)
 	_test_ordinary_assignment_and_return_consumers(failures)
 	_test_steps_1_5_repair_regressions(failures)
+	_test_steps_1_5_repair2_self_signatures(failures)
 	_test_local_enum_value_cycles(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
@@ -4319,6 +4320,9 @@ func _test_local_tuple_and_literal_consumers(failures: PackedStringArray) -> voi
 		"alpha_fixed_slot", "strict_fixed_slot", "strict_return_slot", "strict_async",
 		"strict_rest", "strict_nested", "strict_union", "strict_ignores_parser_wildcard",
 		"markers_match", "markers_fixed_slot", "markers_return_slot", "markers_rest_slot",
+		"parameter_variadic_to_fixed", "parameter_gradual_to_narrowed_rest",
+		"parameter_strict_return_mismatch", "parameter_fixed_receiver_identity",
+		"parameter_return_receiver_identity", "parameter_rest_receiver_identity",
 	]
 	var identity_complete := identity_controls.size() == expected_identity_controls.size()
 	for control in expected_identity_controls:
@@ -4560,6 +4564,54 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 		['Cannot assign a value of type "int" to a constant of type "String".', 6, 33],
 		['Cannot return value of type "int" because the function return type is "String".', 7, 5],
 	]), "ordinary declaration diagnostics use initializer origins while return stays on ReturnNode: %s" % [origin_errors])
+
+
+func _test_steps_1_5_repair2_self_signatures(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+
+	var static_source := "class_name Repair2Static extends Node\nstatic func fixed(value: Self) -> void:\n\tpass\nstatic func rest(...values: Array[Self]) -> void:\n\tpass\nstatic func check(good: Repair2Static, bad: String) -> void:\n\tfixed(good)\n\trest(good)\n\tfixed(bad)\n\trest(bad)\n\tfixed()\n"
+	var static_errors: Array = probe.validate_source(static_source, "res://tests/repair2_static_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(static_errors, [
+		['Invalid argument for "fixed()" function: argument 1 should be "Repair2Static" but is "String".', 9, 11],
+		['Invalid argument for "rest()" function: argument 1 should be "Repair2Static" but is "String".', 10, 10],
+		['Too few arguments for "fixed()" call. Expected at least 1 but received 0.', 11, 5],
+	]), "static fixed/rest Self share declaring-class substitution and exact diagnostics: %s" % [static_errors])
+
+	var constructor_source := "class_name Repair2Constructor extends Node\nclass Base:\n\tfunc _init(first: Self, ...rest: Array[Self]) -> void:\n\t\tpass\nclass Child extends Base:\n\tpass\nfunc check(a: Child, b: Child, base: Base) -> void:\n\tvar direct := Base.new(base, base)\n\tvar inherited := Child.new(a, b)\n\tChild.new(base, b)\n\tChild.new(a, base)\n"
+	var constructor_errors: Array = probe.validate_source(constructor_source, "res://tests/repair2_constructor_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(constructor_errors, [
+		['Invalid argument for "new()" function: argument 1 should be "Child" but is "Base".', 10, 15],
+		['Invalid argument for "new()" function: argument 2 should be "Child" but is "Base".', 11, 18],
+	]), "direct and inherited constructors select one concrete fixed/rest Self type: %s" % [constructor_errors])
+
+	var instance_rest_source := "class_name Repair2InstanceRest extends Node\nfunc take(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2InstanceRest) -> void:\n\ttake(self)\n\tother.take(self)\n"
+	var instance_rest_errors: Array = probe.validate_source(instance_rest_source, "res://tests/repair2_instance_rest_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(instance_rest_errors, [
+		['Invalid argument for "take()" function: argument 1 should be "Self" but is "Self". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 6, 16],
+	]), "ordinary instance rest Self stays receiver-relative: %s" % [instance_rest_errors])
+
+	var callable_direct_source := "class_name Repair2CallableDirect extends Node\nfunc fixed(value: Callable[[Self], void]) -> void:\n\tpass\nfunc returns(value: Callable[[], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self) -> void:\n\tpass\nfunc cb_return() -> Self:\n\treturn self\nfunc cb_rest(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableDirect) -> void:\n\tfixed(cb_fixed)\n\treturns(cb_return)\n\trests(cb_rest)\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n"
+	var callable_direct_errors: Array = probe.validate_source(callable_direct_source, "res://tests/repair2_callable_direct_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(callable_direct_errors, [
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self], void]" but is "Callable[[Self], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 18, 17],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[], Self]" but is "Callable[[], Self]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 19, 19],
+		['Invalid argument for "rests()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Self]], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 20, 17],
+	]), "callable fixed/return/rest Self accepts own receiver and rejects foreign receiver: %s" % [callable_direct_errors])
+	var callable_current_source := "class_name Repair2CallableCurrent extends Node\nfunc take(value: Callable[[Self], void]) -> void:\n\tpass\nfunc cb(value: Self) -> void:\n\tpass\nfunc through_self() -> void:\n\tself.take(cb)\nclass Child extends Repair2CallableCurrent:\n\tfunc through_super() -> void:\n\t\tsuper.take(cb)\n"
+	_expect(failures, probe.validate_source(callable_current_source, "res://tests/repair2_callable_current_self.barista", false).get("valid", false),
+		"explicit self and super callable Self calls retain current-receiver admission")
+
+	var callable_sibling_source := "class_name Repair2CallableSibling extends Node\nfunc fixed(value: Callable[[Self, int], void]) -> void:\n\tpass\nfunc returns(value: Callable[[int], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self, sibling: String) -> void:\n\tpass\nfunc cb_return(sibling: String) -> Self:\n\treturn self\nfunc cb_rest(sibling: String, ...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableSibling) -> void:\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n"
+	var callable_sibling_errors: Array = probe.validate_source(callable_sibling_source, "res://tests/repair2_callable_sibling_self.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(callable_sibling_errors, [
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self, int], void]" but is "Callable[[Self, String], void]". The parameter\'s "Self" at callable parameter 1 is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 15, 17],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[int], Self]" but is "Callable[[String], Self]". The parameter\'s "Self" at the callable return type is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 16, 19],
+		['Invalid argument for "rests()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable[[String, ...Array[Self]], void]". The parameter\'s "Self" at the callable rest parameter is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 17, 17],
+	]), "callable sibling mismatches retain fixed/return/rest receiver slot labels: %s" % [callable_sibling_errors])
+
+	var comparable_source := "class_name Repair2ComparableCallable extends Node\nfunc fixed(callback: Callable[[Self], void]) -> void:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc with_tail(owner: Self, ...rest: Array) -> void:\n\tpass\nfunc sink(...values: Array) -> void:\n\tpass\nfunc check(other: Repair2ComparableCallable) -> void:\n\tvar variadic: Callable[[Self, ...Array], void] = with_tail\n\tvar gradual: Callable[[...Array], void] = sink\n\tfixed(variadic)\n\tfan(gradual)\n\tother.fan(gradual)\n"
+	_expect(failures, probe.validate_source(comparable_source, "res://tests/repair2_callable_comparable.barista", false).get("valid", false),
+		"variadic-to-fixed and gradual-to-narrowed rest callable directions remain admitted")
 
 
 func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:

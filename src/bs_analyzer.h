@@ -748,7 +748,8 @@ private:
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);
-	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee);
+	void validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee,
+			BSParser::ClassNode *p_constructor_class = nullptr);
 	/** Foundry check_match_exhaustiveness @ c9d5e35: bool / tagged-union / plain-enum coverage. */
 	void check_match_exhaustiveness(BSParser::MatchNode *p_match);
 	bool suite_has_return(const BSParser::SuiteNode *p_suite) const;

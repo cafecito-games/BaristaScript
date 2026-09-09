@@ -2025,7 +2025,8 @@ bool _datatype_matches_analyzer_substituted_self(const BSParser::DataType &p_exp
 bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_value_type, BSAnalyzer::SelfContractKind p_kind, const BSParser::ExpressionNode *p_value_source, BSParser::DataType *r_matched_value);
 } // namespace
 
-void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee) {
+void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::FunctionNode *p_callee,
+		BSParser::ClassNode *p_constructor_class) {
 	if (p_call == nullptr || p_callee == nullptr) {
 		return;
 	}
@@ -2071,11 +2072,15 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	// Foundry get_function_signature @ c9d5e35: parameter-position Self is an exact receiver
 	// contract for ordinary instance calls. Stamp before validate_call_arg so PARAMETER admission
 	// and identity gates see the provenance; returns keep the frame Self without the stamp.
-	const bool parameter_self_is_receiver_contract = !p_callee->is_static;
+	const bool parameter_self_is_receiver_contract = p_constructor_class == nullptr && !p_callee->is_static;
 	BSParser::DataType parameter_self_type;
 	if (parameter_self_is_receiver_contract && declaring_class != nullptr) {
 		parameter_self_type = _self_type_parameter_from_bound(_self_type_for_class(declaring_class));
 		parameter_self_type.is_receiver_self_contract = true;
+	} else if (p_constructor_class != nullptr) {
+		parameter_self_type = _self_type_for_class(p_constructor_class);
+	} else if (declaring_class != nullptr) {
+		parameter_self_type = _self_type_for_class(declaring_class);
 	}
 
 	List<BSParser::DataType> par_types;
@@ -2087,12 +2092,8 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 			continue;
 		}
 		BSParser::DataType par_type = parameter->get_datatype();
-		if (_datatype_contains_self_type_parameter(par_type)) {
-			if (parameter_self_is_receiver_contract && parameter_self_type.is_set()) {
-				par_type = _substitute_self_type_parameter(par_type, parameter_self_type);
-			} else if (!parameter_self_is_receiver_contract && declaring_class != nullptr) {
-				par_type = _substitute_self_type_parameter(par_type, _self_type_for_class(declaring_class));
-			}
+		if (_datatype_contains_self_type_parameter(par_type) && parameter_self_type.is_set()) {
+			par_type = _substitute_self_type_parameter(par_type, parameter_self_type);
 		}
 		par_types.push_back(par_type);
 	}
@@ -2112,8 +2113,7 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	BSParser::DataType rest_storage;
 	if (p_callee->is_vararg() && p_callee->rest_parameter != nullptr) {
 		rest_storage = p_callee->rest_parameter->get_datatype();
-		if (parameter_self_is_receiver_contract && parameter_self_type.is_set() &&
-				_datatype_contains_self_type_parameter(rest_storage)) {
+		if (parameter_self_type.is_set() && _datatype_contains_self_type_parameter(rest_storage)) {
 			rest_storage = _substitute_self_type_parameter(rest_storage, parameter_self_type);
 		}
 		rest_type = &rest_storage;
@@ -2212,7 +2212,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (class_meta_type.kind == BSParser::DataType::CLASS && class_meta_type.is_meta_type) {
 					BSParser::FunctionNode *initializer = find_class_function(class_meta_type.class_type, SNAME("_init"));
 					if (initializer != nullptr) {
-						validate_local_call(p_call, initializer);
+						validate_local_call(p_call, initializer, class_meta_type.class_type);
 					} else {
 						call_site_validation.reject_named_call_arguments(p_call);
 						if (!p_call->arguments.is_empty()) {
@@ -4272,6 +4272,21 @@ bool _datatype_self_bindings_are_final(const BSParser::DataType &p_type) {
 			return false;
 		}
 	}
+	for (const BSParser::DataType &parameter : p_type.method_parameter_types) {
+		if (!_datatype_self_bindings_are_final(parameter)) {
+			return false;
+		}
+	}
+	for (const BSParser::DataType &return_type : p_type.method_return_type) {
+		if (!_datatype_self_bindings_are_final(return_type)) {
+			return false;
+		}
+	}
+	for (const BSParser::DataType &rest_type : p_type.method_rest_parameter_type) {
+		if (!_datatype_self_bindings_are_final(rest_type)) {
+			return false;
+		}
+	}
 	for (const BSParser::DataType &member : p_type.union_members) {
 		if (!_datatype_self_bindings_are_final(member)) {
 			return false;
@@ -4590,7 +4605,7 @@ BSParser::DataType _self_contract_comparable_callable_argument(const BSParser::D
 }
 
 bool _datatype_matches_self_parameter_contract_exact(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type) {
-	if (p_expected_type == p_argument_type) {
+	if (_datatype_strict_identity_equal(p_expected_type, p_argument_type)) {
 		return true;
 	}
 	if (_datatype_matches_analyzer_substituted_self(p_expected_type, p_argument_type)) {
@@ -4599,7 +4614,7 @@ bool _datatype_matches_self_parameter_contract_exact(const BSParser::DataType &p
 	if (p_expected_type.is_nullable) {
 		BSParser::DataType non_nullable_expected = p_expected_type;
 		non_nullable_expected.is_nullable = false;
-		if (non_nullable_expected == p_argument_type) {
+		if (_datatype_strict_identity_equal(non_nullable_expected, p_argument_type)) {
 			return true;
 		}
 	}
@@ -4609,35 +4624,96 @@ bool _datatype_matches_self_parameter_contract_exact(const BSParser::DataType &p
 			p_argument_type.builtin_type == Variant::NIL) {
 		return true;
 	}
+	if (expected_type.is_type_handle_annotation) {
+		if (!_type_handle_source_is_handle(p_argument_type)) {
+			return false;
+		}
+		const BSParser::DataType argument_handle_type = _type_handle_represented_type(p_argument_type);
+		if (_datatype_strict_identity_equal(_type_handle_represented_type(p_expected_type), argument_handle_type)) {
+			return true;
+		}
+		if (_datatype_contains_self_type_parameter(p_expected_type) && !_datatype_self_bindings_are_final(p_expected_type)) {
+			return false;
+		}
+		return _datatype_strict_identity_equal(_type_handle_represented_type(expected_type), argument_handle_type);
+	}
 	if (!_datatype_self_bindings_are_final(p_expected_type)) {
 		return false;
 	}
-	if (expected_type == p_argument_type) {
+	if (_datatype_strict_identity_equal(expected_type, p_argument_type)) {
 		return true;
 	}
 	if (expected_type.is_nullable) {
 		BSParser::DataType non_nullable_expected = expected_type;
 		non_nullable_expected.is_nullable = false;
-		return non_nullable_expected == p_argument_type;
+		return _datatype_strict_identity_equal(non_nullable_expected, p_argument_type);
 	}
 	return false;
 }
 
-bool _datatype_contains_receiver_self_contract(const BSParser::DataType &p_type) {
-	if (_is_self_type_parameter(p_type) && p_type.is_receiver_self_contract) {
+bool _datatype_contains_caller_relative_self(const BSParser::DataType &p_type) {
+	if (_is_self_type_parameter(p_type) || p_type.is_substituted_self) {
 		return true;
 	}
 	for (const BSParser::DataType &element : p_type.container_element_types) {
-		if (_datatype_contains_receiver_self_contract(element)) {
+		if (_datatype_contains_caller_relative_self(element)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &argument : p_type.type_arguments) {
+		if (_datatype_contains_caller_relative_self(argument)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &parameter : p_type.method_parameter_types) {
+		if (_datatype_contains_caller_relative_self(parameter)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &return_type : p_type.method_return_type) {
+		if (_datatype_contains_caller_relative_self(return_type)) {
+			return true;
+		}
+	}
+	for (const BSParser::DataType &rest_type : p_type.method_rest_parameter_type) {
+		if (_datatype_contains_caller_relative_self(rest_type)) {
 			return true;
 		}
 	}
 	for (const BSParser::DataType &member : p_type.union_members) {
-		if (_datatype_contains_receiver_self_contract(member)) {
+		if (_datatype_contains_caller_relative_self(member)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+bool _self_parameter_contract_match_needs_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type) {
+	if (_datatype_self_bindings_are_final(p_expected_type)) {
+		return false;
+	}
+	if (_is_bare_self_value_parameter(p_expected_type)) {
+		return p_expected_type.is_receiver_self_contract &&
+				(_is_self_type_parameter(p_argument_type) || p_argument_type.is_substituted_self);
+	}
+	const auto matching_slots_need_identity = [&](const Vector<BSParser::DataType> &p_expected_slots,
+													  const Vector<BSParser::DataType> &p_argument_slots) {
+		if (p_expected_slots.size() != p_argument_slots.size()) {
+			return false;
+		}
+		for (int i = 0; i < p_expected_slots.size(); i++) {
+			if (_self_parameter_contract_match_needs_receiver_identity(p_expected_slots[i], p_argument_slots[i])) {
+				return true;
+			}
+		}
+		return false;
+	};
+	return matching_slots_need_identity(p_expected_type.container_element_types, p_argument_type.container_element_types) ||
+			matching_slots_need_identity(p_expected_type.type_arguments, p_argument_type.type_arguments) ||
+			matching_slots_need_identity(p_expected_type.method_parameter_types, p_argument_type.method_parameter_types) ||
+			matching_slots_need_identity(p_expected_type.method_return_type, p_argument_type.method_return_type) ||
+			matching_slots_need_identity(p_expected_type.method_rest_parameter_type, p_argument_type.method_rest_parameter_type) ||
+			matching_slots_need_identity(p_expected_type.union_members, p_argument_type.union_members);
 }
 
 bool _call_receiver_is_current_self(const BSParser::CallNode *p_call) {
@@ -4652,6 +4728,14 @@ bool _call_receiver_is_current_self(const BSParser::CallNode *p_call) {
 }
 
 bool _self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call);
+
+bool _self_parameter_contract_matched_argument(const BSParser::DataType &p_expected_type,
+		const BSParser::DataType &p_argument_type, const BSParser::ExpressionNode *p_argument,
+		BSParser::DataType &r_matched_argument) {
+	r_matched_argument = p_argument_type;
+	return _self_contract_admits_value_type(p_expected_type, p_argument_type,
+			BSAnalyzer::SelfContractKind::PARAMETER, p_argument, &r_matched_argument);
+}
 
 bool _self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) {
 	if (p_expected_type.kind == BSParser::DataType::UNION) {
@@ -4668,19 +4752,17 @@ bool _self_parameter_contract_admits_argument_type(const BSParser::DataType &p_e
 		}
 		return false;
 	}
-	if (!_datatype_matches_self_parameter_contract_exact(p_expected_type, p_argument_type)) {
+	BSParser::DataType matched_argument;
+	if (!_self_parameter_contract_matched_argument(p_expected_type, p_argument_type, p_argument, matched_argument)) {
 		return false;
 	}
-	if (_datatype_contains_receiver_self_contract(p_expected_type) &&
-			_datatype_contains_self_type_parameter(p_argument_type)) {
-		return _call_receiver_is_current_self(p_call);
+	if (!_datatype_contains_caller_relative_self(p_argument_type)) {
+		return true;
 	}
-	if (_is_bare_self_value_parameter(p_argument_type) || p_argument_type.is_substituted_self) {
-		if (p_expected_type.is_receiver_self_contract) {
-			return p_call == nullptr || p_call->receiver_is_current_self;
-		}
+	if (!_self_parameter_contract_match_needs_receiver_identity(p_expected_type, matched_argument)) {
+		return true;
 	}
-	return true;
+	return p_call == nullptr || _call_receiver_is_current_self(p_call);
 }
 
 bool _self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) {
@@ -4912,6 +4994,36 @@ Dictionary BSAnalyzer::debug_self_identity_controls() {
 	BSParser::DataType missing_rest_marker = marked;
 	missing_rest_marker.container_element_types.write[0].method_rest_parameter_type.write[0].container_element_types.write[0].is_substituted_self = false;
 
+	BSParser::DataType receiver_self = self_type;
+	receiver_self.is_receiver_self_contract = true;
+	BSParser::DataType expected_fixed = callable;
+	expected_fixed.method_parameter_types.write[0] = receiver_self;
+	BSParser::DataType variadic_fixed = expected_fixed;
+	variadic_fixed.method_parameter_types.write[0] = self_type;
+	variadic_fixed.method_info.flags |= METHOD_FLAG_VARARG;
+	BSParser::DataType gradual_rest = builtin(Variant::ARRAY);
+	variadic_fixed.method_rest_parameter_type.push_back(gradual_rest);
+	BSParser::DataType expected_rest = callable;
+	expected_rest.method_parameter_types.clear();
+	expected_rest.method_info.flags |= METHOD_FLAG_VARARG;
+	BSParser::DataType receiver_rest = builtin(Variant::ARRAY);
+	receiver_rest.container_element_types.push_back(receiver_self);
+	expected_rest.method_rest_parameter_type.push_back(receiver_rest);
+	BSParser::DataType gradual_callable = expected_rest;
+	gradual_callable.method_rest_parameter_type.clear();
+	BSParser::DataType expected_return = callable;
+	expected_return.method_parameter_types.clear();
+	expected_return.method_return_type.write[0] = receiver_self;
+	BSParser::DataType argument_return = expected_return;
+	argument_return.method_return_type.write[0] = self_type;
+	BSParser::DataType argument_rest = expected_rest;
+	argument_rest.method_rest_parameter_type.write[0].container_element_types.write[0] = self_type;
+	BSParser::DataType mismatched_return = variadic_fixed;
+	mismatched_return.method_info.flags &= ~METHOD_FLAG_VARARG;
+	mismatched_return.clear_method_rest_parameter_type();
+	mismatched_return.method_return_type.write[0] = int_type;
+	BSParser::DataType matched_parameter;
+
 	BSParser::DataType undetected;
 	undetected.kind = BSParser::DataType::VARIANT;
 	undetected.type_source = BSParser::DataType::UNDETECTED;
@@ -4929,6 +5041,12 @@ Dictionary BSAnalyzer::debug_self_identity_controls() {
 	result["markers_fixed_slot"] = !_datatype_matches_analyzer_substituted_self(self_container, missing_fixed_marker);
 	result["markers_return_slot"] = !_datatype_matches_analyzer_substituted_self(self_container, missing_return_marker);
 	result["markers_rest_slot"] = !_datatype_matches_analyzer_substituted_self(self_container, missing_rest_marker);
+	result["parameter_variadic_to_fixed"] = _self_parameter_contract_matched_argument(expected_fixed, variadic_fixed, nullptr, matched_parameter);
+	result["parameter_gradual_to_narrowed_rest"] = _self_parameter_contract_matched_argument(expected_rest, gradual_callable, nullptr, matched_parameter);
+	result["parameter_strict_return_mismatch"] = !_self_parameter_contract_matched_argument(expected_fixed, mismatched_return, nullptr, matched_parameter);
+	result["parameter_fixed_receiver_identity"] = _self_parameter_contract_match_needs_receiver_identity(expected_fixed, variadic_fixed);
+	result["parameter_return_receiver_identity"] = _self_parameter_contract_match_needs_receiver_identity(expected_return, argument_return);
+	result["parameter_rest_receiver_identity"] = _self_parameter_contract_match_needs_receiver_identity(expected_rest, argument_rest);
 	return result;
 }
 #endif
@@ -5402,55 +5520,102 @@ bool BSAnalyzer::self_parameter_satisfied_by_receiver_identity(const BSParser::D
 	return _self_parameter_satisfied_by_receiver_identity(p_expected_type, p_argument, p_call);
 }
 
+String _self_receiver_identity_element_label(const BSParser::DataType &p_type, int p_index) {
+	if (p_type.kind == BSParser::DataType::TUPLE) {
+		if (p_index < p_type.tuple_field_names.size() && p_type.tuple_field_names[p_index] != StringName()) {
+			return vformat(R"*(element "%s")*", p_type.tuple_field_names[p_index]);
+		}
+		return vformat("element %d", p_index + 1);
+	}
+	return p_type.container_element_types.size() > 1 ? vformat("element type %d", p_index + 1) : String("the element type");
+}
+
+bool _self_parameter_receiver_identity_slot(const BSParser::DataType &p_expected_type,
+		const BSParser::DataType &p_argument_type, String &r_slot_label) {
+	const auto slot_requires_identity = [&](const BSParser::DataType &p_expected_slot,
+												const BSParser::DataType &p_argument_slot) {
+		BSParser::DataType matched;
+		return _datatype_contains_caller_relative_self(p_argument_slot) &&
+				_self_parameter_contract_matched_argument(p_expected_slot, p_argument_slot, nullptr, matched) &&
+				_self_parameter_contract_match_needs_receiver_identity(p_expected_slot, matched);
+	};
+	const auto descend = [&](const BSParser::DataType &p_expected_slot,
+								 const BSParser::DataType &p_argument_slot, const String &p_label) {
+		if (slot_requires_identity(p_expected_slot, p_argument_slot)) {
+			r_slot_label = p_label;
+			return true;
+		}
+		String inner_label;
+		if (_self_parameter_receiver_identity_slot(p_expected_slot, p_argument_slot, inner_label)) {
+			r_slot_label = inner_label + " of " + p_label;
+			return true;
+		}
+		return false;
+	};
+	const auto descend_slots = [&](const Vector<BSParser::DataType> &p_expected_slots,
+									   const Vector<BSParser::DataType> &p_argument_slots, const auto &p_label) {
+		if (p_expected_slots.size() != p_argument_slots.size()) {
+			return false;
+		}
+		for (int i = 0; i < p_expected_slots.size(); i++) {
+			if (descend(p_expected_slots[i], p_argument_slots[i], p_label(i))) {
+				return true;
+			}
+		}
+		return false;
+	};
+	if (descend_slots(p_expected_type.container_element_types, p_argument_type.container_element_types,
+				[&](int p_index) { return _self_receiver_identity_element_label(p_expected_type, p_index); })) {
+		return true;
+	}
+	if (descend_slots(p_expected_type.type_arguments, p_argument_type.type_arguments,
+				[](int p_index) { return vformat("type argument %d", p_index + 1); })) {
+		return true;
+	}
+	if (descend_slots(p_expected_type.method_parameter_types, p_argument_type.method_parameter_types,
+				[](int p_index) { return vformat("callable parameter %d", p_index + 1); })) {
+		return true;
+	}
+	if (descend_slots(p_expected_type.method_return_type, p_argument_type.method_return_type,
+				[](int) { return String("the callable return type"); })) {
+		return true;
+	}
+	if (descend_slots(p_expected_type.method_rest_parameter_type, p_argument_type.method_rest_parameter_type,
+				[](int) { return String("the callable rest parameter"); })) {
+		return true;
+	}
+	return descend_slots(p_expected_type.union_members, p_argument_type.union_members,
+			[](int p_index) { return vformat("alternative %d", p_index + 1); });
+}
+
 String BSAnalyzer::self_parameter_receiver_identity_clause(const BSParser::DataType &p_expected_type,
 		const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call) const {
-	if (p_call == nullptr || !_datatype_contains_self_type_parameter(p_expected_type) ||
-			!_datatype_contains_self_type_parameter(p_argument_type)) {
-		return String();
-	}
-	bool receiver_is_current = p_call->get_callee_type() == BSParser::Node::IDENTIFIER;
-	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
-		const BSParser::SubscriptNode *callee = static_cast<const BSParser::SubscriptNode *>(p_call->callee);
-		receiver_is_current = callee != nullptr && callee->is_attribute && callee->base != nullptr &&
-				callee->base->type == BSParser::Node::SELF;
-	}
-	if (receiver_is_current || p_call->is_super) {
-		return String();
-	}
-
-	const auto element_label = [](const BSParser::DataType &type, int index) -> String {
-		if (type.kind == BSParser::DataType::TUPLE) {
-			if (index < type.tuple_field_names.size() && type.tuple_field_names[index] != StringName()) {
-				return vformat(R"*(element "%s")*", type.tuple_field_names[index]);
-			}
-			return vformat("element %d", index + 1);
-		}
-		return type.container_element_types.size() > 1 ? vformat("element type %d", index + 1) : String("the element type");
-	};
-	const auto find_slot = [&](const auto &self, const BSParser::DataType &expected, const BSParser::DataType &actual) -> String {
-		if (expected.container_element_types.size() != actual.container_element_types.size()) {
-			return String();
-		}
-		for (int i = 0; i < expected.container_element_types.size(); i++) {
-			const BSParser::DataType &expected_element = expected.container_element_types[i];
-			const BSParser::DataType &actual_element = actual.container_element_types[i];
-			if (!_datatype_contains_self_type_parameter(expected_element) || !_datatype_contains_self_type_parameter(actual_element)) {
+	if (p_expected_type.kind == BSParser::DataType::UNION) {
+		for (const BSParser::DataType &member : p_expected_type.union_members) {
+			if (!_datatype_contains_self_type_parameter(member)) {
 				continue;
 			}
-			const String label = element_label(expected, i);
-			if (_datatype_strict_identity_equal(expected_element, actual_element)) {
-				return label;
-			}
-			const String inner = self(self, expected_element, actual_element);
-			if (!inner.is_empty()) {
-				return inner + String(" of ") + label;
+			BSParser::DataType alternative = member;
+			alternative.is_nullable = p_expected_type.is_nullable;
+			const String clause = self_parameter_receiver_identity_clause(alternative, p_argument_type, p_call);
+			if (!clause.is_empty()) {
+				return clause;
 			}
 		}
 		return String();
-	};
-	const String slot = _datatype_strict_identity_equal(p_expected_type, p_argument_type)
-			? String()
-			: find_slot(find_slot, p_expected_type, p_argument_type);
+	}
+	BSParser::DataType matched_argument;
+	String slot;
+	if (!_self_parameter_contract_matched_argument(p_expected_type, p_argument_type, nullptr, matched_argument) ||
+			!_datatype_contains_caller_relative_self(p_argument_type) ||
+			!_self_parameter_contract_match_needs_receiver_identity(p_expected_type, matched_argument)) {
+		if (!_self_parameter_receiver_identity_slot(p_expected_type, p_argument_type, slot)) {
+			return String();
+		}
+	}
+	if (p_call == nullptr || _call_receiver_is_current_self(p_call)) {
+		return String();
+	}
 	return vformat(R"*( The parameter's "Self"%s is resolved against the receiver expression; the argument is relative to the calling frame's receiver.)*",
 			slot.is_empty() ? String() : " at " + slot);
 }
