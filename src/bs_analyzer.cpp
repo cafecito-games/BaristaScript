@@ -101,6 +101,7 @@ static bool _construct_builtin_variant(Variant::Type p_target_type, const Varian
 	gdextension_interface::variant_construct((GDExtensionVariantType)p_target_type,
 			(GDExtensionUninitializedVariantPtr)storage, arguments, 1, &error);
 	if (error.error != GDEXTENSION_CALL_OK) {
+		gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
 		return false;
 	}
 	r_converted = Variant((GDExtensionConstVariantPtr)storage);
