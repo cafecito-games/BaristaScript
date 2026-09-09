@@ -90,6 +90,12 @@ func _init() -> void:
 	_test_steps_1_5_repair2_self_signatures(failures)
 	_test_local_enum_value_cycles(failures)
 	_test_concrete_cast_ternary_and_type_test_reduction(failures)
+	_test_pure_literal_constant_materialization(failures)
+	_test_pure_constant_review_regressions(failures)
+	_test_constant_dictionary_key_conversion(failures)
+	_test_nested_constant_evidence_and_contextual_casts(failures)
+	_test_folded_tuple_child_and_failed_contextual_materialization(failures)
+	_test_constant_producer_child_evidence(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -4307,9 +4313,15 @@ func _test_local_tuple_and_literal_consumers(failures: PackedStringArray) -> voi
 	# Raw and typed Array alternatives both claim an array literal. Reordering the union must
 	# leave the same verdict, while two Self-bearing claimants use their elements to choose one.
 	var union_source := _src_class("TupleUnionClaimants extends Node\nfunc raw_first(v: Array | Array[Self]) -> void:\n\tpass\nfunc typed_first(v: Array[Self] | Array) -> void:\n\tpass\nfunc self_choice(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_first(v: Array[Self] | Array[(Self, int)]) -> void:\n\tpass\nfunc ambiguous_reordered(v: Array[(Self, int)] | Array[Self]) -> void:\n\tpass\nfunc test() -> void:\n\traw_first([self])\n\ttyped_first([self])\n\tself_choice([self])\n\tambiguous_first([])\n\tambiguous_reordered([])\n")
-	var union_report: Dictionary = probe.analyze_source(union_source, "res://tests/tuple_union_claimants.barista")
-	_expect(failures, union_report.get("valid", false) == true,
-		"raw/typed and ambiguous claimant order is neutral; only the unique all-Self fit is selected: %s" % union_report.get("errors"))
+	var union_positive := union_source.replace("\tambiguous_first([])\n", "").replace("\tambiguous_reordered([])\n", "")
+	var union_positive_report: Dictionary = probe.validate_source(union_positive, "res://tests/tuple_union_positive.barista", false)
+	_expect(failures, union_positive_report.get("valid", false) and union_positive_report.get("errors", []).is_empty(),
+		"raw/typed alternatives and unique Self claimant pass independently: %s" % [union_positive_report])
+	var union_errors: Array = probe.validate_source(union_source, "res://tests/tuple_union_claimants.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(union_errors, [
+		['Invalid argument for "ambiguous_first()" function: argument 1 should be "Array[(Self, int)] | Array[Self]" but is "Array".', 16, 21],
+		['Invalid argument for "ambiguous_reordered()" function: argument 1 should be "Array[(Self, int)] | Array[Self]" but is "Array".', 17, 25],
+	]), "raw alternatives and unique Self fits pass; ambiguous hard Array literals reject in either order: %s" % [union_errors])
 
 	# Reparse the same positive and negative source through every public surface. Default
 	# analysis remains read-only with respect to the declaration index.
@@ -4564,6 +4576,7 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 	var nominal_site_errors: Array = probe.validate_source(nominal_sites, "res://tests/repair_nominal_sites.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(nominal_site_errors, [
 		['Cannot assign a value of type Point to variable "declared" with specified type Point. The value is declared by class "Left"; the specified type is declared by class "Right".', 14, 33],
+		['Assigned value for constant "local" isn\'t a constant expression.', 15, 32],
 		['Cannot assign a value of type "Point" to a constant of type "Point". The value is declared by class "Left"; the specified type is declared by class "Right".', 15, 32],
 		['Value of type "Point" cannot be assigned to a variable of type "Point". The value is declared by class "Left"; the variable\'s type is declared by class "Right".', 17, 16],
 		['Invalid argument for "fixed()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 18, 11],
@@ -4579,6 +4592,7 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 		['Cannot assign a value of type "int" to a variable of type "String".', 2, 22],
 		['Cannot assign a value of type "int" to a constant of type "String".', 3, 30],
 		['Cannot assign a value of type "int" to a variable of type "String".', 5, 25],
+		['Assigned value for constant "local_const" isn\'t a constant expression.', 6, 33],
 		['Cannot assign a value of type "int" to a constant of type "String".', 6, 33],
 		['Cannot return value of type "int" because the function return type is "String".', 7, 5],
 	]), "ordinary declaration diagnostics use initializer origins while return stays on ReturnNode: %s" % [origin_errors])
@@ -4914,11 +4928,11 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 		"class-variable weak ternary inference uses the shared datatype rule: %s" % [class_weak_errors])
 	var class_constant_weak_source := "var right_weak = 2\nconst result := 1 if true else right_weak\n"
 	var class_constant_weak_errors: Array = probe.validate_source(class_constant_weak_source, "res://tests/ternary_class_constant_weak.barista", false).get("errors", [])
-	_expect(failures, _errors_are_exact(class_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 2, 17]]),
+	_expect(failures, _errors_are_exact(class_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 2, 17], ["Cannot infer the type of \"result\" constant because the value doesn't have a set type.", 2, 17]]),
 		"class-constant weak ternary rejects its nonconstant initializer: %s" % [class_constant_weak_errors])
 	var local_constant_weak_source := "func test():\n\tvar right_weak = 2\n\tconst result := 1 if true else right_weak\n"
 	var local_constant_weak_errors: Array = probe.validate_source(local_constant_weak_source, "res://tests/ternary_local_constant_weak.barista", false).get("errors", [])
-	_expect(failures, _errors_are_exact(local_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 3, 21]]),
+	_expect(failures, _errors_are_exact(local_constant_weak_errors, [["Assigned value for constant \"result\" isn't a constant expression.", 3, 21], ["Cannot infer the type of \"result\" constant because the value doesn't have a set type.", 3, 21]]),
 		"local-constant weak ternary rejects its nonconstant initializer: %s" % [local_constant_weak_errors])
 
 	var constant_is_source := "const base := [0]\n\nfunc test():\n\tvar sub := 1\n\tif sub is String: pass\n"
@@ -4927,10 +4941,10 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 		"constant non-enum type test rejects at the operand: %s" % [constant_is_errors])
 	if probe.has_method("inspect_expression_source"):
 		var subscript_producer: Dictionary = probe.call("inspect_expression_source", "const base := [0]\nvar probe_expression = base[0]\n", "res://tests/constant_subscript_producer_probe.barista")
-		_expect(failures, _inspection_is_valid(subscript_producer) and subscript_producer.get("datatype") == "Variant" and
-			subscript_producer.get("type_source") == 0 and subscript_producer.get("is_hard_type") == false and
-			subscript_producer.get("is_constant") == false,
-			"constant-subscript producer remains soft Variant/unreduced for step 138-07: %s" % [subscript_producer])
+		_expect(failures, _inspection_is_valid(subscript_producer) and subscript_producer.get("datatype") == "int" and
+			subscript_producer.get("is_hard_type") == true and
+			subscript_producer.get("is_constant") == true,
+			"constant-subscript producer publishes the selected int for inference: %s" % [subscript_producer])
 	var hard_is_source := "class A:\n\tfunc _init():\n\t\tpass\n\nclass B extends A: pass\nclass C extends A: pass\n\nfunc test():\n\tvar x := B.new()\n\tprint(x is C)\n"
 	var hard_is_errors: Array = probe.validate_source(hard_is_source, "res://tests/constructor_call_type.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(hard_is_errors, [['Expression is of type "B" so it can\'t be of type "C".', 10, 11]]),
@@ -4977,3 +4991,469 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 		"incompatible ternary warning obeys ERROR")
 	ProjectSettings.set_setting("debug/barista_script/warnings/incompatible_ternary", 1)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_pure_literal_constant_materialization(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for control: Array in [["(1, 2)", [1, 2]], ["(1, 2).1", 2], ['{"outer": [10, 20]}["outer"][1]', 20], ['{"value": null}["value"]', null]]:
+		var folded: Dictionary = probe.fold_expression(control[0])
+		_expect(failures, folded.get("ok", false) and folded.get("errors", []).is_empty() and folded.get("value") == control[1],
+			"pure literal/subscript fold %s: %s" % [control[0], folded])
+	var nested: Dictionary = probe.fold_expression('{"outer": [1, {"inner": (2, 3)}]}')
+	_expect(failures, nested.get("ok", false) and nested.get("errors", []).is_empty(), "nested literal folds: %s" % [nested])
+	if nested.get("ok", false):
+		var outer: Dictionary = nested.value
+		var array: Array = outer.outer
+		var inner: Dictionary = array[1]
+		var tuple: Array = inner.inner
+		_expect(failures, outer.is_read_only() and array.is_read_only() and inner.is_read_only() and tuple.is_read_only(),
+			"every nested Dictionary/Array/tuple carrier is read-only")
+	var tuple_inspection: Dictionary = probe.inspect_expression_source("var probe_expression = (1, [2, 3])\n", "res://tests/pure_tuple_identity.barista")
+	_expect(failures, _inspection_is_valid(tuple_inspection) and tuple_inspection.get("datatype") == "(int, Array)" and tuple_inspection.get("is_constant"),
+		"tuple retains static identity independently of its Array carrier: %s" % [tuple_inspection])
+	var original_source := "const base := [0]\n\nfunc test():\n\tvar sub := base[0]\n\tif sub is String: pass\n"
+	var original_errors: Array = probe.validate_source(original_source, "res://tests/original_constant_subscript_type.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(original_errors, [['Expression is of type "int" so it can\'t be of type "String".', 5, 8]]),
+		"original pinned constant_subscript_type retains the subscript producer and full diagnostic: %s" % [original_errors])
+	for control: Array in [
+		["func test(value: int):\n\tconst BAD = [1, {\"value\": value}]\n", 'Assigned value for constant "BAD" isn\'t a constant expression.', 2, 17],
+		["func produce() -> int:\n\treturn 1\nfunc test():\n\tconst BAD = [produce()]\n", 'Assigned value for constant "BAD" isn\'t a constant expression.', 4, 17],
+		["func test():\n\tvar weak = 2\n\tvar result := weak\n", 'Cannot infer the type of "result" variable because the value doesn\'t have a set type.', 3, 19],
+		["func test():\n\tvar result := null\n", 'Cannot infer the type of "result" variable because the value is "null".', 2, 19],
+	]:
+		var errors: Array = probe.validate_source(control[0], "res://tests/pure_constant_refusal.barista", false).get("errors", [])
+		_expect(failures, _errors_are_exact(errors, [[control[1], control[2], control[3]]]), "pure constant/inferred refusal: %s" % [errors])
+	var invalid: Dictionary = probe.fold_expression("[1, 2][4]")
+	_expect(failures, not invalid.get("ok", true) and invalid.get("value") == null, "invalid index never fabricates a constant value: %s" % [invalid])
+
+	# Foundry c9d5e35's six static step-7 oracles retain their complete source layouts.
+	var pinned_cases: Array = [
+		["dictionary_duplicate_key_python", "func test():\n\tvar python_dict = {\n\t\t\"a\": 1,\n\t\t\"b\": 2,\n\t\t\"a\": 3, # Duplicate isn't allowed.\n\t}\n", "Key \"a\" was already used in this dictionary (at line 3).", 5, 9],
+		["dictionary_duplicate_key_lua", "func test():\n\tvar lua_dict = {\n\t\ta = 1,\n\t\tb = 2,\n\t\ta = 3, # Duplicate isn't allowed.\n\t}\n", "Key \"a\" was already used in this dictionary (at line 3).", 5, 9],
+		["dictionary_string_stringname_equivalent", "# https://github.com/godotengine/godot/issues/62957\n\nfunc test():\n\tvar dict = {\n\t\t&\"key\": \"StringName\",\n\t\t\"key\": \"String\"\n\t}\n\n\tprint(\"Invalid dictionary: %s\" % dict)\n", "Key \"key\" was already used in this dictionary (at line 5).", 6, 9],
+		["invalid_array_index", "func test():\n\t# Error here. Array indices must be integers.\n\tprint([0, 1][true])\n", "Invalid index type \"bool\" for a base of type \"Array\".", 3, 18],
+		["constant_subscript_type", "const base := [0]\n\nfunc test():\n\tvar sub := base[0]\n\tif sub is String: pass\n", "Expression is of type \"int\" so it can't be of type \"String\".", 5, 8],
+		["invalid_constant", "func test():\n\tvar i = 12\n\t# Constants must be made of a constant, deterministic expression.\n\t# A constant that depends on a variable's value is not a constant expression.\n\tconst TEST = 13 + i\n", "Assigned value for constant \"TEST\" isn't a constant expression.", 5, 18],
+	]
+	for control: Array in pinned_cases:
+		var report: Dictionary = probe.validate_source(control[1], "res://tests/%s.barista" % control[0], false)
+		_expect(failures, not report.get("valid", true) and _errors_are_exact(report.get("errors", []), [[control[2], control[3], control[4]]]),
+			"pinned static source and complete diagnostic %s: %s" % [control[0], report])
+	var positive_source := "enum Message:\n\tQuit\n\tMove(value: int)\nconst CLASS_VALUES: Array[Array[Message]] = [[.Quit]]\nconst CLASS_PICK := {\"values\": [1, 2]}[\"values\"][1]\nconst NULL_VALUE := [null][0]\nfunc test(value: int):\n\tconst LOCAL_VALUES: Dictionary[String, Array[Message]] = {\"values\": [.Quit]}\n\tconst LOCAL_PICK := ([10, 20], 3).0[1]\n\tvar inferred := [[value]]\n\tvar nested := ([1, 2], 3).0[1]\n\tprint(LOCAL_VALUES, LOCAL_PICK, inferred, nested)\n"
+	var positive_path := "res://tests/pure_constant_consumers.barista"
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before: Array = index.get_records().duplicate(true)
+	var generation_before: int = index.claim_refresh("res://tests/pure_generation_control.barista")
+	for iteration in range(2):
+		var analyzed: Dictionary = probe.analyze_source(positive_source, positive_path)
+		var validated: Dictionary = probe.validate_source(positive_source, positive_path, false)
+		_expect(failures, analyzed.get("valid", false) and analyzed.get("errors", []).is_empty() and validated.get("valid", false) and validated.get("errors", []).is_empty() and probe.is_semantically_valid(positive_source, positive_path),
+			"class/local contextual constant fallback and nested inference agree on repeat %d: %s / %s" % [iteration, analyzed, validated])
+		var invalid_analyzed: Dictionary = probe.analyze_source(original_source, "res://tests/original_constant_subscript_type.barista")
+		var invalid_validated: Dictionary = probe.validate_source(original_source, "res://tests/original_constant_subscript_type.barista", false)
+		_expect(failures, not invalid_analyzed.get("valid", true) and invalid_analyzed.get("errors", []) == PackedStringArray([original_errors[0].message]) and
+			invalid_validated.get("errors", []) == original_errors and not probe.is_semantically_valid(original_source, "res://tests/original_constant_subscript_type.barista"),
+			"invalid constant type test has identical complete diagnostics on repeat %d" % iteration)
+	_expect(failures, before == index.get_records() and index.claim_refresh("res://tests/pure_generation_control.barista") == generation_before + 1,
+		"pure constant analysis keeps declaration-index records and revision tokens unchanged by default")
+	for source: String in ["var value: int = 1\nvar probe_expression = [1, {\"value\": value}]\n", "func produce() -> int:\n\treturn 1\nvar probe_expression = [produce()]\n"]:
+		var inspected: Dictionary = probe.inspect_expression_source(source, "res://tests/pure_nonconstant_child.barista")
+		_expect(failures, _inspection_is_valid(inspected) and not inspected.get("is_constant", true) and inspected.get("value") == null,
+			"nonconstant or user-call child leaves no partial trusted value: %s" % [inspected])
+	var nested_inference := "func test(value: int):\n\tvar result := [value][0]\n"
+	var nested_errors: Array = probe.validate_source(nested_inference, "res://tests/pure_nested_inference.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(nested_errors, [['Cannot infer the type of "result" variable because the value doesn\'t have a set type.', 2, 19]]),
+		"general inference gate reaches a nested nonconstant subscript: %s" % [nested_errors])
+	var typed: Dictionary = probe.inspect_expression_source("const VALUE: (float, Array[float]) = (1, [2])\nvar probe_expression = VALUE\n", "res://tests/pure_converted_carrier.barista")
+	_expect(failures, _inspection_is_valid(typed) and typed.get("datatype") == "(float, Array[float])" and typed.get("is_constant", false),
+		"contextual conversion publishes tuple type and constant together: %s" % [typed])
+	if _inspection_is_valid(typed) and typed.get("is_constant", false):
+		var carrier: Array = typed.value
+		_expect(failures, carrier.is_read_only() and typeof(carrier[0]) == TYPE_FLOAT and carrier[1].is_read_only() and typeof(carrier[1][0]) == TYPE_FLOAT,
+			"contextual scalar conversion refreshes all read-only materialized carriers")
+
+	var invalid_index_errors: Array = probe.validate_source("func test():\n\tconst BAD = [1, 2][4]\n", "res://tests/pure_invalid_constant_index.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(invalid_index_errors, [
+		['Assigned value for constant "BAD" isn\'t a constant expression.', 2, 17],
+		['Cannot get index "4" from "[1, 2]".', 2, 24],
+	]), "invalid constant index retains both errors in public source-position order: %s" % [invalid_index_errors])
+	var previous_inference_warning: Variant = ProjectSettings.get_setting("debug/barista_script/warnings/inference_on_variant")
+	ProjectSettings.set_setting("debug/barista_script/warnings/inference_on_variant", 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var variant_source := "func test(value: Variant):\n\tvar inferred := value\n\tprint(inferred)\n"
+	for iteration in range(2):
+		var warning_report: Dictionary = probe.validate_source(variant_source, "res://tests/pure_variant_inference.barista", true)
+		_expect(failures, warning_report.get("valid", false) and warning_report.get("errors", []).is_empty() and _warnings_are_exact(warning_report.get("warnings", []), [
+			["INFERENCE_ON_VARIANT", "The variable type is being inferred from a Variant value, so it will be typed as Variant.", 2, 5, 2, 26],
+		]), "hard Variant inference emits exactly one complete warning on repeat %d: %s" % [iteration, warning_report])
+	var ignored_variant_source := variant_source.replace("\tvar inferred", "\t@warning_ignore(\"inference_on_variant\")\n\tvar inferred")
+	for iteration in range(2):
+		var ignored_report: Dictionary = probe.validate_source(ignored_variant_source, "res://tests/pure_ignored_variant_inference.barista", true)
+		_expect(failures, ignored_report.get("valid", false) and ignored_report.get("errors", []).is_empty() and ignored_report.get("warnings", []).is_empty(),
+			"local inference warning honors its declaration annotation on repeat %d: %s" % [iteration, ignored_report])
+	for control: Array in [
+		["func test(value: Variant):\n\t@warning_ignore(\"inference_on_variant\")\n\tvar ignored := value\n\tvar inferred := value\n\tprint(ignored, inferred)\n", "variable", 4, 5, 4, 26],
+		["const VALUE: Variant = 1\n@warning_ignore(\"inference_on_variant\")\nvar ignored := VALUE\nvar inferred := VALUE\n", "variable", 4, 1, 4, 22],
+		["const VALUE: Variant = 1\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tconst ignored := VALUE\n\tconst inferred := VALUE\n\tprint(ignored, inferred)\n", "constant", 5, 5, 5, 28],
+		["const VALUE: Variant = 1\n@warning_ignore(\"inference_on_variant\")\nconst ignored := VALUE\nconst inferred := VALUE\n", "constant", 4, 1, 4, 24],
+	]:
+		var adjacent_report: Dictionary = probe.validate_source(control[0], "res://tests/pure_adjacent_variant_inference.barista", true)
+		_expect(failures, adjacent_report.get("valid", false) and adjacent_report.get("errors", []).is_empty() and _warnings_are_exact(adjacent_report.get("warnings", []), [
+			["INFERENCE_ON_VARIANT", "The %s type is being inferred from a Variant value, so it will be typed as Variant." % control[1], control[2], control[3], control[4], control[5]],
+		]), "class/local variable/constant suppression does not spill into the next declaration: %s" % [adjacent_report])
+	ProjectSettings.set_setting("debug/barista_script/warnings/inference_on_variant", previous_inference_warning)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+	for expression: String in ["[1] + [2]", "[[1] + [2]]"]:
+		var concatenated: Dictionary = probe.fold_expression(expression)
+		_expect(failures, concatenated.get("ok", false) and concatenated.get("errors", []).is_empty(), "existing pure concatenation still folds: %s" % [concatenated])
+		if concatenated.get("ok", false):
+			var values: Array = concatenated.value
+			_expect(failures, values.is_read_only() and (expression != "[[1] + [2]]" or values[0].is_read_only()),
+				"already-folded Array child cannot bypass nested read-only materialization: %s" % expression)
+
+
+func _test_pure_constant_review_regressions(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for source: String in [
+		"var probe_expression = ([1, 2] as PackedInt32Array) as Array\n",
+		"var probe_expression = [([1, 2] as PackedInt32Array) as Array]\n",
+		"const VALUE = ([1, 2] as PackedInt32Array) as Array\nvar probe_expression = [VALUE]\n",
+		"const PACKED: Variant = [1, 2] as PackedInt32Array\nconst VALUE: Array = PACKED\nvar probe_expression = [VALUE]\n",
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(source, "res://tests/review_converted_readonly.barista")
+		var report: Dictionary = probe.validate_source(source, "res://tests/review_converted_readonly.barista", true)
+		_expect(failures, report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "converted constant full validation: %s" % [report])
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false), "converted constant inspection: %s" % [observed])
+		if _inspection_is_valid(observed) and observed.get("is_constant", false):
+			var values: Array = observed.value
+			_expect(failures, values.is_read_only() and (typeof(values[0]) != TYPE_ARRAY or values[0].is_read_only()), "converted constant and nested carriers are read-only: %s" % source)
+	for control: Array in [
+		["const BASE: Array[Variant] = [0]\nvar probe_expression = BASE[0]\n", "int", 0],
+		["const BASE: Array[int | String] = [0]\nvar probe_expression = BASE[0]\n", "int", 0],
+		['const BASE: Dictionary[String, int] = {"x": 1}\nvar probe_expression = BASE[&"x"]\n', "int", 1],
+		["const BASE: Array[Array[int]] = [[0]]\nvar probe_expression = BASE[0]\n", "Array[int]", [0]],
+		["const BASE: Array[(int, String)] = [(0, \"x\")]\nvar probe_expression = BASE[0]\n", "(int, String)", [0, "x"]],
+		['const BASE: Dictionary[String, Array[int]] = {"x": [0]}\nvar probe_expression = BASE["x"]\n', "Array[int]", [0]],
+		["const BASE: Variant = 0\nvar probe_expression = BASE\n", "Variant", 0],
+		["const BASE = [null]\nvar probe_expression = BASE[0]\n", "null", null],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_constant_selection.barista")
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2], "constant selected value retains the correct datatype: %s" % [observed])
+	for control: Array in [
+		["const BASE: Array[Variant] = [0]\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 5],
+		["const BASE: Array[int | String] = [0]\nfunc test():\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 4],
+		['const BASE: Dictionary[String, Variant] = {"x": 0}\nfunc test():\n\t@warning_ignore("inference_on_variant")\n\tvar sub := BASE["x"]\n\tif sub is String: pass\n', 5],
+	]:
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_selected_consumer.barista", true)
+		_expect(failures, not report.get("valid", true) and _errors_are_exact(report.get("errors", []), [['Expression is of type "int" so it can\'t be of type "String".', control[1], 8]]) and report.get("warnings", []).is_empty(), "selected concrete type reaches its consumer: %s" % [report])
+	for control: Array in [
+		["const BASE = [1]\nvar probe_expression = BASE[true]\n", [['Cannot get index "true" from "[1]".', 2, 29]]],
+		["var probe_expression = [1][true]\n", [['Invalid index type "bool" for a base of type "Array".', 1, 28]]],
+		["const VALUE = (1, 2)[-1]\nvar probe_expression = VALUE\n", [['Assigned value for constant "VALUE" isn\'t a constant expression.', 1, 15], ['Tuple index -1 is out of range for "(int, int)", which has 2 element(s).', 1, 22]]],
+		["const VALUE = (1, 2)[0.0]\nvar probe_expression = VALUE\n", [['Assigned value for constant "VALUE" isn\'t a constant expression.', 1, 15], ['Only an integer can index tuple "(int, int)", but received "float".', 1, 22]]],
+		["var probe_expression = [(1, 2)[-1]]\n", [['Tuple index -1 is out of range for "(int, int)", which has 2 element(s).', 1, 32]]],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_rejected_subscript.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_rejected_subscript.barista", false)
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null, "rejected subscript cannot materialize through a parent or identifier: %s" % [observed])
+		_expect(failures, not report.get("valid", true) and _errors_are_exact(report.get("errors", []), control[1]), "rejected subscript complete diagnostic distinction: %s" % [report])
+	for control: Array in [
+		["const VALUE: Array[PackedInt32Array] = [[1, 2]]\nvar probe_expression = VALUE\n", "Array[PackedInt32Array]", 0],
+		["const VALUE: (PackedInt32Array, int) = ([1, 2], 3)\nvar probe_expression = VALUE\n", "(PackedInt32Array, int)", 0],
+		['const VALUE: Dictionary[String, PackedInt32Array] = {"x": [1, 2]}\nvar probe_expression = VALUE\n', "Dictionary[String, PackedInt32Array]", "x"],
+		["const VALUE: (PackedInt32Array, int) = ([1, 2], 3)\nvar probe_expression = VALUE.0\n", "PackedInt32Array", null],
+		["var probe_expression = [1, 2] as PackedInt32Array\n", "PackedInt32Array", null],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_packed_carrier.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_packed_carrier.barista", true)
+		_expect(failures, report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "packed carrier full validation: %s" % [report])
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1], "converted carrier keeps static identity: %s" % [observed])
+		if _inspection_is_valid(observed) and observed.get("is_constant", false):
+			var selected: Variant = observed.value if control[2] == null else observed.value[control[2]]
+			_expect(failures, typeof(selected) == TYPE_PACKED_INT32_ARRAY and selected == PackedInt32Array([1, 2]), "converted packed value is not rebuilt as original Array syntax: %s" % [observed])
+			if control[2] != null:
+				_expect(failures, observed.value.is_read_only(), "converted parent's carrier remains read-only")
+	var runtime_source := "func source_value() -> Array:\n\treturn [1, 2]\nvar probe_expression = [source_value()]\n"
+	var runtime: Dictionary = probe.inspect_expression_source(runtime_source, "res://tests/review_runtime_child.barista")
+	_expect(failures, _inspection_is_valid(runtime) and not runtime.get("is_constant", true) and runtime.get("value") == null, "ordinary runtime Array child is not materialized or frozen: %s" % [runtime])
+	var local_source := "func test():\n\tconst PACKED: Variant = [1, 2] as PackedInt32Array\n\tconst VALUE: Array = PACKED\n\tconst NESTED: Array[PackedInt32Array] = [[1, 2]]\n\tprint(VALUE, NESTED)\n"
+	var local_report: Dictionary = probe.validate_source(local_source, "res://tests/review_local_conversion.barista", true)
+	_expect(failures, local_report.get("valid", false) and local_report.get("errors", []).is_empty() and local_report.get("warnings", []).is_empty(), "local constant conversion consumers remain valid: %s" % [local_report])
+
+
+func _test_constant_dictionary_key_conversion(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for source: String in [
+		"const BASE: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = BASE[1]\n",
+		"const BASE: Dictionary[int, int] = {1: 2}\nvar probe_expression = BASE[1.5]\n",
+		"const BASE: Dictionary[int, int] = {1: 2}\nvar probe_expression = BASE[true]\n",
+		"const BASE: Dictionary[bool, int] = {true: 2}\nvar probe_expression = BASE[1]\n",
+		'const BASE: Dictionary[String, int] = {"x": 2}\nvar probe_expression = BASE[&"x"]\n',
+		'const BASE: Dictionary[StringName, int] = {&"x": 2}\nvar probe_expression = BASE["x"]\n',
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(source, "res://tests/review_builtin_dictionary_key.barista")
+		var report: Dictionary = probe.validate_source(source, "res://tests/review_builtin_dictionary_key.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == "int" and observed.get("value") == 2 and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "declared builtin Dictionary key converts before pure lookup: %s / %s" % [observed, report])
+	for control: Array in [
+		["const BASE = {1.0: 2}\nvar probe_expression = BASE[1]\n", 'Cannot get index "1" from "{ 1.0: 2 }".'],
+		['const BASE: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = BASE["missing"]\n', 'Cannot get index "missing" from "{ 1.0: 2 }".'],
+		["const BASE: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = BASE[3]\n", 'Cannot get index "3" from "{ 1.0: 2 }".'],
+		["const BASE: Dictionary[int, int] = {1: 2}\nvar probe_expression = BASE[1e309]\n", 'Cannot get index "inf" from "{ 1: 2 }".'],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_rejected_dictionary_key.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_rejected_dictionary_key.barista", false)
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null and _errors_are_exact(report.get("errors", []), [[control[1], 2, 29]]), "raw/nonconvertible/missing/checked Dictionary key retains original index diagnostic and no value: %s / %s" % [observed, report])
+
+
+func _test_nested_constant_evidence_and_contextual_casts(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for control: Array in [
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [KEYS]\nvar probe_expression = BOX[0]\n", "Dictionary[float, int]", {1.0: 2}],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Variant] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		['const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = {"keys": KEYS}\nvar probe_expression = BOX["keys"][1]\n', "int", 2],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Dictionary[float, int]] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = KEYS[1]\n", "int", 2],
+		["const VALUES: Array[int] = [1, 2]\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0]\n", "Array[int]", [1, 2]],
+		['const VALUES: Array[float] = [1, 2]\nconst BOX = {"values": VALUES}\nvar probe_expression = BOX["values"]\n', "Array[float]", [1.0, 2.0]],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Dictionary[Variant, int]] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const BOX = [[1, 2]]\nvar probe_expression = BOX[0]\n", "Array", [1, 2]],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst VALUE: Variant = KEYS\nvar probe_expression = VALUE\n", "Variant", {1.0: 2}],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/nested_constant_evidence.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/nested_constant_evidence.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2] and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty() and probe.is_semantically_valid(control[0], "res://tests/nested_constant_evidence.barista"), "selected constant keeps established builtin child evidence independently of outer slot: %s / %s" % [observed, report])
+	for control: Array in [
+		["const VALUES: Array[int?] = [null, 1]\nconst BOX = [VALUES]\nvar probe_expression = BOX[0]\n", "Array[int?]", [null, 1]],
+		["const VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0][0]\n", "null", null],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [VALUES]\nvar probe_expression = BOX[0]\n", "Dictionary[float?, int?]", {null: null, 1.0: 2}],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		['const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = {"values": VALUES}\nvar probe_expression = BOX["values"][null]\n', "null", null],
+		["const VALUES: Dictionary[float?, int] = {null: 3, 1.0: 2}\nconst BOX = [VALUES]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int] = {null: 3, 1.0: 2}\nvar probe_expression = VALUES[null]\n", "int", 3],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst VALUE: Variant = KEYS\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nconst BOX = [VALUE] + []\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE[1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE[null]\n", "null", null],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE\n", "Variant", {null: null, 1.0: 2}],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = VALUES\nconst VALUE: Variant = RAW\nconst BOX = [VALUE, VALUES]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = VALUES\nconst BOX = [RAW] if true else [VALUES]\nvar probe_expression = BOX[0]\n", "Dictionary[float?, int?]", {null: null, 1.0: 2}],
+		["const VALUE = [1, 2] as Array[float]\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "float", 2.0],
+		["const VALUE = {1: 2} as Dictionary[float, int]\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/nullable_constant_evidence.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/nullable_constant_evidence.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2] and typeof(observed.get("value")) == typeof(control[2]) and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "nullable and converted child evidence survives selection: %s / %s" % [observed, report])
+		if observed.get("value") is Array or observed.get("value") is Dictionary:
+			_expect(failures, observed.value.is_read_only(), "selected nullable carrier remains read-only")
+	for control: Array in [
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst RAW = {1.0: 2}\nconst BOX = [KEYS, RAW]\nvar probe_expression = BOX[1][1]\n", 4, 31, 'Cannot get index "1" from "{ 1.0: 2 }".'],
+		["const KEYS: Dictionary[int, int] = {1: 2}\nconst BOX: Variant = KEYS\nvar probe_expression = BOX[1e309]\n", 3, 28, 'Cannot get index "inf" from "{ 1: 2 }".'],
+		["const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [KEYS, RAW]\nvar probe_expression = BOX[1][1]\n", 4, 31, 'Cannot get index "1" from "{ <null>: <null>, 1.0: 2 }".'],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/raw_constant_evidence.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/raw_constant_evidence.barista", true)
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null and not report.get("valid", true) and report.get("warnings", []).is_empty() and report.get("errors", []) == [{"path": "res://tests/raw_constant_evidence.barista", "line": control[1], "column": control[2], "message": control[3]}], "raw siblings and checked keys keep exact refusal: %s / %s" % [observed, report])
+	for control: Array in [
+		["var probe_expression = [1, 2] as Array[float]\n", "Array[float]", TYPE_FLOAT, 0],
+		['var probe_expression = {"x": 1} as Dictionary[String, float]\n', "Dictionary[String, float]", TYPE_FLOAT, "x"],
+		["var probe_expression = [[1, 2]] as Array[PackedInt32Array]\n", "Array[PackedInt32Array]", TYPE_PACKED_INT32_ARRAY, 0],
+		["const VALUE = [1, 2] as Array[float]\nvar probe_expression = VALUE\n", "Array[float]", TYPE_FLOAT, 0],
+		["const VALUE: Array[float] = [1, 2]\nvar probe_expression = VALUE\n", "Array[float]", TYPE_FLOAT, 0],
+		['const VALUE: Dictionary[String, float] = {"x": 1}\nvar probe_expression = VALUE\n', "Dictionary[String, float]", TYPE_FLOAT, "x"],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/contextual_cast_value.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/contextual_cast_value.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "contextual cast/annotation inspection is valid: %s / %s" % [observed, report])
+		if _inspection_is_valid(observed) and observed.get("is_constant", false):
+			var value: Variant = observed.value
+			_expect(failures, value.is_read_only() and typeof(value[control[3]]) == control[2], "contextual cast publishes converted child carrier after parent refresh: %s" % [observed])
+			if control[2] == TYPE_FLOAT:
+				_expect(failures, value[control[3]] == 1.0 and (not value is Array or (typeof(value[1]) == TYPE_FLOAT and value[1] == 2.0)), "contextual float cast has exact converted values")
+			else:
+				_expect(failures, value[control[3]] == PackedInt32Array([1, 2]), "contextual packed cast keeps exact converted values")
+
+	var runtime_source := "var value: int = 1\nvar probe_expression = [value] as Array[float]\n"
+	var runtime_observed: Dictionary = probe.inspect_expression_source(runtime_source, "res://tests/runtime_contextual_cast.barista")
+	var runtime_report: Dictionary = probe.validate_source(runtime_source, "res://tests/runtime_contextual_cast.barista", true)
+	_expect(failures, _inspection_is_valid(runtime_observed) and not runtime_observed.get("is_constant", true) and runtime_observed.get("value") == null and runtime_observed.get("datatype") == "Array[float]" and runtime_report.get("valid", false) and runtime_report.get("errors", []).is_empty() and runtime_report.get("warnings", []).is_empty(), "runtime contextual cast retains nonconstant state: %s / %s" % [runtime_observed, runtime_report])
+
+
+func _test_folded_tuple_child_and_failed_contextual_materialization(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for control: Array in [
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "int", 2],
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst PAIR = Pair(KEYS, 0)\nvar probe_expression = PAIR.0[1]\n", "int", 2],
+		["const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "int", 2],
+		["tuple Pair(data: Dictionary[float, int], count: int)\nconst KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "int", 2],
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0]\n", "Dictionary[float?, int?]", {null: null, 1.0: 2}],
+		["tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][null]\n", "null", null],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/folded_tuple_child.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/folded_tuple_child.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_hard_type", false) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2] and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty() and probe.is_semantically_valid(control[0], "res://tests/folded_tuple_child.barista"), "folded named tuple retains established nullable child evidence: %s / %s" % [observed, report])
+	for control: Array in [
+		["var probe_expression = [1, \"x\"] as Array[int]\n", [{"column": 28, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 28, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+		["var probe_expression = {\"x\": \"bad\"} as Dictionary[String, int]\n", [{"column": 30, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 30, "line": 1, "message": "Cannot have a value of type \"String\" in a dictionary of type \"Dictionary[String, int]\"."}]],
+		["const VALUE = [1, \"x\"] as Array[int]\nvar probe_expression = VALUE\n", [{"line": 1, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 19, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 19, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+		["var probe_expression = [[1, \"x\"] as Array[int]]\n", [{"column": 29, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 29, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+		["const VALUE: Array[int] = [1, \"x\"]\nvar probe_expression = VALUE\n", [{"line": 1, "column": 27, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 31, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 31, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"column": 31, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 31, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/failed_contextual_materialization.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/failed_contextual_materialization.barista", true)
+		var expected_errors: Array = control[1].duplicate(true)
+		for error: Dictionary in expected_errors:
+			error.path = "res://tests/failed_contextual_materialization.barista"
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null and not report.get("valid", true) and report.get("errors", []) == expected_errors and report.get("warnings", []).is_empty() and not probe.is_semantically_valid(control[0], "res://tests/failed_contextual_materialization.barista"), "failed contextual conversion never publishes a constant: %s / %s" % [observed, report])
+
+	var matrix: Array = [
+		{"case": "named_array_nullable", "source": "tuple Pair(data: Array[int?], count: int)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0]\n", "datatype": "Array[int?]", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_array_null", "source": "tuple Pair(data: Array[int?], count: int)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0][0]\n", "datatype": "null", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_nested_child", "source": "tuple Pair(data: Dictionary[String, Array[int?]], count: int)\nconst VALUES: Dictionary[String, Array[int?]] = {\"values\": [null, 1]}\nconst BOX = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0][\"values\"]\n", "datatype": "Array[int?]", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_nested_tuple", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\ntuple Outer(pair: Pair, count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Outer(Pair(KEYS, 0), 1)]\nvar probe_expression = BOX[0][0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_broad_alias", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = Pair(KEYS, 0)\nconst BOX = {\"values\": [VALUE]}\nvar probe_expression = BOX[\"values\"][0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_direct_variant", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = Pair(KEYS, 0)\nvar probe_expression = VALUE\n", "datatype": "Variant", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_concat", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)] + []\nvar probe_expression = BOX[0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_ternary", "source": "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)] if true else []\nvar probe_expression = BOX[0][0][1]\n", "datatype": "int", "is_constant": true, "valid": true, "errors": []},
+		{"case": "named_equal_raw", "source": "tuple Pair(data: Variant, raw: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, RAW)]\nvar probe_expression = BOX[0][1][1]\n", "datatype": "Variant", "is_constant": false, "valid": false, "errors": [{"line": 5, "column": 34, "message": "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\"."}]},
+		{"case": "failed_tuple_parent", "source": "var probe_expression = ([1, \"x\"] as Array[int], 0)\n", "datatype": "(Array[int], int)", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_dictionary_parent", "source": "var probe_expression = {\"outer\": [1, \"x\"] as Array[int]}\n", "datatype": "Dictionary", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 38, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 38, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_dictionary_key_parent", "source": "var probe_expression = {([1, \"x\"] as Array[int]): 0}\n", "datatype": "Dictionary", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 30, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 30, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_nested_array", "source": "var probe_expression = [[1, \"x\"]] as Array[Array[int]]\n", "datatype": "Array[Array[int]]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_wrapped_cast", "source": "var probe_expression = ([1, \"x\"] as Array[int]) as Array\n", "datatype": "Array", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_key_conversion", "source": "var probe_expression = {\"bad\": 1} as Dictionary[int, int]\n", "datatype": "Dictionary[int, int]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 25, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 25, "message": "Cannot have a key of type \"String\" in a dictionary of type \"Dictionary[int, int]\"."}]},
+		{"case": "failed_variable_annotation", "source": "var probe_expression: Array[int] = [1, \"x\"]\n", "datatype": "Array", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 40, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 40, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"line": 1, "column": 40, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 40, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_named_argument", "source": "tuple Pair(data: Array[int], count: int)\nconst VALUE = Pair([1, \"x\"], 0)\nvar probe_expression = VALUE\n", "datatype": "Pair", "is_constant": false, "valid": false, "errors": [{"line": 2, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 2, "column": 24, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 24, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_constant_alias", "source": "const BAD = [1, \"x\"] as Array[int]\nconst VALUE = BAD\nvar probe_expression = VALUE\n", "datatype": "Array[int]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 13, "message": "Assigned value for constant \"BAD\" isn't a constant expression."}, {"line": 1, "column": 17, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 17, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"line": 2, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}]},
+		{"case": "independent_after_failure", "source": "var rejected = [1, \"x\"] as Array[int]\nvar probe_expression = [1, 2] as Array[float]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 1, "column": 20, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 20, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "independent_before_failure", "source": "var probe_expression = [1, 2] as Array[float]\nvar rejected = [1, \"x\"] as Array[int]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 2, "column": 20, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 20, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "local_const_and_independent", "source": "func test():\n\tconst VALUE = [1, \"x\"] as Array[int]\n\treturn VALUE\nvar probe_expression = [1, 2] as Array[float]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 2, "column": 19, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 2, "column": 23, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 23, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_tuple_annotation", "source": "const VALUE: (int, int) = (1, \"x\")\nvar probe_expression = VALUE\n", "datatype": "(int, int)", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 27, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 1, "column": 27, "message": "Cannot assign a value of type \"(int, String)\" to a constant of type \"(int, int)\"."}, {"line": 1, "column": 31, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 31, "message": "Cannot include a value of type \"String\" as \"int\"."}]},
+		{"case": "valid_tuple_conversion", "source": "const VALUE: (float, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(float, int)", "is_constant": true, "valid": true, "errors": []},
+	]
+	for control: Dictionary in matrix:
+		var path := "res://tests/repair3_%s.barista" % control.case
+		var observed: Dictionary = probe.inspect_expression_source(control.source, path)
+		var report: Dictionary = probe.validate_source(control.source, path, true)
+		var expected_errors: Array = control.errors.duplicate(true)
+		for error: Dictionary in expected_errors:
+			error.path = path
+		_expect(failures, observed.get("found", false) and observed.get("valid") == control.valid and observed.get("is_constant") == control.is_constant and observed.get("datatype") == control.datatype and report.get("valid") == control.valid and report.get("errors", []) == expected_errors and report.get("warnings", []).is_empty() and probe.is_semantically_valid(control.source, path) == control.valid, "folded tuple/contextual failure consumer %s: %s / %s" % [control.case, observed, report])
+		_expect(failures, probe.validate_source(control.source, path, true) == report, "repeated analysis preserves exact contextual diagnostics: %s" % control.case)
+		if not control.is_constant:
+			_expect(failures, observed.get("value") == null, "rejected conversion has no published carrier: %s" % control.case)
+		else:
+			_expect(failures, observed.get("is_hard_type", false), "known folded tuple child remains hard: %s" % control.case)
+			var value: Variant = observed.get("value")
+			if control.datatype == "int":
+				_expect(failures, typeof(value) == TYPE_INT and value == 2, "named tuple selection preserves exact int2")
+			elif control.datatype == "null":
+				_expect(failures, value == null, "successful named tuple null is a real constant")
+			elif control.datatype == "Array[int?]":
+				_expect(failures, value is Array and value == [null, 1] and value.is_read_only() and typeof(value[1]) == TYPE_INT, "nullable Array child retains null and integer carrier")
+			elif control.datatype == "Variant":
+				_expect(failures, value is Array and value == [{null: null, 1.0: 2}, 0] and value.is_read_only() and value[0].is_read_only(), "direct Variant alias keeps declared type and actual read-only named tuple value")
+			elif control.datatype == "Array[float]":
+				_expect(failures, value is Array and value == [1.0, 2.0] and value.is_read_only() and typeof(value[0]) == TYPE_FLOAT and typeof(value[1]) == TYPE_FLOAT, "unrelated rejected expression does not poison an independent constant")
+			elif control.datatype == "(float, int)":
+				_expect(failures, value is Array and value == [1.0, 2] and value.is_read_only() and typeof(value[0]) == TYPE_FLOAT and typeof(value[1]) == TYPE_INT, "successful tuple context still converts and publishes exact carriers")
+
+	var arity_controls: Array = [
+		{"case": "cast_wrong_arity", "source": "var probe_expression = (1, 2) as (int, int, int)\n", "datatype": "(int, int, int)", "valid": false, "is_constant": false, "errors": [{"column": 31, "line": 1, "message": "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\"."}]},
+		{"case": "const_wrong_arity", "source": "const VALUE: (int, int, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(int, int, int)", "valid": false, "is_constant": true, "errors": [{"column": 32, "line": 1, "message": "Cannot assign a value of type \"(int, int)\" to a constant of type \"(int, int, int)\"."}]},
+		{"case": "cast_alias_wrong_arity", "source": "const VALUE = (1, 2) as (int, int, int)\nvar probe_expression = VALUE\n", "datatype": "(int, int, int)", "valid": false, "is_constant": false, "errors": [{"column": 15, "line": 1, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 22, "line": 1, "message": "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\"."}]},
+		{"case": "const_correct_arity", "source": "const VALUE: (int, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(int, int)", "valid": true, "is_constant": true, "errors": []},
+	]
+	for control: Dictionary in arity_controls:
+		var path := "res://tests/repair3_%s.barista" % control.case
+		var observed: Dictionary = probe.inspect_expression_source(control.source, path)
+		var report: Dictionary = probe.validate_source(control.source, path, true)
+		var expected_errors: Array = control.errors.duplicate(true)
+		for error: Dictionary in expected_errors:
+			error.path = path
+		_expect(failures, observed.get("found", false) and observed.get("is_hard_type", false) and observed.get("valid") == control.valid and observed.get("is_constant") == control.is_constant and observed.get("datatype") == control.datatype and report.get("valid") == control.valid and report.get("errors", []) == expected_errors and report.get("warnings", []).is_empty(), "tuple arity keeps literal constness separate from cast refusal: %s / %s" % [observed, report])
+		if control.is_constant:
+			_expect(failures, observed.value == [1, 2] and observed.value.is_read_only(), "unconverted tuple literal keeps its exact constant despite declaration mismatch")
+		else:
+			_expect(failures, observed.get("value") == null, "rejected tuple cast publishes no carrier")
+
+
+func _constant_evidence_carrier(value: Variant) -> Dictionary:
+	var result: Dictionary = {"type": type_string(typeof(value))}
+	if value is Array:
+		result.readonly = value.is_read_only()
+		result.children = []
+		for child in value:
+			result.children.append(_constant_evidence_carrier(child))
+	elif value is Dictionary:
+		result.readonly = value.is_read_only()
+		result.entries = []
+		for key in value:
+			result.entries.append({"key": _constant_evidence_carrier(key), "value": _constant_evidence_carrier(value[key])})
+	else:
+		result.value = value
+	return result
+
+
+func _test_constant_producer_child_evidence(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var previous_enable: Variant = ProjectSettings.get_setting("debug/barista_script/warnings/enable")
+	var previous_redundant: Variant = ProjectSettings.get_setting("debug/barista_script/warnings/redundant_await")
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", true)
+	ProjectSettings.set_setting("debug/barista_script/warnings/redundant_await", 1)
+	var controls: Array = [
+		{"case": "nested", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)]\nvar probe_expression = BOX[0][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "direct", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = Message.Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "selected", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)]\nvar probe_expression = BOX[0][1]\n", "datatype": "Dictionary[float?, int?]", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"entries": [{"key": {"type": "Nil", "value": null}, "value": {"type": "Nil", "value": null}}, {"key": {"type": "float", "value": 1.0}, "value": {"type": "int", "value": 2}}], "readonly": true, "type": "Dictionary"}},
+		{"case": "null", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)]\nvar probe_expression = BOX[0][1][null]\n", "datatype": "null", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "variant_alias", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Variant = Message.Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "direct_variant", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Variant = Message.Data(KEYS)\nvar probe_expression = BOX\n", "datatype": "Variant", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"children": [{"type": "int", "value": 0}, {"entries": [{"key": {"type": "Nil", "value": null}, "value": {"type": "Nil", "value": null}}, {"key": {"type": "float", "value": 1.0}, "value": {"type": "int", "value": 2}}], "readonly": true, "type": "Dictionary"}], "readonly": true, "type": "Array"}},
+		{"case": "array_selected", "source": "enum Message:\n\tData(value: Variant)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX = [Message.Data(VALUES)]\nvar probe_expression = BOX[0][1]\n", "datatype": "Array[int?]", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"children": [{"type": "Nil", "value": null}, {"type": "int", "value": 1}], "readonly": true, "type": "Array"}},
+		{"case": "array_null", "source": "enum Message:\n\tData(value: Variant)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX = [Message.Data(VALUES)]\nvar probe_expression = BOX[0][1][0]\n", "datatype": "null", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "array_integer", "source": "enum Message:\n\tData(value: Variant)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX = [Message.Data(VALUES)]\nvar probe_expression = BOX[0][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 1}},
+		{"case": "nested_enum", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(Message.Data(KEYS))]\nvar probe_expression = BOX[0][1][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "enum_in_tuple", "source": "enum Message:\n\tData(value: Variant)\ntuple Pair(value: Variant, count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(Message.Data(KEYS), 0)]\nvar probe_expression = BOX[0][0][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "tuple_in_enum", "source": "enum Message:\n\tData(value: Variant)\ntuple Pair(value: Variant, count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(Pair(KEYS, 0))]\nvar probe_expression = BOX[0][1][0][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "dict_value_path", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = {\"items\": [Message.Data({\"inner\": KEYS})]}\nvar probe_expression = BOX[\"items\"][0][1][\"inner\"][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "dict_key_value_path", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data({KEYS: KEYS})]\nvar probe_expression = BOX[0][1][KEYS][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "concat", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)] + []\nvar probe_expression = BOX[0][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "ternary", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)] if true else []\nvar probe_expression = BOX[0][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "cast", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)] as Array[Variant]\nvar probe_expression = BOX[0][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "raw_before_typed", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = KEYS\nconst BOX = [Message.Data([RAW, KEYS])]\nvar probe_expression = BOX[0][1][0][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "equal_raw", "source": "enum Message:\n\tData(known: Variant, raw: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS, RAW)]\nvar probe_expression = BOX[0][2][1]\n", "datatype": "Variant", "valid": false, "is_constant": false, "errors": [{"column": 34, "line": 6, "message": "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\"."}], "warnings": [], "is_hard_type": false, "carrier": {"type": "Nil", "value": null}},
+		{"case": "invalid_payload", "source": "enum Message:\n\tData(value: int)\nvar probe_expression = Message.Data(\"bad\")\n", "datatype": "repair4_invalid_payload.barista.Message", "valid": false, "is_constant": false, "errors": [{"column": 37, "line": 3, "message": "Invalid argument 1 for enum case \"Message.Data\": should be \"int\" but is \"String\"."}], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "failed_conversion", "source": "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data([1, \"bad\"] as Array[int])\n", "datatype": "repair4_failed_conversion.barista.Message", "valid": false, "is_constant": false, "errors": [{"column": 41, "line": 3, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 41, "line": 3, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "nonconstant_payload", "source": "enum Message:\n\tData(value: Variant)\nvar value: int = 1\nvar probe_expression = Message.Data(value)\n", "datatype": "repair4_nonconstant_payload.barista.Message", "valid": true, "is_constant": false, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "typed_payload_nonbakeable", "source": "enum Message:\n\tData(value: Dictionary[float?, int?])\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nvar probe_expression = Message.Data(KEYS)\n", "datatype": "repair4_typed_payload_nonbakeable.barista.Message", "valid": true, "is_constant": false, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "actual_null", "source": "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data(null)\n", "datatype": "repair4_actual_null.barista.Message", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"children": [{"type": "int", "value": 0}, {"type": "Nil", "value": null}], "readonly": true, "type": "Array"}},
+		{"case": "partial_payload", "source": "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data(\n", "datatype": "<unresolved type>", "valid": false, "is_constant": false, "errors": [{"column": 36, "line": 3, "message": "Expected expression as the function argument."}, {"column": 36, "line": 3, "message": "Expected closing \")\" after call arguments."}], "warnings": [], "is_hard_type": false, "carrier": {"type": "Nil", "value": null}},
+		{"case": "wrong_arity", "source": "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data()\n", "datatype": "repair4_wrong_arity.barista.Message", "valid": false, "is_constant": false, "errors": [{"column": 24, "line": 3, "message": "Enum case \"Message.Data\" expects 1 argument(s), but 0 were given."}], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "await_container", "source": "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n@warning_ignore(\"redundant_await\")\nconst BOX = await [KEYS]\nvar probe_expression = BOX[0][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "await_enum", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n@warning_ignore(\"redundant_await\")\nconst BOX = await Message.Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "class_attribute", "source": "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Holder.KEYS]\nvar probe_expression = BOX[0][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "class_attribute_alias", "source": "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n\tconst VALUE: Variant = [KEYS]\nconst BOX = Holder.VALUE\nvar probe_expression = BOX[0][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "self_attribute", "source": "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = [KEYS]\nconst BOX = self.VALUE\nvar probe_expression = BOX[0][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "utility_scalar", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nvar probe_expression = len(Message.Data(KEYS))\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "singleton", "source": "enum Message:\n\tEmpty\n\tData(value: Variant)\nvar probe_expression = Message.Empty\n", "datatype": "repair4_singleton.barista.Message", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"children": [{"type": "int", "value": 0}], "readonly": true, "type": "Array"}},
+		{"case": "contextual_enum", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Message = .Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "await_warning", "source": "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = await [KEYS]\nvar probe_expression = BOX[0][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [{"start_line": 2, "start_column": 13, "end_line": 2, "end_column": 25, "code": 27, "string_code": "REDUNDANT_AWAIT", "message": "\"await\" keyword is unnecessary because the expression isn't a coroutine nor a signal."}], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "await_dynamic", "source": "var value: Variant = [1]\nvar probe_expression = await value\n", "datatype": "Variant", "valid": true, "is_constant": false, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "await_coroutine", "source": "var value: Coroutine[Dictionary[float?, int?]]\nvar probe_expression = await value\n", "datatype": "Dictionary[float?, int?]", "valid": true, "is_constant": false, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "Nil", "value": null}},
+		{"case": "attribute_direct_variant", "source": "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n\tconst VALUE: Variant = [KEYS]\nvar probe_expression = Holder.VALUE\n", "datatype": "Variant", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"children": [{"entries": [{"key": {"type": "Nil", "value": null}, "value": {"type": "Nil", "value": null}}, {"key": {"type": "float", "value": 1.0}, "value": {"type": "int", "value": 2}}], "readonly": true, "type": "Dictionary"}], "readonly": true, "type": "Array"}},
+		{"case": "attribute_equal_raw", "source": "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n\tconst RAW = {null: null, 1.0: 2}\n\tconst VALUE: Variant = [KEYS, RAW]\nconst BOX = Holder.VALUE\nvar probe_expression = BOX[1][1]\n", "datatype": "Variant", "valid": false, "is_constant": false, "errors": [{"column": 31, "line": 6, "message": "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\"."}], "warnings": [], "is_hard_type": false, "carrier": {"type": "Nil", "value": null}},
+		{"case": "dictionary_key_child", "source": "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = {KEYS: Message.Data(KEYS)}\nvar probe_expression = BOX[KEYS][1][1]\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [], "is_hard_type": true, "carrier": {"type": "int", "value": 2}},
+		{"case": "await_scalar_warning", "source": "var probe_expression = await 1\n", "datatype": "int", "valid": true, "is_constant": true, "errors": [], "warnings": [{"code": 27, "end_column": 31, "end_line": 1, "message": "\"await\" keyword is unnecessary because the expression isn't a coroutine nor a signal.", "start_column": 24, "start_line": 1, "string_code": "REDUNDANT_AWAIT"}], "is_hard_type": true, "carrier": {"type": "int", "value": 1}},
+	]
+	for control: Dictionary in controls:
+		var path := "res://tests/repair4_%s.barista" % control.case
+		var observed: Dictionary = probe.inspect_expression_source(control.source, path)
+		var report: Dictionary = probe.validate_source(control.source, path, true)
+		var expected_errors: Array = control.errors.duplicate(true)
+		for error: Dictionary in expected_errors:
+			error.path = path
+		_expect(failures, observed.get("found", false) and observed.get("valid") == control.valid and observed.get("datatype") == control.datatype and observed.get("is_hard_type") == control.is_hard_type and observed.get("is_constant") == control.is_constant and _constant_evidence_carrier(observed.get("value")) == control.carrier, "constant producer retains exact child evidence/carrier %s: %s" % [control.case, observed])
+		_expect(failures, report.get("valid") == control.valid and report.get("errors", []) == expected_errors and report.get("warnings", []) == control.warnings and probe.is_semantically_valid(control.source, path) == control.valid, "constant producer preserves complete public diagnostics %s: %s" % [control.case, report])
+		_expect(failures, probe.validate_source(control.source, path, true) == report, "constant producer repeat is stable: %s" % control.case)
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", previous_enable)
+	ProjectSettings.set_setting("debug/barista_script/warnings/redundant_await", previous_redundant)
