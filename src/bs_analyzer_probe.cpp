@@ -205,6 +205,7 @@ godot::Dictionary BaristaScriptAnalyzerProbe::analyze_source(const godot::String
 	godot::Dictionary result;
 	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
 	godot::PackedStringArray errors;
+	godot::Dictionary depended_parser_statuses;
 	Error err = ERR_BUG;
 	int phase = -1;
 	{
@@ -218,12 +219,18 @@ godot::Dictionary BaristaScriptAnalyzerProbe::analyze_source(const godot::String
 		for (const BSParser::ParserError &pe : parser.get_errors()) {
 			errors.push_back(pe.message);
 		}
+		for (const KeyValue<String, Ref<BSParserRef>> &dependency : parser.get_depended_parsers()) {
+			if (dependency.value.is_valid()) {
+				depended_parser_statuses[dependency.key] = (int)dependency.value->get_status();
+			}
+		}
 		phase = (int)analyzer.get_highest_completed_phase();
 	}
 	BSCache::clear_source_override(path);
 	result["valid"] = err == OK && errors.is_empty();
 	result["errors"] = errors;
 	result["phase"] = phase;
+	result["depended_parser_statuses"] = depended_parser_statuses;
 	return result;
 }
 

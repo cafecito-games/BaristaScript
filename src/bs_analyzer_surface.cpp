@@ -142,7 +142,7 @@ BSParser::AnnotationDeclarationNode *BSAnalyzer::load_external_annotation_declar
 		const String &p_qualified_name, BSParser::AnnotationNode *p_annotation, bool &r_error_reported) {
 	r_error_reported = false;
 	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-	if (language == nullptr) {
+	if (language == nullptr || parser == nullptr) {
 		return nullptr;
 	}
 	Vector<String> paths = language->get_declaration_index().get_annotation_declaring_paths(p_qualified_name);
@@ -168,13 +168,20 @@ BSParser::AnnotationDeclarationNode *BSAnalyzer::load_external_annotation_declar
 		return nullptr;
 	}
 
-	Error err = OK;
-	Ref<BSParserRef> ref = BSCache::get_parser(path, BSParserRef::INTERFACE_SOLVED, err, parser->script_path);
-	if (ref.is_null() || err != OK || ref->get_status() < BSParserRef::INTERFACE_SOLVED || ref->get_parser() == nullptr) {
+	Ref<BSParserRef> ref = parser->get_depended_parser_for(path);
+	if (ref.is_null()) {
+		return nullptr;
+	}
+	const Error err = ref->raise_status(BSParserRef::INTERFACE_SOLVED);
+	if (err != OK || ref->get_status() < BSParserRef::INTERFACE_SOLVED) {
+		return nullptr;
+	}
+	BSParser *external_parser = ref->get_parser();
+	if (external_parser == nullptr || external_parser->get_tree() == nullptr) {
 		return nullptr;
 	}
 	BSParser::AnnotationDeclarationNode *first_match = nullptr;
-	for (BSParser::AnnotationDeclarationNode *declaration : ref->get_parser()->get_tree()->annotation_declarations) {
+	for (BSParser::AnnotationDeclarationNode *declaration : external_parser->get_tree()->annotation_declarations) {
 		if (declaration->qualified_name != p_qualified_name) {
 			continue;
 		}

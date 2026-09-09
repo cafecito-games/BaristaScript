@@ -2224,6 +2224,11 @@ func _test_custom_annotation_surface(failures: PackedStringArray) -> void:
 	var consumer_source := "# Custom annotations declared in another file resolve through an imported namespace.\n# This is the analyzer half of the declaration-index coverage: the provider fixture is indexed\n# before this script is analyzed.\nnamespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = \"Imported\")\nclass ImportedSuite:\n\t@fixture\n\tvar state: int\n\n\t@index_test\n\tfunc works() -> void:\n\t\tpass\n\nfunc test() -> void:\n\tpass\n"
 	var consumer_report: Dictionary = probe.analyze_source(consumer_source, "res://tests/annotation_custom_import.barista")
 	_expect(failures, consumer_report.get("valid", false) == true, "imported custom annotations resolve through declaration index")
+	var depended_parser_statuses: Dictionary = consumer_report.get("depended_parser_statuses", {})
+	_expect(failures, depended_parser_statuses.has(provider_path),
+		"external annotation provider is retained as a depended parser")
+	_expect(failures, depended_parser_statuses.get(provider_path, Status.EMPTY) >= Status.INHERITANCE_SOLVED,
+		"external annotation provider reaches dependency finalization")
 	var import_mismatch := "namespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = 7)\nclass ImportedSuite:\n\tpass\n"
 	var mismatch_report: Dictionary = probe.analyze_source(import_mismatch, "res://tests/annotation_custom_import_mismatch.barista")
 	_expect(failures, mismatch_report.get("valid", true) == false, "imported annotation signature is validated")
