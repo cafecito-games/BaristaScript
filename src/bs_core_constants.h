@@ -79,12 +79,13 @@ class BSCoreConstants {
 #include "gen/bs_global_api.gen.h"
 
 	static const Metadata &metadata() {
-		static const Metadata data = []() {
-			Metadata result;
-			populate(result);
+		// Intentionally retained for process lifetime so engine-backed data is not destroyed after API teardown.
+		static const Metadata *data = []() {
+			Metadata *result = memnew(Metadata);
+			populate(*result);
 			return result;
 		}();
-		return data;
+		return *data;
 	}
 
 public:
