@@ -93,6 +93,7 @@ func _init() -> void:
 	_test_pure_literal_constant_materialization(failures)
 	_test_pure_constant_review_regressions(failures)
 	_test_constant_dictionary_key_conversion(failures)
+	_test_nested_constant_evidence_and_contextual_casts(failures)
 	BaristaScriptParseCache.clear_script_cache()
 	quit(SuiteGuard.report("analyzer_test", failures))
 
@@ -5201,3 +5202,77 @@ func _test_constant_dictionary_key_conversion(failures: PackedStringArray) -> vo
 		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/review_rejected_dictionary_key.barista")
 		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_rejected_dictionary_key.barista", false)
 		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null and _errors_are_exact(report.get("errors", []), [[control[1], 2, 29]]), "raw/nonconvertible/missing/checked Dictionary key retains original index diagnostic and no value: %s / %s" % [observed, report])
+
+
+func _test_nested_constant_evidence_and_contextual_casts(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	for control: Array in [
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [KEYS]\nvar probe_expression = BOX[0]\n", "Dictionary[float, int]", {1.0: 2}],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Variant] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		['const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = {"keys": KEYS}\nvar probe_expression = BOX["keys"][1]\n', "int", 2],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Dictionary[float, int]] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = KEYS[1]\n", "int", 2],
+		["const VALUES: Array[int] = [1, 2]\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0]\n", "Array[int]", [1, 2]],
+		['const VALUES: Array[float] = [1, 2]\nconst BOX = {"values": VALUES}\nvar probe_expression = BOX["values"]\n', "Array[float]", [1.0, 2.0]],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Dictionary[Variant, int]] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const BOX = [[1, 2]]\nvar probe_expression = BOX[0]\n", "Array", [1, 2]],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst VALUE: Variant = KEYS\nvar probe_expression = VALUE\n", "Variant", {1.0: 2}],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/nested_constant_evidence.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/nested_constant_evidence.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2] and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty() and probe.is_semantically_valid(control[0], "res://tests/nested_constant_evidence.barista"), "selected constant keeps established builtin child evidence independently of outer slot: %s / %s" % [observed, report])
+	for control: Array in [
+		["const VALUES: Array[int?] = [null, 1]\nconst BOX = [VALUES]\nvar probe_expression = BOX[0]\n", "Array[int?]", [null, 1]],
+		["const VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0][0]\n", "null", null],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [VALUES]\nvar probe_expression = BOX[0]\n", "Dictionary[float?, int?]", {null: null, 1.0: 2}],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		['const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = {"values": VALUES}\nvar probe_expression = BOX["values"][null]\n', "null", null],
+		["const VALUES: Dictionary[float?, int] = {null: 3, 1.0: 2}\nconst BOX = [VALUES]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int] = {null: 3, 1.0: 2}\nvar probe_expression = VALUES[null]\n", "int", 3],
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst VALUE: Variant = KEYS\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nconst BOX = [VALUE] + []\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE[1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE[null]\n", "null", null],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE\n", "Variant", {null: null, 1.0: 2}],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = VALUES\nconst VALUE: Variant = RAW\nconst BOX = [VALUE, VALUES]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+		["const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = VALUES\nconst BOX = [RAW] if true else [VALUES]\nvar probe_expression = BOX[0]\n", "Dictionary[float?, int?]", {null: null, 1.0: 2}],
+		["const VALUE = [1, 2] as Array[float]\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "float", 2.0],
+		["const VALUE = {1: 2} as Dictionary[float, int]\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "int", 2],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/nullable_constant_evidence.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/nullable_constant_evidence.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2] and typeof(observed.get("value")) == typeof(control[2]) and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "nullable and converted child evidence survives selection: %s / %s" % [observed, report])
+		if observed.get("value") is Array or observed.get("value") is Dictionary:
+			_expect(failures, observed.value.is_read_only(), "selected nullable carrier remains read-only")
+	for control: Array in [
+		["const KEYS: Dictionary[float, int] = {1.0: 2}\nconst RAW = {1.0: 2}\nconst BOX = [KEYS, RAW]\nvar probe_expression = BOX[1][1]\n", 4, 31, 'Cannot get index "1" from "{ 1.0: 2 }".'],
+		["const KEYS: Dictionary[int, int] = {1: 2}\nconst BOX: Variant = KEYS\nvar probe_expression = BOX[1e309]\n", 3, 28, 'Cannot get index "inf" from "{ 1: 2 }".'],
+		["const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [KEYS, RAW]\nvar probe_expression = BOX[1][1]\n", 4, 31, 'Cannot get index "1" from "{ <null>: <null>, 1.0: 2 }".'],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/raw_constant_evidence.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/raw_constant_evidence.barista", true)
+		_expect(failures, observed.get("found", false) and not observed.get("valid", true) and not observed.get("is_constant", true) and observed.get("value") == null and not report.get("valid", true) and report.get("warnings", []).is_empty() and report.get("errors", []) == [{"path": "res://tests/raw_constant_evidence.barista", "line": control[1], "column": control[2], "message": control[3]}], "raw siblings and checked keys keep exact refusal: %s / %s" % [observed, report])
+	for control: Array in [
+		["var probe_expression = [1, 2] as Array[float]\n", "Array[float]", TYPE_FLOAT, 0],
+		['var probe_expression = {"x": 1} as Dictionary[String, float]\n', "Dictionary[String, float]", TYPE_FLOAT, "x"],
+		["var probe_expression = [[1, 2]] as Array[PackedInt32Array]\n", "Array[PackedInt32Array]", TYPE_PACKED_INT32_ARRAY, 0],
+		["const VALUE = [1, 2] as Array[float]\nvar probe_expression = VALUE\n", "Array[float]", TYPE_FLOAT, 0],
+		["const VALUE: Array[float] = [1, 2]\nvar probe_expression = VALUE\n", "Array[float]", TYPE_FLOAT, 0],
+		['const VALUE: Dictionary[String, float] = {"x": 1}\nvar probe_expression = VALUE\n', "Dictionary[String, float]", TYPE_FLOAT, "x"],
+	]:
+		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/contextual_cast_value.barista")
+		var report: Dictionary = probe.validate_source(control[0], "res://tests/contextual_cast_value.barista", true)
+		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and report.get("valid", false) and report.get("errors", []).is_empty() and report.get("warnings", []).is_empty(), "contextual cast/annotation inspection is valid: %s / %s" % [observed, report])
+		if _inspection_is_valid(observed) and observed.get("is_constant", false):
+			var value: Variant = observed.value
+			_expect(failures, value.is_read_only() and typeof(value[control[3]]) == control[2], "contextual cast publishes converted child carrier after parent refresh: %s" % [observed])
+			if control[2] == TYPE_FLOAT:
+				_expect(failures, value[control[3]] == 1.0 and (not value is Array or (typeof(value[1]) == TYPE_FLOAT and value[1] == 2.0)), "contextual float cast has exact converted values")
+			else:
+				_expect(failures, value[control[3]] == PackedInt32Array([1, 2]), "contextual packed cast keeps exact converted values")
+
+	var runtime_source := "var value: int = 1\nvar probe_expression = [value] as Array[float]\n"
+	var runtime_observed: Dictionary = probe.inspect_expression_source(runtime_source, "res://tests/runtime_contextual_cast.barista")
+	var runtime_report: Dictionary = probe.validate_source(runtime_source, "res://tests/runtime_contextual_cast.barista", true)
+	_expect(failures, _inspection_is_valid(runtime_observed) and not runtime_observed.get("is_constant", true) and runtime_observed.get("value") == null and runtime_observed.get("datatype") == "Array[float]" and runtime_report.get("valid", false) and runtime_report.get("errors", []).is_empty() and runtime_report.get("warnings", []).is_empty(), "runtime contextual cast retains nonconstant state: %s / %s" % [runtime_observed, runtime_report])
