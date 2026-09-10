@@ -441,7 +441,16 @@ void BSAnalyzer::raise_declared_conformance_dependencies() {
 }
 
 void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class) {
-	if (p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
+	bool local_witness = false;
+	if (p_class == witness_target_class && witness_declaration_scope != nullptr && parser->has_class(witness_declaration_scope)) {
+		for (const BSParser::ConformanceNode *conformance : witness_declaration_scope->conformances) {
+			if (conformance != nullptr && conformance->witnesses.has(p_function)) {
+				local_witness = true;
+				break;
+			}
+		}
+	}
+	if (!local_witness && p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
 		Ref<BSParserRef> owner = ensure_external_parser(p_class, "While resolving function signature", p_function);
 		if (owner.is_valid()) {
 			ForeignAnalyzerVisibilityScope visibility(owner->get_analyzer());
@@ -1187,7 +1196,7 @@ BSParser::ClassNode *BSAnalyzer::resolve_conformance_trait_use(BSParser::ClassNo
 }
 
 bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target,
-		BSParser::ClassNode *p_trait) {
+		BSParser::ClassNode *p_trait, BSParser::ClassNode *p_declaration_scope) {
 	if (p_conformance == nullptr || p_target == nullptr || p_trait == nullptr) {
 		return false;
 	}
@@ -1238,6 +1247,7 @@ bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, 
 			}
 
 			if (witnesses_by_name.has(function_name)) {
+				ScopedWitnessScope witness_scope(this, p_target, p_declaration_scope);
 				TraitMethodImplementation implementation;
 				implementation.function = witnesses_by_name.get(function_name);
 				implementation.owner_class = p_target;
@@ -1492,7 +1502,7 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				continue;
 			}
 
-			if (!validate_conformance(conformance, target, trait)) {
+			if (!validate_conformance(conformance, target, trait, p_class)) {
 				continue;
 			}
 
@@ -1854,8 +1864,8 @@ void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {
 			continue;
 		}
 
-		BSParser::ClassNode *previous_class = current_class;
-		current_class = target;
+		ScopedWitnessScope witness_scope(this, target, p_class);
+		ScopedCurrentClass receiver_scope(this, target);
 		for (int i = 0; i < conformance->witnesses.size(); i++) {
 			BSParser::FunctionNode *witness = conformance->witnesses[i];
 			if (witness == nullptr) {
@@ -1872,7 +1882,6 @@ void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {
 			}
 			analyze_function_body(witness);
 		}
-		current_class = previous_class;
 	}
 }
 

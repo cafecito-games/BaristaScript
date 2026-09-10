@@ -450,6 +450,7 @@ public:
 
 #ifdef BARISTA_TESTS
 	friend struct ProviderTestAccess;
+	friend struct WitnessScopeTestAccess;
 #endif
 
 	BSParser *get_parser() const { return parser; }
@@ -494,6 +495,31 @@ private:
 
 	bool reducing_match_pattern_expression = false;
 	BSParser::ClassNode *current_class = nullptr;
+	BSParser::ClassNode *witness_target_class = nullptr;
+	BSParser::ClassNode *witness_declaration_scope = nullptr;
+	class ScopedCurrentClass {
+		BSAnalyzer *analyzer;
+		BSParser::ClassNode *previous;
+
+	public:
+		ScopedCurrentClass(BSAnalyzer *p_analyzer, BSParser::ClassNode *p_class) : analyzer(p_analyzer), previous(p_analyzer->current_class) { analyzer->current_class = p_class; }
+		~ScopedCurrentClass() { analyzer->current_class = previous; }
+	};
+	class ScopedWitnessScope {
+		BSAnalyzer *analyzer;
+		BSParser::ClassNode *previous_target;
+		BSParser::ClassNode *previous_declaration;
+
+	public:
+		ScopedWitnessScope(BSAnalyzer *p_analyzer, BSParser::ClassNode *p_target, BSParser::ClassNode *p_declaration) : analyzer(p_analyzer), previous_target(p_analyzer->witness_target_class), previous_declaration(p_analyzer->witness_declaration_scope) {
+			analyzer->witness_target_class = p_target;
+			analyzer->witness_declaration_scope = p_declaration;
+		}
+		~ScopedWitnessScope() {
+			analyzer->witness_target_class = previous_target;
+			analyzer->witness_declaration_scope = previous_declaration;
+		}
+	};
 	BSParser::FunctionNode *current_function = nullptr;
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
 	BSParser::EnumNode *current_enum = nullptr;
@@ -542,6 +568,12 @@ private:
 	 * walk base CLASS chain then outer for same-file extends / member lookup.
 	 */
 	void get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source);
+	void get_effective_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, const BSParser::Node *p_source, HashSet<BSParser::ClassNode *> *r_declarations = nullptr);
+	bool is_type_bearing_member(const BSParser::ClassNode::Member &p_member) const;
+	bool witness_target_scope_declares_name(const StringName &p_name, const BSParser::Node *p_source);
+	BSParser::ClassNode *find_witness_declaration_type(const StringName &p_name, const BSParser::Node *p_source);
+	bool reduce_identifier_from_witness_declaration_scope(BSParser::IdentifierNode *p_identifier);
+
 	bool has_member_name_conflict_in_script_class(const StringName &p_member_name, const BSParser::ClassNode *p_class, const BSParser::Node *p_member) const;
 	bool has_member_name_conflict_in_native_type(const StringName &p_member_name, const StringName &p_native_type) const;
 	Error check_native_member_name_conflict(const StringName &p_member_name, const BSParser::Node *p_member_node, const StringName &p_native_type);
@@ -875,7 +907,7 @@ private:
 	BSParser::ClassNode *resolve_builtin_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_builtin_type);
 	BSParser::ClassNode *resolve_trait_reference(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source);
 	BSParser::ClassNode *resolve_conformance_trait_use(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source);
-	bool validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target, BSParser::ClassNode *p_trait);
+	bool validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target, BSParser::ClassNode *p_trait, BSParser::ClassNode *p_declaration_scope);
 	/** Foundry resolve_conformance_bodies: analyze witness methods against the target. */
 	void resolve_conformance_bodies(BSParser::ClassNode *p_class);
 	/** Own members then `base_type.class_type` chain (Foundry inherited method surface @ c9d5e35). */
