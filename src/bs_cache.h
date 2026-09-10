@@ -35,7 +35,7 @@
 
 /**
  * Every reason a cache lookup can miss. A single enum, and every consumer handles every value; the
- * parametrized test in project/tests/cache_test.gd iterates `BSMissReason::get_names()` so a new
+ * parametrized test in tests/native/cache_test.cpp iterates `bs_miss::get_names()` so a new
  * enumerator without a consumer is a test failure, not a silent fall-through.
  *
  * Only COLD may pass unlogged: a cache file that does not exist is a cold cache. Every other value

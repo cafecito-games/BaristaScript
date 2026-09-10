@@ -44,6 +44,23 @@ def select_suites(requested):
     return requested or suites
 
 
+def editor_import_suites():
+    manifest = json.loads((ROOT / "tests/native_suites.json").read_text())
+    imports = manifest.get("editor_import", [])
+    if (not isinstance(imports, list) or any(not isinstance(suite, str) for suite in imports)
+            or len(set(imports)) != len(imports) or not set(imports) <= set(manifest["suites"])):
+        raise ValueError("native editor_import must name unique required suites")
+    return imports
+
+
+def prepare_project(godot, project, suite, timeout):
+    if suite not in editor_import_suites():
+        return
+    completed = supervise([str(godot), "--headless", "--path", str(project), "--editor", "--quit"], timeout)
+    if completed.returncode or not (project / ".godot/global_script_class_cache.cfg").is_file():
+        raise ValueError(f"native {suite} editor preparation failed: {completed.stdout}")
+
+
 def read_artifact(build_dir):
     artifact = json.loads((build_dir / "native-artifact.json").read_text())
     library = Path(artifact["library"])
@@ -162,6 +179,7 @@ def main(argv=None):
         for suite in suites:
             nonce = uuid.uuid4().hex
             with staged_project(artifact) as project:
+                prepare_project(args.godot, project, suite, args.timeout)
                 completed = invoke(args.godot, project, suite, args.case, nonce, args.timeout, args.list)
             print(completed.stdout, end="", flush=True)
             reasons = ([f"listing process exited {completed.returncode}"] if completed.returncode else []) if args.list else evaluate(

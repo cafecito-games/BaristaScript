@@ -210,6 +210,7 @@ jobs:
 
           scons api_version=4.7 target=template_debug barista_tests=yes
           python3 tests/test_run_native_suites.py --godot "$godot_binary"
+          python3 tests/test_native_storage.py --godot "$godot_binary"
           python3 tests/run_native_suites.py --godot "$godot_binary"
           scons api_version=4.7 target=template_debug barista_tests=no
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
@@ -221,6 +222,7 @@ jobs:
           cmake -S . -B build/native-cmake -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
           cmake --build build/native-cmake --parallel 2
           python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+          python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake
           cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF
