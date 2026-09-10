@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -353,6 +354,88 @@ class MetadataTests(unittest.TestCase):
         (self.root / "source.cpp").write_text("dirty source")
         with self.assertRaisesRegex(ValueError, "clean"):
             verify_build_artifacts.verify_artifacts(directory, self.root, self.config, self.selection)
+
+
+
+    def test_universal_slice_parser_rejects_malformed_bounds_and_cpu_claims_on_every_host(self):
+        metadata = build_metadata.create_metadata(self.root, self.config, dict(self.selection, platform="macos", architecture="universal"), native_tests=False)
+        payload = build_metadata.encode_envelope(metadata)
+        cpus = (0x01000007, 0x0100000c)
+        slices = [struct.pack("<IiiIIIII", 0xfeedfacf, cpu, 0, 6, 0, 0, 0, 0) + payload for cpu in cpus]
+        for wide in (False, True):
+            with self.subTest(wide=wide):
+                layout = ">iiQQII" if wide else ">iiIII"
+                entry_size = struct.calcsize(layout)
+                first = 128
+                second = first + ((len(slices[0]) + 63) // 64) * 64
+                content = bytearray(second + len(slices[1]))
+                content[:8] = struct.pack(">II", 0xcafebabf if wide else 0xcafebabe, 2)
+                for index, offset in enumerate((first, second)):
+                    values = (cpus[index], 0, offset, len(slices[index]), 6) + ((0,) if wide else ())
+                    struct.pack_into(layout, content, 8 + index * entry_size, *values)
+                    content[offset:offset + len(slices[index])] = slices[index]
+                self.assertEqual(build_metadata.inspect_artifact_bytes(bytes(content)), metadata)
+                # Reject an incomplete table, duplicate/misreported CPUs, overlap, and out-of-file slices.
+                mutations = ((4, ">I", 1), (8 + entry_size, ">i", cpus[0]),
+                             (first + 4, "<i", cpus[1]), (8 + entry_size + 8, ">Q" if wide else ">I", first),
+                             (8 + 8, ">Q" if wide else ">I", len(content) + 64))
+                for offset, encoding, actual in mutations:
+                    bad = bytearray(content)
+                    struct.pack_into(encoding, bad, offset, actual)
+                    with self.subTest(offset=offset), self.assertRaises(ValueError):
+                        build_metadata.inspect_artifact_bytes(bytes(bad))
+                with self.assertRaises(ValueError):
+                    build_metadata.inspect_artifact_bytes(bytes(content[:-1]))
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("c++") and shutil.which("lipo"),
+                         "real universal-library controls require the macOS toolchain")
+    def test_real_universal_requires_both_physical_slices_with_matching_identity(self):
+        selected = dict(self.selection, platform="macos", architecture="universal")
+        metadata = build_metadata.create_metadata(self.root, self.config, selected, native_tests=False)
+        package = self.root / "build/universal-package"
+        package.mkdir(parents=True)
+        slices = self.root / "build/slices"
+        slices.mkdir()
+        artifact = package / "libbarista_script.macos.template_debug.dylib"
+
+        def compile_slice(architecture, name, value):
+            source = slices / (name + ".cpp")
+            library = slices / (name + ".dylib")
+            if value is None:
+                source.write_text('extern "C" int without_metadata() { return 42; }\n')
+            else:
+                build_metadata.write_header(slices / (name + ".h"), value)
+                source.write_text('#include "' + name + '.h"\nextern "C" const char *build_info() { return BS_BUILD_INFO_ENVELOPE; }\n')
+            completed = subprocess.run(["c++", "-std=c++17", "-dynamiclib", "-DDEBUG_ENABLED", "-arch", architecture,
+                                        str(source), "-o", str(library)], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            return library
+
+        def combine(first, second):
+            subprocess.run(["lipo", "-create", str(first), str(second), "-output", str(artifact)], check=True, capture_output=True)
+            self.assertEqual(set(subprocess.check_output(["lipo", "-archs", str(artifact)], text=True).split()), {"arm64", "x86_64"})
+
+        arm = compile_slice("arm64", "arm", metadata)
+        x86 = compile_slice("x86_64", "x86", metadata)
+        shutil.copy2(arm, artifact)
+        self.assertEqual(subprocess.check_output(["lipo", "-archs", str(artifact)], text=True).strip(), "arm64")
+        for inspect in (lambda: build_metadata.inspect_artifact(artifact),
+                        lambda: verify_build_artifacts.verify_artifacts(package, self.root, self.config, selected)):
+            with self.assertRaisesRegex(ValueError, "universal.*slices"):
+                inspect()
+        combine(arm, x86)
+        self.assertEqual(build_metadata.inspect_artifact(artifact), metadata)
+        self.assertEqual(len(verify_build_artifacts.verify_artifacts(package, self.root, self.config, selected)), 1)
+        bare_x86 = compile_slice("x86_64", "bare", None)
+        combine(arm, bare_x86)
+        with self.assertRaisesRegex(ValueError, "slice.*absent"):
+            verify_build_artifacts.verify_artifacts(package, self.root, self.config, selected)
+        changed = copy.deepcopy(metadata)
+        changed["extension_version"] = "0.1.1"
+        changed_x86 = compile_slice("x86_64", "changed", changed)
+        combine(arm, changed_x86)
+        with self.assertRaisesRegex(ValueError, "conflicting|match"):
+            verify_build_artifacts.verify_artifacts(package, self.root, self.config, selected)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -146,7 +147,7 @@ def encode_envelope(value):
 
 
 def inspect_bytes(content):
-    """Inspect data, without loading foreign code; universal slices must agree exactly."""
+    """Decode framed payloads; artifact callers additionally check universal composition."""
     found = []
     position = 0
     while True:
@@ -180,9 +181,59 @@ def inspect_bytes(content):
     return found[0]
 
 
+def universal_macho_slices(content):
+    """Read supported macOS fat libraries using Apple's mach-o/fat.h and loader.h layout."""
+    # Fat headers are big endian; each supported 64-bit CPU's Mach-O header is little endian.
+    layouts = {b"\xca\xfe\xba\xbe": ">iiIII", b"\xca\xfe\xba\xbf": ">iiQQII"}
+    layout = layouts.get(content[:4])
+    if layout is None or len(content) < 8:
+        raise ValueError("macOS universal artifact requires physical arm64 and x86_64 Mach-O fat slices")
+    count = struct.unpack_from(">I", content, 4)[0]
+    require_equal("macOS universal number of physical slices", 2, count)
+    entry_size = struct.calcsize(layout)
+    table_end = 8 + count * entry_size
+    if table_end > len(content):
+        raise ValueError("truncated macOS universal slice table")
+    cpus = {0x01000007: "x86_64", 0x0100000c: "arm64"}
+    slices = {}
+    regions = []
+    for index in range(count):
+        cpu, subtype, offset, size, alignment, *reserved = struct.unpack_from(layout, content, 8 + index * entry_size)
+        architecture = cpus.get(cpu)
+        if architecture is None or architecture in slices:
+            raise ValueError("macOS universal slices must contain one arm64 and one x86_64 architecture")
+        if (offset < table_end or size < 32 or offset + size > len(content) or alignment > 63
+                or offset % (1 << alignment) or any(reserved)):
+            raise ValueError("invalid macOS universal slice bounds/alignment")
+        if any(offset < end and start < offset + size for start, end in regions):
+            raise ValueError("overlapping macOS universal slices")
+        regions.append((offset, offset + size))
+        data = content[offset:offset + size]
+        if data[:4] != b"\xcf\xfa\xed\xfe":
+            raise ValueError(f"{architecture} slice is not a supported 64-bit Mach-O library")
+        actual_cpu, actual_subtype, file_type = struct.unpack_from("<iiI", data, 4)
+        require_equal(architecture + " slice CPU", cpu, actual_cpu)
+        require_equal(architecture + " slice CPU subtype", subtype, actual_subtype)
+        require_equal(architecture + " slice Mach-O library type", 6, file_type)
+        slices[architecture] = data
+    return slices
+
+
+def inspect_artifact_bytes(content):
+    value = inspect_bytes(content)
+    if value["build"]["architecture"] == "universal":
+        for architecture, data in universal_macho_slices(content).items():
+            try:
+                actual = inspect_bytes(data)
+                require_equal(architecture + " slice compiled identity", value, actual)
+            except ValueError as error:
+                raise ValueError(f"{architecture} slice: {error}") from error
+    return value
+
+
 def inspect_artifact(path):
     try:
-        return inspect_bytes(Path(path).read_bytes())
+        return inspect_artifact_bytes(Path(path).read_bytes())
     except OSError as error:
         raise ValueError(f"cannot inspect compiled artifact {path}: {error}") from error
 

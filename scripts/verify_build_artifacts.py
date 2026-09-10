@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from build_config import ROOT, canonical_json, load_config
-from build_metadata import create_metadata, inspect_bytes, verify_identity
+from build_metadata import create_metadata, inspect_artifact_bytes, verify_identity
 
 LIBRARY_SUFFIXES = {".so", ".dylib", ".dll", ".wasm"}
 
@@ -28,7 +28,7 @@ def verify_artifacts(binary_dir, root, config, selection):
     for path in artifacts:
         try:
             content = path.read_bytes()
-            actual = inspect_bytes(content)
+            actual = inspect_artifact_bytes(content)
             verify_identity(actual, expected, release=True)
         except (OSError, ValueError) as error:
             raise ValueError(f"{path}: {error}") from error
