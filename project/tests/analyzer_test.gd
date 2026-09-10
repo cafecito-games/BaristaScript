@@ -43,6 +43,7 @@ func _init() -> void:
 	_test_pinned_suite_exit_summary(failures)
 	_test_pinned_for_assert_consumers(failures)
 	_test_pinned_suite_datatypes(failures)
+	_test_native_iterator_annotation_nullability(failures)
 	_test_pinned_match_finality_domains(failures)
 	_test_internal_type_test_exhaustion(failures)
 	_test_pinned_match_domain_and_narrowing_audit(failures)
@@ -6027,4 +6028,42 @@ func _test_pinned_suite_datatypes(failures: PackedStringArray) -> void:
 		for path in ["body/0/loop", "body/0"]:
 			_expect(failures, report.get("nodes", {}).get(path, {}).get("type_source") == 1, types[0] + " suite inference source")
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", enabled)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_native_iterator_annotation_nullability(failures: PackedStringArray) -> void:
+	# Foundry c9d5e35 fs_type.cpp:1011-1014/1506-1513 and resolve_for:5797-5807.
+	# A nullable admission can need a runtime check without being a native downcast.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var saved := {}
+	for key in ["debug/barista_script/warnings/enable", "debug/barista_script/analysis/strict_null_checks", "debug/barista_script/analysis/strict_dynamic_checks"]:
+		saved[key] = ProjectSettings.get_setting(key)
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", false)
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	var cases: Array = [
+		["nullable_identity_soft", "Node?", "Node", false, true, false],
+		["nullable_upcast_soft", "Node?", "Object", false, true, false],
+		["identity_hard", "Node", "Node", false, true, false],
+		["upcast_hard", "Node", "Object", false, true, false],
+		["downcast_hard", "Object", "Node", false, true, true],
+		["nullable_target", "Node?", "Node?", false, true, false],
+		["nullable_downcast_soft", "Object?", "Node", false, true, true],
+		["nullable_identity_strict", "Node?", "Node", true, true, true],
+		["nullable_upcast_strict", "Node?", "Object", true, false, false],
+	]
+	for fixture in cases:
+		ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", fixture[3])
+		BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+		var source: String = "func use(values: Array[%s]) -> void:\n\tfor value: %s in values:\n\t\tpass\n" % [fixture[1], fixture[2]]
+		var path: String = "res://tests/native_iterator_" + fixture[0] + ".barista"
+		var expected_errors: Array = [] if fixture[4] else [["Unable to iterate on value of type \"Array[Node?]\" with variable of type \"Object\".", 2, 14]]
+		var report: Dictionary = probe.validate_source(source, path, true)
+		_expect(failures, report.get("valid") == fixture[4] and _errors_are_exact(report.get("errors", []), expected_errors) and report.get("warnings", []).is_empty(), fixture[0] + " exact native annotation diagnostics: " + str(report))
+		var observed: Dictionary = probe.inspect_function_source(source, path, "use")
+		var nodes: Dictionary = observed.get("nodes", {})
+		_expect(failures, observed.get("valid") == fixture[4] and nodes.get("body/0", {}).get("use_conversion_assign") == fixture[5], fixture[0] + " actual iterator conversion: " + str(observed))
+		_expect(failures, nodes.get("body/0/iterator", {}).get("datatype") == fixture[2], fixture[0] + " actual annotated iterator type")
+		_expect(failures, probe.is_semantically_valid(source, path) == fixture[4] and probe.validate_source(source, path, true) == report, fixture[0] + " validity and repeat agreement")
+	for key: String in saved:
+		ProjectSettings.set_setting(key, saved[key])
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
