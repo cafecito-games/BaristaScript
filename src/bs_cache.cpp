@@ -21,8 +21,6 @@
 
 #include <cstring>
 
-#include <godot_cpp/core/object.hpp>
-
 // ---------------------------------------------------------------------------
 // Miss-reason vocabulary. One definition of every name and every log line.
 // ---------------------------------------------------------------------------

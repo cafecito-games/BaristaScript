@@ -1,5 +1,5 @@
 {
-	"schema_version": 1,
+	"schema_version": 2,
 	"upstream": {
 		"repository": "cafecito-games/Foundry",
 		"revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
@@ -37,12 +37,20 @@
 		"site_fixture": "tests/fixtures/foundry_port_set_includes.txt"
 	},
 	"seam_header": "src/bs_platform.h",
+	"seam_files": [
+		"src/bs_platform.h",
+		"src/bs_platform_names.h",
+		"src/bs_platform_serialization.h",
+		"src/bs_platform_variant.h"
+	],
 	"seam_proof_sources": [
 		"src/bs_platform_seam.cpp",
-		"src/bs_platform_shims.cpp"
+		"src/bs_platform_shims.cpp",
+		"src/bs_platform_variant.cpp"
 	],
 	"seam_support_headers": [
 		"godot_cpp/core/memory.hpp",
+		"godot_cpp/core/object.hpp",
 		"godot_cpp/templates/local_vector.hpp",
 		"godot_cpp/classes/dir_access.hpp",
 		"godot_cpp/variant/packed_byte_array.hpp"
