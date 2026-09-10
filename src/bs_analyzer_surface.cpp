@@ -1048,6 +1048,86 @@ void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_nod
 	}
 }
 
+// The declaration fallback belongs only to lookups starting at this witness target.
+void BSAnalyzer::get_effective_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list,
+		const BSParser::Node *p_source, HashSet<BSParser::ClassNode *> *r_declarations) {
+	if (p_node == nullptr)
+		return;
+	get_class_node_current_scope_classes(p_node, p_list, const_cast<BSParser::Node *>(p_source));
+	if (witness_declaration_scope == nullptr || p_node != witness_target_class)
+		return;
+	List<BSParser::ClassNode *> declarations;
+	get_class_node_current_scope_classes(witness_declaration_scope, &declarations, const_cast<BSParser::Node *>(p_source));
+	for (BSParser::ClassNode *scope : declarations) {
+		if (p_list->find(scope) != nullptr)
+			continue;
+		p_list->push_back(scope);
+		if (r_declarations != nullptr)
+			r_declarations->insert(scope);
+	}
+}
+
+bool BSAnalyzer::is_type_bearing_member(const BSParser::ClassNode::Member &p_member) const {
+	switch (p_member.type) {
+		case BSParser::ClassNode::Member::CLASS:
+		case BSParser::ClassNode::Member::ENUM:
+		case BSParser::ClassNode::Member::TUPLE:
+		case BSParser::ClassNode::Member::TYPE_ALIAS:
+			return true;
+		case BSParser::ClassNode::Member::CONSTANT:
+			// #140 semantic class/preload handles carry their authoritative metatype without
+			// materializing a runtime Script object.
+			return p_member.get_datatype().is_meta_type;
+		default:
+			return false;
+	}
+}
+
+BSParser::ClassNode *BSAnalyzer::find_witness_declaration_type(const StringName &p_name, const BSParser::Node *p_source) {
+	if (current_class != witness_target_class || witness_declaration_scope == nullptr || witness_target_scope_declares_name(p_name, p_source))
+		return nullptr;
+	List<BSParser::ClassNode *> scopes;
+	HashSet<BSParser::ClassNode *> declarations;
+	get_effective_scope_classes(current_class, &scopes, p_source, &declarations);
+	for (BSParser::ClassNode *scope : scopes) {
+		if (!declarations.has(scope))
+			continue;
+		if (scope->identifier != nullptr && scope->identifier->name == p_name)
+			return scope;
+		if (!scope->has_member(p_name))
+			continue;
+		resolve_class_member(scope, p_name, p_source);
+		if (is_type_bearing_member(scope->get_member(p_name)))
+			return scope;
+	}
+	return nullptr;
+}
+
+bool BSAnalyzer::reduce_identifier_from_witness_declaration_scope(BSParser::IdentifierNode *p_identifier) {
+	BSParser::ClassNode *scope = find_witness_declaration_type(p_identifier->name, p_identifier);
+	if (scope == nullptr)
+		return false;
+	if (scope->identifier != nullptr && scope->identifier->name == p_identifier->name) {
+		BSParser::DataType type = scope->get_datatype();
+		type.is_meta_type = true;
+		if (!scope->is_trait) {
+			p_identifier->is_constant = true;
+			p_identifier->is_unmaterialized_constant = true;
+		}
+		p_identifier->set_datatype(type);
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
+	} else if (scope->get_member(p_identifier->name).type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+		push_error(vformat(R"(Type alias "%s" can only be used in a type position. It declares no value, so it cannot be called, constructed, or read.)", p_identifier->name), p_identifier);
+		BSParser::DataType type;
+		type.kind = BSParser::DataType::VARIANT;
+		p_identifier->set_datatype(type);
+	} else if (!try_bind_identifier_member(p_identifier, scope, false)) {
+		return false;
+	}
+	p_identifier->resolved_from_conformance_declaration_scope = true;
+	return true;
+}
+
 // Foundry surface:1302-1361: only the compiler's flattened surface is reachable.
 // Abstract receivers additionally expose requirements; lexical outers are never donors.
 BSParser::ClassNode *BSAnalyzer::find_trait_member_in_inheritance_chain(BSParser::ClassNode *p_receiver,
@@ -1456,6 +1536,10 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		BSParser::DataType class_type = member.m_class->get_datatype();
 		class_type.is_meta_type = true;
 		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
+		if (!member.m_class->is_trait) {
+			p_identifier->is_constant = true;
+			p_identifier->is_unmaterialized_constant = true;
+		}
 		p_identifier->set_datatype(class_type);
 		return true;
 	}

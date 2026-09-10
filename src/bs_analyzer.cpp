@@ -1458,6 +1458,41 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 	}
 
 	StringName name = p_type_node->type_chain[0]->name;
+	if (current_class == witness_target_class && witness_declaration_scope != nullptr &&
+			name != SNAME("Self") && name != SNAME("Variant") && name != BSParser::get_number_type_name() &&
+			!BSParser::is_builtin_data_type(name) && name != SNAME("AsyncCallable")) {
+		List<BSParser::ClassNode *> target_scopes;
+		get_class_node_current_scope_classes(current_class, &target_scopes, p_type_node);
+		BSParser::ClassNode *selected = nullptr;
+		for (BSParser::ClassNode *scope : target_scopes) {
+			if (scope->has_member(name) || (scope->identifier != nullptr && scope->identifier->name == name)) {
+				selected = scope;
+				break;
+			}
+		}
+		if (selected == nullptr)
+			selected = find_witness_declaration_type(name, p_type_node);
+		if (selected != nullptr) {
+			if (selected->has_member(name) && selected->get_member(name).type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+				bool lexical = false;
+				for (BSParser::ClassNode *scope = witness_declaration_scope; scope != nullptr; scope = scope->outer) {
+					if (scope == selected) {
+						lexical = true;
+						break;
+					}
+				}
+				if (!lexical) {
+					push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", name), p_type_node);
+					result.kind = BSParser::DataType::VARIANT;
+					return result;
+				}
+			}
+			if (selected != current_class) {
+				ScopedCurrentClass selected_scope(this, selected);
+				return datatype_from_type_node(p_type_node);
+			}
+		}
+	}
 	if (p_type_node->type_chain.size() == 1) {
 		if (name == BSParser::get_number_type_name()) {
 			// Foundry @ c9d5e35: `Number` is the closed int|float union at builtin precedence.
@@ -1600,8 +1635,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			const BSParser::ClassNode::Member member = scope->get_member(name);
 			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
 				resolve_class_member(scope, name, p_type_node);
-				result = member.m_class->get_datatype();
-				result.is_meta_type = false;
+				result = type_from_metatype(member.m_class->get_datatype());
 				result.is_nullable = p_type_node->is_nullable;
 				return result;
 			}
@@ -1660,8 +1694,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 					}
 					return result;
 				}
-				result = current_class->get_datatype();
-				result.is_meta_type = false;
+				result = type_from_metatype(current_class->get_datatype());
 				result.type_arguments.clear();
 				if (!result.is_set() || result.is_variant()) {
 					result.kind = BSParser::DataType::CLASS;
@@ -1740,6 +1773,11 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			push_error(vformat(R"("%s" is a constant but does not contain a type.)", lexical_name), p_type_node);
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
+		}
+		if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
+			// The selected lexical owner supplies nested classes, enums and tuples alike.
+			resolve_class_member(scope, lexical_name, p_type_node);
+			return resolve_nested(type_from_metatype(member.get_datatype()), 1);
 		}
 		break;
 	}
@@ -2694,6 +2732,8 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		p_identifier->set_datatype(self_handle);
 		return;
 	}
+	if (reduce_identifier_from_witness_declaration_scope(p_identifier))
+		return;
 	bool lookup_error = false;
 	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier, lookup_error);
 	if (lookup_error) {
@@ -2703,6 +2743,19 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (!indexed.is_variant()) {
 		indexed.is_meta_type = true;
 		p_identifier->set_datatype(indexed);
+		return;
+	}
+	// A builtin target's expression handle reaches the existing static witness call path.
+	// This carries type identity only; builtin method/constructor metadata stays in its
+	// existing consumers, and no runtime value is constructed for this handle.
+	if (BSParser::is_builtin_data_type(p_identifier->name)) {
+		BSParser::DataType builtin_meta;
+		builtin_meta.kind = BSParser::DataType::BUILTIN;
+		builtin_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		builtin_meta.builtin_type = BSParser::get_builtin_type(p_identifier->name);
+		builtin_meta.is_meta_type = true;
+		builtin_meta.is_constant = true;
+		p_identifier->set_datatype(builtin_meta);
 		return;
 	}
 	// Native classes are expression-position class handles after locals and members have missed.
@@ -2783,6 +2836,19 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	const auto find_owner = [&](const auto &self, BSParser::ClassNode *candidate) -> BSParser::ClassNode * {
 		if (candidate == nullptr) {
 			return nullptr;
+		}
+		// A witness is stored beside its declaration, but parameter Self denotes its
+		// conformance target. Recover that existing target before call-site substitution.
+		for (const BSParser::ConformanceNode *conformance : candidate->conformances) {
+			if (conformance == nullptr || !conformance->witnesses.has(p_callee) || conformance->target == nullptr)
+				continue;
+			const BSParser::DataType target_type = conformance->target->get_datatype();
+			if (target_type.kind == BSParser::DataType::CLASS)
+				return target_type.class_type;
+			if (target_type.kind == BSParser::DataType::NATIVE)
+				return conformance->native_target_shim;
+			if (target_type.kind == BSParser::DataType::BUILTIN)
+				return conformance->builtin_target_shim;
 		}
 		for (const BSParser::ClassNode::Member &member : candidate->members) {
 			if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function == p_callee) {
@@ -3954,6 +4020,10 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 							member.type == BSParser::ClassNode::Member::ENUM) {
 						p_subscript->attribute->set_datatype(member.get_datatype());
 						p_subscript->set_datatype(member.get_datatype());
+						if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr && !member.m_class->is_trait) {
+							p_subscript->is_constant = true;
+							p_subscript->is_unmaterialized_constant = true;
+						}
 						return;
 					}
 					if (receiver_type.is_meta_type && member.type != BSParser::ClassNode::Member::TYPE_ALIAS) {
@@ -6988,6 +7058,52 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	p_call->set_datatype(case_value_type);
 }
 
+bool BSAnalyzer::witness_target_scope_declares_name(const StringName &p_name, const BSParser::Node *p_source) {
+	if (witness_target_class == nullptr)
+		return false;
+	List<BSParser::ClassNode *> scopes;
+	get_class_node_current_scope_classes(witness_target_class, &scopes, const_cast<BSParser::Node *>(p_source));
+	for (BSParser::ClassNode *scope : scopes) {
+		if (scope->has_member(p_name) || (scope->identifier != nullptr && scope->identifier->name == p_name))
+			return true;
+		if (find_trait_member_in_inheritance_chain(scope, p_name, p_source) != nullptr)
+			return true;
+	}
+	const auto self_type = witness_target_class->get_datatype();
+	if (self_type.kind == BSParser::DataType::BUILTIN && self_type.builtin_type != Variant::NIL && self_type.builtin_type != Variant::OBJECT) {
+		if (Variant::has_member(self_type.builtin_type, p_name))
+			return true;
+		// Only default builtin values are constructed for reflection, never user/native objects.
+		alignas(8) uint8_t storage[GODOT_CPP_VARIANT_SIZE]{};
+		GDExtensionCallError error{};
+		gdextension_interface::variant_construct((GDExtensionVariantType)self_type.builtin_type, storage, nullptr, 0, &error);
+		Variant value((GDExtensionConstVariantPtr)storage);
+		gdextension_interface::variant_destroy(storage);
+		if (error.error == GDEXTENSION_CALL_OK && value.has_method(p_name))
+			return true;
+		// The pinned interface returns int(-1) for absence (variant_call.cpp:1786).
+		// None of the selected API's builtin constants has that value; S5 replaces
+		// this name-only reflection seam with its complete generated metadata query.
+		gdextension_interface::variant_get_constant_value((GDExtensionVariantType)self_type.builtin_type, p_name._native_ptr(), storage);
+		Variant constant((GDExtensionConstVariantPtr)storage);
+		gdextension_interface::variant_destroy(storage);
+		if (constant.get_type() != Variant::INT || int64_t(constant) != -1)
+			return true;
+	}
+	const StringName native = witness_target_class->base_type.native_type;
+	if (native != StringName() && ClassDB::class_exists(native)) {
+		if (ClassDB::class_has_method(native, p_name) || ClassDB::class_has_signal(native, p_name) || ClassDB::class_has_enum(native, p_name) || ClassDB::class_has_integer_constant(native, p_name))
+			return true;
+		const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(native);
+		for (int i = 0; i < properties.size(); i++) {
+			const Dictionary property = properties[i];
+			if (StringName(property.get("name", String())) == p_name)
+				return true;
+		}
+	}
+	return false;
+}
+
 bool BSAnalyzer::find_named_tuple_meta_type(const BSParser::DataType &p_base_type, bool p_is_self, const StringName &p_name,
 		const BSParser::Node *p_source, BSParser::DataType &r_tuple_meta_type) {
 	if (p_name == StringName()) {
@@ -7059,6 +7175,12 @@ bool BSAnalyzer::find_named_tuple_meta_type(const BSParser::DataType &p_base_typ
 			}
 			r_tuple_meta_type = tuple_type_for_spelling(member.m_tuple->get_datatype(), scope);
 			return r_tuple_meta_type.kind == BSParser::DataType::TUPLE && r_tuple_meta_type.is_meta_type;
+		}
+	}
+	if (p_is_self && start == witness_target_class) {
+		if (BSParser::ClassNode *declaration = find_witness_declaration_type(p_name, p_source)) {
+			ScopedCurrentClass declaration_scope(this, declaration);
+			return find_named_tuple_meta_type(declaration->get_datatype(), true, p_name, p_source, r_tuple_meta_type);
 		}
 	}
 	return false;
