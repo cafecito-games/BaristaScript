@@ -282,7 +282,7 @@ void BSDeclarationIndex::_erase_path_unlocked(const String &p_path, Vector<Strin
 	const BSDeclarationRecord previous = found->value;
 	by_path.erase(p_path);
 	_rebuild_views_unlocked();
-	if (r_changed_namespaces != nullptr && previous.declares_retroactive_conformances && !previous.namespace_name.is_empty()) {
+	if (r_changed_namespaces != nullptr && previous.declares_retroactive_conformances) {
 		r_changed_namespaces->push_back(previous.namespace_name);
 	}
 }
@@ -297,10 +297,10 @@ void BSDeclarationIndex::_insert_path_unlocked(const BSDeclarationRecord &p_reco
 	by_path[p_record.path] = p_record;
 	_rebuild_views_unlocked();
 	if (r_changed_namespaces != nullptr) {
-		if (previous_conformance && !previous_namespace.is_empty()) {
+		if (previous_conformance) {
 			r_changed_namespaces->push_back(previous_namespace);
 		}
-		if (p_record.declares_retroactive_conformances && !p_record.namespace_name.is_empty()) {
+		if (p_record.declares_retroactive_conformances) {
 			r_changed_namespaces->push_back(p_record.namespace_name);
 		}
 		_sort_unique(*r_changed_namespaces);

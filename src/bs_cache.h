@@ -252,6 +252,8 @@ public:
 	barista_script::BSParser *get_parser();
 	barista_script::BSAnalyzer *get_analyzer();
 	Error raise_status(Status p_new_status);
+	// A later latched failure does not invalidate an already completed lower phase.
+	Error get_result_for_status(Status p_status);
 	void clear();
 
 	BSParserRef() {}
@@ -346,6 +348,7 @@ public:
 	static bool has_parser(const String &p_path);
 	static void remove_parser(const String &p_path);
 	static HashSet<String> collect_parser_invalidation_closure(const String &p_path);
+	static Vector<String> collect_indexed_conformance_observers();
 	static Vector<String> collect_parsers_reaching_namespace(const String &p_namespace);
 	/** Drops every parsed/analyzed artifact; preserves source overrides. */
 	static void invalidate_analysis();

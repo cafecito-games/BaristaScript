@@ -117,7 +117,7 @@ void BSAnalyzer::resolve_annotation_declaration(BSParser::AnnotationDeclarationN
 		}
 		if (parameter->initializer != nullptr) {
 			reduce_expression(parameter->initializer);
-			if (!parameter->initializer->is_constant) {
+			if (!has_materialized_constant_value(parameter->initializer)) {
 				push_error(vformat(R"(Default value for annotation parameter "%s" must be a constant expression.)", parameter->identifier->name), parameter->initializer);
 			} else {
 				Variant default_value = parameter->initializer->reduced_value;
@@ -310,7 +310,7 @@ void BSAnalyzer::resolve_custom_annotation(BSParser::AnnotationNode *p_annotatio
 		}
 		const StringName argument_name = i < p_annotation->argument_names.size() ? p_annotation->argument_names[i] : StringName();
 		reduce_expression(argument);
-		if (!argument->is_constant) {
+		if (!has_materialized_constant_value(argument)) {
 			push_error(vformat(R"(Argument %d of annotation "%s" is not a constant expression.)", i + 1, p_annotation->name), argument);
 			argument_error = true;
 			continue;
@@ -454,7 +454,7 @@ void BSAnalyzer::resolve_annotation(BSParser::AnnotationNode *p_annotation, uint
 
 		reduce_expression(argument);
 
-		if (!argument->is_constant) {
+		if (!has_materialized_constant_value(argument)) {
 			push_error(vformat(R"(Argument %d of annotation "%s" isn't a constant expression.)", i + 1, p_annotation->name), argument);
 			return;
 		}
@@ -1044,7 +1044,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
 					options.strict_null = strict_null_checks;
-					if (member.variable->initializer->is_constant) {
+					if (BSAnalyzer::has_materialized_constant_value(member.variable->initializer)) {
 						options.constant_source_value = &member.variable->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
@@ -1104,7 +1104,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
 					options.strict_null = strict_null_checks;
-					if (member.constant->initializer->is_constant) {
+					if (BSAnalyzer::has_materialized_constant_value(member.constant->initializer)) {
 						options.constant_source_value = &member.constant->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {

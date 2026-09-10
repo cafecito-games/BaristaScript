@@ -56,6 +56,22 @@ namespace barista_script {
 
 namespace {
 
+// Static metatypes have semantic identity but no runtime Variant payload in M3.
+// Their default NIL storage is never evidence of a null value.
+static bool _is_unmaterialized_metatype(const BSParser::ExpressionNode *p_expression) {
+	return p_expression != nullptr && p_expression->get_datatype().is_meta_type &&
+			p_expression->reduced_value.get_type() == Variant::NIL;
+}
+
+static bool _is_static_script_handle(const BSParser::ExpressionNode *p_expression) {
+	return _is_unmaterialized_metatype(p_expression) && p_expression->get_datatype().kind == BSParser::DataType::CLASS &&
+			p_expression->get_datatype().class_type != nullptr;
+}
+
+static bool _constant_truth(const BSParser::ExpressionNode *p_expression) {
+	return _is_static_script_handle(p_expression) || p_expression->reduced_value.booleanize();
+}
+
 static bool _enum_has_value(const BSParser::DataType &p_type, int64_t p_value) {
 	for (const KeyValue<StringName, int64_t> &entry : p_type.enum_values) {
 		if (entry.value == p_value) {
@@ -795,7 +811,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		return;
 	}
 
-	if (p_class == nullptr) {
+	if (p_class == nullptr || failed_name_lookups.has(p_class)) {
 		return;
 	}
 
@@ -912,6 +928,13 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 						break;
 					}
 					if (member.type == BSParser::ClassNode::Member::CONSTANT) {
+						resolve_class_member(look_class, first, first_id);
+						const BSParser::DataType constant_type = member.get_datatype();
+						if (constant_type.is_meta_type && constant_type.kind == BSParser::DataType::CLASS && constant_type.class_type != nullptr) {
+							result = type_from_metatype(constant_type);
+							found = true;
+							break;
+						}
 						push_error(vformat(R"(Constant "%s" is not a preloaded script or class.)", first), first_id);
 					} else {
 						push_error(vformat(R"(Cannot use %s "%s" in extends chain.)", member.get_type_name(), first), first_id);
@@ -1016,6 +1039,17 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		}
 	}
 
+	// Foundry surface:764-780 @ c9d5e35. Preload aliases must not turn a
+	// type-only file into an extendable script class.
+	if (result.kind == BSParser::DataType::CLASS && result.class_type != nullptr &&
+			(result.class_type->is_enum_file || result.class_type->is_tuple_file)) {
+		const BSParser::Node *source = p_class->extends.is_empty() ? static_cast<const BSParser::Node *>(p_class) : p_class->extends[0];
+		push_error(vformat(R"(Cannot extend %s file "%s".)", result.class_type->is_enum_file ? "enum_name" : "tuple_name", result.to_string()), source);
+		failed_name_lookups.insert(p_class);
+		p_class->base_type = BSParser::DataType();
+		return;
+	}
+
 	if (result.kind == BSParser::DataType::CLASS && result.class_type != nullptr && result.class_type->is_trait) {
 		const String class_name = p_class->identifier != nullptr ? String(p_class->identifier->name) : String("<main>");
 		const String trait_name = result.class_type->identifier != nullptr ? String(result.class_type->identifier->name) : String("<trait>");
@@ -1032,9 +1066,18 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		return;
 	}
 
-	// Cyclic inheritance through CLASS bases: Foundry push_errors here. BaristaScript keeps the
-	// CLASS edge so mutual path-extends still terminate in `bs_global_class.cpp` (blank editor
-	// base) without fail-stopping registration / can_instantiate.
+	// Foundry surface:833-841 @ c9d5e35. Reentrant cache acquisition can
+	// return a head whose inheritance is still resolving; that is also a cycle.
+	HashSet<const BSParser::ClassNode *> inheritance_chain;
+	for (const BSParser::ClassNode *base = result.class_type; base != nullptr; base = base->base_type.class_type) {
+		if (base == p_class || base->base_type.is_resolving() || inheritance_chain.has(base)) {
+			push_error("Cyclic inheritance.", p_class);
+			failed_name_lookups.insert(p_class);
+			p_class->base_type = BSParser::DataType();
+			return;
+		}
+		inheritance_chain.insert(base);
+	}
 
 	// M5: extends type arguments are recorded but not specialized here (prior M3 behavior).
 	// Fail-stopping would reject well-formed `extends "Generic"[T]` heads that global-class
@@ -1459,6 +1502,54 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
+	auto resolve_nested = [&](BSParser::DataType base, int prefix_size) {
+		for (int i = prefix_size; i < p_type_node->type_chain.size(); ++i) {
+			BSParser::IdentifierNode *part = p_type_node->type_chain[i];
+			BSParser::ClassNode *owner = base.class_type;
+			HashSet<const BSParser::ClassNode *> visited;
+			while (owner != nullptr && !owner->has_member(part->name) && !visited.has(owner)) {
+				visited.insert(owner);
+				owner = owner->base_type.class_type;
+			}
+			if ((base.kind != BSParser::DataType::CLASS && base.kind != BSParser::DataType::SCRIPT) ||
+					owner == nullptr || !owner->has_member(part->name)) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			resolve_class_member(owner, part->name, part);
+			const BSParser::ClassNode::Member member = owner->get_member(part->name);
+			if (member.type != BSParser::ClassNode::Member::CLASS && member.type != BSParser::ClassNode::Member::ENUM && member.type != BSParser::ClassNode::Member::TUPLE) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			base = type_from_metatype(member.get_datatype());
+		}
+		base.is_nullable = p_type_node->is_nullable;
+		return base;
+	};
+
+	// A lexical metatype constant (including a preload handle) claims the prefix
+	// before an identically spelled namespace. Private aliases remain file-local.
+	const StringName lexical_name = p_type_node->type_chain[0]->name;
+	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+		if (!scope->has_member(lexical_name)) {
+			continue;
+		}
+		const auto member = scope->get_member(lexical_name);
+		if (member.type == BSParser::ClassNode::Member::CONSTANT) {
+			resolve_class_member(scope, lexical_name, p_type_node);
+			if (member.get_datatype().is_meta_type) {
+				return resolve_nested(type_from_metatype(member.get_datatype()), 1);
+			}
+			push_error(vformat(R"("%s" is a constant but does not contain a type.)", lexical_name), p_type_node);
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+		break;
+	}
+
 	String qualified;
 	for (int i = 0; i < p_type_node->type_chain.size(); i++) {
 		if (i > 0) {
@@ -1552,31 +1643,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		if (base.is_variant()) {
 			continue;
 		}
-		for (int i = prefix_size; i < p_type_node->type_chain.size(); ++i) {
-			BSParser::IdentifierNode *part = p_type_node->type_chain[i];
-			BSParser::ClassNode *owner = base.class_type;
-			HashSet<const BSParser::ClassNode *> visited;
-			while (owner != nullptr && !owner->has_member(part->name) && !visited.has(owner)) {
-				visited.insert(owner);
-				owner = owner->base_type.class_type;
-			}
-			if ((base.kind != BSParser::DataType::CLASS && base.kind != BSParser::DataType::SCRIPT) ||
-					owner == nullptr || !owner->has_member(part->name)) {
-				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
-				base.kind = BSParser::DataType::VARIANT;
-				return base;
-			}
-			resolve_class_member(owner, part->name, part);
-			const BSParser::ClassNode::Member member = owner->get_member(part->name);
-			if (member.type != BSParser::ClassNode::Member::CLASS && member.type != BSParser::ClassNode::Member::ENUM && member.type != BSParser::ClassNode::Member::TUPLE) {
-				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
-				base.kind = BSParser::DataType::VARIANT;
-				return base;
-			}
-			base = type_from_metatype(member.get_datatype());
-		}
-		base.is_nullable = p_type_node->is_nullable;
-		return base;
+		return resolve_nested(base, prefix_size);
 	}
 	push_error(vformat(R"(Could not find type "%s".)", qualified), p_type_node->type_chain[0]);
 	result.kind = BSParser::DataType::VARIANT;
@@ -2012,6 +2079,10 @@ BSParser::DataType BSAnalyzer::get_operation_type(Variant::Operator p_operation,
 	return result;
 }
 
+bool BSAnalyzer::has_materialized_constant_value(const BSParser::ExpressionNode *p_expression) {
+	return p_expression != nullptr && p_expression->is_constant && !_is_unmaterialized_metatype(p_expression);
+}
+
 void BSAnalyzer::reduce_literal(BSParser::LiteralNode *p_literal) {
 	if (p_literal == nullptr) {
 		return;
@@ -2029,7 +2100,13 @@ void BSAnalyzer::reduce_unary_op(BSParser::UnaryOpNode *p_unary_op) {
 	reduce_expression(p_unary_op->operand);
 	BSParser::DataType operand_type = p_unary_op->operand->get_datatype();
 
-	if (p_unary_op->operand->is_constant) {
+	if (p_unary_op->operand->is_constant && _is_static_script_handle(p_unary_op->operand) && p_unary_op->variant_op == Variant::OP_NOT) {
+		p_unary_op->is_constant = true;
+		p_unary_op->reduced_value = false;
+		p_unary_op->set_datatype(type_from_variant(false));
+		return;
+	}
+	if (has_materialized_constant_value(p_unary_op->operand)) {
 		p_unary_op->is_constant = true;
 		p_unary_op->reduced = true;
 		String overflow_error;
@@ -2098,7 +2175,37 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 	}
 #endif
 
-	if (p_binary_op->left_operand->is_constant && p_binary_op->right_operand->is_constant) {
+	if (p_binary_op->left_operand->is_constant && p_binary_op->right_operand->is_constant &&
+			(_is_static_script_handle(p_binary_op->left_operand) || _is_static_script_handle(p_binary_op->right_operand))) {
+		const bool left_handle = _is_static_script_handle(p_binary_op->left_operand);
+		const bool right_handle = _is_static_script_handle(p_binary_op->right_operand);
+		const bool left_null = has_materialized_constant_value(p_binary_op->left_operand) && left_type.kind == BSParser::DataType::BUILTIN && left_type.builtin_type == Variant::NIL;
+		const bool right_null = has_materialized_constant_value(p_binary_op->right_operand) && right_type.kind == BSParser::DataType::BUILTIN && right_type.builtin_type == Variant::NIL;
+		bool known = false;
+		bool value = false;
+		if ((p_binary_op->variant_op == Variant::OP_EQUAL || p_binary_op->variant_op == Variant::OP_NOT_EQUAL) &&
+				((left_handle && right_handle) || left_null || right_null)) {
+			// Foundry Variant Object equality is identity (variant_op.h:830-866).
+			value = left_handle && right_handle && left_type.class_type == right_type.class_type;
+			value = p_binary_op->variant_op == Variant::OP_EQUAL ? value : !value;
+			known = true;
+		} else if ((left_handle || has_materialized_constant_value(p_binary_op->left_operand)) &&
+				(right_handle || has_materialized_constant_value(p_binary_op->right_operand))) {
+			const bool left = _constant_truth(p_binary_op->left_operand), right = _constant_truth(p_binary_op->right_operand);
+			if (p_binary_op->variant_op == Variant::OP_AND || p_binary_op->variant_op == Variant::OP_OR || p_binary_op->variant_op == Variant::OP_XOR) {
+				value = p_binary_op->variant_op == Variant::OP_AND ? left && right : p_binary_op->variant_op == Variant::OP_OR ? left || right
+																															   : left != right;
+				known = true;
+			}
+		}
+		if (known) {
+			p_binary_op->is_constant = true;
+			p_binary_op->reduced_value = value;
+			p_binary_op->set_datatype(type_from_variant(value));
+			return;
+		}
+	}
+	if (has_materialized_constant_value(p_binary_op->left_operand) && has_materialized_constant_value(p_binary_op->right_operand)) {
 		p_binary_op->is_constant = true;
 		p_binary_op->reduced = true;
 		String overflow_error;
@@ -2639,6 +2746,18 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				p_call->function_name = subscript->attribute->name;
 			}
 
+			const BSParser::DataType file_type = subscript->base->get_datatype();
+			if (file_type.kind == BSParser::DataType::CLASS && file_type.is_meta_type && file_type.class_type != nullptr && file_type.class_type->is_enum_file) {
+				BSParser::ClassNode *head = file_type.class_type;
+				analyze_class_interface(head, subscript->attribute);
+				if (head->enum_file_decl != nullptr && head->enum_file_decl->get_datatype().get_enum_case_payload(subscript->attribute->name) != nullptr) {
+					// The file-handle diagnostic applies to calls as well as member values.
+					reduce_expression(subscript);
+					p_call->set_datatype(subscript->get_datatype());
+					return;
+				}
+			}
+
 			// Foundry reduce_call tuple-construction path @ c9d5e35: an owner-qualified
 			// local constructor (`Left.Point(...)`) resolves against the precise class
 			// declaration before ordinary method lookup.
@@ -2875,7 +2994,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			options.allow_implicit_conversion = true;
 			options.strict_dynamic = strict_dynamic_checks;
 			options.strict_null = strict_null_checks;
-			if (p_call->arguments[p_index]->is_constant) {
+			if (has_materialized_constant_value(p_call->arguments[p_index])) {
 				options.constant_source_value = &p_call->arguments[p_index]->reduced_value;
 			}
 			return BSTypeCompatibility::check(p_expected, p_call->arguments[p_index]->get_datatype(), options).compatible;
@@ -3040,7 +3159,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					bool all_constant = true;
 					Vector<Variant> arguments;
 					for (const BSParser::ExpressionNode *argument : p_call->arguments) {
-						all_constant = all_constant && argument->is_constant;
+						all_constant = all_constant && has_materialized_constant_value(argument);
 						arguments.push_back(argument->reduced_value);
 					}
 					if (all_constant && parser->get_errors().size() == previous_errors) {
@@ -3068,6 +3187,77 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	BSParser::DataType type;
 	type.kind = BSParser::DataType::VARIANT;
 	p_call->set_datatype(type);
+}
+
+void BSAnalyzer::reduce_preload(BSParser::PreloadNode *p_preload) {
+	// Foundry reduce_preload @ c9d5e35: constant String, relative/UID path,
+	// bootstrap fence, then script/resource loading. M3 script values are semantic
+	// metatypes owned by retained parsers; no Script resource is instantiated.
+	p_preload->is_constant = true;
+	p_preload->set_datatype(type_from_variant(Variant()));
+	if (p_preload->path == nullptr) {
+		return;
+	}
+	reduce_expression(p_preload->path);
+	if (!p_preload->path->is_constant || p_preload->path->reduced_value.get_type() != Variant::STRING) {
+		push_error("Preloaded path must be a constant string.", p_preload->path);
+		return;
+	}
+	String path = p_preload->path->reduced_value;
+	if (path.is_relative_path()) {
+		path = parser->script_path.get_base_dir().path_join(path);
+	}
+	path = ResourceUID::ensure_path(path.simplify_path()).simplify_path();
+	p_preload->resolved_path = path;
+	if (path.get_extension() == "barista") {
+		if (!is_bootstrap_path_allowed(path)) {
+			push_error(vformat(R"(Build task bootstrap cannot preload script "%s"; it is outside the provider bootstrap root "%s".)", bs_diagnostic_file_reference(path), bootstrap_root_storage()), p_preload->path);
+			return;
+		}
+		Ref<BSParserRef> ref = parser->get_depended_parser_for(path);
+		if (ref.is_null()) {
+			push_error(vformat(R"(Preload file "%s" does not exist.)", bs_diagnostic_file_reference(path)), p_preload->path);
+			return;
+		}
+		ref->raise_status(BSParserRef::INHERITANCE_SOLVED);
+		if (ref->get_result_for_status(BSParserRef::INHERITANCE_SOLVED) != OK) {
+			push_error(vformat(R"(Could not preload resource script "%s".)", bs_diagnostic_file_reference(path)), p_preload->path);
+			return;
+		}
+		BSParser::ClassNode *head = ref->get_parser()->get_tree();
+		if (!head->conformances.is_empty()) {
+			ref->raise_status(BSParserRef::INTERFACE_SOLVED);
+			if (ref->get_result_for_status(BSParserRef::INTERFACE_SOLVED) != OK) {
+				push_error(vformat(R"(Could not preload resource script "%s".)", bs_diagnostic_file_reference(path)), p_preload->path);
+				return;
+			}
+		}
+		// A file handle remains a class metatype even for an enum/tuple file. Its
+		// declared head is reached as a member, preserving the pinned file surface.
+		BSParser::DataType type = head->get_datatype();
+		type.is_meta_type = true;
+		type.is_constant = true;
+		p_preload->set_datatype(type);
+		return;
+	}
+	ResourceLoader *loader = ResourceLoader::get_singleton();
+	if (!loader->exists(path)) {
+		push_error(vformat(FileAccess::file_exists(path) ? R"(Preload file "%s" has no resource loaders (unrecognized file extension).)" : R"(Preload file "%s" does not exist.)", bs_diagnostic_file_reference(path)), p_preload->path);
+		return;
+	}
+	p_preload->resource = loader->load(path);
+	if (p_preload->resource.is_null()) {
+		push_error(vformat(R"(Could not preload resource file "%s".)", bs_diagnostic_file_reference(path)), p_preload->path);
+		return;
+	}
+	p_preload->reduced_value = p_preload->resource;
+	BSParser::DataType type;
+	type.kind = BSParser::DataType::NATIVE;
+	type.builtin_type = Variant::OBJECT;
+	type.native_type = p_preload->resource->get_class();
+	type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+	type.is_constant = true;
+	p_preload->set_datatype(type);
 }
 
 void BSAnalyzer::reduce_await(BSParser::AwaitNode *p_await) {
@@ -3254,6 +3444,38 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 		return;
 	}
 	if (p_subscript->is_attribute) {
+		const BSParser::DataType file_receiver = p_subscript->base->get_datatype();
+		BSParser::ClassNode *head = file_receiver.class_type;
+		if (file_receiver.kind == BSParser::DataType::CLASS && file_receiver.is_meta_type && head != nullptr &&
+				head->is_enum_file && head->enum_file_decl != nullptr && p_subscript->attribute != nullptr) {
+			// Foundry identifier-from-base @ c9d5e35: a file handle and its enum
+			// are distinct. Payload constructors are available only on the enum name.
+			analyze_class_interface(head, p_subscript->attribute);
+			const BSParser::DataType enum_type = head->enum_file_decl->get_datatype();
+			const StringName name = p_subscript->attribute->name;
+			if (name == head->enum_file_decl->identifier->name) {
+				p_subscript->attribute->set_datatype(enum_type);
+				p_subscript->set_datatype(enum_type);
+				p_subscript->is_constant = true;
+				return;
+			}
+			if (enum_type.enum_values.has(name)) {
+				BSParser::DataType case_type = type_from_metatype(enum_type);
+				if (enum_type.is_tagged_union && enum_type.get_enum_case_payload(name) != nullptr) {
+					case_type.is_pseudo_type = true;
+					case_type.enum_case_name = name;
+					p_subscript->attribute->set_datatype(case_type);
+					p_subscript->set_datatype(case_type);
+					push_error(vformat(R"*(Enum case "%s.%s" carries a payload and must be constructed through the enum name, e.g. "%s.%s(...)".)*", head->enum_file_decl->identifier->name, name, head->enum_file_decl->identifier->name, name), p_subscript->attribute);
+					return;
+				}
+				p_subscript->attribute->set_datatype(case_type);
+				p_subscript->set_datatype(case_type);
+				p_subscript->is_constant = true;
+				p_subscript->reduced_value = enum_type.is_tagged_union ? _tagged_union_case_singleton(enum_type.enum_values[name]) : Variant(enum_type.enum_values[name]);
+				return;
+			}
+		}
 		// Foundry reduce_subscript ENUM meta case fold @ c9d5e35: `Message.Quit` / plain
 		// `Level.Low` are constant values (tagged-union `[tag]` singleton or INT ordinal).
 		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr) {
@@ -3645,7 +3867,7 @@ Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_ex
 	// r_reduced can alias p_expression->is_constant. Preserve the input before clearing output.
 	const bool was_constant = p_expression != nullptr && p_expression->is_constant;
 	r_reduced = false;
-	if (p_expression == nullptr || failed_constant_expressions.has(p_expression)) {
+	if (p_expression == nullptr || failed_constant_expressions.has(p_expression) || _is_unmaterialized_metatype(p_expression)) {
 		return Variant();
 	}
 	if (was_constant) {
@@ -3809,7 +4031,7 @@ void BSAnalyzer::publish_constant_subscript(BSParser::SubscriptNode *p_subscript
 }
 
 void BSAnalyzer::materialize_constant_initializer(BSParser::ConstantNode *p_constant) {
-	if (p_constant->initializer == nullptr) {
+	if (p_constant->initializer == nullptr || (p_constant->initializer->is_constant && _is_unmaterialized_metatype(p_constant->initializer))) {
 		return;
 	}
 	bool reduced = false;
@@ -3904,7 +4126,7 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 		}
 		reduce_expression(element.value);
 
-		if (element.key != nullptr && element.key->is_constant) {
+		if (has_materialized_constant_value(element.key)) {
 			if (first_value_lines.has(element.key->reduced_value)) {
 				push_error(vformat(R"(Key "%s" was already used in this dictionary (at line %d).)", element.key->reduced_value,
 								   int(first_value_lines[element.key->reduced_value])),
@@ -3941,13 +4163,18 @@ void BSAnalyzer::finalize_ternary_type(BSParser::TernaryOpNode *p_ternary) {
 	p_ternary->reduced = false;
 	p_ternary->reduced_value = Variant();
 	if (p_ternary->condition != nullptr && p_ternary->condition->is_constant &&
+			(has_materialized_constant_value(p_ternary->condition) || _is_static_script_handle(p_ternary->condition)) &&
 			p_ternary->true_expr != nullptr && p_ternary->true_expr->is_constant &&
 			p_ternary->false_expr != nullptr && p_ternary->false_expr->is_constant) {
-		const bool take_true = p_ternary->condition->reduced_value.booleanize();
+		const bool take_true = _constant_truth(p_ternary->condition);
 		BSParser::ExpressionNode *chosen = take_true ? p_ternary->true_expr : p_ternary->false_expr;
 		p_ternary->is_constant = true;
 		p_ternary->reduced = true;
 		p_ternary->reduced_value = chosen->reduced_value;
+		if (_is_unmaterialized_metatype(chosen)) {
+			p_ternary->set_datatype(chosen->get_datatype());
+			return;
+		}
 	}
 
 	BSParser::DataType true_type;
@@ -4013,7 +4240,7 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 	resolve_contextual_enum_case(p_cast->operand, cast_type);
 	p_cast->set_datatype(cast_type);
 	bool publish_constant = false;
-	if (p_cast->operand != nullptr && p_cast->operand->is_constant) {
+	if (has_materialized_constant_value(p_cast->operand)) {
 		BSParser::DataType operand_type = p_cast->operand->get_datatype();
 		if (cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union &&
 				operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT) {
@@ -4057,7 +4284,7 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 	update_container_literal_element_types(p_cast->operand, cast_type);
 	// The pin has this same conversion-before-patching order, but its literal expressions
 	// are not eagerly constant. Our eligible constant must copy the refreshed carrier.
-	if (publish_constant && p_cast->operand->is_constant) {
+	if (publish_constant && has_materialized_constant_value(p_cast->operand)) {
 		p_cast->is_constant = true;
 		p_cast->reduced_value = p_cast->operand->reduced_value;
 	}
@@ -4170,7 +4397,7 @@ void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
 
 	resolve_type_test_case_binds(p_type_test, test_type);
 
-	if (p_type_test->operand->is_constant && test_type.kind != BSParser::DataType::ENUM) {
+	if (has_materialized_constant_value(p_type_test->operand) && test_type.kind != BSParser::DataType::ENUM) {
 		p_type_test->is_constant = true;
 		p_type_test->reduced = true;
 		p_type_test->reduced_value = false;
@@ -4728,7 +4955,7 @@ void BSAnalyzer::qualify_contextual_enum_case_consumer(BSParser::ExpressionNode 
 }
 
 bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage) {
-	if (p_expression == nullptr || !p_expression->is_constant || !p_expected_type.is_set() || p_expected_type.is_variant()) {
+	if (!has_materialized_constant_value(p_expression) || !p_expected_type.is_set() || p_expected_type.is_variant()) {
 		return true;
 	}
 	const BSParser::DataType declared_type = p_expression->get_datatype();
@@ -4864,7 +5091,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 					}
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
-					if (element->is_constant) {
+					if (has_materialized_constant_value(element)) {
 						options.constant_source_value = &element->reduced_value;
 					}
 					return BSTypeCompatibility::check(_substitute_self_type_parameter_with_bounds(expected, false),
@@ -6354,7 +6581,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 			options.allow_implicit_conversion = true;
 			options.strict_dynamic = strict_dynamic_checks;
 			options.strict_null = strict_null_checks;
-			if (argument->is_constant) {
+			if (has_materialized_constant_value(argument)) {
 				options.constant_source_value = &argument->reduced_value;
 			}
 			if (!BSTypeCompatibility::check(field_type, argument_type, options).compatible) {
@@ -6366,7 +6593,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 				continue;
 			}
 		}
-		if (!argument->is_constant) {
+		if (!has_materialized_constant_value(argument)) {
 			payload_is_bakeable = false;
 		}
 	}
@@ -6526,7 +6753,7 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 			options.allow_implicit_conversion = true;
 			options.strict_dynamic = strict_dynamic_checks;
 			options.strict_null = strict_null_checks;
-			if (argument->is_constant) {
+			if (has_materialized_constant_value(argument)) {
 				options.constant_source_value = &argument->reduced_value;
 			}
 			compatible = BSTypeCompatibility::check(field_type, argument_type, options).compatible;
@@ -6537,7 +6764,7 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 							BSParser::DataType::same_rendered_name_clause(field_type, "tuple field's type", argument_type, "argument"),
 					argument);
 		}
-		if (argument == nullptr || !argument->is_constant) {
+		if (!has_materialized_constant_value(argument)) {
 			all_constant = false;
 		} else {
 			values.push_back(argument->reduced_value);
@@ -6825,6 +7052,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::IDENTIFIER:
 			reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_expression));
 			break;
+		case BSParser::Node::PRELOAD:
+			reduce_preload(static_cast<BSParser::PreloadNode *>(p_expression));
+			break;
 		case BSParser::Node::AWAIT:
 			reduce_await(static_cast<BSParser::AwaitNode *>(p_expression));
 			break;
@@ -7052,7 +7282,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
 					options.strict_null = strict_null_checks;
-					if (assignment->assigned_value->is_constant) {
+					if (has_materialized_constant_value(assignment->assigned_value)) {
 						options.constant_source_value = &assignment->assigned_value->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
@@ -7143,7 +7373,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
 					options.strict_null = strict_null_checks;
-					if (variable->initializer->is_constant) {
+					if (has_materialized_constant_value(variable->initializer)) {
 						options.constant_source_value = &variable->initializer->reduced_value;
 					}
 					bool compatible = BSTypeCompatibility::check(declared, initializer_type, options).compatible;
@@ -7222,7 +7452,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
 					options.strict_null = strict_null_checks;
-					if (constant->initializer->is_constant) {
+					if (has_materialized_constant_value(constant->initializer)) {
 						options.constant_source_value = &constant->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(declared, initializer_type, options).compatible) {
@@ -7304,7 +7534,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
 					options.strict_null = strict_null_checks;
-					if (ret->return_value->is_constant) {
+					if (has_materialized_constant_value(ret->return_value)) {
 						options.constant_source_value = &ret->return_value->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(expected_return, result, options).compatible) {
@@ -7374,8 +7604,8 @@ void BSAnalyzer::resolve_assert(BSParser::AssertNode *p_assert) {
 	flow_finality.apply_flow_narrowing_from_condition(p_assert->condition, true);
 
 #ifdef DEBUG_ENABLED
-	if (p_assert->condition->is_constant) {
-		if (p_assert->condition->reduced_value.booleanize()) {
+	if (has_materialized_constant_value(p_assert->condition) || (p_assert->condition->is_constant && _is_static_script_handle(p_assert->condition))) {
+		if (_constant_truth(p_assert->condition)) {
 			parser->push_warning(p_assert->condition, BSWarning::ASSERT_ALWAYS_TRUE);
 		} else if (!(p_assert->condition->type == BSParser::Node::LITERAL && static_cast<BSParser::LiteralNode *>(p_assert->condition)->value.get_type() == Variant::BOOL)) {
 			parser->push_warning(p_assert->condition, BSWarning::ASSERT_ALWAYS_FALSE);
@@ -8112,7 +8342,7 @@ bool BSAnalyzer::collect_uncovered_domain_values(const BSParser::MatchNode *p_ma
 				continue;
 			}
 
-			if (value_node == nullptr || !value_node->is_constant) {
+			if (!BSAnalyzer::has_materialized_constant_value(value_node)) {
 				return false; // Non-constant pattern: cannot prove coverage; bail out.
 			}
 			if (value_node->reduced_value.get_type() != expected_type) {
@@ -8166,7 +8396,7 @@ BSAnalyzer::TaggedUnionPatternCoverage BSAnalyzer::tagged_union_pattern_coverage
 		return TAGGED_UNION_PATTERN_COVERS_NOTHING; // Array, dictionary and tuple patterns cannot cover a whole case.
 	}
 
-	if (value_node == nullptr || !value_node->is_constant) {
+	if (!BSAnalyzer::has_materialized_constant_value(value_node)) {
 		return TAGGED_UNION_PATTERN_COVERAGE_UNPROVABLE;
 	}
 	if (value_node->reduced_value.get_type() == Variant::NIL) {
@@ -8331,7 +8561,7 @@ BSAnalyzer::SuiteExitState BSAnalyzer::get_statement_exit_state(const BSParser::
 			result.has_return = loop_exit.has_return;
 			result.has_noreturn = loop_exit.has_noreturn;
 			result.always_terminates = while_node->loop != nullptr && while_node->condition != nullptr && while_node->condition->is_constant &&
-					while_node->condition->reduced_value.booleanize() && !suite_has_reachable_break(while_node->loop);
+					(has_materialized_constant_value(while_node->condition) || _is_static_script_handle(while_node->condition)) && _constant_truth(while_node->condition) && !suite_has_reachable_break(while_node->loop);
 		} break;
 		case BSParser::Node::FOR: {
 			// Preserve possible reachable returns from a FOR body in the shared summary.

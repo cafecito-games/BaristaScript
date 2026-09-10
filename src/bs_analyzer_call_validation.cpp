@@ -186,7 +186,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 	options.allow_implicit_conversion = true;
 	options.strict_dynamic = analyzer->strict_dynamic_checks;
 	options.strict_null = analyzer->strict_null_checks;
-	if (p_argument->is_constant) {
+	if (BSAnalyzer::has_materialized_constant_value(p_argument)) {
 		options.constant_source_value = &p_argument->reduced_value;
 	}
 

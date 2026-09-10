@@ -451,9 +451,11 @@ public:
 
 	BSParser *get_parser() const { return parser; }
 	AnalyzerPhase get_highest_completed_phase() const { return highest_completed_phase; }
+	bool has_probed_indexed_conformances() const { return indexed_conformance_files_probed.load(); }
 
 	/** Constant-fold a top-level expression after parse; used by the #49 probe. */
 	void reduce_expression(BSParser::ExpressionNode *p_expression, bool p_is_root = false);
+	static bool has_materialized_constant_value(const BSParser::ExpressionNode *p_expression);
 
 	/**
 	 * After successful FULLY_SOLVED analysis, commit a declaration record; on failure remove any
@@ -658,6 +660,9 @@ private:
 	 * REDUNDANT_AWAIT on synchronous non-signal operands.
 	 */
 	void reduce_await(BSParser::AwaitNode *p_await);
+	void reduce_preload(BSParser::PreloadNode *p_preload);
+	void ensure_indexed_conformances_registered_for_diagnostics();
+	std::atomic<bool> indexed_conformance_files_probed{ false };
 	/** Foundry reduce_lambda (@ c9d5e35): Callable type + body under `current_lambda`. */
 	void reduce_lambda(BSParser::LambdaNode *p_lambda);
 	void reduce_subscript(BSParser::SubscriptNode *p_subscript);

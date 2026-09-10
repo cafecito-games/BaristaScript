@@ -967,6 +967,16 @@ Error BSParserRef::raise_status(Status p_new_status) {
 	return result;
 }
 
+Error BSParserRef::get_result_for_status(Status p_status) {
+	std::lock_guard<std::recursive_mutex> raise_lock(raise_mutex);
+	// raise_status stops at its first failed phase. Status advances before work for
+	// legal recursive loads; use exactly that existing phase protocol here too.
+	if (status < p_status) {
+		return result != OK ? result : ERR_UNAVAILABLE;
+	}
+	return status > p_status ? OK : result;
+}
+
 void BSParserRef::clear() {
 	if (clearing) {
 		return;
@@ -1092,6 +1102,31 @@ HashSet<String> BSCache::collect_parser_invalidation_closure(const String &p_pat
 		}
 	}
 	return closure;
+}
+
+Vector<String> BSCache::collect_indexed_conformance_observers() {
+	Vector<String> paths;
+	BSCache *cache = get_singleton();
+	if (cache == nullptr) {
+		return paths;
+	}
+	HashMap<String, Ref<BSParserRef>> snapshot;
+	{
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		snapshot = cache->parser_map;
+	}
+	for (const KeyValue<String, Ref<BSParserRef>> &entry : snapshot) {
+		if (entry.value.is_null()) {
+			continue;
+		}
+		std::unique_lock<std::recursive_mutex> phase_lock(entry.value->raise_mutex, std::try_to_lock);
+		// A busy analysis may already have observed the previous index. Fail safe
+		// without waiting across parser locks; no analysis runs under cache->mutex.
+		if (!phase_lock.owns_lock() || (entry.value->analyzer != nullptr && entry.value->analyzer->has_probed_indexed_conformances())) {
+			paths.push_back(entry.key);
+		}
+	}
+	return paths;
 }
 
 Vector<String> BSCache::collect_parsers_reaching_namespace(const String &p_namespace) {
