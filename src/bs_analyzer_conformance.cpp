@@ -1474,6 +1474,42 @@ static BSParser::DataType _conformance_target_through_type_parameter(const BSPar
 	return p_type;
 }
 
+// Foundry fs_analyzer_conformance.cpp:831 @ c9d5e35. Diagnostic discovery is
+// observational: no owner argument, retained consumer ref, or visibility/load edge.
+static thread_local bool indexed_conformance_probe_in_progress = false;
+
+void BSAnalyzer::ensure_indexed_conformances_registered_for_diagnostics() {
+	if (indexed_conformance_files_probed.exchange(true) || indexed_conformance_probe_in_progress) {
+		return;
+	}
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	if (language == nullptr) {
+		return;
+	}
+	struct ProbeScope {
+		ProbeScope() { indexed_conformance_probe_in_progress = true; }
+		~ProbeScope() { indexed_conformance_probe_in_progress = false; }
+	} scope;
+	const auto records = language->get_declaration_index().get_records();
+	for (const BSDeclarationRecord &record : records) {
+		if (!record.declares_retroactive_conformances || record.path == parser->script_path) {
+			continue;
+		}
+		Error error = OK;
+		Ref<BSParserRef> ref = BSCache::get_parser(record.path, BSParserRef::PARSED, error);
+		if (ref.is_null() || ref->get_result_for_status(BSParserRef::PARSED) != OK) {
+			continue;
+		}
+		const BSParser *provider = ref->get_parser();
+		if (provider == nullptr || provider->get_tree() == nullptr || provider->get_tree()->conformances.is_empty()) {
+			continue;
+		}
+		// Registration owns its transaction and errors. A broken unrelated provider
+		// never contributes an error to this consumer.
+		ref->raise_status(BSParserRef::INTERFACE_SOLVED);
+	}
+}
+
 bool BSAnalyzer::reachable_conformance_supplies_method(const BSParser::DataType &p_target_type, const StringName &p_method) {
 	const BSParser::DataType target_type = _conformance_target_through_type_parameter(p_target_type);
 	if (p_method == StringName()) {
@@ -1483,6 +1519,8 @@ bool BSAnalyzer::reachable_conformance_supplies_method(const BSParser::DataType 
 	if (registry == nullptr) {
 		return false;
 	}
+
+	ensure_indexed_conformances_registered_for_diagnostics();
 
 	// Walk the base chain: a conformance on a base stays reachable through a derived type.
 	for (const BSParser::ClassNode *cursor = target_type.class_type; cursor != nullptr; cursor = cursor->base_type.class_type) {
@@ -1515,6 +1553,8 @@ bool BSAnalyzer::find_hidden_conformance_witness(const BSParser::DataType &p_tar
 	if (!is_builtin_receiver && (target_type.class_type == nullptr || !target_type.class_type->is_final)) {
 		return false;
 	}
+
+	ensure_indexed_conformances_registered_for_diagnostics();
 
 	if (is_builtin_receiver) {
 		return registry->find_hidden_witness_declaration(String(Variant::get_type_name(target_type.builtin_type)),

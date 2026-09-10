@@ -518,6 +518,11 @@ BSDeclarationIndexLoadStatus BaristaScriptLanguage::load_declaration_index(const
 }
 
 void BaristaScriptLanguage::notify_conformance_namespaces_changed(const Vector<String> &p_namespaces) {
+	if (!p_namespaces.is_empty()) {
+		for (const String &path : BSCache::collect_indexed_conformance_observers()) {
+			BSCache::remove_parser(path);
+		}
+	}
 	HashSet<String> seen;
 	for (int i = 0; i < p_namespaces.size(); i++) {
 		const String ns = p_namespaces[i];
