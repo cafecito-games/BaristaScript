@@ -38,15 +38,20 @@ def main():
     xml = runner.ROOT / "doc_classes/BaristaScript.xml"
     sconstruct = runner.ROOT / "SConstruct"
     profile_path = runner.ROOT / "build_profile.json"
-    originals = {path: path.read_bytes() for path in (xml, sconstruct, profile_path)}
+    config_path = runner.ROOT / "build_versions.json"
+    originals = {path: path.read_bytes() for path in (xml, sconstruct, profile_path, config_path)}
     profile = json.loads(originals[profile_path])
+    config = json.loads(originals[config_path])
+    version, patch = config["extension_version"].rsplit(".", 1)
+    config["extension_version"] = f"{version}.{int(patch) + 1}"
     # A normally implicit parent class changes the derived inventory without adding APIs.
     added_class = next(name for name in ("RefCounted", "Object", "MainLoop")
                        if name not in profile["enabled_classes"])
     profile["enabled_classes"].append(added_class)
     changes = ((xml, originals[xml] + b"\n<!-- native incremental identity regression -->\n"),
                (sconstruct, originals[sconstruct] + b"\n# Native incremental identity regression.\n"),
-               (profile_path, (json.dumps(profile, indent=2) + "\n").encode()))
+               (profile_path, (json.dumps(profile, indent=2) + "\n").encode()),
+               (config_path, (json.dumps(config, indent=2) + "\n").encode()))
     failure = None
     try:
         for path, content in changes:
@@ -72,7 +77,7 @@ def main():
                 print(f"Restored source; additional rebuild failure: {cleanup_error}", file=sys.stderr)
     if failure is not None:
         raise failure
-    print("PASS native CMake incremental XML, build-script and profile changes; sources restored")
+    print("PASS native CMake incremental XML, build-script, profile and version changes; sources restored")
 
 
 if __name__ == "__main__":

@@ -91,3 +91,27 @@ A dirty revision identifies the base commit, not every modified byte. Source arc
 Git metadata honestly report unknown revision/state; they do not inherit a containing
 checkout's identity. The selected and actual bindings revisions are kept separately so drift
 remains visible. These are build-time observations, not claims about the current filesystem.
+
+## Verify incremental identity
+
+Exercise actual revision-only, configuration, dirty/staged-source, wrong-library, and
+archive rebuilds in isolated clones with the selected SCons version and stock Godot:
+
+```sh
+python3 tests/test_build_identity_rebuild.py --revision HEAD --godot /path/to/godot \
+  --scons /path/to/pinned/scons --jobs 4 --output /tmp/barista-identity-regression
+```
+
+The output directory must be new and outside the source tree. It retains commands,
+logs, artifact hashes, and loaded identity reports after success or failure. The caller's
+checkout is never edited. Use `--systems cmake` or `--systems scons` for one build path.
+
+The native CMake regression also exercises XML, build-script, profile and version changes:
+
+```sh
+python3 tests/test_native_cmake_rebuild.py --godot /path/to/godot --build-dir build/native-cmake --jobs 4
+```
+
+This native check requires a current test-enabled CMake artifact and exclusive access to
+the source tree while it temporarily edits inputs. It restores their original bytes and
+rebuilds the restored inputs before returning.

@@ -215,7 +215,9 @@ if(BARISTA_TESTS)
     target_compile_definitions(${LIBNAME} PRIVATE BARISTA_TESTS DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
 endif()
 
-set(BARISTA_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/build-info/$<CONFIG>")
+# GODOTCPP_TARGET is fixed for this build tree. Keep BYPRODUCTS free of generator
+# expressions so header generation also works at the declared CMake 3.17 minimum.
+set(BARISTA_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/build-info")
 set(BARISTA_INFO_NATIVE)
 if(BARISTA_TESTS)
     set(BARISTA_INFO_NATIVE --native-tests)
