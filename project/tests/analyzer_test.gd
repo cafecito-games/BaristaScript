@@ -41,6 +41,9 @@ func _init() -> void:
 	_test_callable_signal_constructor_and_typed_receiver_depth(failures)
 	_test_match_and_flow(failures)
 	_test_pinned_suite_exit_summary(failures)
+	_test_pinned_for_assert_consumers(failures)
+	_test_pinned_suite_datatypes(failures)
+	_test_native_iterator_annotation_nullability(failures)
 	_test_pinned_match_finality_domains(failures)
 	_test_internal_type_test_exhaustion(failures)
 	_test_pinned_match_domain_and_narrowing_audit(failures)
@@ -5874,4 +5877,193 @@ func _test_pinned_match_domain_and_narrowing_audit(failures: PackedStringArray) 
 		_expect(failures, probe.validate_source(fixture[1], path, true) == report and probe.analyze_source(fixture[1], path) == analysis, fixture[0] + " pinned audit repeat")
 	for setting: String in saved:
 		ProjectSettings.set_setting(setting, saved[setting])
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_pinned_for_assert_consumers(failures: PackedStringArray) -> void:
+	# Foundry c9d5e35 fs_analyzer.cpp:5307-5346,5715-5879; complete source-derived
+	# controls. Declaration/unused warnings belong to #141; explicitly select flow warnings.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var saved := {}
+	for property in ProjectSettings.get_property_list():
+		var key: String = property.name
+		if key.begins_with("debug/barista_script/warnings/") or key.begins_with("debug/barista_script/analysis/"):
+			saved[key] = ProjectSettings.get_setting(key)
+			if key.begins_with("debug/barista_script/warnings/"):
+				ProjectSettings.set_setting(key, true if key.ends_with("/enable") else 0)
+	for warning in ["assert_always_true", "assert_always_false", "unreachable_code", "non_exhaustive_match", "open_enum_match_without_default"]:
+		ProjectSettings.set_setting("debug/barista_script/warnings/" + warning, 1)
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	var cases: Array = [
+		["for_loop_wrong_specified_type", "func test():\n\tvar a: Array[Resource] = []\n\tfor node: Node in a:\n\t\tprint(node)\n", [["Unable to iterate on value of type \"Array[Resource]\" with variable of type \"Node\".", 3, 13]], [], false],
+		["for_loop_wrong_specified_type_with_literal_array", "# GH-82021\n\nfunc test():\n\tfor x: String in [1, 2, 3]:\n\t\tprint(x)\n", [["Cannot include a value of type \"int\" as \"String\".", 4, 23], ["Cannot have an element of type \"int\" in an array of type \"Array[String]\".", 4, 23]], [], false],
+		["for_loop_wrong_specified_type_with_literal_dictionary", "func test():\n\tfor key: int in { \"a\": 1 }:\n\t\tprint(key)\n", [["Cannot include a value of type \"String\" as \"int\".", 2, 23], ["Cannot have a key of type \"String\" in a dictionary of type \"Dictionary[int, Variant]\".", 2, 23]], [], false],
+		["range_shadow", "func range() -> Array[String]:\n\treturn []\nfunc use() -> String:\n\tfor value in range():\n\t\treturn value\n\treturn \"\"\n", [], [], false],
+		["for_parameter_array_int", "func use(values: Array[int]) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["for_parameter_dictionary_string_int", "func use(values: Dictionary[String, int]) -> String:\n\tfor value in values:\n\t\treturn value\n\treturn \"\"\n", [], [], false],
+		["for_parameter_packedint32array", "func use(values: PackedInt32Array) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["for_parameter_packedstringarray", "func use(values: PackedStringArray) -> String:\n\tfor value in values:\n\t\treturn value\n\treturn \"\"\n", [], [], false],
+		["for_parameter_int", "func use(values: int) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["for_parameter_float", "func use(values: float) -> float:\n\tfor value in values:\n\t\treturn value\n\treturn 0.0\n", [], [], false],
+		["for_parameter_string", "func use(values: String) -> String:\n\tfor value in values:\n\t\treturn value\n\treturn \"\"\n", [], [], false],
+		["for_parameter_vector2i", "func use(values: Vector2i) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["for_parameter_vector3i", "func use(values: Vector3i) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["for_parameter_vector2", "func use(values: Vector2) -> float:\n\tfor value in values:\n\t\treturn value\n\treturn 0.0\n", [], [], false],
+		["for_parameter_vector3", "func use(values: Vector3) -> float:\n\tfor value in values:\n\t\treturn value\n\treturn 0.0\n", [], [], false],
+		["for_parameter_array", "func use(values: Array) -> Variant:\n\tfor value in values:\n\t\treturn value\n\treturn null\n", [], [], false],
+		["for_parameter_dictionary", "func use(values: Dictionary) -> Variant:\n\tfor value in values:\n\t\treturn value\n\treturn null\n", [], [], false],
+		["for_parameter_variant", "func use(values: Variant) -> Variant:\n\tfor value in values:\n\t\treturn value\n\treturn null\n", [], [], false],
+		["for_wrong_return_array_int", "func use(values: Array[int]) -> String:\n\tfor value in values:\n\t\treturn value\n\treturn \"\"\n", [["Cannot return value of type \"int\" because the function return type is \"String\".", 3, 9]], [], false],
+		["for_wrong_return_packedint32array", "func use(values: PackedInt32Array) -> String:\n\tfor value in values:\n\t\treturn value\n\treturn \"\"\n", [["Cannot return value of type \"int\" because the function return type is \"String\".", 3, 9]], [], false],
+		["for_wrong_return_packedstringarray", "func use(values: PackedStringArray) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [["Cannot return value of type \"String\" because the function return type is \"int\".", 3, 9]], [], false],
+		["for_samefile_iterator", "class Iter:\n\tfunc _iter_get(_state: Variant) -> int:\n\t\treturn 1\nfunc use(values: Iter) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["for_inherited_iterator", "class Iter:\n\tfunc _iter_get(_state: Variant) -> int:\n\t\treturn 1\nclass Derived extends Iter:\n\tpass\nfunc use(values: Derived) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["for_samefile_iterator_wrong_destination", "class Iter:\n\tfunc _iter_get(_state: Variant) -> int:\n\t\treturn 1\nfunc use(values: Iter) -> String:\n\tfor value in values:\n\t\treturn value\n\treturn \"\"\n", [["Cannot return value of type \"int\" because the function return type is \"String\".", 6, 9]], [], false],
+		["for_missing_object", "func use(values: Object) -> void:\n\tfor _value in values:\n\t\tpass\n", [["Unable to iterate on object of type \"Object\".", 2, 19]], [], false],
+		["for_missing_empty", "class Empty:\n\tpass\nfunc use(values: Empty) -> void:\n\tfor _value in values:\n\t\tpass\n", [["Unable to iterate on object of type \"Empty\".", 4, 19]], [], false],
+		["for_hard_bool", "func use() -> void:\n\tfor _value in true:\n\t\tpass\n", [["Unable to iterate on value of type \"bool\".", 2, 19]], [], false],
+		["for_wrong_annotation", "func use(values: Array[int]) -> void:\n\tfor value: String in values:\n\t\tpass\n", [["Unable to iterate on value of type \"Array[int]\" with variable of type \"String\".", 2, 14]], [], false],
+		["for_dictionary_key_literal", "func use() -> StringName:\n\tfor key: StringName in {\"a\": 1}:\n\t\treturn key\n\treturn &\"\"\n", [], [], false],
+		["for_array_float_literal", "func use() -> float:\n\tfor value: float in [1, 2]:\n\t\treturn value\n\treturn 0.0\n", [], [], false],
+		["for_range_arity_0", "func use() -> void:\n\tfor _value in range():\n\t\tpass\n", [["Invalid call for \"range()\" function. Expected at least 1 argument, none given.", 2, 19]], [], false],
+		["for_range_arity_4", "func use() -> void:\n\tfor _value in range(1, 2, 3, 4):\n\t\tpass\n", [["Invalid call for \"range()\" function. Expected at most 3 arguments, 4 given.", 2, 19]], [], false],
+		["for_range_float_annotation", "func use() -> float:\n\tfor value: float in range(1, 3):\n\t\treturn value\n\treturn 0.0\n", [], [], false],
+		["assert_true", "func use() -> void:\n\tassert(true)\n", [], [["ASSERT_ALWAYS_TRUE", "Assert statement is redundant because the expression is always true.", 2, 12, 2, 16]], false],
+		["assert_false_numeric", "func use() -> void:\n\tassert(0)\n", [], [["ASSERT_ALWAYS_FALSE", "Assert statement will raise an error because the expression is always false.", 2, 12, 2, 13]], false],
+		["assert_false_nonliteral", "func use() -> void:\n\tassert(not true)\n", [], [["ASSERT_ALWAYS_FALSE", "Assert statement will raise an error because the expression is always false.", 2, 12, 2, 20]], false],
+		["assert_named_false", "const NEVER = false\nfunc use() -> void:\n\tassert(NEVER)\n", [], [["ASSERT_ALWAYS_FALSE", "Assert statement will raise an error because the expression is always false.", 3, 12, 3, 17]], false],
+		["assert_literal_false", "func use() -> void:\n\tassert(false)\n", [], [], false],
+		["assert_literal_false_string_message", "func use() -> void:\n\tassert(false, \"message\")\n", [], [], false],
+		["assert_wrong_message", "func f(flag: bool) -> void:\n\tassert(flag, 1)\n", [["Expected string for assert error message.", 2, 18]], [], false],
+		["assert_string_message", "func f(flag: bool) -> void:\n\tassert(flag, \"message\")\n", [], [], false],
+		["assert_variant_message", "func f(flag: bool, message: Variant) -> void:\n\tassert(flag, message)\n", [["Expected string for assert error message.", 2, 18]], [], false],
+		["assert_narrow_nonnull", "func get_node(maybe: Node?) -> Node:\n\tassert(maybe != null)\n\treturn maybe\n", [], [], true],
+		["for_narrowing_does_not_leak", "func use(values: Array[int], node: Node?) -> Node:\n\tfor _value in values:\n\t\tassert(node != null)\n\treturn node\n", [["Cannot return value of type \"Node?\" because the function return type is \"Node\".", 4, 5]], [], true],
+		["for_preserves_incoming_narrowing", "func use(values: Array[int], node: Node?) -> Node:\n\tassert(node != null)\n\tfor _value in values:\n\t\tpass\n\treturn node\n", [], [], true],
+		["for_soft_scalar", "func use() -> Variant:\n\tvar values = 1\n\tfor value in values:\n\t\treturn value\n\treturn null\n", [], [], false],
+		["publication_return", "func use() -> int:\n\treturn 1\n", [], [], false],
+		["publication_for", "func use(values: Array[int]) -> int:\n\tfor value in values:\n\t\treturn value\n\treturn 0\n", [], [], false],
+		["publication_if", "func use(flag: bool) -> int:\n\tif flag:\n\t\treturn 1\n\telse:\n\t\treturn 2\n", [], [], false],
+		["publication_while", "func use(flag: bool) -> int:\n\twhile flag:\n\t\treturn 1\n\treturn 0\n", [], [], false],
+	]
+	for fixture in cases:
+		ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", fixture[4])
+		BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+		var path: String = "res://tests/for_assert_" + fixture[0] + ".barista"
+		var report: Dictionary = probe.validate_source(fixture[1], path, true)
+		_expect(failures, report.get("valid") == fixture[2].is_empty() and _errors_are_exact(report.get("errors", []), fixture[2]), fixture[0] + " exact errors: " + str(report))
+		_expect(failures, _warnings_are_exact(report.get("warnings", []), fixture[3]), fixture[0] + " exact warnings: " + str(report))
+		_expect(failures, probe.validate_source(fixture[1], path, true) == report, fixture[0] + " repeat stability")
+		if not fixture[3].is_empty():
+			var warning: Array = fixture[3][0]
+			var setting: String = "debug/barista_script/warnings/" + warning[0].to_lower()
+			for level in [0, 2]:
+				ProjectSettings.set_setting(setting, level)
+				BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+				var errors: Array = [] if level == 0 else [[warning[1] + " (Warning treated as error.)", warning[2], warning[3]]]
+				var severity: Dictionary = probe.validate_source(fixture[1], path, true)
+				_expect(failures, severity.get("valid") == errors.is_empty() and _errors_are_exact(severity.get("errors", []), errors) and severity.get("warnings", []).is_empty(), fixture[0] + " exact severity " + str(level) + ": " + str(severity))
+			ProjectSettings.set_setting(setting, 1)
+	for key: String in saved:
+		ProjectSettings.set_setting(key, saved[key])
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_pinned_suite_datatypes(failures: PackedStringArray) -> void:
+	# Observe actual parser-owned nodes. TypeSource INFERRED = 1; UNDETECTED = 0.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var enabled: Variant = ProjectSettings.get_setting("debug/barista_script/warnings/enable")
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var cases: Array = [
+		["array_conversion", "func use() -> float:\n\tfor value: float in [1, 2]:\n\t\treturn value\n\treturn 0.0\n", [["body/0/list", "Array[float]", -1], ["body/0/list/0", "float", -1], ["body/0/list/1", "float", -1], ["body/0/iterator", "float", 2]]],
+		["dictionary_conversion", "func use() -> StringName:\n\tfor key: StringName in {\"a\": 1}:\n\t\treturn key\n\treturn &\"\"\n", [["body/0/list", "Dictionary[StringName, Variant]", -1], ["body/0/list/key0", "StringName", -1], ["body/0/list/value0", "int", -1], ["body/0/iterator", "StringName", 2]]],
+		["soft_scalar", "func use() -> Variant:\n\tvar values = 1\n\tfor value in values:\n\t\treturn value\n\treturn null\n", [["body/1/iterator", "int", 1]]],
+		["soft_object", "func use(source: Object) -> Variant:\n\tvar values = source\n\tfor value in values:\n\t\treturn value\n\treturn null\n", [["body/1/iterator", "Variant", 0]]],
+		["range_float_conversion", "func use() -> float:\n\tfor value: float in range(1):\n\t\treturn value\n\treturn 0.0\n", [["body/0/iterator", "float", 2]]],
+		["object_downcast", "func use(values: Array[Object]) -> Variant:\n\tfor value: Node in values:\n\t\treturn value\n\treturn null\n", [["body/0/iterator", "Node", 2]]],
+		["soft_annotation", "func use(values: Variant) -> Variant:\n\tfor value: int in values:\n\t\treturn value\n\treturn null\n", [["body/0/iterator", "int", 2]]],
+		["return", "func use() -> int:\n\treturn 1\n", [["body", "int", 1], ["body/0", "int", -1]]],
+		["bare_return", "func use() -> void:\n\treturn\n", [["body", "null", 1], ["body/0", "null", 2]]],
+		["while", "func use(flag: bool) -> int:\n\twhile flag:\n\t\treturn 1\n\treturn 0\n", [["body", "int", 1], ["body/0", "int", 1], ["body/0/loop", "int", 1]]],
+		["if", "func use(flag: bool) -> int:\n\tif flag:\n\t\treturn 1\n\telse:\n\t\treturn 2\n", [["body", "int", 1], ["body/0", "int", 1], ["body/0/true", "int", 1], ["body/0/false", "int", 1]]],
+		# The pin's SUITE and MATCH_BRANCH inputs are no-ops in decide_suite_type.
+		["if_plain_else_no_merge", "func use(flag: bool) -> Variant:\n\tif flag:\n\t\treturn 1\n\telse:\n\t\treturn \"s\"\n", [["body/0", "int", 1], ["body/0/false", "String", 1]]],
+		# Pinned DataType::operator== considers INFERRED evidence equal, so later type wins.
+		["if_elif_mixed", "func use(first: bool, second: bool) -> Variant:\n\tif first:\n\t\treturn 1\n\telif second:\n\t\treturn \"s\"\n\treturn null\n", [["body/0", "String", 1]]],
+		["match_no_transport", "func use(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\t\tfalse:\n\t\t\treturn 2\n", [["body/0", "<unresolved type>", 0], ["body/0/0", "<unresolved type>", 0], ["body/0/0/block", "int", 1]]],
+		["pattern_array", "func use(values: Array[int]) -> void:\n\tmatch values:\n\t\t[var _a, var _b]:\n\t\t\tpass\n", [["body/0/0/pattern0", "int", 1]]],
+		["pattern_dictionary", "func use(values: Dictionary[String, int]) -> void:\n\tmatch values:\n\t\t{\"a\": var _a}:\n\t\t\tpass\n", [["body/0/0/pattern0", "int", 1]]],
+		["pattern_tuple", "func use(values: (int, String)) -> void:\n\tmatch values:\n\t\t(var _a, var _b):\n\t\t\tpass\n", [["body/0/0/pattern0", "String", 1]]],
+		["assert", "func use(flag: bool) -> void:\n\tassert(flag)\n", [["body/0", "bool", 2], ["body/0/condition", "bool", 2]]],
+	]
+	for fixture in cases:
+		var report: Dictionary = probe.inspect_function_source(fixture[1], "res://tests/datatype_" + fixture[0] + ".barista", "use")
+		_expect(failures, report.get("valid") == true, fixture[0] + " datatype source valid: " + str(report))
+		for expected in fixture[2]:
+			var node: Dictionary = report.get("nodes", {}).get(expected[0], {})
+			_expect(failures, node.get("datatype") == expected[1] and (expected[2] == -1 or node.get("type_source") == expected[2]), fixture[0] + " " + expected[0] + " actual datatype: " + str(node))
+		if fixture[0] in ["range_float_conversion", "object_downcast", "soft_annotation"]:
+			_expect(failures, report.get("nodes", {}).get("body/0", {}).get("use_conversion_assign") == true, fixture[0] + " conversion assignment flag")
+		if fixture[0] == "array_conversion":
+			for path in ["body/0/list/0", "body/0/list/1"]:
+				_expect(failures, report.get("nodes", {}).get(path, {}).get("value_type") == TYPE_FLOAT, fixture[0] + " converted literal value")
+		if fixture[0] == "dictionary_conversion":
+			_expect(failures, report.get("nodes", {}).get("body/0/list/key0", {}).get("value_type") == TYPE_STRING_NAME and report.get("nodes", {}).get("body/0/list/value0", {}).get("value_type") == TYPE_INT, "dictionary converts only the key")
+	var iterator_types: Array = [
+		["Array[int]", "int"], ["Dictionary[String, int]", "String"],
+		["PackedByteArray", "int"], ["PackedInt32Array", "int"], ["PackedInt64Array", "int"],
+		["PackedFloat32Array", "float"], ["PackedFloat64Array", "float"], ["PackedStringArray", "String"],
+		["PackedVector2Array", "Vector2"], ["PackedVector3Array", "Vector3"], ["PackedVector4Array", "Vector4"], ["PackedColorArray", "Color"],
+		["int", "int"], ["float", "float"], ["String", "String"], ["Vector2i", "int"], ["Vector3i", "int"], ["Vector2", "float"], ["Vector3", "float"],
+		["Array", "Variant"], ["Dictionary", "Variant"], ["Variant", "Variant"],
+	]
+	for types in iterator_types:
+		var source: String = "func use(values: %s) -> Variant:\n\tfor value in values:\n\t\treturn value\n\treturn null\n" % types[0]
+		var report: Dictionary = probe.inspect_function_source(source, "res://tests/iterator_datatype.barista", "use")
+		_expect(failures, report.get("valid") == true, types[0] + " iterator source valid: " + str(report))
+		for path in ["body/0/iterator", "body/0/loop/0/value", "body/0/loop/0", "body/0/loop", "body/0"]:
+			var node: Dictionary = report.get("nodes", {}).get(path, {})
+			_expect(failures, node.get("datatype") == types[1], types[0] + " " + path + " iterator publication: " + str(node))
+		for path in ["body/0/loop", "body/0"]:
+			_expect(failures, report.get("nodes", {}).get(path, {}).get("type_source") == 1, types[0] + " suite inference source")
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", enabled)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_native_iterator_annotation_nullability(failures: PackedStringArray) -> void:
+	# Foundry c9d5e35 fs_type.cpp:1011-1014/1506-1513 and resolve_for:5797-5807.
+	# A nullable admission can need a runtime check without being a native downcast.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var saved := {}
+	for key in ["debug/barista_script/warnings/enable", "debug/barista_script/analysis/strict_null_checks", "debug/barista_script/analysis/strict_dynamic_checks"]:
+		saved[key] = ProjectSettings.get_setting(key)
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", false)
+	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
+	var cases: Array = [
+		["nullable_identity_soft", "Node?", "Node", false, true, false],
+		["nullable_upcast_soft", "Node?", "Object", false, true, false],
+		["identity_hard", "Node", "Node", false, true, false],
+		["upcast_hard", "Node", "Object", false, true, false],
+		["downcast_hard", "Object", "Node", false, true, true],
+		["nullable_target", "Node?", "Node?", false, true, false],
+		["nullable_downcast_soft", "Object?", "Node", false, true, true],
+		["nullable_identity_strict", "Node?", "Node", true, true, true],
+		["nullable_upcast_strict", "Node?", "Object", true, false, false],
+	]
+	for fixture in cases:
+		ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", fixture[3])
+		BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+		var source: String = "func use(values: Array[%s]) -> void:\n\tfor value: %s in values:\n\t\tpass\n" % [fixture[1], fixture[2]]
+		var path: String = "res://tests/native_iterator_" + fixture[0] + ".barista"
+		var expected_errors: Array = [] if fixture[4] else [["Unable to iterate on value of type \"Array[Node?]\" with variable of type \"Object\".", 2, 14]]
+		var report: Dictionary = probe.validate_source(source, path, true)
+		_expect(failures, report.get("valid") == fixture[4] and _errors_are_exact(report.get("errors", []), expected_errors) and report.get("warnings", []).is_empty(), fixture[0] + " exact native annotation diagnostics: " + str(report))
+		var observed: Dictionary = probe.inspect_function_source(source, path, "use")
+		var nodes: Dictionary = observed.get("nodes", {})
+		_expect(failures, observed.get("valid") == fixture[4] and nodes.get("body/0", {}).get("use_conversion_assign") == fixture[5], fixture[0] + " actual iterator conversion: " + str(observed))
+		_expect(failures, nodes.get("body/0/iterator", {}).get("datatype") == fixture[2], fixture[0] + " actual annotated iterator type")
+		_expect(failures, probe.is_semantically_valid(source, path) == fixture[4] and probe.validate_source(source, path, true) == report, fixture[0] + " validity and repeat agreement")
+	for key: String in saved:
+		ProjectSettings.set_setting(key, saved[key])
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()

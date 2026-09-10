@@ -298,6 +298,49 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
     return None
 
 
+def check_static_checks_wiring(workflow: str) -> str | None:
+    """Require a single, unconditional read-only static job consuming the shared tool pin."""
+    try:
+        import yaml
+    except ImportError:
+        return "CI audit requires PyYAML: python3 -m pip install -r tests/requirements.txt"
+    try:
+        document = yaml.load(workflow, Loader=yaml.BaseLoader)
+        jobs = document.get("jobs", {})
+        job = jobs.get("static-checks")
+        if (not isinstance(job, dict) or set(job) - {"name", "runs-on", "permissions", "steps"}
+                or job.get("name", "static-checks") != "static-checks"
+                or job.get("runs-on") != "ubuntu-22.04"
+                or job.get("permissions") != {"contents": "read"}):
+            return "CI requires one unsuppressed Linux static-checks job outside the matrix"
+        expected = [
+            {"uses": "actions/checkout@v4", "with": {"persist-credentials": "false", "submodules": "false"}},
+            {"uses": "actions/setup-python@v5", "with": {"python-version": "3.x"}},
+            {"shell": "bash", "run": "python3 -m pip install -r scripts/requirements-format.txt -r tests/requirements.txt"},
+            {"shell": "bash", "run": "python3 tests/test_check_format.py\npython3 tests/test_static_checks.py"},
+            {"shell": "bash", "run": "python3 scripts/check_format.py"},
+            {"shell": "bash", "run": "python3 scripts/add_license_header.py --check"},
+        ]
+        steps = job.get("steps")
+        if not isinstance(steps, list) or len(steps) != len(expected):
+            return "static-checks requires checkout, Python setup, pinned tools, regression tests, formatting and licenses"
+        for index, (step, required) in enumerate(zip(steps, expected), 1):
+            if not isinstance(step, dict):
+                return f"static-checks step {index} must be a mapping"
+            actual = {key: value.strip() if key == "run" and isinstance(value, str) else value
+                      for key, value in step.items() if key != "name"}
+            if actual != required:
+                return f"static-checks step {index} must retain its validated inputs and unsuppressed check command"
+        for name, other in jobs.items():
+            if name != "static-checks" and isinstance(other, dict):
+                if any(isinstance(step, dict) and "scripts/check_format.py" in step.get("run", "")
+                       for step in other.get("steps", [])):
+                    return "formatting must run only in the dedicated static-checks job"
+    except (yaml.YAMLError, AttributeError, TypeError) as error:
+        return f"invalid static-checks YAML: {error}"
+    return None
+
+
 def main() -> int:
     api_path = ROOT / "godot-cpp" / "gdextension" / "extension_api-4-7.json"
     workflow_path = ROOT / ".github" / "workflows" / "ci.yml"
@@ -324,6 +367,11 @@ def main() -> int:
     corpus_wiring_complaint = check_corpus_reproducibility_wiring(workflow)
     if corpus_wiring_complaint is not None:
         print(corpus_wiring_complaint)
+        return 1
+
+    static_complaint = check_static_checks_wiring(workflow)
+    if static_complaint is not None:
+        print(static_complaint)
         return 1
 
     suite_wiring_complaint = check_gdscript_suite_wiring(workflow)

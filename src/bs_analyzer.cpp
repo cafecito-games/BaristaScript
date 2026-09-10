@@ -3975,14 +3975,17 @@ void BSAnalyzer::analyze_if(BSParser::IfNode *p_if) {
 	flow_finality.apply_flow_narrowing_from_condition(p_if->condition, true);
 	analyze_suite(p_if->true_block);
 	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
+	p_if->set_datatype(p_if->true_block->get_datatype());
 
 	if (p_if->false_block != nullptr) {
 		previous_flow_narrowed_types = flow_finality.get_flow_narrowed_types();
 		flow_finality.apply_flow_narrowing_from_condition(p_if->condition, false);
 		if (BSParser::IfNode *elif = p_if->get_elif()) {
 			analyze_if(elif);
+			decide_suite_type(p_if, elif);
 		} else {
 			analyze_suite(p_if->false_block);
+			decide_suite_type(p_if, p_if->false_block);
 		}
 		flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
 	}
@@ -4002,6 +4005,7 @@ void BSAnalyzer::resolve_match(BSParser::MatchNode *p_match) {
 	bool subject_errored = parser != nullptr && parser->get_errors().size() > errors_before_subject;
 	for (int i = 0; i < p_match->branches.size(); i++) {
 		resolve_match_branch(p_match->branches[i], p_match->test, subject_errored);
+		decide_suite_type(p_match, p_match->branches[i]);
 	}
 	check_match_exhaustiveness(p_match);
 }
@@ -4030,6 +4034,7 @@ void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch,
 	}
 	analyze_suite(p_match_branch->block);
 	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
+	decide_suite_type(p_match_branch, p_match_branch->block);
 }
 
 // Foundry c9d5e35: D1 has one full-width integer carrier.
@@ -4171,6 +4176,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 					element_type_ptr = &element_type;
 				}
 				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr, p_subject_errored);
+				decide_suite_type(p_match_pattern, p_match_pattern->array[i]);
 			}
 			result = p_match_pattern->get_datatype();
 			break;
@@ -4191,6 +4197,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 						value_type_ptr = &value_type;
 					}
 					resolve_match_pattern(p_match_pattern->dictionary[i].value_pattern, nullptr, value_type_ptr, p_subject_errored);
+					decide_suite_type(p_match_pattern, p_match_pattern->dictionary[i].value_pattern);
 				}
 			}
 			result = p_match_pattern->get_datatype();
@@ -4210,6 +4217,7 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 					element_type_ptr = &element_type;
 				}
 				resolve_match_pattern(p_match_pattern->array[i], nullptr, element_type_ptr, p_subject_errored);
+				decide_suite_type(p_match_pattern, p_match_pattern->array[i]);
 				all_irrefutable = all_irrefutable && p_match_pattern->array[i] != nullptr && p_match_pattern->array[i]->is_irrefutable;
 			}
 			p_match_pattern->is_irrefutable = all_irrefutable && subject_is_tuple && !match_test_type.is_nullable &&
@@ -6962,6 +6970,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					mark_coroutine_handle_capture(ret->return_value, expected_return);
 				}
 				const bool constant_type_ok = update_constant_expression_type(ret->return_value, expected_return, "return");
+				ret->set_datatype(ret->return_value->get_datatype());
 				const bool returns_void = expected_return.is_set() && expected_return.kind == BSParser::DataType::BUILTIN &&
 						expected_return.builtin_type == Variant::NIL;
 				if (!constant_type_ok) {
@@ -7029,7 +7038,13 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						mark_node_unsafe(ret);
 					}
 				}
-			} else if (current_function != nullptr) {
+			} else {
+				BSParser::DataType result = type_from_property(PropertyInfo(Variant::NIL, ""));
+				result.is_constant = true;
+				ret->set_datatype(result);
+				if (current_function == nullptr) {
+					break;
+				}
 				const BSParser::DataType expected_return = current_function->get_datatype();
 				if (expected_return.is_set() && !expected_return.is_variant() &&
 						!(expected_return.kind == BSParser::DataType::BUILTIN && expected_return.builtin_type == Variant::NIL)) {
@@ -7049,43 +7064,207 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			flow_finality.apply_flow_narrowing_from_condition(while_node->condition, true);
 			analyze_suite(while_node->loop);
 			flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
+			while_node->set_datatype(while_node->loop->get_datatype());
 		} break;
 		case BSParser::Node::FOR: {
-			BSParser::ForNode *for_node = static_cast<BSParser::ForNode *>(p_node);
-			reduce_expression(for_node->list);
-			// Foundry resolve_for: range is variadic in ordinary call metadata, but the for
-			// intrinsic requires 1..3 operands and yields an int iterator. Do not allocate it.
-			if (for_node->list != nullptr && for_node->list->type == BSParser::Node::CALL) {
-				BSParser::CallNode *call = static_cast<BSParser::CallNode *>(for_node->list);
-				if (call->callee != nullptr && call->callee->type == BSParser::Node::IDENTIFIER) {
-					const BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(call->callee);
-					if (identifier->name == SNAME("range") && identifier->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
-							identifier->get_datatype().has_method_signature) {
-						List<BSParser::DataType> range_parameters;
-						for (int i = 0; i < 3; i++) {
-							range_parameters.push_back(type_from_property(PropertyInfo(Variant::NIL, ""), true));
-						}
-						call_site_validation.validate_call_arg(range_parameters, 2, false, call);
-						if (for_node->variable != nullptr) {
-							for_node->variable->set_datatype(type_from_property(PropertyInfo(Variant::INT, "")));
-						}
-					}
-				}
-			}
-			analyze_suite(for_node->loop);
+			resolve_for(static_cast<BSParser::ForNode *>(p_node));
 		} break;
 		case BSParser::Node::MATCH: {
 			resolve_match(static_cast<BSParser::MatchNode *>(p_node));
 		} break;
 		case BSParser::Node::ASSERT: {
-			BSParser::AssertNode *assert_node = static_cast<BSParser::AssertNode *>(p_node);
-			flow_finality.reduce_condition_expression(assert_node->condition);
-			reduce_expression(assert_node->message);
-			// Foundry resolve_assert: successful assert keeps true-branch narrowing for later statements.
-			flow_finality.apply_flow_narrowing_from_condition(assert_node->condition, true);
+			resolve_assert(static_cast<BSParser::AssertNode *>(p_node));
 		} break;
 		case BSParser::Node::SUITE:
 			analyze_suite(static_cast<BSParser::SuiteNode *>(p_node));
+			break;
+		default:
+			break;
+	}
+}
+
+void BSAnalyzer::resolve_assert(BSParser::AssertNode *p_assert) {
+	flow_finality.reduce_condition_expression(p_assert->condition);
+	if (p_assert->message != nullptr) {
+		reduce_expression(p_assert->message);
+		if (!p_assert->message->get_datatype().has_no_type() && (p_assert->message->get_datatype().kind != BSParser::DataType::BUILTIN || p_assert->message->get_datatype().builtin_type != Variant::STRING)) {
+			push_error(R"(Expected string for assert error message.)", p_assert->message);
+		}
+	}
+
+	p_assert->set_datatype(p_assert->condition->get_datatype());
+	flow_finality.apply_flow_narrowing_from_condition(p_assert->condition, true);
+
+#ifdef DEBUG_ENABLED
+	if (p_assert->condition->is_constant) {
+		if (p_assert->condition->reduced_value.booleanize()) {
+			parser->push_warning(p_assert->condition, BSWarning::ASSERT_ALWAYS_TRUE);
+		} else if (!(p_assert->condition->type == BSParser::Node::LITERAL && static_cast<BSParser::LiteralNode *>(p_assert->condition)->value.get_type() == Variant::BOOL)) {
+			parser->push_warning(p_assert->condition, BSWarning::ASSERT_ALWAYS_FALSE);
+		}
+	}
+#endif // DEBUG_ENABLED
+}
+
+void BSAnalyzer::resolve_for(BSParser::ForNode *p_for) {
+	BSParser::DataType variable_type;
+	BSParser::DataType list_type;
+
+	if (p_for->list) {
+		reduce_expression(p_for->list);
+
+		bool is_range = false;
+		if (p_for->list->type == BSParser::Node::CALL) {
+			BSParser::CallNode *call = static_cast<BSParser::CallNode *>(p_for->list);
+			if (call->callee != nullptr && call->callee->type == BSParser::Node::IDENTIFIER) {
+				const BSParser::IdentifierNode *identifier = static_cast<BSParser::IdentifierNode *>(call->callee);
+				if (identifier->name == SNAME("range") && identifier->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+						identifier->get_datatype().has_method_signature) {
+					if (call->arguments.is_empty()) {
+						push_error(R"*(Invalid call for "range()" function. Expected at least 1 argument, none given.)*", call);
+					} else if (call->arguments.size() > 3) {
+						push_error(vformat(R"*(Invalid call for "range()" function. Expected at most 3 arguments, %d given.)*", call->arguments.size()), call);
+					}
+					is_range = true;
+					variable_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+					variable_type.kind = BSParser::DataType::BUILTIN;
+					variable_type.builtin_type = Variant::INT;
+				}
+			}
+		}
+
+		list_type = p_for->list->get_datatype();
+
+		if (!list_type.is_hard_type()) {
+			mark_node_unsafe(p_for->list);
+		}
+
+		if (is_range) {
+			// Already solved.
+		} else if (list_type.is_variant()) {
+			variable_type.kind = BSParser::DataType::VARIANT;
+			mark_node_unsafe(p_for->list);
+		} else if (list_type.has_container_element_type(0)) {
+			variable_type = list_type.get_container_element_type(0);
+			variable_type.type_source = list_type.type_source;
+		} else if (list_type.is_typed_container_type()) {
+			variable_type = list_type.get_typed_container_type();
+			variable_type.type_source = list_type.type_source;
+		} else if (list_type.builtin_type == Variant::INT || list_type.builtin_type == Variant::FLOAT || list_type.builtin_type == Variant::STRING) {
+			variable_type.type_source = list_type.type_source;
+			variable_type.kind = BSParser::DataType::BUILTIN;
+			variable_type.builtin_type = list_type.builtin_type;
+		} else if (list_type.builtin_type == Variant::VECTOR2I || list_type.builtin_type == Variant::VECTOR3I) {
+			variable_type.type_source = list_type.type_source;
+			variable_type.kind = BSParser::DataType::BUILTIN;
+			variable_type.builtin_type = Variant::INT;
+		} else if (list_type.builtin_type == Variant::VECTOR2 || list_type.builtin_type == Variant::VECTOR3) {
+			variable_type.type_source = list_type.type_source;
+			variable_type.kind = BSParser::DataType::BUILTIN;
+			variable_type.builtin_type = Variant::FLOAT;
+		} else if (list_type.builtin_type == Variant::OBJECT) {
+			BSParser::FunctionNode *iterator = list_type.kind == BSParser::DataType::CLASS
+					? find_class_function(list_type.class_type, SNAME("_iter_get"))
+					: nullptr;
+			MethodInfo method;
+			if (iterator != nullptr) {
+				variable_type = iterator->get_datatype();
+				variable_type.type_source = list_type.type_source;
+			} else if (BSNativeDB::get_method_info(list_type.native_type, SNAME("_iter_get"), &method)) {
+				variable_type = type_from_property(method.return_val, (method.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT) != 0);
+				variable_type.type_source = list_type.type_source;
+			} else if (!list_type.is_hard_type()) {
+				variable_type.kind = BSParser::DataType::VARIANT;
+			} else {
+				push_error(vformat(R"(Unable to iterate on object of type "%s".)", list_type.to_string()), p_for->list);
+			}
+		} else if (list_type.builtin_type == Variant::ARRAY || list_type.builtin_type == Variant::DICTIONARY || !list_type.is_hard_type()) {
+			variable_type.kind = BSParser::DataType::VARIANT;
+		} else {
+			push_error(vformat(R"(Unable to iterate on value of type "%s".)", list_type.to_string()), p_for->list);
+		}
+	}
+
+	// Use the shared concrete checker with the analysis profile for annotation conversion.
+	auto compatible = [&](const BSParser::DataType &p_target, const BSParser::DataType &p_source, bool p_conversion) {
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = p_conversion;
+		options.strict_dynamic = strict_dynamic_checks;
+		options.strict_null = strict_null_checks;
+		const BSTypeCompatibility::Result result = BSTypeCompatibility::check(p_target, p_source, options);
+		// Only native downcasts use FOR's reverse-compatibility/conversion branch.
+		// Nullable identity/upcasts can also need a runtime check in a non-strict
+		// profile, so retain their forward admission through the reference relation.
+		return result.compatible && !(result.requires_runtime_check && p_target.kind == BSParser::DataType::NATIVE && p_source.kind == BSParser::DataType::NATIVE && !p_target.can_reference(p_source));
+	};
+	if (p_for->variable) {
+		if (p_for->datatype_specifier) {
+			BSParser::DataType specified_type = datatype_from_type_node(p_for->datatype_specifier);
+			if (!specified_type.is_variant()) {
+				if (variable_type.is_variant() || !variable_type.is_hard_type()) {
+					mark_node_unsafe(p_for->variable);
+					p_for->use_conversion_assign = true;
+				} else if (!compatible(specified_type, variable_type, true)) {
+					if (compatible(variable_type, specified_type, false)) {
+						mark_node_unsafe(p_for->variable);
+						p_for->use_conversion_assign = true;
+					} else {
+						push_error(vformat(R"(Unable to iterate on value of type "%s" with variable of type "%s".)", list_type.to_string(), specified_type.to_string()), p_for->datatype_specifier);
+					}
+				} else if (!compatible(specified_type, variable_type, false)) {
+					p_for->use_conversion_assign = true;
+				}
+				if (p_for->list) {
+					// The loop variable's type is what an *element* of the list has to be, so the list
+					// itself is expected to be a container of that type. A dictionary iterates its keys,
+					// so only the key slot is constrained.
+					BSParser::DataType list_expected_type;
+					if (p_for->list->type == BSParser::Node::ARRAY || p_for->list->type == BSParser::Node::DICTIONARY) {
+						list_expected_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+						list_expected_type.kind = BSParser::DataType::BUILTIN;
+						list_expected_type.builtin_type = p_for->list->type == BSParser::Node::ARRAY ? Variant::ARRAY : Variant::DICTIONARY;
+						// Dictionary iteration constrains only its key slot.
+						list_expected_type.container_element_types.push_back(specified_type);
+						if (list_expected_type.builtin_type == Variant::DICTIONARY) {
+							list_expected_type.container_element_types.push_back(BSParser::DataType::get_variant_type());
+						}
+					}
+					update_container_literal_element_types(p_for->list, list_expected_type);
+				}
+			}
+			p_for->variable->set_datatype(specified_type);
+		} else {
+			p_for->variable->set_datatype(variable_type);
+		}
+	}
+
+	HashMap<const BSParser::Node *, BSParser::DataType> previous_flow_narrowed_types(flow_finality.get_flow_narrowed_types());
+	analyze_suite(p_for->loop);
+	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
+	p_for->set_datatype(p_for->loop->get_datatype());
+}
+
+void BSAnalyzer::decide_suite_type(BSParser::Node *p_suite, BSParser::Node *p_statement) {
+	if (p_statement == nullptr) {
+		return;
+	}
+	switch (p_statement->type) {
+		case BSParser::Node::IF:
+		case BSParser::Node::FOR:
+		case BSParser::Node::MATCH:
+		case BSParser::Node::PATTERN:
+		case BSParser::Node::RETURN:
+		case BSParser::Node::WHILE:
+			// Use return or nested suite type as this suite type.
+			if (p_suite->get_datatype().is_set() && (p_suite->get_datatype() != p_statement->get_datatype())) {
+				// Mixed types.
+				// TODO: This could use the common supertype instead.
+				p_suite->datatype.kind = BSParser::DataType::VARIANT;
+				p_suite->datatype.type_source = BSParser::DataType::UNDETECTED;
+			} else {
+				p_suite->set_datatype(p_statement->get_datatype());
+				p_suite->datatype.type_source = BSParser::DataType::INFERRED;
+			}
 			break;
 		default:
 			break;
@@ -7101,6 +7280,7 @@ void BSAnalyzer::analyze_suite(BSParser::SuiteNode *p_suite) {
 		// Foundry resolve_suite @ c9d5e35: flush lambda bodies after each statement so capture
 		// marking sees the outer suite's live flow-narrowing map.
 		resolve_pending_lambda_bodies();
+		decide_suite_type(p_suite, p_suite->statements[i]);
 	}
 }
 

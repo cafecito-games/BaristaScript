@@ -38,6 +38,9 @@ public:
 	/** Inspect the named top-level `probe_expression` initializer without requiring a fold. */
 	godot::Dictionary inspect_expression_source(const godot::String &p_source, const godot::String &p_path) const;
 
+	/** Copy actual parser-owned statement/suite/iterator/literal datatypes in a top-level function. */
+	godot::Dictionary inspect_function_source(const godot::String &p_source, const godot::String &p_path, const godot::StringName &p_function) const;
+
 	/** Copied public metadata and boolean identity checks only; never returns or invokes markers. */
 	godot::Dictionary language_utility_metadata() const;
 	/** Source-independent concrete callable identity and Self-marker traversal controls. */

@@ -126,6 +126,40 @@ clearing caches, checks ordinary debug/release artifacts for test code, and reta
 legacy suite/corpus gate. Add native suites to `tests/native_suites.json`; CI consumes the
 whole manifest without filters.
 
+## Check formatting and licenses
+
+Install the exact clang-format release from the shared pin (activate a virtual environment
+first if your Python installation is externally managed):
+
+```sh
+python3 -m pip install -r scripts/requirements-format.txt
+python3 scripts/check_format.py
+python3 scripts/add_license_header.py --check
+```
+
+`check_format.py` checks every tracked maintained C/C++ source/header, including staged new
+files and `tests/native/`, against the repository `.clang-format`. It uses the license script's
+source suffixes and exclusions, so pinned `godot-cpp/`, `thirdparty/`, generated `gen/`,
+`build/`, and `bin/` files stay excluded. A missing or wrong formatter, empty discovery,
+missing tracked source, or formatting violation fails with a diagnostic. Add new sources
+to Git before checking them. `--clang-format /path/to/clang-format` selects an executable
+but still requires the pinned version.
+
+Checks do not edit sources. To repair formatting explicitly, run
+`python3 scripts/check_format.py --fix`; to add missing license headers, run
+`python3 scripts/add_license_header.py`. `prek install` enables the matching format check
+and the existing license-header repair hook; stage repaired files and commit again.
+
+CI runs the `static-checks` status once per existing workflow event, independently of the
+platform build matrix. It installs the same pin, tests the checkers in disposable Git
+repositories, and checks formatting plus licenses. Reproduce its regression tests with:
+
+```sh
+python3 -m pip install -r tests/requirements.txt
+python3 tests/test_check_format.py
+python3 tests/test_static_checks.py
+```
+
 ## Layout
 
 - `src/barista_script_language.*` implements language registration metadata.
