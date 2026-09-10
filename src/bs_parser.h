@@ -614,6 +614,9 @@ public:
 		// Base type for all expression kinds.
 		bool reduced = false;
 		bool is_constant = false;
+		// M3 can know a constant's type/identity without constructing its Script payload.
+		// Propagates through aliases and pure containers; reduced_value is unavailable.
+		bool is_unmaterialized_constant = false;
 		Variant reduced_value;
 		// When the analyzer resolves this expression to a namespaced global class used as a
 		// value (e.g. `Foo` from the current/imported namespace, or a qualified `ns.Foo`), it

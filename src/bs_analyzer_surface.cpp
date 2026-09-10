@@ -1276,6 +1276,7 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		if (member.constant->initializer != nullptr && member.constant->initializer->is_constant) {
 			p_identifier->is_constant = true;
 			p_identifier->reduced_value = member.constant->initializer->reduced_value;
+			p_identifier->is_unmaterialized_constant = !has_materialized_constant_value(member.constant->initializer);
 		}
 		return true;
 	}

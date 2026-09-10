@@ -674,6 +674,7 @@ bool BSAnalyzer::CallSiteValidationContext::canonicalize_named_call_arguments(BS
 		constant_argument->value = parameter->initializer->reduced_value;
 		constant_argument->reduced = true;
 		constant_argument->is_constant = true;
+		constant_argument->is_unmaterialized_constant = !BSAnalyzer::has_materialized_constant_value(parameter->initializer);
 		constant_argument->reduced_value = parameter->initializer->reduced_value;
 		constant_argument->set_datatype(parameter->initializer->get_datatype());
 		slots.write[i] = constant_argument;

@@ -490,7 +490,31 @@ TEST_SUITE("preload_analyzer") {
 		CHECK(int64_t(consumer.get_tree()->get_member("Selected").constant->initializer->reduced_value) == 1);
 		CHECK(consumer.get_tree()->get_member("Alias").get_datatype().class_type == consumer.get_tree()->get_member("P").get_datatype().class_type);
 		for (const StringName &name : { StringName("items"), StringName("mapping"), StringName("pair"), StringName("text") }) {
-			CHECK_FALSE(consumer.get_tree()->get_member(name).variable->initializer->is_constant);
+			auto *value = consumer.get_tree()->get_member(name).variable->initializer;
+			CHECK_FALSE(BSAnalyzer::has_materialized_constant_value(value));
+			if (name != StringName("text")) {
+				CHECK(value->is_constant);
+			}
 		}
+	}
+	TEST_CASE("semantic_preload_containers_remain_constant_without_runtime_payload") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "constant", "class_name ConstantProvider\n").is_empty());
+		BSParser consumer;
+		BS_TEST_REQUIRE(consumer.parse("const P = preload(\"constant.barista\")\nconst A = [P]\nconst D = {\"provider\": P}\nconst T = (P, 1)\nconst Alias = A\nconst RealNull: Array? = null\n", "res://tests/x3/consumer.barista", false) == OK);
+		BSAnalyzer analyzer(&consumer);
+		CHECK(analyzer.analyze() == OK);
+		no_errors(consumer);
+		for (const StringName &name : { StringName("A"), StringName("D"), StringName("T"), StringName("Alias") }) {
+			auto *value = consumer.get_tree()->get_member(name).constant->initializer;
+			CAPTURE(name);
+			CHECK(value->is_constant);
+			CHECK_FALSE(BSAnalyzer::has_materialized_constant_value(value));
+		}
+		auto *null_value = consumer.get_tree()->get_member("RealNull").constant->initializer;
+		CHECK(null_value->is_constant);
+		CHECK(BSAnalyzer::has_materialized_constant_value(null_value));
+		CHECK(null_value->reduced_value.get_type() == Variant::NIL);
+		CHECK(consumer.get_tree()->get_member("RealNull").get_datatype().is_nullable);
 	}
 }

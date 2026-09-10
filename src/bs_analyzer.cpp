@@ -68,8 +68,40 @@ static bool _is_static_script_handle(const BSParser::ExpressionNode *p_expressio
 			p_expression->get_datatype().class_type != nullptr;
 }
 
+static bool _has_known_constant_truth(const BSParser::ExpressionNode *p_expression) {
+	if (BSAnalyzer::has_materialized_constant_value(p_expression) || _is_static_script_handle(p_expression)) {
+		return true;
+	}
+	if (p_expression == nullptr || !p_expression->is_constant || !p_expression->is_unmaterialized_constant) {
+		return false;
+	}
+	// A pure container needs an unavailable element to carry this marker, so it
+	// cannot be empty. Unknown scalar results never claim a truth value.
+	const auto type = p_expression->get_datatype();
+	return p_expression->type == BSParser::Node::ARRAY || p_expression->type == BSParser::Node::DICTIONARY ||
+			p_expression->type == BSParser::Node::TUPLE_LITERAL || type.kind == BSParser::DataType::TUPLE || type.is_tagged_union_type();
+}
+
+static void _preserve_unmaterialized_constant(BSParser::ExpressionNode *p_expression, const Vector<BSParser::ExpressionNode *> &p_children) {
+	if (p_expression->is_constant) {
+		return;
+	}
+	bool unavailable = false;
+	for (const BSParser::ExpressionNode *child : p_children) {
+		if (child == nullptr || !child->is_constant) {
+			return;
+		}
+		unavailable = unavailable || !BSAnalyzer::has_materialized_constant_value(child);
+	}
+	if (unavailable) {
+		p_expression->is_constant = true;
+		p_expression->is_unmaterialized_constant = true;
+		p_expression->reduced_value = Variant();
+	}
+}
+
 static bool _constant_truth(const BSParser::ExpressionNode *p_expression) {
-	return _is_static_script_handle(p_expression) || p_expression->reduced_value.booleanize();
+	return _is_static_script_handle(p_expression) || p_expression->is_unmaterialized_constant || p_expression->reduced_value.booleanize();
 }
 
 static bool _enum_has_value(const BSParser::DataType &p_type, int64_t p_value) {
@@ -2080,7 +2112,7 @@ BSParser::DataType BSAnalyzer::get_operation_type(Variant::Operator p_operation,
 }
 
 bool BSAnalyzer::has_materialized_constant_value(const BSParser::ExpressionNode *p_expression) {
-	return p_expression != nullptr && p_expression->is_constant && !_is_unmaterialized_metatype(p_expression);
+	return p_expression != nullptr && p_expression->is_constant && !p_expression->is_unmaterialized_constant && !_is_unmaterialized_metatype(p_expression);
 }
 
 void BSAnalyzer::reduce_literal(BSParser::LiteralNode *p_literal) {
@@ -2100,7 +2132,7 @@ void BSAnalyzer::reduce_unary_op(BSParser::UnaryOpNode *p_unary_op) {
 	reduce_expression(p_unary_op->operand);
 	BSParser::DataType operand_type = p_unary_op->operand->get_datatype();
 
-	if (p_unary_op->operand->is_constant && _is_static_script_handle(p_unary_op->operand) && p_unary_op->variant_op == Variant::OP_NOT) {
+	if (p_unary_op->operand->is_constant && !has_materialized_constant_value(p_unary_op->operand) && _has_known_constant_truth(p_unary_op->operand) && p_unary_op->variant_op == Variant::OP_NOT) {
 		p_unary_op->is_constant = true;
 		p_unary_op->reduced_value = false;
 		p_unary_op->set_datatype(type_from_variant(false));
@@ -2145,6 +2177,7 @@ void BSAnalyzer::reduce_unary_op(BSParser::UnaryOpNode *p_unary_op) {
 		}
 	}
 	p_unary_op->set_datatype(result);
+	_preserve_unmaterialized_constant(p_unary_op, { p_unary_op->operand });
 }
 
 void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
@@ -2281,6 +2314,7 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 	}
 
 	p_binary_op->set_datatype(result);
+	_preserve_unmaterialized_constant(p_binary_op, { p_binary_op->left_operand, p_binary_op->right_operand });
 }
 
 void BSAnalyzer::maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier) {
@@ -2366,6 +2400,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 					if (local.constant->initializer != nullptr && local.constant->initializer->is_constant) {
 						p_identifier->is_constant = true;
 						p_identifier->reduced_value = local.constant->initializer->reduced_value;
+						p_identifier->is_unmaterialized_constant = !has_materialized_constant_value(local.constant->initializer);
 					}
 				}
 				return;
@@ -3162,6 +3197,9 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						all_constant = all_constant && has_materialized_constant_value(argument);
 						arguments.push_back(argument->reduced_value);
 					}
+					if (!all_constant && parser->get_errors().size() == previous_errors && BSUtilityFunctions::is_function_constant(constructor_name)) {
+						_preserve_unmaterialized_constant(p_call, p_call->arguments);
+					}
 					if (all_constant && parser->get_errors().size() == previous_errors) {
 						Variant value;
 						String error;
@@ -3238,6 +3276,7 @@ void BSAnalyzer::reduce_preload(BSParser::PreloadNode *p_preload) {
 		type.is_meta_type = true;
 		type.is_constant = true;
 		p_preload->set_datatype(type);
+		p_preload->is_unmaterialized_constant = true;
 		return;
 	}
 	ResourceLoader *loader = ResourceLoader::get_singleton();
@@ -3304,6 +3343,7 @@ void BSAnalyzer::reduce_await(BSParser::AwaitNode *p_await) {
 	} else if (p_await->to_await->is_constant) {
 		p_await->is_constant = p_await->to_await->is_constant;
 		p_await->reduced_value = p_await->to_await->reduced_value;
+		p_await->is_unmaterialized_constant = !has_materialized_constant_value(p_await->to_await);
 		// Awaiting a plain value yields it unchanged; a non-coroutine operand never carries the flag.
 		await_type.is_coroutine = false;
 	}
@@ -3558,6 +3598,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						if (member.constant->initializer != nullptr && member.constant->initializer->is_constant) {
 							p_subscript->is_constant = true;
 							p_subscript->reduced_value = member.constant->initializer->reduced_value;
+							p_subscript->is_unmaterialized_constant = !has_materialized_constant_value(member.constant->initializer);
 						}
 						return;
 					}
@@ -3620,6 +3661,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						if (member.constant->initializer != nullptr && member.constant->initializer->is_constant) {
 							p_subscript->is_constant = true;
 							p_subscript->reduced_value = member.constant->initializer->reduced_value;
+							p_subscript->is_unmaterialized_constant = !has_materialized_constant_value(member.constant->initializer);
 						}
 						return;
 					}
@@ -3854,6 +3896,7 @@ void BSAnalyzer::reject_constant_materialization(BSParser::ExpressionNode *p_exp
 	}
 	failed_constant_expressions.insert(p_expression);
 	p_expression->is_constant = false;
+	p_expression->is_unmaterialized_constant = false;
 	p_expression->reduced_value = Variant();
 	BSParser::DataType type = p_expression->get_datatype();
 	type.is_constant = false;
@@ -3864,10 +3907,11 @@ void BSAnalyzer::reject_constant_materialization(BSParser::ExpressionNode *p_exp
 // Only pure literal/subscript structure is materialized here. CALL belongs to #141 S5;
 // class/generic runtime descriptors belong to M4/M5. Visitation is not constant success.
 Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced) {
-	// r_reduced can alias p_expression->is_constant. Preserve the input before clearing output.
+	// Materialization success is separate from semantic constness; callers must not
+	// alias this output with ExpressionNode::is_constant.
 	const bool was_constant = p_expression != nullptr && p_expression->is_constant;
 	r_reduced = false;
-	if (p_expression == nullptr || failed_constant_expressions.has(p_expression) || _is_unmaterialized_metatype(p_expression)) {
+	if (p_expression == nullptr || failed_constant_expressions.has(p_expression) || p_expression->is_unmaterialized_constant || _is_unmaterialized_metatype(p_expression)) {
 		return Variant();
 	}
 	if (was_constant) {
@@ -4027,11 +4071,12 @@ void BSAnalyzer::publish_constant_subscript(BSParser::SubscriptNode *p_subscript
 	_make_constant_containers_read_only(p_value);
 	p_subscript->is_constant = true;
 	p_subscript->reduced_value = p_value;
+	p_subscript->is_unmaterialized_constant = false;
 	p_subscript->set_datatype(type);
 }
 
 void BSAnalyzer::materialize_constant_initializer(BSParser::ConstantNode *p_constant) {
-	if (p_constant->initializer == nullptr || (p_constant->initializer->is_constant && _is_unmaterialized_metatype(p_constant->initializer))) {
+	if (p_constant->initializer == nullptr || (p_constant->initializer->is_constant && !has_materialized_constant_value(p_constant->initializer))) {
 		return;
 	}
 	bool reduced = false;
@@ -4082,7 +4127,10 @@ void BSAnalyzer::reduce_array(BSParser::ArrayNode *p_array) {
 	type.kind = BSParser::DataType::BUILTIN;
 	type.builtin_type = Variant::ARRAY;
 	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-	p_array->reduced_value = make_expression_reduced_value(p_array, p_array->is_constant);
+	bool materialized = false;
+	p_array->reduced_value = make_expression_reduced_value(p_array, materialized);
+	p_array->is_constant = materialized || p_array->is_unmaterialized_constant;
+	_preserve_unmaterialized_constant(p_array, p_array->elements);
 	type.is_constant = p_array->is_constant;
 	p_array->set_datatype(type);
 }
@@ -4105,7 +4153,10 @@ void BSAnalyzer::reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple) {
 		element_types.push_back(element_type);
 	}
 	BSParser::DataType tuple_type = make_tuple_type(StringName(), String(), String(), element_types, Vector<StringName>(), false);
-	p_tuple->reduced_value = make_expression_reduced_value(p_tuple, p_tuple->is_constant);
+	bool materialized = false;
+	p_tuple->reduced_value = make_expression_reduced_value(p_tuple, materialized);
+	p_tuple->is_constant = materialized || p_tuple->is_unmaterialized_constant;
+	_preserve_unmaterialized_constant(p_tuple, p_tuple->elements);
 	tuple_type.is_constant = p_tuple->is_constant;
 	p_tuple->set_datatype(tuple_type);
 }
@@ -4140,7 +4191,15 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 	type.kind = BSParser::DataType::BUILTIN;
 	type.builtin_type = Variant::DICTIONARY;
 	type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-	p_dictionary->reduced_value = make_expression_reduced_value(p_dictionary, p_dictionary->is_constant);
+	bool materialized = false;
+	p_dictionary->reduced_value = make_expression_reduced_value(p_dictionary, materialized);
+	p_dictionary->is_constant = materialized || p_dictionary->is_unmaterialized_constant;
+	Vector<BSParser::ExpressionNode *> constant_elements;
+	for (const auto &element : p_dictionary->elements) {
+		constant_elements.push_back(element.key);
+		constant_elements.push_back(element.value);
+	}
+	_preserve_unmaterialized_constant(p_dictionary, constant_elements);
 	type.is_constant = p_dictionary->is_constant;
 	p_dictionary->set_datatype(type);
 }
@@ -4162,8 +4221,9 @@ void BSAnalyzer::finalize_ternary_type(BSParser::TernaryOpNode *p_ternary) {
 	p_ternary->is_constant = false;
 	p_ternary->reduced = false;
 	p_ternary->reduced_value = Variant();
+	p_ternary->is_unmaterialized_constant = false;
 	if (p_ternary->condition != nullptr && p_ternary->condition->is_constant &&
-			(has_materialized_constant_value(p_ternary->condition) || _is_static_script_handle(p_ternary->condition)) &&
+			_has_known_constant_truth(p_ternary->condition) &&
 			p_ternary->true_expr != nullptr && p_ternary->true_expr->is_constant &&
 			p_ternary->false_expr != nullptr && p_ternary->false_expr->is_constant) {
 		const bool take_true = _constant_truth(p_ternary->condition);
@@ -4171,7 +4231,8 @@ void BSAnalyzer::finalize_ternary_type(BSParser::TernaryOpNode *p_ternary) {
 		p_ternary->is_constant = true;
 		p_ternary->reduced = true;
 		p_ternary->reduced_value = chosen->reduced_value;
-		if (_is_unmaterialized_metatype(chosen)) {
+		if (!has_materialized_constant_value(chosen)) {
+			p_ternary->is_unmaterialized_constant = true;
 			p_ternary->set_datatype(chosen->get_datatype());
 			return;
 		}
@@ -5179,7 +5240,9 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 						: target_type;
 				p_expression->set_datatype(published);
 				p_expression->is_constant = false;
-				p_expression->reduced_value = make_expression_reduced_value(p_expression, p_expression->is_constant);
+				bool materialized = false;
+				p_expression->reduced_value = make_expression_reduced_value(p_expression, materialized);
+				p_expression->is_constant = materialized || p_expression->is_unmaterialized_constant;
 				published.is_constant = p_expression->is_constant;
 				p_expression->set_datatype(published);
 				return true;
@@ -5201,7 +5264,9 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 						: target_type;
 				p_expression->set_datatype(published);
 				p_expression->is_constant = false;
-				p_expression->reduced_value = make_expression_reduced_value(p_expression, p_expression->is_constant);
+				bool materialized = false;
+				p_expression->reduced_value = make_expression_reduced_value(p_expression, materialized);
+				p_expression->is_constant = materialized || p_expression->is_unmaterialized_constant;
 				published.is_constant = p_expression->is_constant;
 				p_expression->set_datatype(published);
 				return true;
@@ -5232,7 +5297,9 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 				return true;
 			}
 			p_expression->is_constant = false;
-			p_expression->reduced_value = make_expression_reduced_value(p_expression, p_expression->is_constant);
+			bool materialized = false;
+			p_expression->reduced_value = make_expression_reduced_value(p_expression, materialized);
+			p_expression->is_constant = materialized || p_expression->is_unmaterialized_constant;
 			published.is_constant = p_expression->is_constant;
 			p_expression->set_datatype(published);
 			return true;
@@ -6635,6 +6702,8 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 		p_call->reduced_value = case_value;
 	}
 
+	_preserve_unmaterialized_constant(p_call, p_call->arguments);
+	case_value_type.is_constant = p_call->is_constant;
 	p_call->set_datatype(case_value_type);
 }
 
@@ -6776,6 +6845,8 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 		p_call->reduced_value = values;
 		tuple_type.is_constant = true;
 	}
+	_preserve_unmaterialized_constant(p_call, p_call->arguments);
+	tuple_type.is_constant = p_call->is_constant;
 	p_call->set_datatype(tuple_type);
 }
 
@@ -7074,7 +7145,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				if (reduced) {
 					publish_constant_subscript(subscript, value);
 				} else if (!subscript->is_attribute && subscript->base != nullptr && subscript->index != nullptr &&
-						subscript->base->is_constant && subscript->index->is_constant &&
+						has_materialized_constant_value(subscript->base) && has_materialized_constant_value(subscript->index) &&
 						!subscript->base->get_datatype().is_meta_type && subscript->base->reduced_value.get_type() != Variant::OBJECT) {
 					push_error(vformat(R"(Cannot get index "%s" from "%s".)", subscript->index->reduced_value, subscript->base->reduced_value), subscript->index);
 				}
@@ -7604,7 +7675,7 @@ void BSAnalyzer::resolve_assert(BSParser::AssertNode *p_assert) {
 	flow_finality.apply_flow_narrowing_from_condition(p_assert->condition, true);
 
 #ifdef DEBUG_ENABLED
-	if (has_materialized_constant_value(p_assert->condition) || (p_assert->condition->is_constant && _is_static_script_handle(p_assert->condition))) {
+	if (p_assert->condition->is_constant && _has_known_constant_truth(p_assert->condition)) {
 		if (_constant_truth(p_assert->condition)) {
 			parser->push_warning(p_assert->condition, BSWarning::ASSERT_ALWAYS_TRUE);
 		} else if (!(p_assert->condition->type == BSParser::Node::LITERAL && static_cast<BSParser::LiteralNode *>(p_assert->condition)->value.get_type() == Variant::BOOL)) {
@@ -8134,7 +8205,7 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 					if (member.constant->initializer != nullptr) {
 						reduce_expression(member.constant->initializer);
 						qualify_contextual_enum_case_consumer(member.constant->initializer, member.constant->get_datatype());
-						if (member.constant->initializer->is_constant &&
+						if (has_materialized_constant_value(member.constant->initializer) &&
 								(!member.constant->get_datatype().is_set() || member.constant->get_datatype().is_variant()) &&
 								!member.constant->initializer->get_datatype().is_set()) {
 							member.constant->initializer->set_datatype(type_from_variant(member.constant->initializer->reduced_value));
@@ -8561,7 +8632,7 @@ BSAnalyzer::SuiteExitState BSAnalyzer::get_statement_exit_state(const BSParser::
 			result.has_return = loop_exit.has_return;
 			result.has_noreturn = loop_exit.has_noreturn;
 			result.always_terminates = while_node->loop != nullptr && while_node->condition != nullptr && while_node->condition->is_constant &&
-					(has_materialized_constant_value(while_node->condition) || _is_static_script_handle(while_node->condition)) && _constant_truth(while_node->condition) && !suite_has_reachable_break(while_node->loop);
+					_has_known_constant_truth(while_node->condition) && _constant_truth(while_node->condition) && !suite_has_reachable_break(while_node->loop);
 		} break;
 		case BSParser::Node::FOR: {
 			// Preserve possible reachable returns from a FOR body in the shared summary.
