@@ -109,6 +109,33 @@ TEST_SUITE("source_analyzer") {
 		CHECK(analyzer.analyze() == OK);
 		CHECK(parser.get_errors().is_empty());
 	}
+	TEST_CASE("native_constant_calls_preserve_claims_through_class_ancestors") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(seed(fixture, "res://tests/source/native_owner.barista", "class_name NativeOwner extends Node\n"));
+		for (const String &receiver : { String("Node"), String("NativeOwner") }) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("var result = " + receiver + ".NOTIFICATION_READY()\n", "res://tests/source/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			auto *initializer = parser.get_tree()->get_member("result").variable->initializer;
+			BS_TEST_REQUIRE(initializer->type == BSParser::Node::CALL);
+			diagnostic(parser, "Name \"NOTIFICATION_READY\" called as a function but is a \"int\".", static_cast<BSParser::CallNode *>(initializer)->callee);
+		}
+		BSParser read;
+		BS_TEST_REQUIRE(read.parse("extends Node\nvar result: int = NOTIFICATION_READY\n", "res://tests/source/read.barista", false) == OK);
+		BSAnalyzer read_analyzer(&read);
+		CHECK(read_analyzer.analyze() == OK);
+		CHECK(read.get_errors().is_empty());
+		BSCache::remove_script("res://tests/source/native_owner.barista");
+		BS_TEST_REQUIRE(seed(fixture, "res://tests/source/native_owner.barista", "class_name NativeOwner extends Node\nconst NOTIFICATION_READY = \"claimed\"\n"));
+		BSParser claimed;
+		BS_TEST_REQUIRE(claimed.parse("var result = NativeOwner.NOTIFICATION_READY()\n", "res://tests/source/consumer.barista", false) == OK);
+		BSAnalyzer claimed_analyzer(&claimed);
+		CHECK(claimed_analyzer.analyze() != OK);
+		auto *initializer = claimed.get_tree()->get_member("result").variable->initializer;
+		BS_TEST_REQUIRE(initializer->type == BSParser::Node::CALL);
+		diagnostic(claimed, "Name \"NOTIFICATION_READY\" called as a function but is a \"String\".", static_cast<BSParser::CallNode *>(initializer)->callee);
+	}
 	TEST_CASE("ordinary_language_and_script_server_lookup_reject_without_repair") {
 		StorageFixture fixture;
 		const String path = "res://tests/source/provider.barista";

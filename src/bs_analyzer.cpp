@@ -3167,6 +3167,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (!p_call->is_super && base_type.is_hard_type() && base_type.is_meta_type) {
 					// Foundry c9d5e35:9125-9143: a claimed non-function is diagnosed at the
 					// callee; only a missing name reaches the static-call diagnostic below.
+					bool class_member_claimed = false;
 					HashSet<const BSParser::ClassNode *> visited;
 					for (BSParser::ClassNode *owner = method_owner; owner != nullptr; owner = owner->base_type.class_type) {
 						if (visited.has(owner)) {
@@ -3176,6 +3177,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						if (!owner->has_member(p_call->function_name)) {
 							continue;
 						}
+						class_member_claimed = true;
 						const int previous_errors = parser->get_errors().size();
 						reduce_expression(subscript);
 						const BSParser::DataType callee_type = subscript->get_datatype();
@@ -3195,7 +3197,14 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						}
 						break;
 					}
-					push_error(vformat(R"*(Static function "%s()" not found in base "%s".)*", p_call->function_name, base_type.to_string()), p_call);
+					// The same native ancestor surface is available through a CLASS receiver.
+					// Reuse the integer-constant producer used by identifier member lookup.
+					if (!class_member_claimed && native_type != StringName() && ClassDB::class_has_integer_constant(native_type, p_call->function_name)) {
+						const BSParser::DataType callee_type = type_from_variant(ClassDB::class_get_integer_constant(native_type, p_call->function_name));
+						push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, callee_type.to_string()), p_call->callee);
+					} else {
+						push_error(vformat(R"*(Static function "%s()" not found in base "%s".)*", p_call->function_name, base_type.to_string()), p_call);
+					}
 					BSParser::DataType call_type;
 					call_type.kind = BSParser::DataType::VARIANT;
 					p_call->set_datatype(call_type);
