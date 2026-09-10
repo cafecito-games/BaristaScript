@@ -623,6 +623,7 @@ private:
 	void resolve_for(BSParser::ForNode *p_for);
 	void resolve_assert(BSParser::AssertNode *p_assert);
 	void analyze_statement(BSParser::Node *p_node);
+	void warn_shadowed_local(BSParser::IdentifierNode *p_identifier, const String &p_context);
 	void warn_unused_locals(BSParser::SuiteNode *p_suite);
 	void warn_unused_parameters(BSParser::FunctionNode *p_function);
 	/** Foundry resolve_class_body unused pass: UNUSED_PRIVATE_CLASS_VARIABLE + UNUSED_SIGNAL. */

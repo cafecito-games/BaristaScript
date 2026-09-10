@@ -18,7 +18,8 @@
     "variadic_callable_analyzer",
     "builtin_metadata_analyzer",
     "get_node_analyzer",
-    "numeric_consumer_analyzer"
+    "numeric_consumer_analyzer",
+    "warning_producer_analyzer"
   ],
   "editor_import": [
     "global_class"

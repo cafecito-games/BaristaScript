@@ -12785,8 +12785,8 @@
       ],
       "disposition": "implemented",
       "owner": "#141",
-      "boundary": "One immutable selected-API query supplies constructors/methods/properties/constants/enums/trait and typed Signal consumers; all rows and typed defaults are independently verified.",
-      "rationale": "One immutable selected-API query supplies constructors/methods/properties/constants/enums/trait and typed Signal consumers; all rows and typed defaults are independently verified.",
+      "boundary": "One immutable selected-API query supplies constructors/methods/properties/constants/enums/trait and typed Signal consumers; all rows and typed defaults are independently verified. Metadata admission from merged PR180/35364dda68d16cd6bf28103bca740fe9a4060f49 is preserved; restoration additionally proves the actual discarded-result/static-instance/shadowed-local warning producers and extension tool-button validation, not merely signature membership.",
+      "rationale": "One immutable selected-API query supplies constructors/methods/properties/constants/enums/trait and typed Signal consumers; all rows and typed defaults are independently verified. Metadata admission from merged PR180/35364dda68d16cd6bf28103bca740fe9a4060f49 is preserved; restoration additionally proves the actual discarded-result/static-instance/shadowed-local warning producers and extension tool-button validation, not merely signature membership.",
       "upstream": [
         "fs_analyzer.cpp:get_function_signature:17",
         "fs_analyzer.cpp:property_type_from_builtin_member:32",
@@ -12921,18 +12921,123 @@
         {
           "path": "src/bs_analyzer.cpp",
           "symbol": "BSAnalyzer::reduce_call"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::warn_shadowed_local"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::warn_unused_locals"
+        },
+        {
+          "path": "src/bs_parser.cpp",
+          "symbol": "BSParser::export_tool_button_annotation"
         }
       ],
       "tests": [
         {
           "path": "tests/native/builtin_metadata_analyzer_tests.cpp",
           "symbol": "TEST_CASE(\"every_builtin_producer_row_and_typed_value_matches_immutable_query\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_export_tool_button_requires_tool_mode\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_return_value_discarded_builtin_and_utility\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"helper_blocked_user_call_producer_has_direct_same_file_control\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"helper_blocked_standalone_constructor_utility_producers_have_direct_control\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_shadowed_constant\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_shadowed_global_identifier\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_shadowed_variable_class\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_shadowed_variable_function\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_static_called_on_instance\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"shadowing_uses_declaring_class_and_global_priority_even_when_local_is_used\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"tool_button_static_validation_preserves_adjacent_admission_rules\")"
         }
       ],
       "evidence": {
-        "kind": "merged",
-        "pr": "https://github.com/cafecito-games/BaristaScript/pull/180",
-        "commit": "35364dda68d16cd6bf28103bca740fe9a4060f49"
+        "kind": "candidate",
+        "pr": {
+          "kind": "provisional",
+          "repository": "cafecito-games/BaristaScript",
+          "head_ref": "m3/issue-141-restoration-warnings",
+          "issue": 141
+        },
+        "blobs": [
+          {
+            "path": "src/bs_analyzer.cpp",
+            "sha256": "f6ea03de0419a6729e79f34da2ba1a0f70e6c47f825e1f0174a87ca190277f7a"
+          },
+          {
+            "path": "src/bs_analyzer.h",
+            "sha256": "9f17fbb30eafaeda78c3ff7fc1b47bf4d3e8732b167cbe1727ef18b3c7bda4e5"
+          },
+          {
+            "path": "src/bs_core_constants.h",
+            "sha256": "235d85eff765f0c1994ecd308fd7d325a34a05528d8c62e86723c39a05de1a39"
+          },
+          {
+            "path": "src/bs_parser.cpp",
+            "sha256": "77dd884067c407352a05886baca2bb90cff18334e58879568367e397f3925ed4"
+          },
+          {
+            "path": "tests/native/builtin_metadata_analyzer_tests.cpp",
+            "sha256": "a1344e535ae6ee9fff8a63f34924ac42d0475c658fb49fc9f79a6c2d2c034d68"
+          },
+          {
+            "path": "tests/native/warning_producer_analyzer_tests.cpp",
+            "sha256": "79aa247424008bf53075c25334a2bc363da6c59606a022db6fbab67bdeebbf75"
+          },
+          {
+            "path": "tests/native_suites.json",
+            "sha256": "cd86cbb23bae977bdf9006ed32e728e502c050509abb132349e5a55f67ba7281"
+          }
+        ],
+        "results": [
+          {
+            "command": [
+              "python3",
+              "tests/run_native_suites.py",
+              "--godot",
+              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
+              "--suite",
+              "warning_producer_analyzer"
+            ],
+            "exit": 0,
+            "log_sha256": "fff11d616e3327bb9226e88eda5fa0b09c969288fe0be5038bd7f8bfb2e64a29",
+            "result": "16 cases / 669 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors. Original helpers remain #31."
+          }
+        ]
       },
       "branch_keys": [
         "reduce_call/local utility and builtin/native constructors",
@@ -12942,7 +13047,11 @@
         "get_function_signature/apply_conformance_witness fallback",
         "get_function_signature/Dictionary ordinary method shadow",
         "property/literal indexed path and strict dynamic unresolved reflection",
-        "export/registered builtin export annotation after datatype publication"
+        "export/registered builtin export annotation after datatype publication",
+        "reduce_call/root nonvoid noncoroutine user/constructor/utility result-discard warning (pin8230-8236,9028-9032)",
+        "reduce_call/selected builtin/native/CLASS static method on nonmeta nonself receiver warning (pin9034-9037)",
+        "warn_unused_locals/UNUSED then global-priority/current-class member-kind-and-line shadow warning (pin17910-17946)",
+        "export_tool_button_annotation/static tool-mode/type/static/other-export validation in supported extension build (pin7927-7953)"
       ]
     },
     {
@@ -13320,8 +13429,8 @@
       ],
       "disposition": "implemented",
       "owner": "#141",
-      "boundary": "Pending warning queue is flushed through finalization and early failure, retaining full warning code/message/span and declaring owner.",
-      "rationale": "Pending warning queue is flushed through finalization and early failure, retaining full warning code/message/span and declaring owner.",
+      "boundary": "Pending warning queue is flushed through finalization and early failure, retaining full warning code/message/span and declaring owner. Queue semantics from merged PR165/30736ac4d9b4f979e991390428ea90a3528730c4 remain; producer coverage is separately demonstrated by exact original diagnostics, per-producer severity/suppression controls and parser-owned preload uniqueness.",
+      "rationale": "Pending warning queue is flushed through finalization and early failure, retaining full warning code/message/span and declaring owner. Queue semantics from merged PR165/30736ac4d9b4f979e991390428ea90a3528730c4 remain; producer coverage is separately demonstrated by exact original diagnostics, per-producer severity/suppression controls and parser-owned preload uniqueness.",
       "upstream": [
         "fs_analyzer_finalization.cpp:analyzer_result_from_parser_errors:1",
         "fs_analyzer_finalization.cpp:run_phase_apply_pending_warnings:2",
@@ -13431,6 +13540,14 @@
         {
           "path": "src/bs_analyzer_finalization.cpp",
           "symbol": "BSAnalyzer::run_phase_finalize"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::analyze_statement"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::reduce_call"
         }
       ],
       "tests": [
@@ -13441,16 +13558,71 @@
         {
           "path": "project/tests/analyzer_test.gd",
           "symbol": "func _test_pinned_match_finality_domains("
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"each_retained_warning_honors_ignore_warn_error_and_annotation_suppression\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"discarded_calls_distinguish_consumed_void_variant_await_coroutine_and_preload\")"
         }
       ],
       "evidence": {
-        "kind": "merged",
-        "pr": "https://github.com/cafecito-games/BaristaScript/pull/165",
-        "commit": "30736ac4d9b4f979e991390428ea90a3528730c4"
+        "kind": "candidate",
+        "pr": {
+          "kind": "provisional",
+          "repository": "cafecito-games/BaristaScript",
+          "head_ref": "m3/issue-141-restoration-warnings",
+          "issue": 141
+        },
+        "blobs": [
+          {
+            "path": "project/tests/analyzer_test.gd",
+            "sha256": "14ee5a7ccaaeb14d7feb12e4244fcc0c99b64f9027333dcc57470cac195e3809"
+          },
+          {
+            "path": "src/bs_analyzer.cpp",
+            "sha256": "f6ea03de0419a6729e79f34da2ba1a0f70e6c47f825e1f0174a87ca190277f7a"
+          },
+          {
+            "path": "src/bs_analyzer.h",
+            "sha256": "9f17fbb30eafaeda78c3ff7fc1b47bf4d3e8732b167cbe1727ef18b3c7bda4e5"
+          },
+          {
+            "path": "src/bs_analyzer_finalization.cpp",
+            "sha256": "4b5d2c4d2d02515078085d057bb6f32e49d185f5a8f11e42b10a9daeeb9195dc"
+          },
+          {
+            "path": "tests/native/warning_producer_analyzer_tests.cpp",
+            "sha256": "79aa247424008bf53075c25334a2bc363da6c59606a022db6fbab67bdeebbf75"
+          },
+          {
+            "path": "tests/native_suites.json",
+            "sha256": "cd86cbb23bae977bdf9006ed32e728e502c050509abb132349e5a55f67ba7281"
+          }
+        ],
+        "results": [
+          {
+            "command": [
+              "python3",
+              "tests/run_native_suites.py",
+              "--godot",
+              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
+              "--suite",
+              "warning_producer_analyzer"
+            ],
+            "exit": 0,
+            "log_sha256": "fff11d616e3327bb9226e88eda5fa0b09c969288fe0be5038bd7f8bfb2e64a29",
+            "result": "16 cases / 669 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors. Original helpers remain #31."
+          }
+        ]
       },
       "branch_keys": [
         "warning queue/severity and final error classification",
-        "full/incremental early-error visited-function queue recovery"
+        "full/incremental early-error visited-function queue recovery",
+        "analyze_statement/apply warning_ignore before expression and declaration reduction (pin5334-5348)",
+        "retained warning producers/IGNORE WARN ERROR suppression exact spans repeat restoration and no duplicate preload warning"
       ]
     },
     {
@@ -13633,38 +13805,9 @@
         }
       ],
       "evidence": {
-        "kind": "candidate",
-        "pr": {
-          "kind": "provisional",
-          "repository": "cafecito-games/BaristaScript",
-          "head_ref": "m3/issue-141-s6-s7",
-          "issue": 141
-        },
-        "blobs": [
-          {
-            "path": "src/bs_builtin_sources.cpp",
-            "sha256": "447fadfe741e27b7e4540f156a52b821091d8a454ce6f1ff50bffc35d2b405fc"
-          },
-          {
-            "path": "tests/native/get_node_analyzer_tests.cpp",
-            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
-          }
-        ],
-        "results": [
-          {
-            "command": [
-              "python3",
-              "tests/run_native_suites.py",
-              "--godot",
-              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
-              "--suite",
-              "get_node_analyzer"
-            ],
-            "exit": 0,
-            "log_sha256": "033a55e356443dba1eb5517f9eb3f498bdaba8de6b452190f3c0c8ea9dced794",
-            "result": "Native get_node_analyzer: 14 cases / 550 assertions passed; declaring defaults/lazy restoration and original retained enum sources included"
-          }
-        ]
+        "kind": "merged",
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/181",
+        "commit": "01216eb4c489da5004bffd04c4ea62d48da96ae2"
       },
       "branch_keys": [
         "PATH_PREFIX/EXPORTED_BYTECODE_PREFIX deterministic translation",
@@ -14996,8 +15139,8 @@
       ],
       "disposition": "implemented",
       "owner": "#141",
-      "boundary": "Statement/suite exit state, noreturn/loop/iterator/assertion/match narrowing and final assignment warnings retain accepted #139 semantics.",
-      "rationale": "Statement/suite exit state, noreturn/loop/iterator/assertion/match narrowing and final assignment warnings retain accepted #139 semantics.",
+      "boundary": "Statement/suite exit state, noreturn/loop/iterator/assertion/match narrowing and final assignment warnings retain accepted #139 semantics. Merged PR181/01216eb4c489da5004bffd04c4ea62d48da96ae2 final-variable and visited-body contracts remain; ordinary unassigned read/compound warnings use the existing scalar counter, with default/capture/RHS-order controls, not a new definite-assignment solver.",
+      "rationale": "Statement/suite exit state, noreturn/loop/iterator/assertion/match narrowing and final assignment warnings retain accepted #139 semantics. Merged PR181/01216eb4c489da5004bffd04c4ea62d48da96ae2 final-variable and visited-body contracts remain; ordinary unassigned read/compound warnings use the existing scalar counter, with default/capture/RHS-order controls, not a new definite-assignment solver.",
       "upstream": [
         "fs_analyzer_flow_finality.cpp:type_test_exhausts_alternatives:1",
         "fs_analyzer_flow_finality.cpp:check_final_member_assignments:2",
@@ -15146,6 +15289,14 @@
         {
           "path": "src/bs_analyzer.cpp",
           "symbol": "BSAnalyzer::check_pending_function_flow_finality"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::reduce_identifier"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::reduce_expression"
         }
       ],
       "tests": [
@@ -15160,17 +15311,80 @@
         {
           "path": "tests/native/get_node_analyzer_tests.cpp",
           "symbol": "TEST_CASE(\"original_anonymous_enum_is_published_before_for_body\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_unassigned_variable\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_unassigned_variable_op_assign\")"
+        },
+        {
+          "path": "tests/native/warning_producer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"unassigned_scalar_counter_keeps_defaults_captures_and_compound_rhs_order\")"
         }
       ],
       "evidence": {
-        "kind": "merged",
-        "commit": "01216eb4c489da5004bffd04c4ea62d48da96ae2",
-        "pr": "https://github.com/cafecito-games/BaristaScript/pull/181"
+        "kind": "candidate",
+        "pr": {
+          "kind": "provisional",
+          "repository": "cafecito-games/BaristaScript",
+          "head_ref": "m3/issue-141-restoration-warnings",
+          "issue": 141
+        },
+        "blobs": [
+          {
+            "path": "project/tests/analyzer_test.gd",
+            "sha256": "14ee5a7ccaaeb14d7feb12e4244fcc0c99b64f9027333dcc57470cac195e3809"
+          },
+          {
+            "path": "src/bs_analyzer.cpp",
+            "sha256": "f6ea03de0419a6729e79f34da2ba1a0f70e6c47f825e1f0174a87ca190277f7a"
+          },
+          {
+            "path": "src/bs_analyzer.h",
+            "sha256": "9f17fbb30eafaeda78c3ff7fc1b47bf4d3e8732b167cbe1727ef18b3c7bda4e5"
+          },
+          {
+            "path": "src/bs_analyzer_flow_finality.cpp",
+            "sha256": "0276867991b054b90fb6cf07e62930a7a4d2f1e9ac318e186ee84ad40f3cf7b2"
+          },
+          {
+            "path": "tests/native/get_node_analyzer_tests.cpp",
+            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
+          },
+          {
+            "path": "tests/native/warning_producer_analyzer_tests.cpp",
+            "sha256": "79aa247424008bf53075c25334a2bc363da6c59606a022db6fbab67bdeebbf75"
+          },
+          {
+            "path": "tests/native_suites.json",
+            "sha256": "cd86cbb23bae977bdf9006ed32e728e502c050509abb132349e5a55f67ba7281"
+          }
+        ],
+        "results": [
+          {
+            "command": [
+              "python3",
+              "tests/run_native_suites.py",
+              "--godot",
+              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
+              "--suite",
+              "warning_producer_analyzer"
+            ],
+            "exit": 0,
+            "log_sha256": "fff11d616e3327bb9226e88eda5fa0b09c969288fe0be5038bd7f8bfb2e64a29",
+            "result": "16 cases / 669 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors. Original helpers remain #31."
+          }
+        ]
       },
       "branch_keys": [
         "suite/statement exit summaries and visited function recovery",
         "final member/static/local and flattened trait state",
-        "null/type/match narrowing/capture invalidation and unreachable code"
+        "null/type/match narrowing/capture invalidation and unreachable code",
+        "reduce_identifier/local assignments==0 except hard builtin defaults before narrowing (pin12578-12585)",
+        "reduce_expression/compound local assignments==1 after existing increment (pin8003-8009)"
       ]
     },
     {
@@ -15499,36 +15713,9 @@
         }
       ],
       "evidence": {
-        "kind": "candidate",
-        "pr": {
-          "kind": "provisional",
-          "repository": "cafecito-games/BaristaScript",
-          "head_ref": "m3/issue-141-s6-s7",
-          "issue": 141
-        },
-        "blobs": [
-          {
-            "path": "tests/test_analyzer_port_inventory.py",
-            "sha256": "65ba9b00d10a20633213463615dff22029b3e7c3a87c6aaf76c65091dfc879a1"
-          },
-          {
-            "path": "tests/validate_analyzer_port_inventory.py",
-            "sha256": "2363a596870522f42d763850fb7c7de0d8e9ffdeae691d361be8f13ddea2d659"
-          }
-        ],
-        "results": [
-          {
-            "command": [
-              "python3",
-              "tests/test_analyzer_port_inventory.py",
-              "--foundry-dir",
-              "/Users/christian/.codex/baristascript-m3/foundry-pinned"
-            ],
-            "exit": 0,
-            "log_sha256": "9c8c0dd5c1317ba0a978fad6dd69df61e2131b6872ff16c1a15627f0f4580827",
-            "result": "Twelve inventory tests passed, including immutable pin, malformed evidence, shallow history, detached and integrated checkout controls"
-          }
-        ]
+        "kind": "merged",
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/181",
+        "commit": "01216eb4c489da5004bffd04c4ea62d48da96ae2"
       },
       "branch_keys": [
         "explicit signature/branch and historical/current marker ledger",
@@ -15622,21 +15809,42 @@
         {
           "path": "src/bs_type.cpp",
           "symbol": "BSNumericConversion::classify"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::warn_plain_enum_conversion"
+        },
+        {
+          "path": "src/bs_analyzer.cpp",
+          "symbol": "BSAnalyzer::reduce_expression"
         }
       ],
       "tests": [
         {
           "path": "project/tests/analyzer_test.gd",
           "symbol": "func _test_union_store_carrier_select("
+        },
+        {
+          "path": "tests/native/numeric_consumer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_enum_integer_consumers_preserve_all_four_warning_spans\")"
+        },
+        {
+          "path": "tests/native/numeric_consumer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"original_integer_division_keeps_warning_and_downgrades_weak_destination\")"
+        },
+        {
+          "path": "tests/native/numeric_consumer_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"nullable_integer_constants_keep_positional_checks_before_enum_publication\")"
         }
       ],
       "evidence": {
         "kind": "merged",
-        "pr": "https://github.com/cafecito-games/BaristaScript/pull/151",
-        "commit": "71d7883a02d5be5c314c761fbe4e8cfc5f8ffb2f"
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/182",
+        "commit": "7176e173f9dd6ba951f861465248c6c137d1eb58"
       },
       "branch_keys": [
-        "ordinary INT/FLOAT classifier/constant exactness and store carrier"
+        "ordinary INT/FLOAT classifier/constant exactness and store carrier",
+        "PR182 ordinary plain-enum conversion warning consumers and weak assignment downgrade; strict-null-before-publication and D1 hard destinations retained"
       ]
     }
   ],

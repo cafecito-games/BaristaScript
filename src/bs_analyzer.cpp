@@ -2667,6 +2667,13 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->variable_source = local.variable;
 				if (local.variable != nullptr) {
 					p_identifier->set_datatype(local.variable->get_datatype());
+#ifdef DEBUG_ENABLED
+					// Foundry c9d5e35:12578-12585: scalar assignment history, before flow narrowing.
+					const auto declared_type = local.variable->get_datatype();
+					if (local.variable->assignments == 0 && !(declared_type.is_hard_type() && declared_type.kind == BSParser::DataType::BUILTIN)) {
+						push_warning(p_identifier, BSWarning::UNASSIGNED_VARIABLE, { String(p_identifier->name) });
+					}
+#endif
 				}
 				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
 					p_identifier->set_datatype(*narrowed);
@@ -3046,6 +3053,14 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 #ifdef DEBUG_ENABLED
 	Finally warn_missing_await([&]() {
 		const BSParser::DataType call_type = p_call->get_datatype();
+		// Foundry c9d5e35:8230-8236,9028-9032. All dispatch exits publish metadata;
+		// PRELOAD has its own parser producer and never enters this call consumer.
+		if (p_is_root && call_type.is_set() && !call_type.is_variant() && !call_type.is_coroutine &&
+				!(call_type.kind == BSParser::DataType::BUILTIN && call_type.builtin_type == Variant::NIL) &&
+				!(p_call->is_super && p_call->function_name == SNAME("_init"))) {
+			push_warning(p_call, BSWarning::RETURN_VALUE_DISCARDED, { String(p_call->function_name) });
+		}
+
 		if (call_type.is_coroutine && !p_is_await && p_is_root && !coroutine_result_is_void(call_type)) {
 			Vector<String> symbols;
 			symbols.push_back(call_type.to_string());
@@ -3080,6 +3095,15 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		if (subscript != nullptr && subscript->is_attribute && subscript->attribute != nullptr) {
 			reduce_expression(subscript->base);
 			const bool is_self = subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF;
+			auto warn_static_instance = [&](bool is_static, const BSParser::DataType &receiver) {
+#ifdef DEBUG_ENABLED
+				// Foundry c9d5e35:9034-9037; only selected ordinary method metadata enters here.
+				if (is_static && !receiver.is_meta_type && !is_self) {
+					push_warning(p_call, BSWarning::STATIC_CALLED_ON_INSTANCE, { String(p_call->function_name), receiver.to_string() });
+				}
+#endif
+			};
+
 			if (p_call->function_name == StringName()) {
 				p_call->function_name = subscript->attribute->name;
 			}
@@ -3198,6 +3222,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						call_site_validation.reject_named_call_arguments(p_call);
 						if (receiver.is_meta_type && !(method->info.flags & METHOD_FLAG_STATIC))
 							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(receiver).to_string()), p_call);
+						warn_static_instance(method->info.flags & METHOD_FLAG_STATIC, receiver);
 						call_site_validation.validate_call_arg(method->info, p_call);
 						const auto result = type_from_property(method->info.return_val);
 						p_call->set_datatype(result);
@@ -3240,6 +3265,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 							p_call->set_datatype(callee->get_datatype());
 							return;
 						}
+						warn_static_instance(callee->is_static, base_type);
 						validate_local_call(p_call, callee);
 						p_call->is_noreturn = callee->is_noreturn;
 						return;
@@ -3273,6 +3299,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (native_type != StringName()) {
 					MethodInfo method_info;
 					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
+						warn_static_instance(method_info.flags & METHOD_FLAG_STATIC, base_type);
 						call_site_validation.reject_named_call_arguments(p_call);
 						call_site_validation.validate_call_arg(method_info, p_call);
 						call_site_validation.validate_typed_object_signal_api_args(base_type, p_call, is_self);
@@ -7958,6 +7985,12 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				// Parameters and binds point to smaller nodes without an assignments field.
 				if (assignee->source == BSParser::IdentifierNode::LOCAL_VARIABLE && assignee->variable_source != nullptr) {
 					assignee->variable_source->assignments++;
+#ifdef DEBUG_ENABLED
+					// Foundry c9d5e35:8003-8009: this store has already incremented the counter.
+					if (assignment->operation != BSParser::AssignmentNode::OP_NONE && assignee->variable_source->assignments == 1) {
+						push_warning(assignment, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, { String(assignee->name), _operator_name(assignment->variant_op) });
+					}
+#endif
 				}
 			}
 			// Foundry reduce_assignment @ c9d5e35: type assignee with narrowing still active so a
@@ -8156,19 +8189,17 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 	if (p_node == nullptr) {
 		return;
 	}
+	// Foundry resolve_suite c9d5e35:5334-5348 applies statement suppression before
+	// reduction, including calls and assignments as well as local declarations.
+	for (BSParser::AnnotationNode *annotation : p_node->annotations) {
+		if (annotation != nullptr && annotation->name == SNAME("@warning_ignore")) {
+			resolve_annotation(annotation);
+			annotation->apply(parser, p_node, current_class);
+		}
+	}
 	if (p_node->is_expression()) {
 		reduce_expression(static_cast<BSParser::ExpressionNode *>(p_node), true);
 		return;
-	}
-	// Foundry resolve_suite @ c9d5e35:5334-5348 applies declaration annotations before
-	// resolve_assignable queues warnings. Reuse the parser's validated suppression spans.
-	if (p_node->type == BSParser::Node::VARIABLE || p_node->type == BSParser::Node::CONSTANT) {
-		for (BSParser::AnnotationNode *annotation : p_node->annotations) {
-			if (annotation != nullptr && annotation->name == SNAME("@warning_ignore")) {
-				resolve_annotation(annotation, p_node->type == BSParser::Node::VARIABLE ? BSParser::AnnotationDeclarationNode::TARGET_VARIABLE : BSParser::AnnotationDeclarationNode::TARGET_CONSTANT);
-				annotation->apply(parser, p_node, current_class);
-			}
-		}
 	}
 	switch (p_node->type) {
 		case BSParser::Node::VARIABLE: {
@@ -8765,6 +8796,31 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 #endif
 }
 
+void BSAnalyzer::warn_shadowed_local(BSParser::IdentifierNode *p_identifier, const String &p_context) {
+#ifdef DEBUG_ENABLED
+	// Foundry is_shadowing c9d5e35:17910-17946: global identifiers take precedence
+	// over a current-class member. Use the same metadata as ordinary identifier lookup.
+	const StringName name = p_identifier->name;
+	MethodInfo utility;
+	String global_kind;
+	if (BSUtilityFunctions::get_function_info(name, utility) || CoreConstants::get_utility_function(name, utility)) {
+		global_kind = "built-in function";
+	} else if (ClassDB::class_exists(name)) {
+		global_kind = "native class";
+	} else if (ScriptServer::is_global_class(name)) {
+		global_kind = vformat(R"(global class defined in "%s")", ScriptServer::get_global_class_path(name).get_file());
+	} else if (BSParser::get_builtin_type(name) < Variant::VARIANT_MAX) {
+		global_kind = "built-in type";
+	}
+	if (!global_kind.is_empty()) {
+		push_warning(p_identifier, BSWarning::SHADOWED_GLOBAL_IDENTIFIER, { p_context, String(name), global_kind });
+	} else if (current_class != nullptr && current_class->has_member(name)) {
+		const auto member = current_class->get_member(name);
+		push_warning(p_identifier, BSWarning::SHADOWED_VARIABLE, { p_context, String(name), member.get_type_name(), itos(member.get_line()) });
+	}
+#endif
+}
+
 void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
 #ifdef DEBUG_ENABLED
 	if (p_suite == nullptr) {
@@ -8778,12 +8834,14 @@ void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
 				symbols.push_back(String(local.variable->identifier->name));
 				push_warning(local.variable, BSWarning::UNUSED_VARIABLE, symbols);
 			}
+			warn_shadowed_local(local.variable->identifier, "variable");
 		} else if (local.type == BSParser::SuiteNode::Local::CONSTANT && local.constant != nullptr && local.constant->identifier != nullptr) {
 			if (local.constant->usages == 0 && !String(local.constant->identifier->name).begins_with("_")) {
 				Vector<String> symbols;
 				symbols.push_back(String(local.constant->identifier->name));
 				push_warning(local.constant, BSWarning::UNUSED_LOCAL_CONSTANT, symbols);
 			}
+			warn_shadowed_local(local.constant->identifier, "constant");
 		}
 	}
 	for (int i = 0; i < p_suite->statements.size(); i++) {
