@@ -283,6 +283,93 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("src/bs_platform_never_written.cpp", result.stdout + result.stderr)
 
+    def test_a_missing_declared_seam_file_is_rejected(self):
+        document = real_manifest()
+        document["seam_header"] = "src/bs_platform_never_written.h"
+        document["seam_files"] = ["src/bs_platform_never_written.h"]
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/bs_platform_never_written.h", result.stdout + result.stderr)
+
+    def test_wrongly_typed_seam_files_are_rejected(self):
+        document = real_manifest()
+        document["seam_files"] = "src/bs_platform.h"
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("seam_files", result.stdout + result.stderr)
+
+    def test_an_unsupported_manifest_schema_is_rejected(self):
+        document = real_manifest()
+        document["schema_version"] = 999
+        with TemporaryManifest(document) as path:
+            result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("schema_version", result.stdout + result.stderr)
+
+    def test_an_unallowlisted_include_from_a_seam_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            seam = Path(scratch) / "synthetic_seam.h"
+            seam.write_text('#pragma once\n#include "unlisted_private_seam.h"\n', encoding="utf-8")
+            document = real_manifest()
+            document["seam_header"] = str(seam)
+            document["seam_files"] = [str(seam)]
+            with TemporaryManifest(document) as path:
+                result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unlisted_private_seam.h", result.stdout + result.stderr)
+
+    def test_an_unreachable_declared_seam_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            unreachable = Path(scratch) / "unreachable_private_seam.h"
+            unreachable.write_text("#pragma once\nstruct UnreachableShim {};\n", encoding="utf-8")
+            document = real_manifest()
+            document["seam_files"].append(str(unreachable))
+            with TemporaryManifest(document) as path:
+                result = run_audit("--manifest", str(path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not reachable from", result.stdout + result.stderr)
+
+    def test_a_shim_may_be_defined_in_a_declared_private_seam_file(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            umbrella = Path(scratch) / "bs_platform.h"
+            private_seam = Path(scratch) / "private_seam.h"
+            umbrella_text = SEAM.read_text(encoding="utf-8")
+            for name in ("bs_platform_names.h", "bs_platform_serialization.h", "bs_platform_variant.h"):
+                umbrella_text = umbrella_text.replace(f'#include "{name}"\n', "")
+                umbrella_text += (ROOT / "src" / name).read_text(encoding="utf-8")
+            umbrella.write_text(
+                umbrella_text + '\n#include "private_seam.h"\n',
+                encoding="utf-8",
+            )
+            private_seam.write_text(
+                "#pragma once\n_FORCE_INLINE_ bool prove_string_builder() { return true; }\n",
+                encoding="utf-8",
+            )
+            document = real_manifest()
+            document["seam_header"] = str(umbrella)
+            document["seam_files"] = [str(umbrella), str(private_seam)]
+            for entry in document["entries"]:
+                if entry["resolution"] == "shimmed":
+                    entry["shim_symbols"] = ["prove_string_builder"]
+                    break
+            with TemporaryManifest(document) as path:
+                result = run_audit("--manifest", str(path), "--source-root", scratch)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_direct_upstream_engine_include_bypasses_the_seam(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source_root = Path(scratch) / "src"
+            source_root.mkdir()
+            (source_root / "ported.cpp").write_text(
+                '#include "bs_platform.h"\n#include "core/variant/variant.h"\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--source-root", str(source_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bypasses the platform seam", result.stdout + result.stderr)
+
     def test_a_shim_absent_from_the_proof_sources_is_rejected(self):
         document = real_manifest()
         document["seam_proof_sources"] = ["src/bs_platform_seam.cpp"]
@@ -535,10 +622,12 @@ class VocabularyClosureTest(unittest.TestCase):
             document["upstream"]["site_fixture"] = str(fixture)
             document["upstream"]["port_set"] = ["fs_tokenizer.h"]
             manifest = Path(scratch) / "manifest.json"
-            manifest.write_text(json.dumps(document, indent=2), encoding="utf-8")
             seam = Path(scratch) / "synthetic_seam.h"
             seam.write_text(self.SYNTHETIC_SEAM, encoding="utf-8")
-            return run_audit("--manifest", str(manifest), "--seam", str(seam))
+            document["seam_header"] = str(seam)
+            document["seam_files"] = [str(seam)]
+            manifest.write_text(json.dumps(document, indent=2), encoding="utf-8")
+            return run_audit("--manifest", str(manifest), "--source-root", scratch)
 
     def test_the_audit_documents_every_resolution(self):
         text = AUDIT.read_text(encoding="utf-8")

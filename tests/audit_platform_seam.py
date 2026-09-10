@@ -5,7 +5,7 @@
 # This file is part of BaristaScript, a Godot GDExtension.
 # SPDX-License-Identifier: MIT
 
-"""Audit `src/bs_platform.h` against the godot-cpp header set.
+"""Audit the declared `src/bs_platform*` seam files against the godot-cpp header set.
 
 The manifest at `src/bs_platform_manifest.json` is the demand side: every `core/*` header the
 ported Foundry frontend depends on, with the resolution BaristaScript chose for it. godot-cpp is
@@ -63,7 +63,7 @@ FORBIDDEN_FIELDS = {
 
 OMISSION_REASONS = ("debug-only", "tools-only", "unreferenced")
 
-INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+[<"]([^>"]+)[>"]', re.MULTILINE)
+INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+([<"])([^>"]+)[>"]', re.MULTILINE)
 FIXTURE_SECTION_PATTERN = re.compile(r"^=== \S+/(\S+) ===$")
 FIXTURE_INCLUDE_PATTERN = re.compile(r'^(\d+):\s*#\s*include\s+"([^"]+)"$')
 
@@ -85,9 +85,13 @@ def load_manifest(path):
         raise AuditError("{} is not valid JSON: {}".format(path, error))
     if not isinstance(document, dict):
         raise AuditError("{} is not valid JSON object: top level is {}".format(path, type(document).__name__))
-    for field in ("entries", "required_macros", "upstream", "seam_header"):
+    for field in ("schema_version", "entries", "required_macros", "upstream", "seam_header", "seam_files"):
         if field not in document:
             raise AuditError("{} has no {!r} field".format(path, field))
+    if document["schema_version"] != 2:
+        raise AuditError(
+            "{}: unsupported 'schema_version' {!r}; expected 2".format(path, document["schema_version"])
+        )
     if not isinstance(document["entries"], list):
         raise AuditError("{}: 'entries' must be a list, not {}".format(path, type(document["entries"]).__name__))
     if not isinstance(document["required_macros"], list):
@@ -98,6 +102,16 @@ def load_manifest(path):
         raise AuditError(
             "{}: 'upstream' must be an object, not {}".format(path, type(document["upstream"]).__name__)
         )
+    if (
+        not isinstance(document["seam_files"], list)
+        or not document["seam_files"]
+        or not all(isinstance(item, str) and item for item in document["seam_files"])
+    ):
+        raise AuditError("{}: 'seam_files' must be a non-empty list of strings".format(path))
+    if len(document["seam_files"]) != len(set(document["seam_files"])):
+        raise AuditError("{}: 'seam_files' must not contain duplicates".format(path))
+    if document["seam_header"] not in document["seam_files"]:
+        raise AuditError("{}: 'seam_header' must also be listed in 'seam_files'".format(path))
     return document
 
 
@@ -226,11 +240,81 @@ def strip_cpp_string_literals(text):
     return "\n".join(lines)
 
 
-def seam_includes(seam):
-    if not seam.is_file():
-        raise AuditError("no seam header at {}".format(seam))
-    text = strip_cpp_comments(seam.read_text(encoding="utf-8"))
-    return set(INCLUDE_PATTERN.findall(text)), text
+def manifest_path(value):
+    """Resolve a manifest path against the repository while preserving absolute test fixtures."""
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
+def seam_contents(manifest, seam_override=None):
+    """Read exactly the declared seam allowlist; never recurse into arbitrary local includes."""
+    declared = list(manifest["seam_files"])
+    if seam_override is not None:
+        declared[declared.index(manifest["seam_header"])] = str(seam_override)
+
+    paths = [manifest_path(value).resolve() for value in declared]
+    if len(paths) != len(set(paths)):
+        raise AuditError("'seam_files' resolves to duplicate paths")
+    for value, path in zip(declared, paths):
+        if not path.is_file():
+            raise AuditError("no declared seam file at {}".format(value))
+
+    godot_headers = set()
+    combined_text = ""
+    local_edges = []
+    for path in paths:
+        text = strip_cpp_comments(path.read_text(encoding="utf-8"))
+        combined_text += "\n" + text
+        for delimiter, include in INCLUDE_PATTERN.findall(text):
+            if include.startswith("godot_cpp/"):
+                godot_headers.add(include)
+            elif delimiter == '"':
+                local_edges.append((path, include, (path.parent / include).resolve()))
+    return paths, godot_headers, combined_text, local_edges
+
+
+def check_seam_include_allowlist(paths, umbrella, local_edges, failures):
+    allowed = set(paths)
+    edges = {path: set() for path in paths}
+    for source, include, destination in local_edges:
+        if destination not in allowed:
+            failures.append(
+                "{} includes {}, which is not in the declared seam_files allowlist".format(source, include)
+            )
+        else:
+            edges[source].add(destination)
+
+    reachable = {umbrella}
+    pending = [umbrella]
+    while pending:
+        source = pending.pop()
+        for destination in edges.get(source, ()):
+            if destination not in reachable:
+                reachable.add(destination)
+                pending.append(destination)
+    for path in sorted(allowed - reachable):
+        failures.append("declared seam file {} is not reachable from {}".format(path, umbrella))
+
+
+def check_frontend_boundary(source_root, seam_paths, umbrella, failures):
+    """Reject direct engine includes and private seam includes outside the owned seam."""
+    if not source_root.is_dir():
+        failures.append("no frontend source root at {}".format(source_root))
+        return
+    owned = set(seam_paths)
+    private_names = {path.name for path in seam_paths if path != umbrella}
+    engine_prefixes = ("core/", "editor/", "scene/", "servers/")
+    for path in sorted(source_root.rglob("*")):
+        if path.suffix not in (".h", ".hpp", ".c", ".cc", ".cpp", ".cxx") or path.resolve() in owned:
+            continue
+        text = strip_cpp_comments(path.read_text(encoding="utf-8"))
+        for _delimiter, include in INCLUDE_PATTERN.findall(text):
+            if include.startswith(engine_prefixes):
+                failures.append("{} includes {}, which bypasses the platform seam".format(path, include))
+            if include in private_names:
+                failures.append(
+                    "{} includes private seam file {} instead of {}".format(path, include, umbrella.name)
+                )
 
 
 def defines_symbol(seam_text, symbol):
@@ -502,7 +586,7 @@ def check_shims_are_compiled(manifest, rows, failures):
         return
     text = ""
     for source in sources:
-        path = ROOT / source
+        path = manifest_path(source)
         if not path.is_file():
             failures.append("no seam proof source at {}".format(source))
             continue
@@ -521,6 +605,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--manifest", type=Path, default=ROOT / "src" / "bs_platform_manifest.json")
     parser.add_argument("--seam", type=Path, default=None)
+    parser.add_argument("--source-root", type=Path, default=ROOT / "src")
     parser.add_argument("--godot-cpp", type=Path, default=ROOT / "godot-cpp")
     parser.add_argument("--build-profile", type=Path, default=ROOT / "build_profile.json")
     parser.add_argument("--sconstruct", type=Path, default=ROOT / "SConstruct")
@@ -536,8 +621,12 @@ def main(argv=None):
             print("\n".join(sorted(index)))
             return 0
         manifest = load_manifest(arguments.manifest)
-        seam = arguments.seam or ROOT / manifest["seam_header"]
-        seam_headers, seam_text = seam_includes(seam)
+        seam_paths, seam_headers, seam_text, local_edges = seam_contents(manifest, arguments.seam)
+        umbrella = (
+            arguments.seam.resolve()
+            if arguments.seam is not None
+            else manifest_path(manifest["seam_header"]).resolve()
+        )
         fixture = manifest["upstream"].get("site_fixture")
         if not isinstance(fixture, str) or not fixture:
             raise AuditError("{} declares no 'site_fixture'".format(arguments.manifest))
@@ -547,6 +636,9 @@ def main(argv=None):
         return 1
 
     failures = []
+    check_seam_include_allowlist(seam_paths, umbrella, local_edges, failures)
+    original_seam_paths = [manifest_path(value).resolve() for value in manifest["seam_files"]]
+    check_frontend_boundary(arguments.source_root, seam_paths + original_seam_paths, umbrella, failures)
     for header in sorted(drift):
         failures.append("godot-cpp generator drift: {} is predicted but not generated".format(header))
 

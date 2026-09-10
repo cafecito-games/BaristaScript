@@ -35,16 +35,6 @@
 // core/templates/vector.h
 #include <godot_cpp/templates/vector.hpp>
 
-// core/string/ustring.h -- opaque and engine-backed; see the manifest's non-mapping note. core
-// declares vformat here too; godot-cpp keeps it in variant/utility_functions.hpp.
-#include <godot_cpp/variant/string.hpp>
-#include <godot_cpp/variant/utility_functions.hpp>
-// core/string/string_name.h -- the type maps; the SNAME macro is shimmed below.
-#include <godot_cpp/variant/string_name.hpp>
-// core/string/char_utils.h
-#include <godot_cpp/variant/char_utils.hpp>
-// core/variant/variant.h
-#include <godot_cpp/variant/variant.hpp>
 // core/variant/callable.h -- analyzer-only utility identity, with no runtime registration.
 #include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/callable_custom.hpp>
@@ -68,8 +58,6 @@
 // core/object/script_language.h -- core declares Script and ScriptLanguage together.
 #include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/classes/script_language.hpp>
-// core/io/file_access.h
-#include <godot_cpp/classes/file_access.hpp>
 // core/io/resource.h
 #include <godot_cpp/classes/resource.hpp>
 // core/io/resource_loader.h -- a singleton in godot-cpp, static members in core.
@@ -87,11 +75,6 @@
 #include <godot_cpp/core/method_bind.hpp>
 // core/variant/type_info.h
 #include <godot_cpp/core/type_info.hpp>
-// core/io/compression.h -- only the ZSTD mode is used; godot-cpp spells it on FileAccess.
-#include <godot_cpp/classes/file_access.hpp>
-// core/io/marshalls.h -- godot-cpp has no marshalls header; see the BSMarshalls shim below. The
-// shim reaches the variant serializer through UtilityFunctions, already included above.
-#include <godot_cpp/variant/packed_byte_array.hpp>
 // scene/main/multiplayer_api.h -- the `@rpc` annotation reads the RPCMode enumerators from
 // MultiplayerAPI and the TransferMode ones from MultiplayerPeer, which core declares in a header
 // this one includes and godot-cpp splits into its own.
@@ -104,10 +87,6 @@
 #include <godot_cpp/classes/text_server.hpp>
 #include <godot_cpp/classes/text_server_manager.hpp>
 
-// Backing for the shims below; not a mapping of any upstream dependency.
-#include <godot_cpp/core/memory.hpp>
-#include <godot_cpp/templates/local_vector.hpp>
-
 // Backing for the parse cache's on-disk store, also not a mapping of any upstream dependency:
 // upstream fs_cache is in-memory only -- its only file access is reading script sources
 // (fs_cache.cpp:407 at the pinned revision) -- so the store's atomic rename
@@ -115,7 +94,12 @@
 // BaristaScript additions. Recorded in the manifest's seam_support_headers, not as entries,
 // because there is no upstream include site to map them to.
 #include <godot_cpp/classes/dir_access.hpp>
-#include <godot_cpp/variant/packed_byte_array.hpp>
+
+// Cohesive private implementation groups. These files are reachable only through this umbrella;
+// the manifest audit owns their allowlist and rejects direct frontend includes of them.
+#include "bs_platform_names.h"
+#include "bs_platform_serialization.h"
+#include "bs_platform_variant.h"
 
 /**
  * Ported files are written against Godot's global names. godot-cpp puts everything in `godot`, so
@@ -155,213 +139,6 @@ using CoreConstants = BSCoreConstants;
 #if !defined(ERR_FAIL_V) || !defined(ERR_FAIL_V_MSG) || !defined(ERR_PRINT) || !defined(DEV_ASSERT)
 #error "bs_platform.h: godot-cpp no longer defines the error macros the ported frontend uses."
 #endif
-
-/**
- * `SNAME` is a core macro with no godot-cpp counterpart, and `fs_parser.cpp` uses it 39 times. It
- * caches one `StringName` per call site, which is the whole point: constructing a `StringName`
- * crosses the GDExtension interface.
- *
- * The cached object is allocated once and never destroyed. A function-local `StringName` object
- * would run its destructor during static destruction, after the extension has been unloaded and
- * the interface function pointers are gone. Leaking one `StringName` per call site is the cheaper
- * of the two, and matches how the engine treats its own interned names.
- */
-#ifdef SNAME
-#error "bs_platform.h: SNAME is already defined; the seam must own the only definition."
-#endif
-#define SNAME(m_arg)                                                 \
-	([]() -> const godot::StringName & {                             \
-		static godot::StringName *sname = memnew(StringName(m_arg)); \
-		return *sname;                                               \
-	}())
-
-/**
- * `StringName` compared against a C string literal. Core declares four such operators on
- * `StringName` and four free ones for the reversed operand order
- * (Foundry `core/string/string_name.h:82,84,197,198` @ c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6,
- * unchanged from stock Godot); godot-cpp declares none of them, so `name == "export"` is not a
- * missing operator but an *ambiguous* one -- the compiler can convert either side -- and every such
- * comparison in the ported front-end fails to build.
- *
- * The four operators below are exact matches, so they resolve the ambiguity rather than adding a conversion, and
- * they answer exactly what core's answer: the comparison a `StringName` makes against the interned
- * form of that literal. They are declared here rather than spelled out at ~30 call sites so that the
- * diff against Foundry stays readable, which is the seam's whole purpose.
- */
-_FORCE_INLINE_ bool bs_string_name_equals_literal(const godot::StringName &p_name, const char *p_literal) {
-	return p_name == godot::StringName(p_literal);
-}
-
-_FORCE_INLINE_ bool operator==(const godot::StringName &p_name, const char *p_literal) {
-	return bs_string_name_equals_literal(p_name, p_literal);
-}
-_FORCE_INLINE_ bool operator!=(const godot::StringName &p_name, const char *p_literal) {
-	return !bs_string_name_equals_literal(p_name, p_literal);
-}
-_FORCE_INLINE_ bool operator==(const char *p_literal, const godot::StringName &p_name) {
-	return bs_string_name_equals_literal(p_name, p_literal);
-}
-_FORCE_INLINE_ bool operator!=(const char *p_literal, const godot::StringName &p_name) {
-	return !bs_string_name_equals_literal(p_name, p_literal);
-}
-
-/**
- * `core/string/string_builder.h` is absent from godot-cpp. Godot's own implementation was read
- * before this was written: its `as_string()` builds the result with `String::resize_uninitialized`,
- * which godot-cpp's `String` does not have -- it offers `resize`, `ptr` and `ptrw`, but no
- * uninitialized resize -- so a vendored copy would have to be edited, and an edited vendor loses
- * the upstream diffability that was the reason to vendor.
- *
- * What follows reimplements the public API over ordinary concatenation. The observable behaviour is
- * Godot's, deliberately: appending an empty `String` is a no-op that does not count towards
- * `num_strings_appended()`, appending an empty C string does count, and an empty builder stringifies
- * to `""`. The cost profile is not Godot's -- this concatenates instead of writing once into a
- * presized buffer. `FSParser::TreePrinter` is the only consumer and runs under `DEBUG_ENABLED`.
- */
-class StringBuilder {
-	uint32_t string_length = 0;
-	LocalVector<String> strings;
-
-public:
-	StringBuilder &append(const String &p_string) {
-		if (p_string.is_empty()) {
-			return *this;
-		}
-		string_length += (uint32_t)p_string.length();
-		strings.push_back(p_string);
-		return *this;
-	}
-
-	StringBuilder &append(const char *p_cstring) {
-		// Godot counts an empty C string as an append even though it adds no characters, so this
-		// does not delegate to the String overload, which skips empties.
-		const String converted = String(p_cstring);
-		string_length += (uint32_t)converted.length();
-		strings.push_back(converted);
-		return *this;
-	}
-
-	StringBuilder &operator+(const String &p_string) {
-		return append(p_string);
-	}
-
-	StringBuilder &operator+(const char *p_cstring) {
-		return append(p_cstring);
-	}
-
-	void operator+=(const String &p_string) {
-		append(p_string);
-	}
-
-	void operator+=(const char *p_cstring) {
-		append(p_cstring);
-	}
-
-	int num_strings_appended() const {
-		return (int)strings.size();
-	}
-
-	uint32_t get_string_length() const {
-		return string_length;
-	}
-
-	String as_string() const {
-		if (string_length == 0) {
-			return String();
-		}
-		String result;
-		for (uint32_t i = 0; i < strings.size(); i++) {
-			result += strings[i];
-		}
-		return result;
-	}
-
-	operator String() const {
-		return as_string();
-	}
-};
-
-/**
- * `core/io/marshalls.h` is absent from godot-cpp, and the four functions the tokenizer buffer uses
- * split into two very different cases.
- *
- * The fixed-width integer codecs are byte-order definitions, not engine behaviour: core writes a
- * `uint32_t` little-endian, byte by byte, and reads it back the same way. Reimplementing that is
- * exact, so `encode_uint32`/`decode_uint32` below are the same function core has.
- *
- * `encode_variant`/`decode_variant` are not. godot-cpp reaches the same serializer through
- * `UtilityFunctions::var_to_bytes` / `bytes_to_var`, which is core's `encode_variant` with
- * `p_full_objects = false` -- the mode the buffer already asked for, because a constant is never an
- * object. What godot-cpp does not expose is core's `r_len` out-parameter, so a reader cannot learn
- * how many bytes one value consumed. The seam does not invent one: it hands back the encoded block
- * and leaves framing to the caller, and `BSTokenizerBuffer` length-prefixes each constant for
- * exactly that reason. A shim that guessed the length would be the near-miss the seam forbids.
- */
-struct BSMarshalls {
-	static void encode_uint32(uint32_t p_value, uint8_t *p_bytes) {
-		for (int i = 0; i < 4; i++) {
-			p_bytes[i] = uint8_t(p_value & 0xFF);
-			p_value >>= 8;
-		}
-	}
-
-	static uint32_t decode_uint32(const uint8_t *p_bytes) {
-		uint32_t value = 0;
-		for (int i = 3; i >= 0; i--) {
-			value <<= 8;
-			value |= uint32_t(p_bytes[i]);
-		}
-		return value;
-	}
-
-	static PackedByteArray encode_variant(const Variant &p_variant) {
-		// `false` is core's `p_full_objects = false`: object references are never encoded.
-		return UtilityFunctions::var_to_bytes(p_variant);
-	}
-
-	static Variant decode_variant(const PackedByteArray &p_bytes) {
-		// Mirrors core's `decode_variant(..., p_allow_objects = false)`; a malformed block decodes
-		// to `nil` rather than to an object the buffer never wrote.
-		return UtilityFunctions::bytes_to_var(p_bytes);
-	}
-};
-
-/**
- * `core/io/compression.h` is absent from godot-cpp as a class, but the operation is not: the same
- * ZSTD codec is reachable as `PackedByteArray::compress`/`decompress`, taking the mode enumerator
- * from `FileAccess::COMPRESSION_ZSTD`. The shim is a rename over exactly that, and it keeps core's
- * contract that decompression is told the expected size up front rather than growing a buffer.
- *
- * `decompress` returns an empty array on failure, which is indistinguishable from decompressing to
- * nothing; the caller checks the size against the header value it already has, so a truncated or
- * corrupt block is a data error rather than a short read.
- */
-struct BSCompression {
-	static PackedByteArray compress_zstd(const PackedByteArray &p_bytes) {
-		return p_bytes.compress(FileAccess::COMPRESSION_ZSTD);
-	}
-
-	static PackedByteArray decompress_zstd(const PackedByteArray &p_bytes, int64_t p_decompressed_size) {
-		return p_bytes.decompress(p_decompressed_size, FileAccess::COMPRESSION_ZSTD);
-	}
-};
-
-/**
- * Core `Variant::get_validated_operator_evaluator` / `get_operator_return_type` are absent from
- * godot-cpp. `BSVariantOperators` recreates them via `variant_get_ptr_operator_evaluator` +
- * `Variant::evaluate` (implemented in `bs_platform_shims.cpp`) so analyzer `get_operation_type`
- * does not reach the GDExtension loader alone.
- */
-struct BSVariantOperators {
-	/** True when core would return a non-null ValidatedOperatorEvaluator for the triple. */
-	static bool has_validated_evaluator(Variant::Operator p_op, Variant::Type p_a, Variant::Type p_b);
-	/**
-	 * Return type of a validated operator, recovered by evaluating default operands. Division and
-	 * modulo use non-zero numeric defaults so value-domain failure is not mistaken for a missing
-	 * evaluator (validity itself comes from `has_validated_evaluator`).
-	 */
-	static Variant::Type get_return_type(Variant::Operator p_op, Variant::Type p_a, Variant::Type p_b);
-};
 
 /**
  * D1 gives BaristaScript one integer type, so Foundry's `NumericType` and the numeric tower built
