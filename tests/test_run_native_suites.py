@@ -142,13 +142,11 @@ class RuntimeTests(unittest.TestCase):
                                         "missing-check", artifact["build_id"]))
         self.assertNotIn(runner.RESULT_PREFIX, completed.stdout)
 
-    def test_ordinary_library_cannot_supply_runner(self):
-        import sys
-        platform_name = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
-        candidates = sorted((runner.ROOT / "project/bin" / platform_name).glob("*template_debug*"))
-        self.assertTrue(candidates, "build an ordinary debug extension before native integration checks")
+    def test_wrong_library_cannot_supply_runner(self):
         artifact = runner.read_artifact(BUILD_DIR)
-        with runner.staged_project(dict(artifact, library=str(candidates[0]))) as project:
+        with runner.staged_project(artifact) as project:
+            for library in (project / "bin").glob("native.*"):
+                library.write_bytes(b"not a Godot extension")
             completed = runner.invoke(GODOT, project, "tokenizer", "", "wrong-library-check", 5)
         self.assertTrue(runner.evaluate(completed.returncode, completed.stdout, "tokenizer", "",
                                         "wrong-library-check", artifact["build_id"]))
