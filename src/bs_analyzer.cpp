@@ -2995,12 +2995,12 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 
-			// A local class metatype's new() produces that precise class value, so subsequent
-			// method calls retain their local signatures instead of degrading to native Object.
+			// Foundry constructor admission @ c9d5e35:8805-8834,17037-17043. Native
+			// and local class handles construct their instance type before ordinary method lookup.
 			if (subscript->base != nullptr && p_call->function_name == SNAME("new")) {
 				const BSParser::DataType class_meta_type = subscript->base->get_datatype();
-				if (class_meta_type.kind == BSParser::DataType::CLASS && class_meta_type.is_meta_type) {
-					BSParser::FunctionNode *initializer = find_class_function(class_meta_type.class_type, SNAME("_init"));
+				if ((class_meta_type.kind == BSParser::DataType::CLASS || class_meta_type.kind == BSParser::DataType::NATIVE) && class_meta_type.is_meta_type) {
+					BSParser::FunctionNode *initializer = class_meta_type.kind == BSParser::DataType::CLASS ? find_class_function(class_meta_type.class_type, SNAME("_init")) : nullptr;
 					if (initializer != nullptr) {
 						validate_local_call(p_call, initializer, class_meta_type.class_type);
 					} else {
@@ -3165,6 +3165,36 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					}
 				}
 				if (!p_call->is_super && base_type.is_hard_type() && base_type.is_meta_type) {
+					// Foundry c9d5e35:9125-9143: a claimed non-function is diagnosed at the
+					// callee; only a missing name reaches the static-call diagnostic below.
+					HashSet<const BSParser::ClassNode *> visited;
+					for (BSParser::ClassNode *owner = method_owner; owner != nullptr; owner = owner->base_type.class_type) {
+						if (visited.has(owner)) {
+							break;
+						}
+						visited.insert(owner);
+						if (!owner->has_member(p_call->function_name)) {
+							continue;
+						}
+						const int previous_errors = parser->get_errors().size();
+						reduce_expression(subscript);
+						const BSParser::DataType callee_type = subscript->get_datatype();
+						const bool claimed = callee_type.is_set() && !callee_type.is_variant();
+						if (parser->get_errors().size() == previous_errors && claimed) {
+							if (callee_type.builtin_type == Variant::CALLABLE) {
+								push_error(vformat(R"*(Name "%s" is a Callable. You can call it with "%s.call()" instead.)*", p_call->function_name, p_call->function_name), p_call->callee);
+							} else {
+								push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, callee_type.to_string()), p_call->callee);
+							}
+						}
+						if (claimed || parser->get_errors().size() != previous_errors) {
+							BSParser::DataType call_type;
+							call_type.kind = BSParser::DataType::VARIANT;
+							p_call->set_datatype(call_type);
+							return;
+						}
+						break;
+					}
 					push_error(vformat(R"*(Static function "%s()" not found in base "%s".)*", p_call->function_name, base_type.to_string()), p_call);
 					BSParser::DataType call_type;
 					call_type.kind = BSParser::DataType::VARIANT;

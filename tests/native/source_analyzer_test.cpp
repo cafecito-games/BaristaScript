@@ -72,6 +72,43 @@ TEST_SUITE("source_analyzer") {
 			diagnostic(parser, named ? "Static function \"value()\" not found in base \"Empty\"." : "Static function \"value()\" not found in base \"empty.barista\".", parser.get_tree()->get_member("value").variable->initializer);
 		}
 	}
+	TEST_CASE("native_construction_preserves_instance_identity") {
+		StorageFixture fixture;
+		for (const String &name : { String("Node"), String("Node2D") }) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("var direct = " + name + ".new()\n", "res://tests/source/native.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const Error result = analyzer.analyze();
+			String messages;
+			for (const auto &error : parser.get_errors())
+				messages += error.message + String("\n");
+			CHECK_MESSAGE(result == OK, std::string(messages.utf8().get_data()));
+			CHECK(parser.get_errors().is_empty());
+			const auto type = parser.get_tree()->get_member("direct").variable->initializer->get_datatype();
+			CHECK(type.kind == BSParser::DataType::NATIVE);
+			CHECK(type.native_type == StringName(name));
+			CHECK_FALSE(type.is_meta_type);
+		}
+	}
+	TEST_CASE("claimed_static_nonfunctions_use_callee_diagnostics") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(seed(fixture, "res://tests/source/provider.barista", "class_name Provider\nconst value = 1\nstatic var callback: Callable\n"));
+		for (const String &name : { String("value"), String("callback") }) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("const P = preload(\"provider.barista\")\nvar result = P." + name + "()\n", "res://tests/source/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			auto *initializer = parser.get_tree()->get_member("result").variable->initializer;
+			BS_TEST_REQUIRE(initializer->type == BSParser::Node::CALL);
+			auto *call = static_cast<BSParser::CallNode *>(initializer);
+			diagnostic(parser, name == "value" ? "Name \"value\" called as a function but is a \"int\"." : "Name \"callback\" is a Callable. You can call it with \"callback.call()\" instead.", call->callee);
+		}
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("const P = preload(\"provider.barista\")\nvar result = P.callback.call()\n", "res://tests/source/consumer.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() == OK);
+		CHECK(parser.get_errors().is_empty());
+	}
 	TEST_CASE("ordinary_language_and_script_server_lookup_reject_without_repair") {
 		StorageFixture fixture;
 		const String path = "res://tests/source/provider.barista";
