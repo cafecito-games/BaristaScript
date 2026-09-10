@@ -41,6 +41,16 @@ jobs:
         with:
           submodules: true
 
+      - name: Setup Python for configuration
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Resolve shared build versions
+        id: versions
+        shell: bash
+        run: python3 scripts/build_config.py --platform ${{ matrix.target.platform }} --format github >> "$GITHUB_OUTPUT"
+
       # Add linux x86_32 toolchain
       - name: Install multilib support
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
@@ -53,8 +63,8 @@ jobs:
         uses: ./.github/actions/setup-godot-cpp
         with:
           platform: ${{ matrix.target.platform }}
-          em-version: 3.1.62
-          windows-compiler: msvc
+          em-version: ${{ steps.versions.outputs.emscripten }}
+          windows-compiler: ${{ steps.versions.outputs.windows_compiler }}
 
       # Build GDExtension (with caches)
 
@@ -69,7 +79,7 @@ jobs:
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
         run: |
-          scons api_version=4.7 target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
+          scons api_version=${{ steps.versions.outputs.godot_api }} target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save
@@ -83,6 +93,14 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
+
+      - name: Verify distribution build identity
+        shell: bash
+        run: >-
+          python3 scripts/verify_build_artifacts.py --binary-dir bin
+          --platform ${{ matrix.target.platform }} --architecture ${{ matrix.target.arch }}
+          --target ${{ matrix.target-type }} --api ${{ steps.versions.outputs.godot_api }}
+          --precision ${{ matrix.float-precision }}
 
       # Upload the build
       - name: Upload Artifact

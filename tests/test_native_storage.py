@@ -71,13 +71,13 @@ class RuntimeTests(unittest.TestCase):
         with runner.staged_project(artifact) as project:
             failed = runner.invoke(GODOT, project, "global_class", "registry", "missing-editor", 60)
             self.assertTrue(runner.evaluate(failed.returncode, failed.stdout, "global_class", "registry",
-                                           "missing-editor", artifact["build_id"]), failed.stdout)
+                                           "missing-editor", artifact["build_id"], artifact["build_info"]), failed.stdout)
             self.assertFalse((project / ".godot/global_script_class_cache.cfg").exists())
             runner.prepare_project(GODOT, project, "global_class", 120)
             self.assertTrue((project / ".godot/global_script_class_cache.cfg").is_file())
             passed = runner.invoke(GODOT, project, "global_class", "registry", "real-editor", 60)
             self.assertEqual([], runner.evaluate(passed.returncode, passed.stdout, "global_class", "registry",
-                                                "real-editor", artifact["build_id"]), passed.stdout)
+                                                "real-editor", artifact["build_id"], artifact["build_info"]), passed.stdout)
 
     def test_shared_state_leak_is_rejected(self):
         artifact = runner.read_artifact(BUILD_DIR)

@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "extension_version": "0.1.0",
+  "godot_api": "4.7",
+  "godot_api_patch": 0,
+  "godot_runtime": "4.7.2",
+  "precision": "single",
+  "toolchain": {
+    "scons": "4.4.0",
+    "mingw": "12.2.0",
+    "ndk": "r28b",
+    "emscripten": "4.0.11",
+    "clang_format": "21.1.7",
+    "windows_compiler": "mingw"
+  },
+  "platform_overrides": {
+    "web": {"emscripten": "3.1.62"},
+    "windows": {"windows_compiler": "msvc"}
+  }
+}

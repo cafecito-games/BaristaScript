@@ -124,6 +124,9 @@ jobs:
         run: |
           python3 -m pip install -r tests/requirements.txt
           python3 tests/validate_ci.py
+          python3 tests/test_build_config.py
+          python3 tests/test_build_consumers.py
+          python3 tests/test_query_build_info.py
           python3 tests/test_run_gdscript_suites.py
           python3 tests/test_corpus_baseline.py
           python3 tests/test_corpus_expectations.py
@@ -138,6 +141,11 @@ jobs:
         shell: bash
         run: python3 tests/test_warning_table_closure.py
 
+      - name: Resolve shared build versions
+        id: versions
+        shell: bash
+        run: python3 scripts/build_config.py --platform ${{ matrix.target.platform }} --format github >> "$GITHUB_OUTPUT"
+
       # Add linux x86_32 toolchain
       - name: Install multilib support
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}
@@ -151,8 +159,8 @@ jobs:
         uses: ./.github/actions/setup-godot-cpp
         with:
           platform: ${{ matrix.target.platform }}
-          em-version: 3.1.62
-          windows-compiler: msvc
+          em-version: ${{ steps.versions.outputs.emscripten }}
+          windows-compiler: ${{ steps.versions.outputs.windows_compiler }}
 
       # Build GDExtension (with caches)
 
@@ -167,7 +175,15 @@ jobs:
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
         run: |
-          scons api_version=4.7 target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
+          scons api_version=${{ steps.versions.outputs.godot_api }} target=${{ matrix.target-type }} platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}
+
+      - name: Verify distribution build identity
+        shell: bash
+        run: >-
+          python3 scripts/verify_build_artifacts.py --binary-dir bin
+          --platform ${{ matrix.target.platform }} --architecture ${{ matrix.target.arch }}
+          --target ${{ matrix.target-type }} --api ${{ steps.versions.outputs.godot_api }}
+          --precision ${{ matrix.float-precision }}
 
       - name: Verify parse-cache release surface
         shell: bash
@@ -192,7 +208,7 @@ jobs:
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash
         env:
-          GODOT_VERSION: 4.7.2
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
         run: |
           curl --fail --location --retry 3 \
             --output "$RUNNER_TEMP/godot.zip" \
@@ -207,19 +223,20 @@ jobs:
           # here: the runner discovers every project/tests/*_test.gd and fails the job unless the
           # run printed the guard sentinel that only executed code can produce.
           python3 tests/run_gdscript_suites.py --godot "$godot_binary"
+          python3 tests/test_run_corpus_triage.py --godot "$godot_binary" --library project/bin/linux/libbarista_script.linux.template_debug.x86_64.so
 
-          scons api_version=4.7 target=template_debug barista_tests=yes
+          scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/test_run_native_suites.py --godot "$godot_binary"
           python3 tests/test_native_storage.py --godot "$godot_binary"
           python3 tests/run_native_suites.py --godot "$godot_binary"
-          scons api_version=4.7 target=template_debug barista_tests=no
+          scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=no
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
-          scons api_version=4.7 target=template_release barista_tests=no
+          scons api_version=${{ steps.versions.outputs.godot_api }} target=template_release barista_tests=no
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_release
-          scons api_version=4.7 target=template_debug barista_tests=yes
+          scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/run_native_suites.py --godot "$godot_binary"
 
-          cmake -S . -B build/native-cmake -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
+          cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
           cmake --build build/native-cmake --parallel 2
           python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake

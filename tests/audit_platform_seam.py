@@ -70,7 +70,6 @@ FIXTURE_INCLUDE_PATTERN = re.compile(r'^(\d+):\s*#\s*include\s+"([^"]+)"$')
 # Includes of the port set's own headers. They are upstream file names, not engine dependencies, so
 # the seam has nothing to say about them.
 PORT_INTERNAL_PREFIXES = ("fs_", "foundry_script.")
-API_VERSION_PATTERN = re.compile(r'"api_version"\]\s*=\s*"([0-9]+\.[0-9]+)"')
 
 
 class AuditError(Exception):
@@ -103,13 +102,14 @@ def load_manifest(path):
 
 
 def read_api_version(sconstruct):
-    """The build's API version is declared once, in SConstruct; never guess a default."""
-    if not sconstruct.is_file():
-        raise AuditError("no SConstruct at {}, so the godot-cpp API version is unknown".format(sconstruct))
-    match = API_VERSION_PATTERN.search(sconstruct.read_text(encoding="utf-8"))
-    if not match:
-        raise AuditError("{} does not declare api_version".format(sconstruct))
-    return match.group(1)
+    """Require executable shared-config wiring; never guess a default or accept a literal."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from build_config import load_config, validate_scons_consumer
+    try:
+        validate_scons_consumer(sconstruct.read_text(encoding="utf-8"))
+        return load_config(sconstruct.parent / "build_versions.json")["godot_api"]
+    except (OSError, ValueError) as error:
+        raise AuditError(str(error)) from error
 
 
 def godot_cpp_header_index(godot_cpp, api_version, build_profile):

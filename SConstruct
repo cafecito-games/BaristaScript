@@ -9,14 +9,21 @@ import os
 import sys
 import runpy
 
+sys.path.insert(0, os.path.abspath("scripts"))
+from build_config import load_config, api_path, validate_selection, validate_api_file
+from build_metadata import create_metadata, write_header as write_build_info_header
+
 from methods import print_error
+
+versions = load_config()
 
 
 libname = "barista_script"
 projectdir = "project"
 
 localEnv = Environment(tools=["default"], PLATFORM="")
-localEnv["api_version"] = "4.7"
+localEnv["api_version"] = versions["godot_api"]
+localEnv["precision"] = versions["precision"]
 localEnv["build_profile"] = "build_profile.json"
 
 # Build profiles can be used to decrease compile times.
@@ -55,11 +62,14 @@ if env["barista_tests"]:
 else:
     env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
 
+actual_api = env.get("custom_api_file") or os.path.join(env.get("gdextension_dir") or "godot-cpp/gdextension",
+                                                           api_path(versions).name)
+validate_api_file(versions, actual_api)
 env.Append(CPPPATH=["src/"])
 
 # Share the pinned engine metadata generator with CMake; unchanged content is not rewritten.
 runpy.run_path("scripts/generate_global_api.py")["write_header"](
-    "godot-cpp/gdextension/extension_api-4-7.json", "src/gen/bs_global_api.gen.h"
+    str(api_path(versions)), "src/gen/bs_global_api.gen.h"
 )
 
 # The warning registry's message switch has no `default:` label on purpose, so an unhandled warning
@@ -70,6 +80,14 @@ if env.get("is_msvc", False):
     env.Append(CXXFLAGS=["/we4062"])
 else:
     env.Append(CXXFLAGS=["-Werror=switch"])
+
+selection = validate_selection(versions, platform=env["platform"], architecture=env["arch"],
+                               target=env["target"], api=env["api_version"], precision=env["precision"])
+info_mode = "native" if env["barista_tests"] else "ordinary"
+info_directory = "build/build-info/" + ".".join((info_mode, env["platform"], env["target"], env["arch"], env["precision"]))
+info_header = info_directory + "/bs_build_info.gen.h"
+write_build_info_header(info_header, create_metadata(os.getcwd(), versions, selection, native_tests=bool(env["barista_tests"])))
+env.Append(CPPPATH=[info_directory])
 
 sources = Glob("src/*.cpp")
 if env["barista_tests"]:

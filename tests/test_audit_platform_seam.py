@@ -445,11 +445,8 @@ class FailClosedTest(unittest.TestCase):
     def test_the_scons_globs_are_read_rather_than_assumed(self):
         with tempfile.TemporaryDirectory() as scratch:
             sconstruct = Path(scratch) / "SConstruct"
-            sconstruct.write_text(
-                'localEnv["api_version"] = "4.7"\n'
-                'sources = Glob("src/legacy/*.cpp")\n',
-                encoding="utf-8",
-            )
+            sconstruct.write_text((ROOT / "SConstruct").read_text().replace('Glob("src/*.cpp")', 'Glob("src/legacy/*.cpp")'), encoding="utf-8")
+            (Path(scratch) / "build_versions.json").write_bytes((ROOT / "build_versions.json").read_bytes())
             result = run_audit("--sconstruct", str(sconstruct))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("src/legacy/*.cpp", result.stdout + result.stderr)
@@ -457,7 +454,8 @@ class FailClosedTest(unittest.TestCase):
     def test_a_sconstruct_that_globs_nothing_is_rejected(self):
         with tempfile.TemporaryDirectory() as scratch:
             sconstruct = Path(scratch) / "SConstruct"
-            sconstruct.write_text('localEnv["api_version"] = "4.7"\n', encoding="utf-8")
+            sconstruct.write_text((ROOT / "SConstruct").read_text().replace('Glob("src/*.cpp")', '[]').replace('Glob("tests/native/*.cpp")', '[]').replace('Glob("doc_classes/*.xml")', '[]'), encoding="utf-8")
+            (Path(scratch) / "build_versions.json").write_bytes((ROOT / "build_versions.json").read_bytes())
             result = run_audit("--sconstruct", str(sconstruct))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("declares no Glob()", result.stdout + result.stderr)

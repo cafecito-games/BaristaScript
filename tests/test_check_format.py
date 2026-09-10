@@ -25,7 +25,7 @@ class FormatCheckTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.environment = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
         for name in ("scripts/check_format.py", "scripts/add_license_header.py",
-                     "scripts/requirements-format.txt", ".clang-format"):
+                     "scripts/requirements-format.txt", "scripts/build_config.py", "build_versions.json", ".clang-format"):
             source = ROOT / name
             if source.exists():
                 destination = self.root / name
@@ -123,7 +123,7 @@ class FormatCheckTests(unittest.TestCase):
         pin.write_text("clang-format==0.0.0\n")
         result = self.check()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("requires clang-format 0.0.0", result.stderr)
+        self.assertIn("formatter requirements projection", result.stderr)
 
     def test_missing_license_in_filename_with_spaces_fails(self):
         path = self.add_source("tests/native/missing license.cpp", "int value;\n")

@@ -8,12 +8,33 @@ endif()
 set(LIBNAME "barista_script")
 option(BARISTA_TESTS "Build isolated native C++ tests" OFF)
 set(GODOT_PROJECT_DIR "project" CACHE STRING "The directory of a Godot project folder")
-set(GODOTCPP_API_VERSION "4.7" CACHE STRING "Godot API version" FORCE)
 set(GODOTCPP_BUILD_PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/build_profile.json" CACHE FILEPATH "godot-cpp build profile" FORCE)
 
 # Make sure all the dependencies are satisfied
 find_package(Python3 3.4 REQUIRED)
 find_program(GIT git REQUIRED)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/build_versions.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_config.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_config.py" --format cmake
+    OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/barista-versions.cmake" RESULT_VARIABLE BARISTA_CONFIG_RESULT)
+if(NOT BARISTA_CONFIG_RESULT EQUAL 0)
+    message(FATAL_ERROR "Invalid shared BaristaScript build configuration")
+endif()
+include("${CMAKE_CURRENT_BINARY_DIR}/barista-versions.cmake")
+foreach(SETTING API_VERSION PRECISION)
+    if(SETTING STREQUAL "API_VERSION")
+        set(EXPECTED_SETTING "${BARISTA_GODOT_API}")
+    else()
+        set(EXPECTED_SETTING "${BARISTA_PRECISION}")
+    endif()
+    if(DEFINED GODOTCPP_${SETTING} AND NOT "${GODOTCPP_${SETTING}}" STREQUAL "${EXPECTED_SETTING}")
+        message(FATAL_ERROR "GODOTCPP_${SETTING}: expected ${EXPECTED_SETTING}, actual ${GODOTCPP_${SETTING}}")
+    endif()
+    set(GODOTCPP_${SETTING} "${EXPECTED_SETTING}" CACHE STRING "Shared BaristaScript ${SETTING}")
+endforeach()
+string(REPLACE "." "-" BARISTA_API_SUFFIX "${BARISTA_GODOT_API}")
+set(BARISTA_API_FILE "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp/gdextension/extension_api-${BARISTA_API_SUFFIX}.json")
 if(BARISTA_TESTS)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/build_profile.json"
@@ -42,10 +63,10 @@ add_subdirectory(godot-cpp SYSTEM)
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_global_api.py"
-    "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp/gdextension/extension_api-4-7.json")
+    "${BARISTA_API_FILE}")
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_global_api.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp/gdextension/extension_api-4-7.json"
+        "${BARISTA_API_FILE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/bs_global_api.gen.h"
     RESULT_VARIABLE BARISTA_GLOBAL_API_RESULT)
 if(NOT BARISTA_GLOBAL_API_RESULT EQUAL 0)
@@ -67,11 +88,27 @@ include(GodotCPPModule)
 get_target_property(GODOTCPP_SUFFIX godot::cpp GODOTCPP_SUFFIX)
 get_target_property(GODOTCPP_PLATFORM godot::cpp GODOTCPP_PLATFORM)
 get_target_property(GODOTCPP_ARCH godot::cpp GODOTCPP_ARCH)
+get_target_property(BARISTA_ACTUAL_TARGET godot::cpp GODOTCPP_TARGET)
+get_target_property(BARISTA_ACTUAL_PRECISION godot::cpp GODOTCPP_PRECISION)
+if(GODOTCPP_CUSTOM_API_FILE)
+    set(BARISTA_ACTUAL_API "${GODOTCPP_CUSTOM_API_FILE}")
+else()
+    set(BARISTA_ACTUAL_API "${GODOTCPP_GDEXTENSION_DIR}/extension_api-${BARISTA_API_SUFFIX}.json")
+endif()
+get_filename_component(BARISTA_ACTUAL_API "${BARISTA_ACTUAL_API}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp")
+# godot-cpp trims this input at configure time. Watch the original selected file,
+# including external overrides, so incremental builds cannot reuse a stale trim.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BARISTA_ACTUAL_API}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_config.py"
+    --expect-api-file "${BARISTA_ACTUAL_API}" RESULT_VARIABLE BARISTA_API_CHECK OUTPUT_QUIET)
+if(NOT BARISTA_API_CHECK EQUAL 0)
+    message(FATAL_ERROR "Actual bindings API differs from shared configuration")
+endif()
 
 # Now we can specify our own project which will inherit any global cmake properties or variables that have been defined.
 project(barista_script
-    VERSION 0.1.0
-    DESCRIPTION "BaristaScript language support for Godot 4.7"
+    VERSION ${BARISTA_EXTENSION_VERSION}
+    DESCRIPTION "BaristaScript language support for Godot ${BARISTA_GODOT_API}"
     HOMEPAGE_URL "https://github.com/cafecito-games/BaristaScript"
     LANGUAGES CXX
 )
@@ -89,6 +126,8 @@ add_library(${LIBNAME} SHARED)
 
 target_sources(${LIBNAME}
     PRIVATE
+    src/bs_build_info.cpp
+    src/bs_build_info.h
     src/bs_platform.h
     src/bs_platform_seam.cpp
     src/bs_warning.cpp
@@ -178,6 +217,24 @@ if(BARISTA_TESTS)
     target_include_directories(${LIBNAME} PRIVATE src tests/native thirdparty/doctest "${CMAKE_CURRENT_BINARY_DIR}/native-gen")
     target_compile_definitions(${LIBNAME} PRIVATE BARISTA_TESTS DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
 endif()
+
+# GODOTCPP_TARGET is fixed for this build tree. Keep BYPRODUCTS free of generator
+# expressions so header generation also works at the declared CMake 3.17 minimum.
+set(BARISTA_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/build-info")
+set(BARISTA_INFO_NATIVE)
+if(BARISTA_TESTS)
+    set(BARISTA_INFO_NATIVE --native-tests)
+endif()
+add_custom_target(barista_build_identity
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build_metadata.py"
+        --header "${BARISTA_INFO_DIR}/bs_build_info.gen.h"
+        --platform "${GODOTCPP_PLATFORM}" --architecture "${GODOTCPP_ARCH}"
+        --target "${BARISTA_ACTUAL_TARGET}" --api "${GODOTCPP_API_VERSION}" --precision "${BARISTA_ACTUAL_PRECISION}"
+        ${BARISTA_INFO_NATIVE}
+    BYPRODUCTS "${BARISTA_INFO_DIR}/bs_build_info.gen.h"
+    VERBATIM)
+add_dependencies(${LIBNAME} barista_build_identity)
+target_include_directories(${LIBNAME} PRIVATE "${BARISTA_INFO_DIR}")
 
 target_link_libraries(${LIBNAME} PRIVATE godot-cpp)
 

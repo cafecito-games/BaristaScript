@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from build_config import load_config, require_equal
 from add_license_header import C_STYLE_SUFFIXES, REPOSITORY_ROOT, is_excluded
 
 PIN_PATH = REPOSITORY_ROOT / "scripts" / "requirements-format.txt"
@@ -38,7 +39,8 @@ def require_formatter(executable: str) -> None:
     pin = re.fullmatch(r"clang-format==(\d+\.\d+\.\d+)\s*", PIN_PATH.read_text())
     if pin is None:
         raise ValueError(f"Invalid exact clang-format pin in {PIN_PATH}")
-    version = pin.group(1)
+    version = load_config()["toolchain"]["clang_format"]
+    require_equal("generated formatter requirements projection", version, pin.group(1))
     try:
         result = subprocess.run([executable, "--version"], capture_output=True, text=True, check=True)
     except (OSError, subprocess.CalledProcessError) as error:

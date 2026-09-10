@@ -13,6 +13,7 @@ func _initialize() -> void:
 	var corpus_root := DEFAULT_CORPUS_ROOT
 	var stage := ""
 	var exact_case := ""
+	var build_info_nonce := ""
 	var allow_empty := false
 	var update_expectations := false
 	var harness := Harness.new()
@@ -22,6 +23,12 @@ func _initialize() -> void:
 	while index < arguments.size():
 		var argument: String = arguments[index]
 		match argument:
+			"--build-info-nonce":
+				index += 1
+				if index >= arguments.size() or arguments[index].is_empty() or not build_info_nonce.is_empty():
+					_finish(harness.error_result("BS_ERROR --build-info-nonce requires one nonempty nonce"))
+					return
+				build_info_nonce = arguments[index]
 			"--corpus":
 				index += 1
 				if index >= arguments.size():
@@ -49,6 +56,9 @@ func _initialize() -> void:
 				return
 		index += 1
 
+	if not build_info_nonce.is_empty():
+		var script := BaristaScript.new()
+		print("BS_BUILD_INFO " + JSON.stringify({"nonce": build_info_nonce, "build_info": script.get_build_info(), "godot_version": Engine.get_version_info()}))
 	if not stage.is_empty():
 		harness.fixture_stages[corpus_root] = stage
 	var result := harness.run(corpus_root, allow_empty, update_expectations, exact_case)

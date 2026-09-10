@@ -25,6 +25,8 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from native_test_build import build_identity
+from build_config import load_config, parse_json, require_equal
+from build_metadata import create_metadata, inspect_artifact, verify_identity
 
 DEFAULT_BUILD_DIR = ROOT / "build/native-scons"
 PROTOCOL = (ROOT / "tests/native/result_protocol.h").read_text()
@@ -68,6 +70,17 @@ def read_artifact(build_dir):
         raise ValueError(f"missing or wrong native test library: {library}; rebuild with tests enabled")
     if artifact.get("build_id") != build_identity():
         raise ValueError("native test artifact does not match current build inputs; rebuild with tests enabled")
+    actual = inspect_artifact(library)
+    verify_identity(actual, artifact["build_info"])
+    config = load_config()
+    build = actual["build"]
+    expected = create_metadata(ROOT, config, dict(platform=build["platform"], architecture=build["architecture"],
+                               target=build["target"], precision=config["precision"], api=config["godot_api"]), native_tests=True)
+    verify_identity(actual, expected)
+    # The native source fingerprint covers mutable extension/test inputs, not arbitrary
+    # dependency edits: require a clean selected dependency for a current-artifact claim.
+    require_equal("native godot-cpp state", "clean", actual["godot_cpp"]["state"])
+    require_equal("native selected godot-cpp revision", actual["godot_cpp"]["selected_revision"], actual["godot_cpp"]["revision"])
     return artifact
 
 
@@ -106,7 +119,7 @@ def staged_project(artifact):
         shutil.copy2(library, destination)
         (project / "bin/barista_script.gdextension").write_text(
             '[configuration]\nentry_symbol = "barista_script_library_init"\n'
-            'compatibility_minimum = "4.7"\nreloadable = false\n\n[libraries]\n'
+            f'compatibility_minimum = "{load_config()["godot_api"]}"\nreloadable = false\n\n[libraries]\n'
             f'debug = "res://bin/{destination.name}"\nrelease = "res://bin/{destination.name}"\n')
         (project / ".godot").mkdir()
         shutil.copy2(ROOT / "project/.godot/extension_list.cfg", project / ".godot/extension_list.cfg")
@@ -134,7 +147,7 @@ def invoke(godot, project, suite, case, nonce, timeout, listing=False):
     return supervise(command, timeout)
 
 
-def evaluate(returncode, output, suite, case, nonce, build_id):
+def evaluate(returncode, output, suite, case, nonce, build_id, build_info):
     failures = []
     if returncode:
         failures.append(f"process exited {returncode}")
@@ -142,13 +155,14 @@ def evaluate(returncode, output, suite, case, nonce, build_id):
     if len(records) != 1:
         return failures + [f"expected one completion record, found {len(records)}"]
     try:
-        record = json.loads(records[0])
+        record = parse_json(records[0])
         if not isinstance(record, dict) or set(record) != RESULT_FIELDS:
             raise ValueError("completion fields do not match the shared protocol")
         for key, expected in dict(protocol=PROTOCOL_VERSION, suite=suite, case=case, nonce=nonce,
                                   build_id=build_id).items():
             if type(record[key]) is not type(expected) or record[key] != expected:
                 failures.append(f"completion {key} does not match {expected!r}")
+        verify_identity(record["build_info"], build_info)
         for key in ("cases", "assertions", "failed_cases", "failed_assertions"):
             if type(record[key]) is not int or record[key] < 0:
                 raise ValueError(f"invalid {key} count")
@@ -183,7 +197,7 @@ def main(argv=None):
                 completed = invoke(args.godot, project, suite, args.case, nonce, args.timeout, args.list)
             print(completed.stdout, end="", flush=True)
             reasons = ([f"listing process exited {completed.returncode}"] if completed.returncode else []) if args.list else evaluate(
-                completed.returncode, completed.stdout, suite, args.case, nonce, artifact["build_id"])
+                completed.returncode, completed.stdout, suite, args.case, nonce, artifact["build_id"], artifact["build_info"])
             for reason in reasons:
                 print(f"FAIL {suite}: {reason}", file=sys.stderr)
             failed |= bool(reasons)

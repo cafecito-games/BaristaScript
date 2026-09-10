@@ -11,8 +11,18 @@ body:
   attributes:
     label: Godot version
     description: >
-      Specify the Git commit hash of your Godot build.
-    placeholder: v4.7.stable.official [92bee43ad]
+      Paste the actual host engine's full `godot --version` output, including its build/revision.
+    placeholder: Paste godot --version output
+  validations:
+    required: true
+
+- type: textarea
+  attributes:
+    label: Extension build information
+    description: |
+      Follow [build diagnostics](https://github.com/cafecito-games/BaristaScript/blob/main/docs/build-identity.md) and paste the report from `python3 scripts/query_build_info.py --godot /path/to/godot --library /path/to/library`.
+      This identifies the loaded library separately from your current checkout. If loading fails, include the error and the artifact-only inspection output described in the guide.
+    render: text
   validations:
     required: true
 

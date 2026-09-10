@@ -9,10 +9,11 @@
 import argparse
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+from build_config import api_path, load_config
+from build_metadata import inspect_artifact, repository_identity
 
 
 def build_identity():
@@ -20,12 +21,12 @@ def build_identity():
                      *ROOT.glob("tests/native/*"), *ROOT.glob("thirdparty/doctest/*"), *ROOT.glob("doc_classes/*.xml"),
                      ROOT / "SConstruct", ROOT / "CMakeLists.txt", ROOT / "build_profile.json", Path(__file__).resolve(),
                      ROOT / "scripts/generate_global_api.py", ROOT / ".gitmodules",
-                     ROOT / "godot-cpp/gdextension/extension_api-4-7.json"})
+                     api_path(load_config()), ROOT / "build_versions.json", ROOT / "scripts/build_config.py", ROOT / "scripts/build_metadata.py"})
     digest = hashlib.sha256()
     for path in inputs:
         if path.is_file():
             digest.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
-    digest.update(subprocess.check_output(["git", "-C", str(ROOT / "godot-cpp"), "rev-parse", "HEAD"]))
+    digest.update((repository_identity(ROOT / "godot-cpp")["revision"] + "\n").encode("ascii"))
     return digest.hexdigest()
 
 
@@ -53,7 +54,7 @@ def record(library, header, destination):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(dict(library=str(library), build_id=build_id,
-                                           sha256=hashlib.sha256(library.read_bytes()).hexdigest()), indent=2) + "\n")
+                                           sha256=hashlib.sha256(library.read_bytes()).hexdigest(), build_info=inspect_artifact(library)), indent=2) + "\n")
 
 
 if __name__ == "__main__":

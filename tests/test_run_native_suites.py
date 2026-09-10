@@ -22,15 +22,20 @@ BUILD_DIR = runner.DEFAULT_BUILD_DIR
 
 
 class ResultTests(unittest.TestCase):
+    def setUp(self):
+        config = runner.load_config()
+        self.info = runner.create_metadata(runner.ROOT, config, dict(platform="linux", architecture="x86_64",
+                                           target="template_debug", api=config["godot_api"], precision=config["precision"]), native_tests=True)
+
     def record(self, **overrides):
         record = dict(protocol=runner.PROTOCOL_VERSION, suite="tokenizer", case="", nonce="run-1",
                       build_id="build-1", cases=13, assertions=600, failed_cases=0,
-                      failed_assertions=0)
+                      failed_assertions=0, build_info=self.info)
         record.update(overrides)
         return runner.RESULT_PREFIX + json.dumps(record)
 
     def evaluate(self, output, code=0):
-        return runner.evaluate(code, output, "tokenizer", "", "run-1", "build-1")
+        return runner.evaluate(code, output, "tokenizer", "", "run-1", "build-1", self.info)
 
     def test_only_matching_executed_completion_is_success(self):
         self.assertEqual([], self.evaluate(self.record()))
@@ -48,7 +53,7 @@ class ResultTests(unittest.TestCase):
 
     def test_empty_unknown_and_mismatched_results(self):
         for key, value in dict(protocol=99, suite="other", case="other", nonce="old",
-                               build_id="wrong", cases=0, assertions=0).items():
+                               build_id="wrong", build_info={}, cases=0, assertions=0).items():
             with self.subTest(key=key):
                 self.assertTrue(self.evaluate(self.record(**{key: value})))
         self.assertTrue(self.evaluate(self.record() + "\n" + self.record()))
@@ -92,15 +97,16 @@ class ResultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             library = root / "native.so"
-            library.write_bytes(b"test artifact")
+            from build_metadata import encode_envelope
+            library.write_bytes(encode_envelope(self.info))
             artifact = dict(library=str(library), sha256=hashlib.sha256(library.read_bytes()).hexdigest(),
-                            build_id=runner.build_identity())
+                            build_id=runner.build_identity(), build_info=self.info)
             metadata = root / "native-artifact.json"
             metadata.write_text(json.dumps(artifact))
             self.assertEqual(artifact, runner.read_artifact(root))
             library.write_bytes(b"wrong artifact")
             self.assertRaises(ValueError, runner.read_artifact, root)
-            library.write_bytes(b"test artifact")
+            library.write_bytes(encode_envelope(self.info))
             artifact["build_id"] = "previous source revision"
             metadata.write_text(json.dumps(artifact))
             self.assertRaises(ValueError, runner.read_artifact, root)
@@ -118,7 +124,7 @@ class RuntimeTests(unittest.TestCase):
             state = project.parent
             completed = runner.invoke(GODOT, project, "tokenizer", "integer_range_is_exact", "state-check", 60)
             self.assertEqual([], runner.evaluate(completed.returncode, completed.stdout, "tokenizer",
-                              "integer_range_is_exact", "state-check", artifact["build_id"]), completed.stdout)
+                              "integer_range_is_exact", "state-check", artifact["build_id"], artifact["build_info"]), completed.stdout)
             self.assertTrue((state / "logs/godot.log").is_file(), "Godot user:// logs must stay in disposable state")
         self.assertFalse(state.exists())
 
@@ -127,7 +133,7 @@ class RuntimeTests(unittest.TestCase):
         with runner.staged_project(artifact) as project:
             completed = runner.invoke(GODOT, project, "runner_failure", "intentional failing assertion", "failure-check", 60)
         reasons = runner.evaluate(completed.returncode, completed.stdout, "runner_failure", "intentional failing assertion",
-                                  "failure-check", artifact["build_id"])
+                                  "failure-check", artifact["build_id"], artifact["build_info"])
         self.assertTrue(reasons, completed.stdout)
         self.assertNotEqual(completed.returncode, 0, completed.stdout)
         self.assertIn('"failed_assertions":1', completed.stdout)
@@ -155,7 +161,7 @@ class RuntimeTests(unittest.TestCase):
                 library.unlink()
             completed = runner.invoke(GODOT, project, "tokenizer", "", "missing-check", 5)
         self.assertTrue(runner.evaluate(completed.returncode, completed.stdout, "tokenizer", "",
-                                        "missing-check", artifact["build_id"]))
+                                        "missing-check", artifact["build_id"], artifact["build_info"]))
         self.assertNotIn(runner.RESULT_PREFIX, completed.stdout)
 
     def test_wrong_library_cannot_supply_runner(self):
@@ -165,7 +171,7 @@ class RuntimeTests(unittest.TestCase):
                 library.write_bytes(b"not a Godot extension")
             completed = runner.invoke(GODOT, project, "tokenizer", "", "wrong-library-check", 5)
         self.assertTrue(runner.evaluate(completed.returncode, completed.stdout, "tokenizer", "",
-                                        "wrong-library-check", artifact["build_id"]))
+                                        "wrong-library-check", artifact["build_id"], artifact["build_info"]))
         self.assertNotIn(runner.RESULT_PREFIX, completed.stdout)
 
     def test_unknown_case_and_query_emit_no_execution_evidence(self):
@@ -175,7 +181,7 @@ class RuntimeTests(unittest.TestCase):
                 completed = runner.invoke(GODOT, project, "tokenizer", case, "query-check", 60,
                                           listing=listing)
             self.assertTrue(runner.evaluate(completed.returncode, completed.stdout, "tokenizer", case,
-                                            "query-check", artifact["build_id"]))
+                                            "query-check", artifact["build_id"], artifact["build_info"]))
 
 
 if __name__ == "__main__":

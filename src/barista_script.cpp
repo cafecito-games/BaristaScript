@@ -7,6 +7,7 @@
 /**************************************************************************/
 
 #include "barista_script.h"
+#include "bs_build_info.h"
 
 #include "barista_script_language.h"
 #include "bs_analyzer.h"
@@ -14,7 +15,12 @@
 
 namespace barista_script {
 
+godot::Dictionary BaristaScript::get_build_info() const {
+	return bs_get_build_info();
+}
+
 void BaristaScript::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("get_build_info"), &BaristaScript::get_build_info);
 	// Script::is_valid() is not exposed to GDScript in Godot 4.7; bind an explicit wrapper so
 	// suites and editor tooling can ask the same question `_is_valid()` answers (#43).
 	ClassDB::bind_method(D_METHOD("is_valid"), &BaristaScript::_is_valid);
