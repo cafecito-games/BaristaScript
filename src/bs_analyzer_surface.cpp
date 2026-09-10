@@ -1286,7 +1286,11 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			}
 
 			if (member.variable->initializer != nullptr) {
+				// S6: Foundry surface:1758-1820 scopes static member initializer context.
+				const BSParser::VariableNode *previous_initializer = get_node_initializer;
+				get_node_initializer = member.variable;
 				reduce_expression(member.variable->initializer);
+				get_node_initializer = previous_initializer;
 				qualify_contextual_enum_case_consumer(member.variable->initializer, type);
 				mark_coroutine_handle_capture(member.variable->initializer, type);
 				const bool constant_type_ok = update_constant_expression_type(member.variable->initializer, type, "assign");

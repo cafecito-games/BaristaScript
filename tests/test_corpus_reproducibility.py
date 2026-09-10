@@ -370,7 +370,7 @@ class CheckoutContract(unittest.TestCase):
             path = self.root / record["source"]
             path.mkdir(parents=True)
             (path / "input.fs").write_text("data only")
-        for relative in self.registry.get("auxiliary_sources", []):
+        for relative in self.registry.get("auxiliary_sources", []) + self.registry.get("analyzer_sources", []):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("auxiliary data only")
@@ -387,7 +387,7 @@ class CheckoutContract(unittest.TestCase):
 
     def test_executable_mode_drift_without_byte_changes_fails(self):
         paths = [record["source"] + "/input.fs" for record in self.registry["corpora"].values()]
-        paths += self.registry["auxiliary_sources"]
+        paths += self.registry["auxiliary_sources"] + self.registry.get("analyzer_sources", [])
         for relative in paths:
             path = self.root / relative
             mode = path.stat().st_mode
@@ -398,7 +398,7 @@ class CheckoutContract(unittest.TestCase):
         self.verify()
 
     def test_auxiliary_exact_bytes_missing_and_index_drift(self):
-        for relative in self.registry["auxiliary_sources"]:
+        for relative in self.registry["auxiliary_sources"] + self.registry.get("analyzer_sources", []):
             path = self.root / relative
             original = path.read_bytes()
             self.git("update-index", "--assume-unchanged", "--", relative)

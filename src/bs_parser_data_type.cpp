@@ -708,7 +708,7 @@ BSParser::DataType BSParser::DataType::substitute(const DataType &p_type, const 
 	return result;
 }
 
-// D-engine: the rich signature channel is deleted, not ported.
+// R15/#38: stock PropertyInfo lacks rich signature hints; analyzer DataType retains them.
 //
 // Upstream encodes a Callable's or signal's full signature, and a `Coroutine[T]`'s result type, into
 // a `PropertyInfo` under `PROPERTY_HINT_CALLABLE_TYPE` and `PROPERTY_HINT_COROUTINE_TYPE`
@@ -720,16 +720,13 @@ BSParser::DataType BSParser::DataType::substitute(const DataType &p_type, const 
 // `_encode_signature_type_base`, `_encode_method_signature_suffix`, `_encode_coroutine_result_element`,
 // `_encode_coroutine_container_element`, `_signature_type_handle_represented_type` and the two
 // round-trip predicates `_enum_signature_leaf_round_trips` / `_signature_type_is_encodable` -- is
-// therefore deleted rather than kept as unreachable code, exactly as D1 deletes the numeric tower.
+// omitted from this stock-engine adapter. #38 owns the engine hint-channel adaptation; this is
+// separate from D1 numeric deletion and does not remove analyzer-owned signatures.
 // `to_property_info()` takes the branch upstream already takes when a slot cannot round-trip: the
-// hint is omitted and the value crosses the boundary untyped (gradual). That is a narrowing of what
-// crosses a *cross-script* boundary, never a wrong answer at one.
-//
-// Nothing else is lost with it: the deleted predicates were the only consumers of the three engine
-// registries godot-cpp does not mirror (`CoreConstants::is_global_enum`,
-// `ScriptServer::is_global_class_enum`, `ClassDB::is_class_exposed`), so no guessed answer stands in
-// for any of them. `to_string()`'s own signature spelling (`_method_signature_to_string`) is a
-// different renderer and is ported unchanged.
+// hint is omitted at the stock PropertyInfo boundary. Source-to-source analysis retains rich
+// signatures in DataType and the declaring parser (#140); that path does not depend on these hints.
+// `to_string()` keeps its separate signature renderer. S5's immutable engine metadata and the
+// source declaration index supply their own supported enum/class queries without this encoder.
 
 String bs_encode_type_handle_property_class_name(const StringName &p_represented_class) {
 	return vformat("Type[%s]", p_represented_class);

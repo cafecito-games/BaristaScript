@@ -18,11 +18,11 @@
 /*  capture + compound-assign restore, get_operation_type,                */
 /*  resolve_class_member same-parser depth, reduce_await + MISSING_AWAIT / */
 /*  REDUNDANT_AWAIT (#60), class-phase INTERFACE/BODY foreign failure     */
-/*  recording and dependent replay (#60 residual after #118), Coroutine[T]*/
-/*  annotation decode in datatype_from_type_node (#60 residual), direct   */
-/*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
+/*  recording and dependent replay (R01/X3, #140), Coroutine[T]*/
+/*  annotation decode in datatype_from_type_node (R02), direct   */
+/*  async-call wrap + mark_coroutine_handle_capture (R02).       */
 /*  Non-generic SelfFieldLeg + Self-contract RETURN assign/return (#60). */
-/*  Gradual Self-union admission + self_free union members (#60 residual). */
+/*  Concrete Self-union admission + self_free union members (R03, #138). */
 /*  complete_self_referential_enum_type + specialize helpers (#60).      */
 /*  Deliberate non-ports: NumericType / fs_numeric_ops / integer suffixes */
 /*  are deleted by D1; fs_builtin_types registration and its JsonResult  */
@@ -858,7 +858,8 @@ BSParser::DataType BSAnalyzer::type_from_variant(const Variant &p_value) {
 BSParser::DataType BSAnalyzer::type_from_property(const PropertyInfo &p_property, bool p_is_arg, bool p_is_readonly) const {
 	// D1-trimmed decode of Foundry FSAnalyzer::type_from_property (@ c9d5e35): carrier-only
 	// PropertyInfo → DataType for MethodInfo call validation. Width/signedness metadata is never
-	// consulted; coroutine / Callable-signature hint decoding remains follow-up under #60.
+	// consulted. R15: stock Godot lacks Foundry rich PropertyInfo hints (#38);
+	// analyzer-to-analyzer Callable/Coroutine signatures remain in DataType.
 	BSParser::DataType result;
 	result.is_read_only = p_is_readonly;
 	result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
@@ -3817,6 +3818,33 @@ void BSAnalyzer::reduce_await(BSParser::AwaitNode *p_await) {
 #endif
 }
 
+bool BSAnalyzer::get_node_is_static_context() const {
+	if (get_node_initializer != nullptr) {
+		return get_node_initializer->is_static;
+	}
+	return current_function != nullptr && current_function->is_static;
+}
+
+void BSAnalyzer::reduce_get_node(BSParser::GetNodeNode *p_get_node) {
+	// S6: Foundry fs_analyzer.cpp:9352-9375 / mark_lambda_use_self:18557 at c9d5e35.
+	BSParser::DataType result;
+	result.kind = BSParser::DataType::VARIANT;
+	if (current_class == nullptr || !ClassDB::is_parent_class(current_class->base_type.native_type, SNAME("Node"))) {
+		push_error(vformat(R"*(Cannot use shorthand "get_node()" notation ("%c") on a class that isn't a node.)*", p_get_node->use_dollar ? '$' : '%'), p_get_node);
+	} else if (get_node_is_static_context()) {
+		push_error(vformat(R"*(Cannot use shorthand "get_node()" notation ("%c") in a static function.)*", p_get_node->use_dollar ? '$' : '%'), p_get_node);
+	} else {
+		for (BSParser::LambdaNode *lambda = current_lambda; lambda != nullptr; lambda = lambda->parent_lambda) {
+			lambda->use_self = true;
+		}
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		result.kind = BSParser::DataType::NATIVE;
+		result.builtin_type = Variant::OBJECT;
+		result.native_type = SNAME("Node");
+	}
+	p_get_node->set_datatype(result);
+}
+
 void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
 	// Foundry reduce_lambda @ c9d5e35: Callable type + signature now; body after the statement
 	// via resolve_pending_lambda_bodies so capture marking runs under the outer suite's
@@ -3834,6 +3862,8 @@ void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
 		return;
 	}
 
+	// Foundry signature context (4677-4683): pending lambda bodies retain the creation context.
+	p_lambda->function->is_static = get_node_is_static_context();
 	BSParser::LambdaNode *previous_lambda = current_lambda;
 	current_lambda = p_lambda;
 	resolve_function_signature_in_class(p_lambda->function, current_class);
@@ -7018,7 +7048,7 @@ Dictionary BSAnalyzer::debug_self_identity_controls() {
 void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type) {
 	// Foundry reduce_call_enum_case_construction @ c9d5e35 (SelfFieldLeg + self-ref completion):
 	// spelling-aware `@Self` payload admission + complete_self_referential_enum_type on fields.
-	// open_union_members_collapse / full open-schema alternative admission remain #60 residuals.
+	// R06: concrete union reduction is implemented (#138); open generic schemas belong to M5.
 	if (p_call == nullptr) {
 		return;
 	}
@@ -7191,7 +7221,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	};
 
 	// Foundry checked_payload_field_type @ c9d5e35: complete recursive shells after spelling /
-	// type-argument transform. open_union_members_collapse remains an explicit #60 residual.
+	// type-argument transform. R06: open generic union-schema collapse belongs to M5.
 	const auto checked_payload_field_type = [&](int p_index, const BSParser::DataType &p_specialized_field) -> BSParser::DataType {
 		const BSParser::DataType *open_field = open_payload_field(case_name, p_index);
 		if (open_field == nullptr) {
@@ -7763,6 +7793,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			break;
 		case BSParser::Node::IDENTIFIER:
 			reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_expression));
+			break;
+		case BSParser::Node::GET_NODE:
+			reduce_get_node(static_cast<BSParser::GetNodeNode *>(p_expression));
 			break;
 		case BSParser::Node::PRELOAD:
 			reduce_preload(static_cast<BSParser::PreloadNode *>(p_expression));
@@ -8588,7 +8621,7 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 		analyze_suite(p_function->body);
 	}
 	// Foundry resolve_function_body checks every resolved body, including lambdas and witnesses.
-	// Keep those consumers in our existing flow phase, after successful body analysis.
+	// Drain them in the flow phase or diagnostic recovery after a visited body fails.
 	// resolved_body above ensures each parser-owned function is queued exactly once.
 	pending_function_flow_checks.push_back(p_function);
 	warn_unused_parameters(p_function);
@@ -9829,15 +9862,16 @@ Error BSAnalyzer::resolve_body() {
 	Error err = run_phase_body_expression_callable_signal();
 	if (err != OK) {
 		// Foundry resolves final assignments after visiting bodies even if a body reported
-		// an error (resolve_class_body @ c9d5e35). Keep recovery in phase 5: no exit-summary
-		// checks, witness bodies, warning finalization, or success publication follow it.
+		// an error (resolve_class_body @ c9d5e35). Its inline function exit checks also
+		// run for visited bodies. Drain only that queue; later phases remain fail-stop.
 		check_final_assignments();
+		check_pending_function_flow_finality();
 		commit_or_remove_declaration(false);
 		return err;
 	}
 	err = run_phase_flow_finality();
 	if (err != OK) {
-		// Foundry residual #60: body already queued pending warnings (e.g. NON_EXHAUSTIVE_MATCH);
+		// R17: body already queued pending warnings (e.g. NON_EXHAUSTIVE_MATCH);
 		// flush them even when flow-finality exits early (return-typed incomplete matches).
 		run_phase_finalize();
 		commit_or_remove_declaration(false);
@@ -9873,12 +9907,14 @@ Error BSAnalyzer::analyze() {
 	err = run_phase_body_expression_callable_signal();
 	if (err != OK && !errors_are_only_m5_deferred()) {
 		check_final_assignments();
+		// R17/R26: recover the pinned inline exit diagnostics for already visited bodies.
+		check_pending_function_flow_finality();
 		commit_or_remove_declaration(false);
 		return err;
 	}
 	Error flow_err = run_phase_flow_finality();
 	if (flow_err != OK && !errors_are_only_m5_deferred()) {
-		// Foundry residual #60: flush pending warnings even when flow-finality exits early
+		// R17: flush pending warnings even when flow-finality exits early
 		// (latent with return-typed incomplete tagged-union matches).
 		run_phase_finalize();
 		commit_or_remove_declaration(false);
