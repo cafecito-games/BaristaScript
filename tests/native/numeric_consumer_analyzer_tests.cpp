@@ -307,4 +307,117 @@ TEST_SUITE("numeric_consumer_analyzer") {
 		CHECK(parser.get_warnings().size() == 1);
 		warning(parser, 0, BSWarning::INT_AS_ENUM_WITHOUT_CAST, ENUM_WARNING, 4, 17, 20);
 	}
+	TEST_CASE("nullable_integer_constants_keep_positional_checks_before_enum_publication") {
+		StorageFixture storage;
+		WarningProfile profile;
+		profile.set("debug/barista_script/analysis/strict_null_checks", true);
+		profile.set("debug/barista_script/analysis/strict_dynamic_checks", false);
+		profile.level(BSWarning::INT_AS_ENUM_WITHOUT_CAST, BSWarning::IGNORE);
+		// R1: pin6978 validates before7007 publishes. Each unchanged consumer owns its error.
+		struct Consumer {
+			const char *tail;
+			const char *message;
+			int line;
+			int column;
+		};
+		const Consumer consumers[] = {
+			{ "var member: E = BOX\n", "Cannot assign a value of type \"int?\" to a variable of type \"numeric_nullable.barista.E\".", 4, 17 },
+			{ "func test():\n\tvar value: E = BOX\n", "Cannot assign a value of type \"int?\" to a variable of type \"numeric_nullable.barista.E\".", 5, 20 },
+			{ "func test():\n\tvar value: E = E.A\n\tvalue = BOX\n", "Value of type \"int?\" cannot be assigned to a variable of type \"numeric_nullable.barista.E\".", 6, 13 },
+			{ "func test() -> E:\n\treturn BOX\n", "Cannot return value of type \"int?\" because the function return type is \"numeric_nullable.barista.E\".", 5, 5 },
+			{ "func take(_value: E):\n\tpass\nfunc test():\n\ttake(BOX)\n", "Cannot pass nullable value of type \"int?\" as argument 1 of \"take()\"; expected non-nullable \"numeric_nullable.barista.E\".", 7, 10 },
+		};
+		for (const auto &c : consumers) {
+			for (const char *value : { "0", "null" }) {
+				const String source = String("enum E:\n\tA = 0\nconst BOX: int? = ") + value + "\n" + c.tail;
+				BSParser parser;
+				BS_TEST_REQUIRE(parser.parse(source, "res://tests/numeric_nullable.barista", false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK(analyzer.analyze() != OK);
+				diagnostics(parser);
+				CHECK(parser.get_errors().size() == 1);
+				if (parser.get_errors().size() != 1)
+					continue;
+				const auto &e = parser.get_errors().front()->get();
+				CHECK(e.message == c.message);
+				CHECK(e.line == c.line);
+				CHECK(e.column == c.column);
+				CHECK(parser.get_warnings().is_empty());
+			}
+		}
+		for (const char *source : {
+					 "enum E:\n\tA = 0\nconst BOX: int? = 0\nvar member: E? = BOX\n",
+					 "enum E:\n\tA = 0\nconst BOX: int? = null\nvar member: E? = BOX\n",
+					 "enum E:\n\tA = 0\nconst BOX: int = 0\nvar member: E = BOX\n" }) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/numeric_nullable.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			CHECK(parser.get_warnings().is_empty());
+		}
+	}
+	TEST_CASE("enum_compound_result_has_one_warning_or_promoted_error") {
+		StorageFixture storage;
+		WarningProfile profile;
+		// R2: pin7766 only retypes OP_NONE; compound results report once at7926.
+		for (auto level : { BSWarning::WARN, BSWarning::ERROR }) {
+			profile.level(BSWarning::INT_AS_ENUM_WITHOUT_CAST, level);
+			for (const char *store : { "value += 1", "value = 1", "value += n" }) {
+				const bool plain = String(store) == "value = 1";
+				const String source = String("enum E:\n\tA = 0\nfunc test(n: int):\n\tvar value: E = E.A\n\t") + store + "\n";
+				BSParser parser;
+				BS_TEST_REQUIRE(parser.parse(source, "res://tests/numeric_compound_enum.barista", false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() == OK) == (level == BSWarning::WARN));
+				diagnostics(parser);
+				const int column = plain ? 13 : 14;
+				if (level == BSWarning::WARN) {
+					CHECK(parser.get_errors().is_empty());
+					CHECK(parser.get_warnings().size() == 1);
+					warning(parser, 0, BSWarning::INT_AS_ENUM_WITHOUT_CAST, ENUM_WARNING, 5, column, column + 1);
+				} else {
+					CHECK(parser.get_warnings().is_empty());
+					CHECK(parser.get_errors().size() == 1);
+					if (parser.get_errors().size() != 1)
+						continue;
+					const auto &e = parser.get_errors().front()->get();
+					CHECK(e.message == String(ENUM_WARNING) + " (Warning treated as error.)");
+					CHECK(e.line == 5);
+					CHECK(e.column == column);
+					CHECK(e.end_line == 5);
+					CHECK(e.end_column == column + 1);
+				}
+			}
+		}
+	}
+	TEST_CASE("inferred_self_contract_precedes_ordinary_weak_downgrade") {
+		StorageFixture storage;
+		WarningProfile profile;
+		profile.level(BSWarning::INT_AS_ENUM_WITHOUT_CAST, BSWarning::IGNORE);
+		// R3: pin7850 and base8015 apply the embedded Self contract before soft stores.
+		for (const char *source : {
+					 "func test():\n\tvar value = self\n\tvalue = 1\n",
+					 "func test():\n\tvar value = self\n\tvalue = self\n",
+					 "func test():\n\tvar value = 1\n\tvalue = 0.5\n" }) {
+			const bool rejected = String(source).contains("value = self\n\tvalue = 1");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/numeric_self.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK((analyzer.analyze() == OK) == !rejected);
+			diagnostics(parser);
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				CHECK(parser.get_errors().size() == 1);
+				if (parser.get_errors().size() != 1)
+					continue;
+				const auto &e = parser.get_errors().front()->get();
+				CHECK(e.message == "Value of type \"int\" cannot be assigned to a variable of type \"Self\".");
+				CHECK(e.line == 3);
+				CHECK(e.column == 13);
+			} else
+				CHECK(parser.get_errors().is_empty());
+		}
+	}
 }

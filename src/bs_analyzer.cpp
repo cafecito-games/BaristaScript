@@ -5709,6 +5709,16 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	// type so the declaration/return/call compatibility consumer does not warn again.
 	if (p_expected_type.kind == BSParser::DataType::ENUM && !p_expected_type.is_tagged_union && !p_expected_type.is_meta_type && !p_expected_type.is_type_handle_annotation &&
 			declared_type.kind == BSParser::DataType::BUILTIN && declared_type.builtin_type == Variant::INT && !declared_type.is_meta_type) {
+		// Pin6978 checks the declared type (including nullable provenance) before7007
+		// publishes an enum. Leave refusals untouched for the existing positional reporter.
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = true;
+		options.strict_dynamic = strict_dynamic_checks;
+		options.strict_null = strict_null_checks;
+		options.constant_source_value = &p_expression->reduced_value;
+		if (!BSTypeCompatibility::check(p_expected_type, declared_type, options).compatible) {
+			return true;
+		}
 		if (String(p_usage) != "cast")
 			warn_plain_enum_conversion(p_expected_type, declared_type, p_expression);
 		BSParser::DataType published = p_expected_type;
@@ -8047,7 +8057,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				if (assignment->assignee != nullptr) {
 					assignee_type = assignment->assignee->get_datatype();
 				}
-				const bool constant_type_ok = !assignee_type.is_hard_type() || update_constant_expression_type(assignment->assigned_value, assignee_type, "assign");
+				// Pin7766: compound operations convert their result, not their RHS operand.
+				const bool constant_type_ok = assignment->operation != BSParser::AssignmentNode::OP_NONE || !assignee_type.is_hard_type() ||
+						update_constant_expression_type(assignment->assigned_value, assignee_type, "assign");
 				BSParser::DataType assigned_value_type = assignment->assigned_value->get_datatype();
 				bool compatible = true;
 				BSParser::DataType op_type = assigned_value_type;
@@ -8081,20 +8093,8 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				}
 				assignment->set_datatype(op_type);
 
-				// Foundry reduce_assignment @ c9d5e35:7926-7993 keeps soft declarations
-				// gradual after an incompatible store; hard destinations retain D1 conversion rules.
-				if (assignee_type.is_set() && !assignee_type.is_variant() && !assignee_type.is_hard_type() && op_type.is_set()) {
-					BSTypeCompatibility::Options options;
-					options.allow_implicit_conversion = false;
-					options.strict_dynamic = strict_dynamic_checks;
-					options.strict_null = strict_null_checks;
-					warn_plain_enum_conversion(assignee_type, op_type, assignment->assigned_value);
-					if (op_type.is_variant() || !BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
-						mark_node_unsafe(assignment);
-						downgrade_assignment_source(assignment->assignee);
-					}
-					// Foundry reduce_assignment Self-contract RETURN gate @ c9d5e35.
-				} else if (!constant_type_ok) {
+				// Pin7850: embedded Self contracts precede ordinary weak-store downgrade.
+				if (!constant_type_ok) {
 					// Value-aware constant reporting already emitted the sole mismatch.
 				} else if (!assignee_type.is_variant() && assignee_type.is_set() &&
 						_datatype_contains_self_type_parameter(assignee_type)) {
@@ -8113,6 +8113,18 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 					} else if (value_is_gradual || op_type.is_variant()) {
 						mark_node_unsafe(assignment);
 						assignment->use_conversion_assign = true;
+					}
+					// Foundry reduce_assignment @ c9d5e35:7926-7993 keeps soft declarations
+					// gradual after an incompatible store; hard destinations retain D1 conversion rules.
+				} else if (assignee_type.is_set() && !assignee_type.is_variant() && !assignee_type.is_hard_type() && op_type.is_set()) {
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = false;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					warn_plain_enum_conversion(assignee_type, op_type, assignment->assigned_value);
+					if (op_type.is_variant() || !BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
+						mark_node_unsafe(assignment);
+						downgrade_assignment_source(assignment->assignee);
 					}
 				} else if (assignee_type.is_set() && !assignee_type.is_variant() && op_type.is_set()) {
 					warn_plain_enum_conversion(assignee_type, op_type, assignment->assigned_value);
