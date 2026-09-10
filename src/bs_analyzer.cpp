@@ -5650,11 +5650,82 @@ void BSAnalyzer::qualify_contextual_enum_case_consumer(BSParser::ExpressionNode 
 	update_container_literal_element_types(p_expression, p_expected_type);
 }
 
+void BSAnalyzer::warn_plain_enum_conversion(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const BSParser::Node *p_origin) {
+#ifdef DEBUG_ENABLED
+	// Foundry is_type_compatible @ c9d5e35:18400-18409: only reporting consumers
+	// advise casts, never pure compatibility queries or tagged-union/type handles.
+	if (p_target.kind == BSParser::DataType::ENUM && !p_target.is_tagged_union && !p_target.is_meta_type && !p_target.is_type_handle_annotation &&
+			p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::INT && !p_source.is_meta_type) {
+		push_warning(p_origin, BSWarning::INT_AS_ENUM_WITHOUT_CAST);
+	}
+#else
+	(void)p_target;
+	(void)p_source;
+	(void)p_origin;
+#endif
+}
+
+void BSAnalyzer::downgrade_assignment_source(BSParser::ExpressionNode *p_assignee) {
+	// Foundry downgrade_node_type_source @ c9d5e35:18517-18554 updates the declaration
+	// that later reads resolve; changing only this assignment's expression is insufficient.
+	BSParser::IdentifierNode *identifier = nullptr;
+	if (p_assignee->type == BSParser::Node::IDENTIFIER) {
+		identifier = static_cast<BSParser::IdentifierNode *>(p_assignee);
+	} else if (p_assignee->type == BSParser::Node::SUBSCRIPT) {
+		auto *subscript = static_cast<BSParser::SubscriptNode *>(p_assignee);
+		if (subscript->is_attribute)
+			identifier = subscript->attribute;
+	}
+	if (identifier == nullptr)
+		return;
+	BSParser::Node *source = nullptr;
+	switch (identifier->source) {
+		case BSParser::IdentifierNode::MEMBER_VARIABLE:
+		case BSParser::IdentifierNode::LOCAL_VARIABLE:
+			source = identifier->variable_source;
+			break;
+		case BSParser::IdentifierNode::FUNCTION_PARAMETER:
+			source = identifier->parameter_source;
+			break;
+		case BSParser::IdentifierNode::LOCAL_ITERATOR:
+			source = identifier->bind_source;
+			break;
+		default:
+			break;
+	}
+	if (source != nullptr) {
+		BSParser::DataType gradual;
+		gradual.kind = BSParser::DataType::VARIANT;
+		source->set_datatype(gradual);
+	}
+}
+
 bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage, bool p_builtin_constructor) {
 	if (!has_materialized_constant_value(p_expression) || !p_expected_type.is_set() || p_expected_type.is_variant()) {
 		return true;
 	}
 	const BSParser::DataType declared_type = p_expression->get_datatype();
+	// Foundry constant retyping: report once at the expression, then publish the enum
+	// type so the declaration/return/call compatibility consumer does not warn again.
+	if (p_expected_type.kind == BSParser::DataType::ENUM && !p_expected_type.is_tagged_union && !p_expected_type.is_meta_type && !p_expected_type.is_type_handle_annotation &&
+			declared_type.kind == BSParser::DataType::BUILTIN && declared_type.builtin_type == Variant::INT && !declared_type.is_meta_type) {
+		// Pin6978 checks the declared type (including nullable provenance) before7007
+		// publishes an enum. Leave refusals untouched for the existing positional reporter.
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = true;
+		options.strict_dynamic = strict_dynamic_checks;
+		options.strict_null = strict_null_checks;
+		options.constant_source_value = &p_expression->reduced_value;
+		if (!BSTypeCompatibility::check(p_expected_type, declared_type, options).compatible) {
+			return true;
+		}
+		if (String(p_usage) != "cast")
+			warn_plain_enum_conversion(p_expected_type, declared_type, p_expression);
+		BSParser::DataType published = p_expected_type;
+		published.is_constant = true;
+		p_expression->set_datatype(published);
+		return true;
+	}
 	// Concrete literals are described by their ordinary call/assign/return consumer. A gradual
 	// constant or closed union needs this value-aware path because the consumer otherwise admits
 	// Variant or loses the known alternative. Container elements use their pinned "include" wording.
@@ -5703,6 +5774,17 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 						   p_usage, reported_type.to_string(), p_expected_type.to_string()),
 				p_expression);
 		return false;
+	}
+	// Foundry :6995 also checks the known integer inside a Variant constant.
+	// This follows strict-dynamic/refusal handling and publishes the same enum type.
+	if (p_expected_type.kind == BSParser::DataType::ENUM && !p_expected_type.is_tagged_union && !p_expected_type.is_meta_type && !p_expected_type.is_type_handle_annotation &&
+			comparison_type.kind == BSParser::DataType::BUILTIN && comparison_type.builtin_type == Variant::INT && !comparison_type.is_meta_type) {
+		if (String(p_usage) != "cast")
+			warn_plain_enum_conversion(p_expected_type, comparison_type, p_expression);
+		BSParser::DataType published = p_expected_type;
+		published.is_constant = true;
+		p_expression->set_datatype(published);
+		return true;
 	}
 	if (p_expected_type.kind != BSParser::DataType::BUILTIN || comparison_type.kind != BSParser::DataType::BUILTIN) {
 		return true;
@@ -7975,7 +8057,9 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				if (assignment->assignee != nullptr) {
 					assignee_type = assignment->assignee->get_datatype();
 				}
-				const bool constant_type_ok = update_constant_expression_type(assignment->assigned_value, assignee_type, "assign");
+				// Pin7766: compound operations convert their result, not their RHS operand.
+				const bool constant_type_ok = assignment->operation != BSParser::AssignmentNode::OP_NONE || !assignee_type.is_hard_type() ||
+						update_constant_expression_type(assignment->assigned_value, assignee_type, "assign");
 				BSParser::DataType assigned_value_type = assignment->assigned_value->get_datatype();
 				bool compatible = true;
 				BSParser::DataType op_type = assigned_value_type;
@@ -8009,7 +8093,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				}
 				assignment->set_datatype(op_type);
 
-				// Foundry reduce_assignment Self-contract RETURN gate @ c9d5e35.
+				// Pin7850: embedded Self contracts precede ordinary weak-store downgrade.
 				if (!constant_type_ok) {
 					// Value-aware constant reporting already emitted the sole mismatch.
 				} else if (!assignee_type.is_variant() && assignee_type.is_set() &&
@@ -8030,7 +8114,20 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 						mark_node_unsafe(assignment);
 						assignment->use_conversion_assign = true;
 					}
+					// Foundry reduce_assignment @ c9d5e35:7926-7993 keeps soft declarations
+					// gradual after an incompatible store; hard destinations retain D1 conversion rules.
+				} else if (assignee_type.is_set() && !assignee_type.is_variant() && !assignee_type.is_hard_type() && op_type.is_set()) {
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = false;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					warn_plain_enum_conversion(assignee_type, op_type, assignment->assigned_value);
+					if (op_type.is_variant() || !BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
+						mark_node_unsafe(assignment);
+						downgrade_assignment_source(assignment->assignee);
+					}
 				} else if (assignee_type.is_set() && !assignee_type.is_variant() && op_type.is_set()) {
+					warn_plain_enum_conversion(assignee_type, op_type, assignment->assigned_value);
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
@@ -8103,6 +8200,8 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 			if (variable->datatype_specifier != nullptr && declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
 				const bool constant_type_ok = update_constant_expression_type(variable->initializer, declared, "assign");
 				const BSParser::DataType initializer_type = variable->initializer->get_datatype();
+				if (constant_type_ok)
+					warn_plain_enum_conversion(declared, initializer_type, variable->initializer);
 				// Foundry assignable Self-contract RETURN gate @ c9d5e35.
 				if (!constant_type_ok) {
 					// Value-aware constant reporting already emitted the sole mismatch.
@@ -8283,6 +8382,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					}
 				} else if (expected_return.is_set() && !expected_return.is_variant()) {
 					const BSParser::DataType result = ret->return_value->get_datatype();
+					warn_plain_enum_conversion(expected_return, result, ret);
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;

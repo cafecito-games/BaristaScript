@@ -15163,46 +15163,9 @@
         }
       ],
       "evidence": {
-        "kind": "candidate",
-        "pr": {
-          "kind": "provisional",
-          "repository": "cafecito-games/BaristaScript",
-          "head_ref": "m3/issue-141-s6-s7",
-          "issue": 141
-        },
-        "blobs": [
-          {
-            "path": "project/tests/analyzer_test.gd",
-            "sha256": "14ee5a7ccaaeb14d7feb12e4244fcc0c99b64f9027333dcc57470cac195e3809"
-          },
-          {
-            "path": "src/bs_analyzer.cpp",
-            "sha256": "178172b1df4e9960dd1502e94f389418bc4401f384e06f75edbf75c2949ce997"
-          },
-          {
-            "path": "src/bs_analyzer_flow_finality.cpp",
-            "sha256": "0276867991b054b90fb6cf07e62930a7a4d2f1e9ac318e186ee84ad40f3cf7b2"
-          },
-          {
-            "path": "tests/native/get_node_analyzer_tests.cpp",
-            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
-          }
-        ],
-        "results": [
-          {
-            "command": [
-              "python3",
-              "tests/run_native_suites.py",
-              "--godot",
-              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
-              "--suite",
-              "get_node_analyzer"
-            ],
-            "exit": 0,
-            "log_sha256": "033a55e356443dba1eb5517f9eb3f498bdaba8de6b452190f3c0c8ea9dced794",
-            "result": "Native get_node_analyzer: 14 cases / 550 assertions passed; declaring defaults/lazy restoration and original retained enum sources included"
-          }
-        ]
+        "kind": "merged",
+        "commit": "01216eb4c489da5004bffd04c4ea62d48da96ae2",
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/181"
       },
       "branch_keys": [
         "suite/statement exit summaries and visited function recovery",
@@ -15451,54 +15414,9 @@
         }
       ],
       "evidence": {
-        "kind": "candidate",
-        "pr": {
-          "kind": "provisional",
-          "repository": "cafecito-games/BaristaScript",
-          "head_ref": "m3/issue-141-s6-s7",
-          "issue": 141
-        },
-        "blobs": [
-          {
-            "path": "src/bs_analyzer.cpp",
-            "sha256": "178172b1df4e9960dd1502e94f389418bc4401f384e06f75edbf75c2949ce997"
-          },
-          {
-            "path": "src/bs_analyzer.h",
-            "sha256": "9b7fbb3717f38d6d4fec7189bb1caed557958bc829f50404d616101bb88c1a0e"
-          },
-          {
-            "path": "src/bs_analyzer_surface.cpp",
-            "sha256": "07280ebd576cefea472628a2f3f02f42f956362ce5fc4e53462b4d6aa790e75a"
-          },
-          {
-            "path": "tests/native/get_node_analyzer_tests.cpp",
-            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
-          },
-          {
-            "path": "tests/native_suites.json",
-            "sha256": "2a6619cc92b5ebffb420ae21ab544b12e632f1a928d51438fa4be45fd7c7c2d5"
-          },
-          {
-            "path": "src/bs_analyzer_conformance.cpp",
-            "sha256": "99ff3917bd387bafb8276ec217165738f235dba97add844cf819107464043a88"
-          }
-        ],
-        "results": [
-          {
-            "command": [
-              "python3",
-              "tests/run_native_suites.py",
-              "--godot",
-              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
-              "--suite",
-              "get_node_analyzer"
-            ],
-            "exit": 0,
-            "log_sha256": "033a55e356443dba1eb5517f9eb3f498bdaba8de6b452190f3c0c8ea9dced794",
-            "result": "Native get_node_analyzer: 14 cases / 550 assertions passed; declaring defaults/lazy restoration and original retained enum sources included"
-          }
-        ]
+        "kind": "merged",
+        "commit": "01216eb4c489da5004bffd04c4ea62d48da96ae2",
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/181"
       },
       "branch_keys": [
         "GET_NODE/non-Node error before static error",
