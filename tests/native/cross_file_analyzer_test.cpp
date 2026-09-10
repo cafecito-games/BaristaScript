@@ -300,4 +300,39 @@ TEST_SUITE("cross_file_analyzer") {
 			CHECK(script->_is_valid() == expected);
 		}
 	}
+	TEST_CASE("lexical_value_members_block_imported_type_annotations") {
+		Names names;
+		names.add("provider", "namespace lib\nclass_name Item\n");
+		// Foundry fs_analyzer.cpp2951–2967/3130–3162: any nearest lexical member
+		// claims the name; constants must actually carry a metatype to be a type.
+		error_is(analyze("import lib\nconst Item = 1\nvar x: Item\n"), "\"Item\" is a constant but does not contain a type.", 3, 6, 3, 12);
+		error_is(analyze("import lib\nvar Item = 1\nvar x: Item\n"), "\"Item\" is a variable but does not contain a type.", 3, 6, 3, 12);
+		error_is(analyze("import lib\nfunc Item():\n\tpass\nvar x: Item\n"), "\"Item\" is a function but does not contain a type.", 4, 6, 4, 12);
+		valid("import lib\nconst Item = 1\nvar x: lib.Item\n");
+		valid("import lib\nenum Local:\n\tA = 0\nconst Item = Local\nvar x: Item\n");
+		const Result metatype = analyze("import lib\nenum Local:\n\tA = 0\nconst Item = Local\nvar x: Item\n");
+		CHECK(metatype.type.kind == BSParser::DataType::ENUM);
+		CHECK_FALSE(metatype.type.is_meta_type);
+		valid("import lib\ntype Item = int\nvar x: Item\n");
+		valid("import lib\nenum Item:\n\tA = 0\nvar x: Item\n");
+		valid("import lib\ntuple Item(value: int, other: int)\nvar x: Item\n");
+		valid("import lib\nclass Item:\n\tpass\nvar x: Item\n");
+	}
+	TEST_CASE("lexical_extends_failure_is_latched_per_reference") {
+		Names names;
+		names.add("provider", "namespace lib\nclass_name Item\n");
+		// Foundry fs_analyzer_surface.cpp653–658 owns the CONSTANT diagnostic;
+		// inheritance/interface recovery must not report the same node again.
+		const String message = "Constant \"Item\" is not a preloaded script or class.";
+		error_is(analyze("import lib\nconst Item = 1\nclass User extends Item:\n\tpass\n"), message, 3, 20, 3, 24);
+		const Result result = analyze("import lib\nconst Item = 1\nclass User extends Item:\n\tpass\nclass Other extends Item:\n\tpass\n");
+		CHECK(result.status != OK);
+		CHECK(result.errors.size() == 2);
+		for (int i = 0; i < result.errors.size(); i++) {
+			Result one;
+			one.status = result.status;
+			one.errors.push_back(result.errors[i]);
+			error_is(one, message, 3 + 2 * i, 20 + i, 3 + 2 * i, 24 + i);
+		}
+	}
 }

@@ -850,6 +850,10 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		return;
 	} else {
 		BSParser::IdentifierNode *first_id = p_class->extends[0];
+		if (failed_name_lookups.has(first_id)) {
+			p_class->base_type = BSParser::DataType();
+			return;
+		}
 		const StringName first = first_id->name;
 		int extends_index = 1;
 		bool found = false;
@@ -897,7 +901,12 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 						found = true;
 						break;
 					}
-					push_error(vformat(R"(Cannot use %s "%s" in extends chain.)", member.get_type_name(), first), first_id);
+					if (member.type == BSParser::ClassNode::Member::CONSTANT) {
+						push_error(vformat(R"(Constant "%s" is not a preloaded script or class.)", first), first_id);
+					} else {
+						push_error(vformat(R"(Cannot use %s "%s" in extends chain.)", member.get_type_name(), first), first_id);
+					}
+					failed_name_lookups.insert(first_id);
 					p_class->base_type = BSParser::DataType();
 					return;
 				}
@@ -1277,6 +1286,33 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		if (name == SNAME("Variant")) {
 			result.kind = BSParser::DataType::VARIANT;
 			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			return result;
+		}
+
+		// Foundry current_scope_has_name / lexical member dispatch @ c9d5e35:
+		// any nearest lexical member claims the name before namespace lookup.
+		for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+			if (!scope->has_member(name)) {
+				continue;
+			}
+			const BSParser::ClassNode::Member member = scope->get_member(name);
+			if (member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::ENUM ||
+					member.type == BSParser::ClassNode::Member::TUPLE || member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+				break; // Existing declaration-specific reducers below own these types.
+			}
+			if (member.type == BSParser::ClassNode::Member::CONSTANT) {
+				resolve_class_member(scope, name, p_type_node);
+				if (member.get_datatype().is_meta_type) {
+					result = type_from_metatype(member.get_datatype());
+					result.is_nullable = result.is_nullable || p_type_node->is_nullable;
+					return result;
+				}
+			}
+			if (!failed_name_lookups.has(p_type_node)) {
+				push_error(vformat(R"("%s" is a %s but does not contain a type.)", name, member.get_type_name()), p_type_node);
+				failed_name_lookups.insert(p_type_node);
+			}
+			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
 
