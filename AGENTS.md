@@ -31,6 +31,10 @@ objects in static initializers. Use the supervisor for verification; list/query 
 0 alone are not execution evidence. Verify both build systems and on/off/on transitions when
 changing native build infrastructure; `tests/verify_native_surface.py` checks ordinary debug
 and release artifacts. Native runs must leave ordinary fixtures, descriptors and libraries intact.
+After a native CMake build, `python3 tests/test_native_cmake_rebuild.py --godot "$(command -v godot)"`
+checks incremental XML/build-script/profile changes using only `cmake --build`. It temporarily
+edits those inputs and restores their exact bytes and rebuilds even if a check fails; run it
+without concurrent builds or source edits.
 
 Add focused assertions to `project/tests/smoke_test.gd` for runtime-facing behavior. Name new GDScript tests `*_test.gd` and repository checks `test_*.py` or `validate_*.py`. A `*_test.gd` file under `project/tests/` is discovered and run by `tests/run_gdscript_suites.py` with no further wiring, and it must end with `quit(SuiteGuard.report("<suite stem>", failures))` using `project/tests/suite_guard.gd`: SceneTree quits 0 on a parse error, so the shared `BS_SUITE_OK <stem>` sentinel is the only evidence the suite ran, and the runner fails the job without it. Declare a suite that needs arguments, or a script not named `*_test.gd`, in `tests/gdscript_suites.json`. Run CI validation, an affected build path, editor import, and the suite runner before opening a PR. No numeric coverage threshold is enforced; behavioral changes should include regression coverage.
 

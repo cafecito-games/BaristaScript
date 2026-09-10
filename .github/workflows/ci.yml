@@ -203,6 +203,7 @@ jobs:
           cmake --build build/native-cmake --parallel 2
           python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+          python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake
           cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF
           cmake --build build/native-cmake --parallel 2
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug

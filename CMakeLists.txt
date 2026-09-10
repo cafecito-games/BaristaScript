@@ -15,6 +15,9 @@ set(GODOTCPP_BUILD_PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/build_profile.json" CACH
 find_package(Python3 3.4 REQUIRED)
 find_program(GIT git REQUIRED)
 if(BARISTA_TESTS)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/build_profile.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/native_test_build.py")
     set(GODOTCPP_BUILD_PROFILE "${CMAKE_CURRENT_BINARY_DIR}/native-build-profile.json" CACHE FILEPATH "godot-cpp test build profile" FORCE)
     execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/native_test_build.py"
         --profile "${GODOTCPP_BUILD_PROFILE}" RESULT_VARIABLE NATIVE_PROFILE_RESULT)
@@ -167,16 +170,14 @@ if(BARISTA_TESTS)
     endif()
     set(NATIVE_HEADER "${CMAKE_CURRENT_BINARY_DIR}/native-gen/native_build_id.h")
     file(GLOB NATIVE_SOURCES CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tests/native/*.cpp")
-    file(GLOB NATIVE_INPUTS CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tests/native/*"
-        "${PROJECT_SOURCE_DIR}/src/*.cpp" "${PROJECT_SOURCE_DIR}/src/*.h"
-        "${PROJECT_SOURCE_DIR}/thirdparty/doctest/*")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NATIVE_INPUTS}
-        "${PROJECT_SOURCE_DIR}/scripts/native_test_build.py")
-    execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/native_test_build.py"
-        --header "${NATIVE_HEADER}" RESULT_VARIABLE NATIVE_RESULT)
-    if(NOT NATIVE_RESULT EQUAL 0)
-        message(FATAL_ERROR "Cannot identify native test build")
-    endif()
+    # Refresh before compilation on every build: the shared identity also covers
+    # non-C++ inputs and the current submodule HEAD. The helper only writes changes.
+    add_custom_target(native_build_identity
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/native_test_build.py"
+            --header "${NATIVE_HEADER}"
+        BYPRODUCTS "${NATIVE_HEADER}"
+        VERBATIM)
+    add_dependencies(${LIBNAME} native_build_identity)
     target_sources(${LIBNAME} PRIVATE ${NATIVE_SOURCES})
     target_include_directories(${LIBNAME} PRIVATE src tests/native thirdparty/doctest "${CMAKE_CURRENT_BINARY_DIR}/native-gen")
     target_compile_definitions(${LIBNAME} PRIVATE BARISTA_TESTS DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
