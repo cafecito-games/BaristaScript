@@ -1,3 +1,4 @@
 {
-  "suites": ["tokenizer"]
+  "suites": ["tokenizer", "cache", "declaration_index", "global_class"],
+  "editor_import": ["global_class"]
 }

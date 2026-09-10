@@ -10,7 +10,8 @@ import argparse
 from pathlib import Path
 from verify_parse_cache_surface import find_artifacts
 
-NATIVE_MARKERS = (b"BaristaNativeTestRunner", b"BS_NATIVE_RESULT", b"[doctest]", b"token_vocabulary_is_closed")
+NATIVE_MARKERS = (b"BaristaNativeTestRunner", b"BS_NATIVE_RESULT", b"[doctest]", b"token_vocabulary_is_closed",
+                  b"native-storage-", b"storage assertion failure restores state")
 
 
 def verify_surface(binary_dir, target_type):

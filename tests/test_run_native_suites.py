@@ -125,8 +125,8 @@ class RuntimeTests(unittest.TestCase):
     def test_real_assertion_failure(self):
         artifact = runner.read_artifact(BUILD_DIR)
         with runner.staged_project(artifact) as project:
-            completed = runner.invoke(GODOT, project, "runner_failure", "", "failure-check", 60)
-        reasons = runner.evaluate(completed.returncode, completed.stdout, "runner_failure", "",
+            completed = runner.invoke(GODOT, project, "runner_failure", "intentional failing assertion", "failure-check", 60)
+        reasons = runner.evaluate(completed.returncode, completed.stdout, "runner_failure", "intentional failing assertion",
                                   "failure-check", artifact["build_id"])
         self.assertTrue(reasons, completed.stdout)
         self.assertNotEqual(completed.returncode, 0, completed.stdout)

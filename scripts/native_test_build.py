@@ -39,7 +39,7 @@ def write_header(destination):
 
 def write_profile(destination):
     profile = json.loads((ROOT / "build_profile.json").read_text())
-    profile["enabled_classes"] = sorted(set(profile["enabled_classes"]) | {"SceneTree"})
+    profile["enabled_classes"] = sorted(set(profile["enabled_classes"]) | {"SceneTree", "ConfigFile"})
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(profile, indent=2) + "\n"
