@@ -1,6 +1,7 @@
 # Native C++ tests
 
-`TEST_SUITE("tokenizer")` / `TEST_CASE("name")` in C++ own case identities.
+`TEST_SUITE("tokenizer")`, `TEST_SUITE("parser")`, `TEST_SUITE("warnings")` and
+`TEST_SUITE("platform")` / `TEST_CASE("name")` in C++ own case identities.
 `tests/native_suites.json` alone declares required suites; the Python supervisor and CI
 run the whole manifest by default. New `tests/native/*.cpp` files are discovered by both
 build systems. Include `doctest.h` and call internal C++ APIs directly.
@@ -66,3 +67,7 @@ The baseline source remains available at the immutable commit above.
 `tokenizer_helpers.*` retains the old probe's typed/tab-separated rendering and stored-literal
 selection. It is a C++ utility, with no script binding. Exhausting the scan bound now explicitly
 fails instead of letting equal truncated streams count as replay evidence.
+
+The parser, warning and platform migration inventory, unchanged-fixture provenance,
+settings restoration checks, and retained adapter consumers are documented in
+[parser_warning_platform_parity.md](parser_warning_platform_parity.md).
