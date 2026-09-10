@@ -480,6 +480,7 @@ private:
 	BSParser::LambdaNode *current_lambda = nullptr;
 	/** Foundry pending_body_resolution_lambdas (@ c9d5e35): flush after each suite statement. */
 	Vector<BSParser::LambdaNode *> pending_lambda_bodies;
+	Vector<BSParser::FunctionNode *> pending_function_flow_checks;
 	CallSiteValidationContext call_site_validation;
 	FlowFinalityContext flow_finality;
 
@@ -764,11 +765,19 @@ private:
 			BSParser::ClassNode *p_constructor_class = nullptr);
 	/** Foundry check_match_exhaustiveness @ c9d5e35: bool / tagged-union / plain-enum coverage. */
 	void check_match_exhaustiveness(BSParser::MatchNode *p_match);
-	bool suite_has_return(const BSParser::SuiteNode *p_suite) const;
-	/** True when a RETURN statement appears on some path (excludes `@noreturn` calls). */
-	bool suite_has_explicit_return(const BSParser::SuiteNode *p_suite) const;
-	bool node_terminates(const BSParser::Node *p_node) const;
-	bool node_has_explicit_return(const BSParser::Node *p_node) const;
+	struct SuiteExitState {
+		bool always_terminates = false;
+		bool has_return = false;
+		bool has_noreturn = false;
+	};
+	SuiteExitState get_suite_exit_state(const BSParser::SuiteNode *p_suite) const;
+	SuiteExitState get_statement_exit_state(const BSParser::Node *p_statement) const;
+	bool suite_has_reachable_break(const BSParser::SuiteNode *p_suite) const;
+	bool statement_has_reachable_break(const BSParser::Node *p_statement) const;
+	const BSParser::MatchNode *find_non_covering_match_cause(const BSParser::SuiteNode *p_suite) const;
+	void warn_unreachable_after_noreturn(const BSParser::SuiteNode *p_suite);
+	void warn_unreachable_after_noreturn_in_statement(const BSParser::Node *p_statement);
+	void check_pending_function_flow_finality();
 	void check_function_flow_finality(BSParser::FunctionNode *p_function);
 	void resolve_used_traits(BSParser::ClassNode *p_class);
 	/** Foundry validate_trait_requirements @ c9d5e35: abstract methods from used traits. */
