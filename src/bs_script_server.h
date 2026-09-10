@@ -49,6 +49,24 @@ public:
 		return settings->get_global_class_list();
 	}
 
+	/** Discovery only: an invalid private candidate must still block engine fallback. */
+	static bool has_global_class_candidate(const StringName &p_name) {
+		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+		BSDeclarationRecord record;
+		if (language != nullptr && language->get_declaration_index().try_get_by_qualified_name(String(p_name), record)) {
+			return true;
+		}
+		if (BSBuiltinSources::has_global_name(String(p_name))) {
+			return true;
+		}
+		for (const Dictionary &entry : _engine_global_class_list()) {
+			if (String(entry.get("class", String())) == String(p_name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	static bool is_global_class(const StringName &p_name) {
 		const String name = String(p_name);
 		if (name.is_empty()) {

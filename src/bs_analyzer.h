@@ -37,6 +37,7 @@
 #pragma once
 
 #include "bs_conformance_registry.h"
+#include "bs_declaration_index.h"
 #include "bs_parser.h"
 #include "bs_type.h"
 
@@ -835,14 +836,27 @@ private:
 	BSParser::ClassNode *resolve_conformance_target(BSParser::ConformanceNode *p_conformance, BSParser::DataType &r_target_type);
 	BSParser::ClassNode *resolve_native_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_native_type);
 	BSParser::ClassNode *resolve_builtin_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_builtin_type);
+	BSParser::ClassNode *resolve_trait_reference(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source);
 	BSParser::ClassNode *resolve_conformance_trait_use(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source);
 	bool validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target, BSParser::ClassNode *p_trait);
 	/** Foundry resolve_conformance_bodies: analyze witness methods against the target. */
 	void resolve_conformance_bodies(BSParser::ClassNode *p_class);
 	/** Own members then `base_type.class_type` chain (Foundry inherited method surface @ c9d5e35). */
 	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
-	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source);
-	BSParser::DataType resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source);
+	enum class NameLookupStatus { MISSING,
+		FOUND,
+		ERROR };
+	struct NameLookup {
+		NameLookupStatus status = NameLookupStatus::MISSING;
+		String qualified;
+		BSDeclarationRecord record;
+		bool indexed = false;
+	};
+	HashSet<const BSParser::Node *> failed_name_lookups;
+	NameLookup lookup_declaration(const String &p_name, BSParser::ClassNode *p_scope, const BSParser::Node *p_source, const String &p_symbol_kind);
+	BSParser::DataType named_type_from_lookup(const NameLookup &p_lookup);
+	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error);
+	BSParser::DataType resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source, bool &r_error);
 	bool errors_are_only_m5_deferred() const;
 	/** True when every error at/after `p_from_index` is an M5 deferred diagnostic (or none exist). */
 	bool errors_from_index_are_only_m5_deferred(int p_from_index) const;
