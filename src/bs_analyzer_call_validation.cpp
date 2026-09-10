@@ -1148,6 +1148,188 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		return MAX(p_bound_arguments.size() - p_base_type.method_unbound_argument_count, 0);
 	};
 
+	// Foundry c9d5e35:16070-16287: finite fixed-prefix/rest arity preservation.
+	auto can_bound_argument_fill_parameter = [&](const BSParser::ExpressionNode *p_argument, const BSParser::DataType &p_parameter_type) -> bool {
+		if (p_argument == nullptr) {
+			return false;
+		}
+		if (!p_parameter_type.is_hard_type()) {
+			return true;
+		}
+
+		BSParser::DataType argument_type = p_argument->get_datatype();
+		if (argument_type.is_variant() || !argument_type.is_hard_type()) {
+			return false;
+		}
+
+		return BSTypeCompatibility::is_compatible(p_parameter_type, argument_type, true);
+	};
+	auto bound_argument_conflicts_with_rest_tail = [&](const BSParser::ExpressionNode *p_argument) -> bool {
+		if (!p_base_type.has_method_rest_parameter_type()) {
+			return false;
+		}
+		return bound_argument_conflicts_with(p_argument, p_base_type.get_method_rest_parameter_type().get_container_element_type(0));
+	};
+	// unbind() models the arguments it discards as trailing Variant parameters, so the target's own
+	// rest tail begins that many parameters before the parameter list ends. A surviving bound value
+	// sits at target position `call arity + i`: below that point it fills a parameter, at or above it
+	// it reaches the rest tail.
+	auto target_fixed_argument_count = [&]() -> int {
+		return MAX(p_base_type.method_parameter_types.size() - p_base_type.method_unbound_argument_count, 0);
+	};
+	auto fixed_vararg_accepts_argument_count = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments, int p_argument_count) -> bool {
+		const int fixed_argument_count = p_base_type.method_parameter_types.size();
+		const int original_default_arg_count = MIN(p_base_type.method_info.default_arguments.size(), fixed_argument_count);
+		const int omitted_argument_count = fixed_argument_count - p_argument_count;
+		if (omitted_argument_count <= 0) {
+			return true;
+		}
+
+		const int bound_filled_count = MIN(omitted_argument_count, p_bound_arguments.size());
+		const int default_filled_count = omitted_argument_count - bound_filled_count;
+		if (default_filled_count > original_default_arg_count) {
+			return false;
+		}
+
+		const int reaching_bound_count = bound_arguments_reaching_target(p_bound_arguments);
+		const int parameter_filled_count = CLAMP(target_fixed_argument_count() - p_argument_count, 0, reaching_bound_count);
+		for (int i = 0; i < parameter_filled_count; i++) {
+			if (!can_bound_argument_fill_parameter(p_bound_arguments[i], p_base_type.method_parameter_types[p_argument_count + i])) {
+				return false;
+			}
+		}
+		// Bound values the fixed parameters do not absorb spill into the rest tail at this arity.
+		for (int i = parameter_filled_count; i < reaching_bound_count; i++) {
+			if (bound_argument_conflicts_with_rest_tail(p_bound_arguments[i])) {
+				return false;
+			}
+		}
+
+		return true;
+	};
+	auto fixed_vararg_rules_out_argument_count = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments, int p_argument_count) -> bool {
+		const int fixed_argument_count = p_base_type.method_parameter_types.size();
+		const int original_default_arg_count = MIN(p_base_type.method_info.default_arguments.size(), fixed_argument_count);
+		const int omitted_argument_count = fixed_argument_count - p_argument_count;
+		const int bound_filled_count = omitted_argument_count > 0 ? MIN(omitted_argument_count, p_bound_arguments.size()) : 0;
+		if (omitted_argument_count - bound_filled_count > original_default_arg_count) {
+			return true;
+		}
+
+		const int reaching_bound_count = bound_arguments_reaching_target(p_bound_arguments);
+		const int parameter_filled_count = CLAMP(target_fixed_argument_count() - p_argument_count, 0, reaching_bound_count);
+		for (int i = 0; i < parameter_filled_count; i++) {
+			if (bound_argument_conflicts_with(p_bound_arguments[i], p_base_type.method_parameter_types[p_argument_count + i])) {
+				return true;
+			}
+		}
+		// Every bound value the fixed parameters do not absorb reaches the rest tail.
+		for (int i = parameter_filled_count; i < reaching_bound_count; i++) {
+			if (bound_argument_conflicts_with_rest_tail(p_bound_arguments[i])) {
+				return true;
+			}
+		}
+
+		return false;
+	};
+	auto preserve_fixed_vararg_callable = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments, BSParser::DataType &r_return_type) -> bool {
+		if (!is_callable_vararg) {
+			return false;
+		}
+
+		// A bind consumes the trailing synthetic slots of a preceding unbind first.
+		// They no longer belong to the transformed invocation signature.
+		const int consumed_discard_count = MIN(p_bound_arguments.size(), p_base_type.method_unbound_argument_count);
+		const int fixed_argument_count = p_base_type.method_parameter_types.size() - consumed_discard_count;
+		// Bound values occupy the trailing argument positions: bound value `i` is passed at target
+		// position `call arity + i`. A bound value past the fixed arity lands in the rest tail whatever
+		// the call arity, so it is reported straight away. An earlier bound value only reaches the rest
+		// tail once the call supplies enough arguments of its own, so a conflict there bounds the
+		// arities at which the result can still be invoked instead of failing the bind outright.
+		const int reaching_bound_count = bound_arguments_reaching_target(p_bound_arguments);
+		const int rest_tail_start = target_fixed_argument_count();
+		bool rest_tail_conflicts = false;
+		if (p_base_type.has_method_rest_parameter_type()) {
+			const BSParser::DataType rest_element_type = p_base_type.get_method_rest_parameter_type().get_container_element_type(0);
+			for (int i = rest_tail_start; i < reaching_bound_count; i++) {
+				validate_argument_against_type(rest_element_type, const_cast<BSParser::ExpressionNode *>(p_bound_arguments[i]), i + 1, function_name, nullptr);
+			}
+			for (int i = 0; i < MIN(rest_tail_start, reaching_bound_count); i++) {
+				if (bound_argument_conflicts_with_rest_tail(p_bound_arguments[i])) {
+					rest_tail_conflicts = true;
+					break;
+				}
+			}
+		}
+
+		// Every arity at or above the fixed arity passes each bound value through the rest tail, so a
+		// conflicting bound value caps the result below the fixed arity and drops its variadic tail.
+		const bool stays_variadic = !rest_tail_conflicts;
+		const int highest_candidate_argument_count = stays_variadic ? fixed_argument_count : fixed_argument_count - 1;
+
+		Vector<int> allowed_argument_counts;
+		Vector<int> possible_argument_counts;
+		for (int argument_count = 0; argument_count <= highest_candidate_argument_count; argument_count++) {
+			if (fixed_vararg_accepts_argument_count(p_bound_arguments, argument_count)) {
+				allowed_argument_counts.push_back(argument_count);
+			}
+			if (!fixed_vararg_rules_out_argument_count(p_bound_arguments, argument_count)) {
+				possible_argument_counts.push_back(argument_count);
+			}
+		}
+
+		// The strict set holds the arities the bound values are proven to satisfy. When a rest-tail
+		// conflict leaves none of them, an untyped bound value may still make some arity work at
+		// runtime, so the weaker "not ruled out" set keeps those arities alive. Either way the
+		// arities this analysis already ruled out stay rejected.
+		const Vector<int> &surviving_argument_counts = allowed_argument_counts.is_empty() ? possible_argument_counts : allowed_argument_counts;
+
+		if (surviving_argument_counts.is_empty()) {
+			if (p_base_type.has_method_rest_parameter_type()) {
+				// No call arity can place the bound values, so the mismatch is reported at the bind.
+				const BSParser::DataType rest_element_type = p_base_type.get_method_rest_parameter_type().get_container_element_type(0);
+				for (int i = 0; i < MIN(rest_tail_start, reaching_bound_count); i++) {
+					if (bound_argument_conflicts_with_rest_tail(p_bound_arguments[i])) {
+						validate_argument_against_type(rest_element_type, const_cast<BSParser::ExpressionNode *>(p_bound_arguments[i]), i + 1, function_name, nullptr);
+					}
+				}
+			}
+			// No signature describes what survives, so fall back to a signatureless callable rather
+			// than asserting a shape no invocation matches.
+			r_return_type = plain_callable_type();
+			r_return_type.signature_is_async = p_base_type.signature_is_async;
+			return true;
+		}
+
+		const int highest_allowed_argument_count = surviving_argument_counts[surviving_argument_counts.size() - 1];
+		int lowest_continuous_argument_count = highest_allowed_argument_count;
+		for (int index = surviving_argument_counts.size() - 2; index >= 0; index--) {
+			if (surviving_argument_counts[index] != lowest_continuous_argument_count - 1) {
+				break;
+			}
+			lowest_continuous_argument_count = surviving_argument_counts[index];
+		}
+
+		Vector<BSParser::DataType> remaining_parameter_types;
+		for (int i = 0; i < highest_allowed_argument_count; i++) {
+			remaining_parameter_types.push_back(p_base_type.method_parameter_types[i]);
+		}
+
+		r_return_type = transformed_callable_type(p_base_type, remaining_parameter_types,
+				highest_allowed_argument_count - lowest_continuous_argument_count, stays_variadic);
+		r_return_type.method_unbound_argument_count = p_base_type.method_unbound_argument_count - consumed_discard_count;
+		if (!stays_variadic) {
+			// No call argument can reach the tail any more, so the result no longer has one.
+			r_return_type.clear_method_rest_parameter_type();
+		}
+		for (int index = 0; index < surviving_argument_counts.size(); index++) {
+			if (surviving_argument_counts[index] < lowest_continuous_argument_count) {
+				r_return_type.method_extra_allowed_argument_counts.push_back(surviving_argument_counts[index]);
+			}
+		}
+		return true;
+	};
+
 	auto default_survival_for_bind = [&](const Vector<const BSParser::ExpressionNode *> &p_bound_arguments,
 											 int p_checked_bind_start, int p_remaining_argument_count,
 											 int &r_result_default_arg_count, Vector<int> &r_extra_allowed_argument_counts) {
@@ -1179,7 +1361,7 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 				continue;
 			}
 			bool bound_arguments_fit_extra_arity = true;
-			for (int i = 0; i < p_bound_arguments.size() && bound_arguments_fit_extra_arity; i++) {
+			for (int i = 0; i < bound_arguments_reaching_target(p_bound_arguments) && bound_arguments_fit_extra_arity; i++) {
 				bound_arguments_fit_extra_arity = !bound_argument_conflicts_with(
 						p_bound_arguments[i], p_base_type.method_parameter_types[remaining_argument_count + i]);
 			}
@@ -1283,16 +1465,18 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 						remaining_default_arg_count, default_survival_extra_argument_counts);
 
 				return_type = transformed_callable_type(p_base_type, remaining_parameter_types, remaining_default_arg_count, false);
+				return_type.method_unbound_argument_count = MAX(p_base_type.method_unbound_argument_count - bind_argument_count, 0);
 				for (int extra_allowed_argument_count : default_survival_extra_argument_counts) {
 					return_type.method_extra_allowed_argument_counts.push_back(extra_allowed_argument_count);
 				}
 				preserve_extra_allowed_argument_counts(bound_arguments, return_type);
 			}
 		} else {
-			// Variadic Callable.bind richness (preserve_fixed_vararg_callable) remains follow-up under #60.
-			validate_call_arg(List<BSParser::DataType>(), 0, true, p_call);
-			return_type = plain_callable_type();
-			return_type.signature_is_async = p_base_type.signature_is_async;
+			Vector<const BSParser::ExpressionNode *> bound_arguments;
+			for (BSParser::ExpressionNode *argument : p_call->arguments)
+				bound_arguments.push_back(argument);
+			preserve_fixed_vararg_callable(bound_arguments, return_type);
+			preserve_extra_allowed_argument_counts(bound_arguments, return_type);
 		}
 
 		p_call->set_datatype(return_type);
@@ -1339,11 +1523,18 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 						remaining_default_arg_count, default_survival_extra_argument_counts);
 
 				return_type = transformed_callable_type(p_base_type, remaining_parameter_types, remaining_default_arg_count, false);
+				return_type.method_unbound_argument_count = MAX(p_base_type.method_unbound_argument_count - bind_argument_count, 0);
 				for (int extra_allowed_argument_count : default_survival_extra_argument_counts) {
 					return_type.method_extra_allowed_argument_counts.push_back(extra_allowed_argument_count);
 				}
 				preserve_extra_allowed_argument_counts(bound_arguments, return_type);
 			}
+		} else if (bind_array != nullptr) {
+			Vector<const BSParser::ExpressionNode *> bound_arguments;
+			for (BSParser::ExpressionNode *argument : bind_array->elements)
+				bound_arguments.push_back(argument);
+			preserve_fixed_vararg_callable(bound_arguments, return_type);
+			preserve_extra_allowed_argument_counts(bound_arguments, return_type);
 		}
 
 		p_call->set_datatype(return_type);
