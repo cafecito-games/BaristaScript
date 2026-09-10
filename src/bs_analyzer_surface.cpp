@@ -1267,11 +1267,15 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				break;
 			}
 			member.variable->set_datatype(resolving_datatype);
+			auto is_builtin_export = [](const BSParser::AnnotationNode *annotation) {
+				return annotation && annotation->info && !annotation->is_custom && String(annotation->name).begins_with("@export");
+			};
 
 			for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
 				if (annotation != nullptr && annotation->name != SNAME("@warning_ignore")) {
 					resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_VARIABLE);
-					annotation->apply(parser, member.variable, p_class);
+					if (!is_builtin_export(annotation))
+						annotation->apply(parser, member.variable, p_class);
 				}
 			}
 
@@ -1323,6 +1327,11 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				type.type_source = BSParser::DataType::UNDETECTED;
 			}
 			member.variable->set_datatype(type);
+			// The existing export callback consumes the completed datatype (parser export_annotations).
+			for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
+				if (is_builtin_export(annotation))
+					annotation->apply(parser, member.variable, p_class);
+			}
 		} break;
 		case BSParser::ClassNode::Member::CONSTANT: {
 			if (member.constant == nullptr) {

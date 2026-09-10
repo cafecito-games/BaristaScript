@@ -234,6 +234,43 @@ static bool _constant_truth(const BSParser::ExpressionNode *p_expression) {
 	return _is_static_script_handle(p_expression) || p_expression->is_unmaterialized_constant || p_expression->reduced_value.booleanize();
 }
 
+// Native/global/builtin enums share int-carried nominal identities. Their metatypes
+// are names, never Dictionary payloads or user Script objects.
+static BSParser::DataType _engine_enum_type(const String &qualified) {
+	BSParser::DataType result;
+	result.kind = BSParser::DataType::VARIANT;
+	HashMap<StringName, int64_t> values;
+	bool found = CoreConstants::is_global_enum(qualified);
+	if (found)
+		CoreConstants::get_enum_values(qualified, &values);
+	const int dot = qualified.find(".");
+	if (!found && dot > 0) {
+		const String owner = qualified.substr(0, dot), name = qualified.substr(dot + 1);
+		const auto carrier = BSParser::get_builtin_type(owner);
+		if (const auto *e = BSCoreConstants::get_builtin_enum(carrier, name)) {
+			for (int i = 0; i < e->names.size(); ++i)
+				values.insert(e->names[i], e->values[i]);
+			found = true;
+		} else if (ClassDB::class_exists(owner) && ClassDB::class_has_enum(owner, name)) {
+			const PackedStringArray names = ClassDB::class_get_enum_constants(owner, name);
+			for (int i = 0; i < names.size(); ++i)
+				values.insert(names[i], ClassDB::class_get_integer_constant(owner, names[i]));
+			found = true;
+		}
+	}
+	if (found) {
+		result.kind = BSParser::DataType::ENUM;
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		result.builtin_type = Variant::INT;
+		result.enum_type = qualified;
+		result.native_type = qualified;
+		result.is_meta_type = true;
+		result.is_constant = true;
+		result.enum_values = values;
+	}
+	return result;
+}
+
 static bool _enum_has_value(const BSParser::DataType &p_type, int64_t p_value) {
 	for (const KeyValue<StringName, int64_t> &entry : p_type.enum_values) {
 		if (entry.value == p_value) {
@@ -1492,7 +1529,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 
 		// Foundry get_builtin_data_type / datatype_from_type_node @ c9d5e35: every Variant
 		// builtin spelling (StringName, Callable, bare Array, NodePath, …) resolves here.
-		// Nested builtin enums remain follow-up (godot-cpp lacks Variant::has_enum).
+		// Qualified builtin enums below use the same generated engine metadata.
 		const bool is_async_callable = name == SNAME("AsyncCallable");
 		const Variant::Type builtin_type = is_async_callable ? Variant::CALLABLE : BSParser::get_builtin_type(name);
 		if (builtin_type < Variant::VARIANT_MAX || is_async_callable) {
@@ -1641,6 +1678,15 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 		}
 
+		{
+			auto engine_enum = _engine_enum_type(String(name));
+			if (engine_enum.kind == BSParser::DataType::ENUM) {
+				engine_enum.is_meta_type = false;
+				engine_enum.is_constant = false;
+				engine_enum.is_nullable = p_type_node->is_nullable;
+				return engine_enum;
+			}
+		}
 		if (name == SNAME("Self") && current_class != nullptr) {
 			// Foundry datatype_from_type_node @ c9d5e35: Self lowers to @Self bound by the
 			// declaring class so trait signature matching can reify it to the implementer.
@@ -1777,6 +1823,16 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			qualified += ".";
 		}
 		qualified += String(p_type_node->type_chain[i]->name);
+	}
+
+	{
+		auto engine_enum = _engine_enum_type(qualified);
+		if (engine_enum.kind == BSParser::DataType::ENUM) {
+			engine_enum.is_meta_type = false;
+			engine_enum.is_constant = false;
+			engine_enum.is_nullable = p_type_node->is_nullable;
+			return engine_enum;
+		}
 	}
 
 	// `Message.Move` (or longer chains ending in a case) when the parser asked for an enum case.
@@ -2761,11 +2817,33 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		p_identifier->set_datatype(native_meta);
 		return;
 	}
+	{
+		auto engine_enum = _engine_enum_type(String(p_identifier->name));
+		if (engine_enum.kind == BSParser::DataType::ENUM) {
+			p_identifier->set_datatype(engine_enum);
+			return;
+		}
+	}
+	if (p_identifier->name == SNAME("Variant")) {
+		BSParser::DataType meta;
+		meta.kind = BSParser::DataType::BUILTIN;
+		meta.builtin_type = Variant::NIL;
+		meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		meta.native_type = SNAME("Variant");
+		meta.is_meta_type = true;
+		p_identifier->set_datatype(meta);
+		return;
+	}
 	if (CoreConstants::is_global_constant(p_identifier->name)) {
 		const int index = CoreConstants::get_global_constant_index(p_identifier->name);
 		p_identifier->reduced_value = CoreConstants::get_global_constant_value(index);
 		p_identifier->is_constant = true;
-		p_identifier->set_datatype(type_from_variant(p_identifier->reduced_value));
+		auto value_type = _engine_enum_type(String(CoreConstants::get_global_constant_enum(index)));
+		if (value_type.kind != BSParser::DataType::ENUM)
+			value_type = type_from_variant(p_identifier->reduced_value);
+		value_type.is_meta_type = false;
+		value_type.is_constant = true;
+		p_identifier->set_datatype(value_type);
 		return;
 	}
 	MethodInfo utility;
@@ -3082,15 +3160,12 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
 						base_type.has_method_signature) {
 					call_site_validation.reject_named_call_arguments(p_call);
-					call_site_validation.validate_signal_connect_arg(base_type, p_call, 0);
-					BSParser::DataType void_type;
-					void_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-					void_type.kind = BSParser::DataType::BUILTIN;
-					void_type.builtin_type = Variant::NIL;
-					if (p_call->function_name == SNAME("is_connected")) {
-						void_type.builtin_type = Variant::BOOL;
+					const auto *method = BSCoreConstants::get_builtin_method(Variant::SIGNAL, p_call->function_name);
+					if (method) {
+						call_site_validation.validate_call_arg(method->info, p_call);
+						p_call->set_datatype(type_from_property(method->info.return_val));
 					}
-					p_call->set_datatype(void_type);
+					call_site_validation.validate_signal_connect_arg(base_type, p_call, 0);
 					return;
 				}
 			}
@@ -3100,6 +3175,24 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				const BSParser::DataType base_type = subscript->base->get_datatype();
 				if (call_site_validation.try_type_callable_method_call(p_call, base_type)) {
 					return;
+				}
+			}
+
+			if (subscript->base && p_call->function_name != StringName()) {
+				const auto receiver = subscript->base->get_datatype();
+				if (receiver.kind == BSParser::DataType::BUILTIN && receiver.is_hard_type()) {
+					const auto *method = BSCoreConstants::get_builtin_method(receiver.builtin_type, p_call->function_name);
+					if (method) {
+						call_site_validation.reject_named_call_arguments(p_call);
+						if (receiver.is_meta_type && !(method->info.flags & METHOD_FLAG_STATIC))
+							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(receiver).to_string()), p_call);
+						call_site_validation.validate_call_arg(method->info, p_call);
+						const auto result = type_from_property(method->info.return_val);
+						p_call->set_datatype(result);
+						if (!p_is_root && !p_is_await && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL)
+							push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
+						return;
+					}
 				}
 			}
 
@@ -3226,6 +3319,21 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						}
 					}
 				}
+				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.is_hard_type()) {
+					const auto *member = BSCoreConstants::get_builtin_member(base_type.builtin_type, p_call->function_name);
+					const auto *constant = BSCoreConstants::get_builtin_constant(base_type.builtin_type, p_call->function_name);
+					int64_t enum_value = 0;
+					const auto *enumeration = BSCoreConstants::get_builtin_enum_value(base_type.builtin_type, p_call->function_name, enum_value);
+					if (member || constant || enumeration) {
+						const auto claimed = member ? type_from_property(*member) : type_from_variant(constant ? constant->get_value() : Variant(enum_value));
+						push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, claimed.to_string()), p_call->callee);
+					} else
+						push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, base_type.to_string()), p_call->callee);
+					BSParser::DataType error;
+					error.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(error);
+					return;
+				}
 				if (!p_call->is_super && base_type.is_hard_type() && base_type.is_meta_type) {
 					// Foundry c9d5e35:9125-9143: a claimed non-function is diagnosed at the
 					// callee; only a missing name reaches the static-call diagnostic below.
@@ -3290,93 +3398,129 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		}
 	}
 
-	// Foundry builtin constructor specialization @ c9d5e35: validate the pinned engine overloads,
-	// then preserve the target signature carried by Callable(Object, method) and Signal(Object, signal).
+	// Resolve the ordinary name first; only an actual builtin metatype is a constructor.
 	StringName constructor_name = p_call->function_name;
-	if (constructor_name == StringName() && p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER) {
+	if (constructor_name == StringName() && p_call->callee && p_call->callee->type == BSParser::Node::IDENTIFIER)
 		constructor_name = static_cast<BSParser::IdentifierNode *>(p_call->callee)->name;
-	}
-	const bool callable_constructor = constructor_name == SNAME("Callable");
-	const bool signal_constructor = constructor_name == SNAME("Signal");
-	if ((callable_constructor || signal_constructor) &&
-			(p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER)) {
-		call_site_validation.reject_named_call_arguments(p_call);
-		const Variant::Type builtin_type = callable_constructor ? Variant::CALLABLE : Variant::SIGNAL;
-		BSParser::DataType constructor_type = type_from_property(PropertyInfo(builtin_type, ""));
-		// The pinned engine producer declares exactly (), (same carrier), and
-		// (Object, StringName) overloads for both types
-		// (`godot-cpp/gdextension/extension_api-4-7.json:19959-19984,20130-20155`).
-		// Validate that overload surface before adding Foundry's richer target signature.
-		auto argument_matches = [&](int p_index, const BSParser::DataType &p_expected) {
-			if (p_index < 0 || p_index >= p_call->arguments.size() || p_call->arguments[p_index] == nullptr) {
-				return false;
-			}
-			BSTypeCompatibility::Options options;
-			options.allow_implicit_conversion = true;
-			options.strict_dynamic = strict_dynamic_checks;
-			options.strict_null = strict_null_checks;
-			if (has_materialized_constant_value(p_call->arguments[p_index])) {
-				options.constant_source_value = &p_call->arguments[p_index]->reduced_value;
-			}
-			return BSTypeCompatibility::check(p_expected, p_call->arguments[p_index]->get_datatype(), options).compatible;
-		};
-		bool valid_constructor = p_call->arguments.is_empty();
-		if (p_call->arguments.size() == 1) {
-			const BSParser::DataType source_type = p_call->arguments[0]->get_datatype();
-			// Copy construction is carrier identity, not general type coercion. A genuinely gradual
-			// value remains a runtime check in non-strict mode; a concrete Object/@Self does not.
-			valid_constructor = (source_type.kind == BSParser::DataType::BUILTIN &&
-										source_type.builtin_type == builtin_type) ||
-					(source_type.is_variant() && !strict_dynamic_checks);
-		} else if (p_call->arguments.size() == 2) {
-			const BSParser::DataType object_type = type_from_property(PropertyInfo(
-																			  Variant::OBJECT, "", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_DEFAULT, SNAME("Object")),
-					true);
-			const BSParser::DataType name_type = type_from_property(PropertyInfo(Variant::STRING_NAME, ""), true);
-			const BSParser::DataType receiver_type = p_call->arguments[0] != nullptr
-					? p_call->arguments[0]->get_datatype()
-					: BSParser::DataType();
-			const bool local_object_receiver = receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr;
-			valid_constructor = (local_object_receiver || argument_matches(0, object_type)) && argument_matches(1, name_type);
-		}
-		if (!valid_constructor) {
-			String signature = Variant::get_type_name(builtin_type) + "(";
-			for (int i = 0; i < p_call->arguments.size(); i++) {
-				if (i > 0) {
-					signature += ", ";
+	if (p_call->callee && p_call->callee->type == BSParser::Node::IDENTIFIER && BSParser::get_builtin_type(constructor_name) < Variant::VARIANT_MAX) {
+		reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_call->callee));
+		const auto meta = p_call->callee->get_datatype();
+		if (meta.kind == BSParser::DataType::BUILTIN && meta.is_meta_type) {
+			const auto *builtin = BSCoreConstants::get_builtin(meta.builtin_type);
+			const BSCoreConstants::BuiltinConstructor *accepted = nullptr;
+			// Pure admission has no diagnostics or retyping from rejected overloads.
+			if (builtin)
+				for (const auto &candidate : builtin->constructors) {
+					const auto &info = candidate.info;
+					if (p_call->arguments.size() < info.arguments.size() - info.default_arguments.size() || p_call->arguments.size() > info.arguments.size())
+						continue;
+					bool matches = true;
+					int i = 0;
+					for (const auto &property : info.arguments) {
+						if (i >= p_call->arguments.size())
+							break;
+						const auto *argument = p_call->arguments[i++];
+						BSTypeCompatibility::Options options;
+						options.allow_implicit_conversion = true;
+						options.strict_dynamic = strict_dynamic_checks;
+						options.strict_null = strict_null_checks;
+						if (has_materialized_constant_value(argument))
+							options.constant_source_value = &argument->reduced_value;
+						if (!BSTypeCompatibility::check(type_from_property(property, true), argument->get_datatype(), options).compatible) {
+							matches = false;
+							break;
+						}
+					}
+					if (matches) {
+						accepted = &candidate;
+						break;
+					}
 				}
-				signature += p_call->arguments[i] != nullptr ? p_call->arguments[i]->get_datatype().to_string() : String("Variant");
+			p_call->function_name = constructor_name;
+			const int previous_errors = parser->get_errors().size();
+			call_site_validation.reject_named_call_arguments(p_call);
+			if (!accepted) {
+				String signature = String(constructor_name) + "(";
+				for (int i = 0; i < p_call->arguments.size(); ++i) {
+					if (i)
+						signature += ", ";
+					signature += p_call->arguments[i]->get_datatype().to_string();
+				}
+				signature += ")";
+				push_error(vformat(R"(No constructor of "%s" matches the signature "%s".)", constructor_name, signature), p_call);
+				reject_constant_materialization(p_call);
+				p_call->set_datatype(type_from_metatype(meta));
+				return;
 			}
-			signature += ")";
-			push_error(vformat(R"(No constructor of "%s" matches the signature "%s".)",
-							   Variant::get_type_name(builtin_type), signature),
-					p_call);
-			p_call->set_datatype(constructor_type);
+			call_site_validation.validate_call_arg(accepted->info, p_call);
+			if (parser->get_errors().size() == previous_errors) {
+				int i = 0;
+				for (const auto &property : accepted->info.arguments) {
+					if (i >= p_call->arguments.size())
+						break;
+					auto *argument = p_call->arguments[i];
+					const auto expected = type_from_property(property, true);
+					const auto actual = argument->get_datatype();
+					update_constant_expression_type(argument, expected, "pass", true);
+#ifdef DEBUG_ENABLED
+					if (expected.builtin_type == Variant::INT && actual.builtin_type == Variant::FLOAT && meta.builtin_type != Variant::INT) {
+						Vector<String> symbols;
+						push_warning(p_call, BSWarning::NARROWING_CONVERSION, symbols);
+					}
+					if (!expected.is_variant() && (actual.is_variant() || !actual.is_hard_type())) {
+						mark_node_unsafe(p_call);
+						Vector<String> symbols;
+						symbols.push_back(itos(i + 1));
+						symbols.push_back("constructor");
+						symbols.push_back(constructor_name);
+						symbols.push_back(expected.to_string());
+						symbols.push_back(actual.to_string());
+						push_warning(argument, BSWarning::UNSAFE_CALL_ARGUMENT, symbols);
+					}
+#endif
+					++i;
+				}
+			}
+			auto result = type_from_property(accepted->info.return_val);
+			const bool callable = meta.builtin_type == Variant::CALLABLE;
+			const bool signal = meta.builtin_type == Variant::SIGNAL;
+			if ((callable || signal) && p_call->arguments.size() == 2) {
+				BSParser::DataType explicit_type;
+				const bool found = callable ? call_site_validation.callable_type_from_constant_method_args(p_call, 0, 1, explicit_type) : call_site_validation.signal_type_from_receiver(p_call->arguments[0]->get_datatype(), p_call, 1, explicit_type);
+				if (found)
+					result = explicit_type;
+				else if (callable)
+					call_site_validation.validate_strict_callable_method_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
+				else
+					call_site_validation.validate_strict_signal_name_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
+			}
+			p_call->set_datatype(result);
+			if (parser->get_errors().size() != previous_errors) {
+				reject_constant_materialization(p_call);
+				return;
+			}
+			if (callable || signal) {
+				if (p_call->arguments.is_empty()) {
+					p_call->is_constant = true;
+					p_call->reduced_value = callable ? Variant(Callable()) : Variant(Signal());
+				} else if (p_call->arguments.size() == 1 && has_materialized_constant_value(p_call->arguments[0]) && p_call->arguments[0]->reduced_value.get_type() == meta.builtin_type) {
+					p_call->is_constant = true;
+					p_call->reduced_value = p_call->arguments[0]->reduced_value;
+				}
+			} else if (meta.builtin_type == Variant::ARRAY || meta.builtin_type == Variant::DICTIONARY) {
+				bool reduced = false;
+				const Variant value = make_expression_reduced_value(p_call, reduced);
+				if (reduced) {
+					p_call->is_constant = true;
+					p_call->reduced_value = value;
+				} else if (p_call->arguments.size() == 1 && p_call->arguments[0]->get_datatype().builtin_type == meta.builtin_type) {
+					// An admitted pure copy keeps semantic constness even when a retained Script
+					// handle prevents Variant materialization. The collector still reports false.
+					_preserve_unmaterialized_constant(p_call, p_call->arguments);
+				}
+			}
 			return;
 		}
-		if (p_call->arguments.size() == 2) {
-			BSParser::DataType explicit_type;
-			const bool found = callable_constructor ? call_site_validation.callable_type_from_constant_method_args(p_call, 0, 1, explicit_type) : call_site_validation.signal_type_from_receiver(p_call->arguments[0]->get_datatype(), p_call, 1, explicit_type);
-			if (found) {
-				constructor_type = explicit_type;
-			} else if (callable_constructor) {
-				call_site_validation.validate_strict_callable_method_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
-			} else {
-				call_site_validation.validate_strict_signal_name_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
-			}
-		}
-		// Foundry fs_analyzer.cpp:8265-8351 @ c9d5e35: only empty carriers and constant
-		// carrier-preserving copies are safe to fold. Receiver/name construction stays dynamic.
-		if (p_call->arguments.is_empty()) {
-			p_call->is_constant = true;
-			p_call->reduced_value = callable_constructor ? Variant(Callable()) : Variant(Signal());
-		} else if (p_call->arguments.size() == 1 && p_call->arguments[0]->is_constant &&
-				p_call->arguments[0]->reduced_value.get_type() == builtin_type) {
-			p_call->is_constant = true;
-			p_call->reduced_value = p_call->arguments[0]->reduced_value;
-		}
-		p_call->set_datatype(constructor_type);
-		return;
 	}
 
 	if (current_class != nullptr) {
@@ -3719,6 +3863,85 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 	}
 	reduce_expression(p_subscript->base);
 	const BSParser::DataType tuple_base_type = p_subscript->base->get_datatype();
+	if (p_subscript->is_attribute && p_subscript->attribute) {
+		const auto receiver = tuple_base_type;
+		const auto name = p_subscript->attribute->name;
+		if (receiver.kind == BSParser::DataType::BUILTIN || receiver.kind == BSParser::DataType::NATIVE) {
+			const String owner = receiver.kind == BSParser::DataType::NATIVE || receiver.native_type == SNAME("Variant") ? String(receiver.native_type) : Variant::get_type_name(receiver.builtin_type);
+			if (receiver.is_meta_type) {
+				auto e = _engine_enum_type(owner + String(".") + String(name));
+				if (e.kind == BSParser::DataType::ENUM) {
+					p_subscript->set_datatype(e);
+					return;
+				}
+			}
+			int64_t value = 0;
+			String enumeration;
+			const auto *builtin_enum = receiver.kind == BSParser::DataType::BUILTIN ? BSCoreConstants::get_builtin_enum_value(receiver.builtin_type, name, value) : nullptr;
+			bool enum_value = builtin_enum != nullptr;
+			if (builtin_enum)
+				enumeration = owner + String(".") + String(builtin_enum->name);
+			if (receiver.kind == BSParser::DataType::NATIVE && ClassDB::class_has_integer_constant(receiver.native_type, name)) {
+				value = ClassDB::class_get_integer_constant(receiver.native_type, name);
+				enum_value = true;
+				const String enum_name = ClassDB::class_get_integer_constant_enum(receiver.native_type, name);
+				if (!enum_name.is_empty())
+					enumeration = owner + String(".") + enum_name;
+			}
+			if (enum_value) {
+				auto type = _engine_enum_type(enumeration);
+				if (type.kind != BSParser::DataType::ENUM)
+					type = type_from_variant(value);
+				type.is_meta_type = false;
+				type.is_constant = true;
+				p_subscript->set_datatype(type);
+				p_subscript->is_constant = true;
+				p_subscript->reduced_value = value;
+				return;
+			}
+			if (receiver.kind == BSParser::DataType::BUILTIN) {
+				if (const auto *constant = BSCoreConstants::get_builtin_constant(receiver.builtin_type, name)) {
+					p_subscript->reduced_value = constant->get_value();
+					p_subscript->is_constant = true;
+					p_subscript->set_datatype(type_from_variant(p_subscript->reduced_value));
+					return;
+				}
+				if (!receiver.is_meta_type)
+					if (const auto *member = BSCoreConstants::get_builtin_member(receiver.builtin_type, name)) {
+						p_subscript->set_datatype(type_from_property(*member));
+						return;
+					}
+			} else if (!receiver.is_meta_type) {
+				const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(receiver.native_type, false);
+				for (int i = 0; i < properties.size(); ++i) {
+					const Dictionary property = properties[i];
+					if (StringName(property.get("name", String())) == name) {
+						p_subscript->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+						return;
+					}
+				}
+			}
+			BSParser::DataType method;
+			if (call_site_validation.callable_type_from_method(receiver, name, p_subscript, method)) {
+				p_subscript->set_datatype(method);
+				return;
+			}
+			if (receiver.kind == BSParser::DataType::BUILTIN && receiver.is_hard_type() && (receiver.is_meta_type || receiver.builtin_type != Variant::DICTIONARY)) {
+				if (auto *witness = find_conformance_witness(receiver, name)) {
+					if (witness->is_static || !receiver.is_meta_type) {
+						p_subscript->set_datatype(call_site_validation.callable_type_from_function(witness));
+						return;
+					}
+				}
+				push_error(vformat(R"(Cannot find member "%s" in base "%s".)", name, type_from_metatype(receiver).to_string()), p_subscript->attribute);
+				BSParser::DataType error;
+				error.kind = BSParser::DataType::VARIANT;
+				p_subscript->set_datatype(error);
+				return;
+			}
+		}
+	}
+
 	if (p_subscript->is_tuple_index) {
 		reduce_expression(p_subscript->index);
 		BSParser::DataType result_type;
@@ -4226,7 +4449,7 @@ void BSAnalyzer::reject_constant_materialization(BSParser::ExpressionNode *p_exp
 }
 
 // Foundry make_expression_reduced_value and literal collectors @ c9d5e35:15187-15325.
-// Only pure literal/subscript structure is materialized here. CALL belongs to #141 S5;
+// Only pure literal/subscript structure and admitted Array/Dictionary calls are materialized;
 // class/generic runtime descriptors belong to M4/M5. Visitation is not constant success.
 Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced) {
 	// Materialization success is separate from semantic constness; callers must not
@@ -4244,6 +4467,30 @@ Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_ex
 	// Only unmaterialized literals are collected from syntax. A contextual parent explicitly
 	// invalidates its old carrier after changing children; converted children stay constant.
 	switch (p_expression->type) {
+		case BSParser::Node::CALL: {
+			const auto *call = static_cast<const BSParser::CallNode *>(p_expression);
+			if (!call->callee || call->callee->get_datatype().kind != BSParser::DataType::BUILTIN || !call->callee->get_datatype().is_meta_type)
+				return Variant();
+			const auto carrier = call->callee->get_datatype().builtin_type;
+			if ((carrier != Variant::ARRAY && carrier != Variant::DICTIONARY) || call->get_datatype().builtin_type != carrier)
+				return Variant();
+			if (call->arguments.is_empty()) {
+				Variant value = carrier == Variant::ARRAY ? Variant(Array()) : Variant(Dictionary());
+				_make_constant_containers_read_only(value);
+				r_reduced = true;
+				return value;
+			}
+			if (call->arguments.size() != 1)
+				return Variant();
+			bool child_reduced = false;
+			const Variant child = make_expression_reduced_value(call->arguments[0], child_reduced);
+			Variant value;
+			if (!child_reduced || !BSVariantOperators::construct(carrier, child, value))
+				return Variant();
+			_make_constant_containers_read_only(value);
+			r_reduced = true;
+			return value;
+		}
 		case BSParser::Node::ARRAY:
 		case BSParser::Node::TUPLE_LITERAL: {
 			const Vector<BSParser::ExpressionNode *> &elements = p_expression->type == BSParser::Node::ARRAY
@@ -5355,7 +5602,7 @@ void BSAnalyzer::qualify_contextual_enum_case_consumer(BSParser::ExpressionNode 
 	update_container_literal_element_types(p_expression, p_expected_type);
 }
 
-bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage) {
+bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage, bool p_builtin_constructor) {
 	if (!has_materialized_constant_value(p_expression) || !p_expected_type.is_set() || p_expected_type.is_variant()) {
 		return true;
 	}
@@ -5363,7 +5610,7 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	// Concrete literals are described by their ordinary call/assign/return consumer. A gradual
 	// constant or closed union needs this value-aware path because the consumer otherwise admits
 	// Variant or loses the known alternative. Container elements use their pinned "include" wording.
-	if (!declared_type.is_variant() && declared_type.kind != BSParser::DataType::UNION && String(p_usage) != "include") {
+	if (!declared_type.is_variant() && declared_type.kind != BSParser::DataType::UNION && String(p_usage) != "include" && !p_builtin_constructor) {
 		return true;
 	}
 	if (p_expected_type.kind != BSParser::DataType::BUILTIN &&
@@ -5435,7 +5682,7 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	p_expression->reduced_value = converted;
 	p_expression->set_datatype(published);
 #ifdef DEBUG_ENABLED
-	if (p_expected_type.builtin_type == Variant::INT && comparison_type.builtin_type == Variant::FLOAT) {
+	if (!p_builtin_constructor && p_expected_type.builtin_type == Variant::INT && comparison_type.builtin_type == Variant::FLOAT) {
 		Vector<String> symbols;
 		push_warning(p_expression, BSWarning::NARROWING_CONVERSION, symbols);
 	}
@@ -7060,23 +7307,12 @@ bool BSAnalyzer::witness_target_scope_declares_name(const StringName &p_name, co
 	}
 	const auto self_type = witness_target_class->get_datatype();
 	if (self_type.kind == BSParser::DataType::BUILTIN && self_type.builtin_type != Variant::NIL && self_type.builtin_type != Variant::OBJECT) {
-		if (Variant::has_member(self_type.builtin_type, p_name))
-			return true;
-		// Only default builtin values are constructed for reflection, never user/native objects.
-		alignas(8) uint8_t storage[GODOT_CPP_VARIANT_SIZE]{};
-		GDExtensionCallError error{};
-		gdextension_interface::variant_construct((GDExtensionVariantType)self_type.builtin_type, storage, nullptr, 0, &error);
-		Variant value((GDExtensionConstVariantPtr)storage);
-		gdextension_interface::variant_destroy(storage);
-		if (error.error == GDEXTENSION_CALL_OK && value.has_method(p_name))
-			return true;
-		// The pinned interface returns int(-1) for absence (variant_call.cpp:1786).
-		// None of the selected API's builtin constants has that value; S5 replaces
-		// this name-only reflection seam with its complete generated metadata query.
-		gdextension_interface::variant_get_constant_value((GDExtensionVariantType)self_type.builtin_type, p_name._native_ptr(), storage);
-		Variant constant((GDExtensionConstVariantPtr)storage);
-		gdextension_interface::variant_destroy(storage);
-		if (constant.get_type() != Variant::INT || int64_t(constant) != -1)
+		int64_t enum_value = 0;
+		if (BSCoreConstants::get_builtin_member(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_method(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_constant(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_enum(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_enum_value(self_type.builtin_type, p_name, enum_value))
 			return true;
 	}
 	const StringName native = witness_target_class->base_type.native_type;

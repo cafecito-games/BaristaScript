@@ -798,7 +798,7 @@ private:
 	 */
 	bool update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
 	/** Value-aware constant retyping/reporting shared by assign/return/pass consumers. */
-	bool update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage);
+	bool update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage, bool p_builtin_constructor = false);
 	void update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type);
 	void update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type);
 	/** resolve_contextual_enum_case + container-literal element descent for one consumer site. */
