@@ -1,0 +1,55 @@
+{
+  "foundry_revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
+  "root": "res://tests/corpus_support/parser",
+  "schema_version": 1,
+  "sources": [
+    {
+      "git_blob": "e678ffc45e75564a1bcfc2a01031685a539c5d3e",
+      "identity": "modules/foundry_script/tests/scripts/utils.notest.fs",
+      "imported_path": "utils.notest.barista",
+      "imported_sha256": "815bd5e8aa439778742c4ee8469320e21993d0004dcd913993c2429d65b89bdc",
+      "references": [],
+      "role": "support_helper",
+      "sha256": "8d6ca9203daed3ca56c75fd6fd52401b68f3171c1f92d7893bb8793d6cf952f4",
+      "transformations": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 3032,
+          "line": 89,
+          "occurrences": 1,
+          "rule": "D1-incidental-local-annotation",
+          "start": 3028
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 3055,
+          "line": 90,
+          "occurrences": 1,
+          "rule": "D1-incidental-local-annotation",
+          "start": 3051
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 4696,
+          "line": 139,
+          "occurrences": 1,
+          "rule": "D1-incidental-local-annotation",
+          "start": 4692
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 4745,
+          "line": 140,
+          "occurrences": 1,
+          "rule": "D1-incidental-local-annotation",
+          "start": 4741
+        }
+      ],
+      "upstream_path": "utils.notest.fs"
+    }
+  ]
+}

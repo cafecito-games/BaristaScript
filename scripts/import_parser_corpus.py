@@ -25,18 +25,14 @@ What the import does, and why each part of it is not a judgement call:
   * `.fs` becomes `.barista`; `.notest.fs` becomes `.notest.barista` and stays
     uncounted, because it is a helper source the runner imports, not a case
     (`modules/foundry_script/tests/fs_test_runner.cpp:539-540`).
-  * The shared static extractor validates pinned status/diagnostic blocks and
-    excludes runtime transcripts. At #31 checkpoint A every imported case is
-    explicitly parser stage: parser errors retain their first diagnostic,
-    while analyzer-error and successful warning cases retain parser acceptance.
-  * The four analyzer-error blocks remain verbatim in `analyzer_deferred`.
-    Checkpoint B restores those four and the 29 warning cases after their
-    semantic owners pass; this importer does not manufacture analyzer evidence.
+  * The shared static extractor restores all four analyzer-error blocks and 29
+    warning cases at analyzer stage; the remaining cases stay parser stage.
+    Original full blocks and source hashes remain in generated source provenance.
   * Upstream's `.fsignore` is not copied. It is an empty file that opts the
     parser scripts out of Foundry's *runtime* suite; imported into a harness
     that honours it, it would silently skip all 340 cases at exit code 0. The
     harness's marker is `.baristaignore` for the same reason.
-  * The sixteen files the D1 delta and the fork rename touch are triaged by
+  * The twenty dispositions the D1 delta and the fork rename touch are triaged by
     DELETIONS, REPLACEMENT_*, EDITS and EXPECTATION_OVERRIDES below, which are
     the single copy of that table.
 
@@ -60,10 +56,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 from corpus_expectations import success_sentinel, extract_static_block  # noqa: E402
+from import_analyzer_corpus import (source_policy_changes, source_record, default_policy, patch, change, sha, encoded)
 from corpus_stages import write_stages  # noqa: E402
 from corpus_ledger import barista_path, build_triage_from_maps, validate_triage_ledger  # noqa: E402
 
-from corpus_registry import load_registry, tree_entries, validate_registration, verify_checkout  # noqa: E402
+from corpus_registry import load_registry, local_path, tree_entries, validate_registration, verify_checkout  # noqa: E402
 
 REGISTRY = load_registry(ROOT)
 FOUNDRY_REVISION = REGISTRY["revision"]
@@ -77,6 +74,18 @@ DESTINATION = ROOT / REGISTRY["corpora"]["parser"]["destination"]
 BASELINE_PATH = ROOT / "tests" / "corpus_baseline.json"
 
 CATEGORIES = ("features", "errors", "warnings")
+SUPPORT_DESTINATION = ROOT / "project/tests/corpus_support/parser"
+SUPPORT_URI = "res://tests/corpus_support/parser/utils.notest.barista"
+ANALYZER_ERRORS = {
+    "errors/export_enum_wrong_array_type.fs", "errors/export_enum_wrong_type.fs",
+    "errors/export_tool_button_requires_tool_mode.fs",
+    "features/contextual_tagged_union_shorthand.norun.fs",
+}
+
+
+def case_stage(path):
+    return "analyzer" if path in ANALYZER_ERRORS or path.startswith("warnings/") else "parser"
+
 
 UPSTREAM_OK = "FS_TEST_OK"
 UPSTREAM_PARSER_ERROR = "FS_TEST_PARSER_ERROR"
@@ -168,6 +177,16 @@ REPLACEMENT_REASON = (
 # Each entry is (upstream path, [(exact old text, new text)], reason).
 EDITS = [
     (
+        "features/contextual_tagged_union_shorthand.norun.fs",
+        [("enum Result[T, E]", "enum Result"), ("enum Option[T]", "enum Option")],
+        "M3 removes only unused declaration parameter lists; concrete payload types, line layout "
+        "and all six original contextual shorthand diagnostics remain unchanged.",
+    ),
+    *[("warnings/" + name + ".fs", [("../../utils.notest.fs", SUPPORT_URI)],
+       "Relocate the original preload to the real adapted auxiliary .barista helper outside "
+       "aggregate corpus discovery; preserve the line layout and original warning block.")
+      for name in ("return_value_discarded", "standalone_expression")],
+    (
         "errors/type_alias_duplicate_name.fs",
         [("type Unsigned = uint | ulong", "type Unsigned = String | bool")],
         "The case asserts that a type alias may not reuse a constant's name; its union members are "
@@ -223,6 +242,14 @@ EDITS = [
 # Each entry is (upstream path, [(exact old text, new text)] for the source,
 # upstream expectation, new expectation, reason).
 EXPECTATION_OVERRIDES = [
+    (
+        "warnings/narrowing_conversion.fs", [],
+        "~~ WARNING at line 5: (NARROWING_CONVERSION) Narrowing conversion (float is converted to int and loses precision).",
+        '>> ERROR at line 5: Invalid argument for "i_accept_ints_only()" function: argument 1 should be "int" but is "float".',
+        "D1 (docs/GRAMMAR.md implicit numeric conversions) requires an explicit cast for the "
+        "fractional 12.345 argument. The positional call validator rejects it at argument line 5; "
+        "preserve the pinned warning block in source provenance instead of relaxing hard conversion.",
+    ),
     (
         "errors/fixed_width_integer_suffix_lowercase.fs",
         [("\t# Integer suffixes are uppercase only.\n",
@@ -339,6 +366,7 @@ def verify_revision(foundry: Path, requested: str, *, rebuilding: bool = False) 
     try:
         registry = validate_registration(ROOT, baseline_path=BASELINE_PATH,
                                          rebuilding="parser" if rebuilding else None)
+        local_path(ROOT, SUPPORT_DESTINATION.relative_to(ROOT).as_posix())
         verify_checkout(foundry, registry, requested)
     except (ValueError, OSError) as error:
         raise SystemExit(str(error)) from error
@@ -348,20 +376,44 @@ def read_bytes(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def expectation_line(upstream_out: bytes, path: str, sentinel: str) -> tuple[str, str | None]:
-    """The one expectation line for `path`, and the upstream text it defers.
-
-    Returns (expectation, deferred_upstream_diagnostic). The second is non-None
-    only for an analyzer case, whose real expectation M3 has to restore.
-    """
+def expectation_line(upstream_out: bytes, path: str, sentinel: str) -> tuple[str, str]:
+    """Select the pinned complete static block at the explicit owned stage."""
     try:
         block = extract_static_block(upstream_out, path)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     status = upstream_out.split(b"\n", 1)[0].decode("utf-8")
-    if status == UPSTREAM_ANALYZER_ERROR:
-        return sentinel, block
-    return (block if status == UPSTREAM_PARSER_ERROR else sentinel), None
+    stage = case_stage(path)
+    if (status == UPSTREAM_ANALYZER_ERROR) != (path in ANALYZER_ERRORS):
+        raise SystemExit(f"{path}: analyzer-error stage policy differs from pinned status")
+    return (block if stage == "analyzer" or status == UPSTREAM_PARSER_ERROR else sentinel), stage
+
+
+def source_changes(before, after, reason, edits):
+    changes = []
+    for old, new in edits:
+        offset = 0
+        needle = old.encode()
+        while (start := before.find(needle, offset)) >= 0:
+            changes.append(change(before, start, start + len(needle), new, reason))
+            offset = start + len(needle)
+    if patch(before, changes, "parser source adaptation") != after:
+        raise ValueError("parser source adaptation differs from its exact patch provenance")
+    return changes
+
+
+def generate_support(foundry, destination):
+    path = "utils.notest.fs"
+    data = (foundry / CORPUS_SUBPATH.parent / path).read_bytes()
+    policy = default_policy()
+    changes = source_policy_changes(data, path, policy)
+    record = source_record(data, path, "utils.notest.barista", "support_helper", changes, [])
+    destination.mkdir(parents=True)
+    (destination / record['imported_path']).write_bytes(patch(data, changes, path))
+    (destination / "source_map.json").write_bytes(encoded({
+        "schema_version": 1, "foundry_revision": FOUNDRY_REVISION,
+        "root": SUPPORT_URI.rsplit('/', 1)[0], "sources": [record]}))
+    return record
 
 
 def apply_edits(source: bytes, path: str, edits: list[tuple[str, str]]) -> bytes:
@@ -398,7 +450,8 @@ def _generate_corpus(foundry: Path, destination: Path) -> dict:
 
     cases: list[str] = []
     helpers: list[str] = []
-    analyzer_deferred: dict[str, str] = {}
+    stages = {}
+    records = []
 
     for category in CATEGORIES:
         category_root = corpus_root / category
@@ -432,10 +485,12 @@ def _generate_corpus(foundry: Path, destination: Path) -> dict:
             if relative == REPLACEMENT_PATH:
                 target.write_bytes(REPLACEMENT_SOURCE.encode("utf-8"))
                 expectation = REPLACEMENT_EXPECTATION
-                deferred = None
+                stage = "parser"
                 replacement_applied = True
             else:
                 source_bytes = read_bytes(source_path)
+                if relative == "warnings/narrowing_conversion.fs" and sha(source_bytes) != "d41e732170651e7e7fd4fbf88c952be4415dfecfc6e7ba3052644150465bbde4":
+                    raise SystemExit(f"{relative}: D1 fractional argument source preimage mismatch")
                 if relative in edits_by_path:
                     source_bytes = apply_edits(source_bytes, relative, edits_by_path[relative])
                     applied_edits.add(relative)
@@ -444,7 +499,7 @@ def _generate_corpus(foundry: Path, destination: Path) -> dict:
                     source_bytes = apply_edits(source_bytes, relative, override[0])
                     applied_overrides.add(relative)
                 target.write_bytes(source_bytes)
-                expectation, deferred = expectation_line(
+                expectation, stage = expectation_line(
                     read_bytes(upstream_out), relative, sentinel
                 )
                 if override is not None:
@@ -464,8 +519,27 @@ def _generate_corpus(foundry: Path, destination: Path) -> dict:
             expectation_target.write_bytes((expectation + "\n").encode("utf-8"))
             case = target.relative_to(destination).as_posix()
             cases.append(case)
-            if deferred is not None:
-                analyzer_deferred[case] = deferred
+            stages[case] = stage
+            if stage != "analyzer":
+                continue
+            original = read_bytes(source_path)
+            upstream_bytes = read_bytes(upstream_out)
+            reason = parser_triage_ledger()
+            disposition = next((key for key, paths in reason.items() if case in paths), "imported")
+            description = reason.get(disposition, {}).get(case, "Pinned static frontend expectation.")
+            changes = source_changes(original, target.read_bytes(), description, edits_by_path.get(relative, []))
+            record = source_record(original, "parser/" + relative, case, "case", changes, [])
+            if relative in ("warnings/return_value_discarded.fs", "warnings/standalone_expression.fs"):
+                record['references'] = [{'kind': 'preload', 'literal': '../../utils.notest.fs',
+                                         'target': 'utils.notest.fs', 'relocated': SUPPORT_URI,
+                                         'intentional_missing': False}]
+            record.update({'expectation_identity': str(CORPUS_SUBPATH / relative[:-3]) + '.out',
+                           'expectation_sha256': sha(upstream_bytes),
+                           'status': upstream_bytes.split(b"\n", 1)[0].decode(),
+                           'stage': stage, 'disposition': disposition, 'reason': description,
+                           'original_expected_block': extract_static_block(upstream_bytes, relative),
+                           'expected_block': expectation})
+            records.append(record)
 
     missing_deletions = sorted(set(DELETIONS) - applied_deletions)
     missing_edits = sorted(set(edits_by_path) - applied_edits)
@@ -477,48 +551,55 @@ def _generate_corpus(foundry: Path, destination: Path) -> dict:
             f"overrides {missing_overrides}, replacement applied {replacement_applied}"
         )
 
-    write_stages(destination, cases, helpers, FOUNDRY_REVISION)
+    selected = {path for path, stage in stages.items() if stage == "analyzer"}
+    if len(selected) != 33 or len(selected & {barista_path(p) for p in ANALYZER_ERRORS}) != 4:
+        raise SystemExit("parser restoration requires exactly four analyzer errors and 29 warning cases")
+    write_stages(destination, cases, helpers, FOUNDRY_REVISION, stages)
+    (destination / "source_map.json").write_bytes(encoded({
+        "schema_version": 1, "foundry_revision": FOUNDRY_REVISION,
+        "root": "res://tests/corpus/parser", "sources": records}))
     return {
         "cases": sorted(cases),
         "helpers": sorted(helpers),
-        "analyzer_deferred": analyzer_deferred,
+        "stages": stages,
     }
 
 
-def import_corpus(foundry: Path, destination: Path, *, publish_baseline: bool = False) -> dict:
-    """Validate all output before publication; roll back both owned outputs on failure."""
+def import_corpus(foundry: Path, destination: Path, *, publish_baseline: bool = False,
+                  support_destination: Path | None = None) -> dict:
+    """Validate and publish corpus, auxiliary support and baseline in one rollback scope."""
+    support_destination = support_destination or destination.with_name(destination.name + "_support")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    support_destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".parser-import-", dir=destination.parent) as temporary:
         staging = Path(temporary)
         fresh = staging / "fresh"
         summary = _generate_corpus(foundry, fresh)
+        generate_support(foundry, staging / "support")
         write_readme(fresh, summary)
         candidate_baseline = staging / "baseline.json"
         if publish_baseline:
-            parser_baseline_entry(summary)
             write_baseline(summary, candidate_baseline)
-        old_baseline = BASELINE_PATH.read_bytes() if BASELINE_PATH.exists() else None
-        backup = staging / "previous"
-        moved = False
-        published = False
+        outputs = [(fresh, destination), (staging / "support", support_destination)]
+        if publish_baseline:
+            outputs.append((candidate_baseline, BASELINE_PATH))
+        moved, published = [], []
         try:
-            if destination.exists():
-                os.replace(destination, backup)
-                moved = True
-            os.replace(fresh, destination)
-            published = True
-            if publish_baseline:
-                os.replace(candidate_baseline, BASELINE_PATH)
+            for index, (source, target) in enumerate(outputs):
+                backup = staging / ("previous-" + str(index))
+                if target.exists():
+                    os.replace(target, backup)
+                    moved.append((backup, target))
+                os.replace(source, target)
+                published.append(target)
         except BaseException:
-            if published:
-                shutil.rmtree(destination)
-            if moved:
-                os.replace(backup, destination)
-            if publish_baseline:
-                if old_baseline is None:
-                    BASELINE_PATH.unlink(missing_ok=True)
+            for target in reversed(published):
+                if target.is_dir():
+                    shutil.rmtree(target)
                 else:
-                    BASELINE_PATH.write_bytes(old_baseline)
+                    target.unlink()
+            for backup, target in reversed(moved):
+                os.replace(backup, target)
             raise
         return summary
 
@@ -528,7 +609,6 @@ def write_readme(destination: Path, summary: dict) -> None:
     counts = {category: 0 for category in CATEGORIES}
     for case in summary["cases"]:
         counts[case.split("/", 1)[0]] += 1
-    deferred = "\n".join(f"- `{case}`" for case in sorted(summary["analyzer_deferred"]))
     (destination / "README.md").write_text(
         f"""# Parser conformance corpus
 
@@ -554,22 +634,20 @@ Each `.out` is a complete static diagnostic block followed by exactly one LF. Th
 `case_stages.json` assigns each runnable case its explicit frontend stage; helpers have no entries.
 Do not use `--update-expectations` here: the importer owns sources, expectations and stages.
 
-## What these cases assert at oracle checkpoint A
+## Static frontend coverage
 
-All {len(summary["cases"])} cases remain at **parser** stage. A `{sentinel}` expectation means this
-source parses without a diagnostic. It does not assert analyzer success or runtime behavior.
-The four analyzer-error debts and all 29 warning cases await #31 checkpoint B after semantic
-restoration. The static oracle is exercised separately by miniature analyzer fixtures. No upstream
-runtime transcript is compared, and no case function executes.
+Exactly 33 cases run through the analyzer (the four original analyzer-error cases and all
+29 warning cases); the remaining {len(summary["cases"]) - 33} assert parser coverage.
+`{sentinel}` means acceptance at that case's explicit stage. The deprecated-operators control
+asserts analyzer acceptance with zero warnings. No runtime transcript or case function executes.
 
-## Cases whose expectation M3 must restore
+The original blocks contain 53 warnings and 9 errors. The single documented D1 fractional
+float-to-int expectation override projects these to 52 warnings and 10 errors. `source_map.json`
+binds each selected original source/output hash, full original block, adapted bytes and final expectation.
 
-Upstream marks {len(summary["analyzer_deferred"])} of these `FS_TEST_ANALYZER_ERROR`: the parser
-accepts them and the *analyzer* rejects them. With no analyzer their honest M2 expectation is the
-parse outcome, so each is listed in `tests/corpus_baseline.json` under `analyzer_deferred` together
-with the upstream diagnostic it owes:
-
-{deferred}
+The real `utils.notest.barista` auxiliary lives at `res://tests/corpus_support/parser/`, outside
+aggregate discovery. Its source map records the pinned bytes and four exact D1 annotation patches.
+The parser importer owns that support tree transactionally alongside this corpus and its baseline.
 """,
         encoding="utf-8",
     )
@@ -587,7 +665,6 @@ def parser_baseline_entry(summary: dict) -> dict:
         "foundry_revision": FOUNDRY_REVISION,
         "upstream_total": PARSER_UPSTREAM_TOTAL,
         "triage": triage,
-        "analyzer_deferred": dict(sorted(summary["analyzer_deferred"].items())),
     }
     complaint = validate_triage_ledger(
         "parser",
@@ -663,9 +740,11 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.check:
         with tempfile.TemporaryDirectory() as temporary:
             fresh = Path(temporary) / "parser"
-            summary = import_corpus(foundry, fresh)
+            support = Path(temporary) / "support"
+            summary = import_corpus(foundry, fresh, support_destination=support)
             write_readme(fresh, summary)
             differences = compare_trees(DESTINATION, fresh)
+            differences += ["auxiliary support: " + d for d in compare_trees(SUPPORT_DESTINATION, support)]
             expected_entry = parser_baseline_entry(summary)
         if differences:
             print("the committed corpus is not what the importer produces:")
@@ -677,6 +756,9 @@ def main(argv: list[str] | None = None) -> int:
         if committed_parser is None:
             print("tests/corpus_baseline.json has no parser corpus entry")
             return 1
+        if "analyzer_deferred" in committed_parser:
+            print("obsolete analyzer_deferred field is forbidden")
+            return 1
         # Provenance fields the importer owns must match what a fresh import emits.
         for field in (
             "total",
@@ -684,7 +766,6 @@ def main(argv: list[str] | None = None) -> int:
             "foundry_revision",
             "upstream_total",
             "triage",
-            "analyzer_deferred",
             "expected_failures",
         ):
             if committed_parser.get(field) != expected_entry.get(field):
@@ -698,7 +779,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    summary = import_corpus(foundry, DESTINATION, publish_baseline=True)
+    summary = import_corpus(foundry, DESTINATION, publish_baseline=True, support_destination=SUPPORT_DESTINATION)
     print(
         f"imported {len(summary['cases'])} cases and {len(summary['helpers'])} helpers "
         f"from {FOUNDRY_REVISION}"

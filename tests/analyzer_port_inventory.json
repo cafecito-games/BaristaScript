@@ -12986,58 +12986,9 @@
         }
       ],
       "evidence": {
-        "kind": "candidate",
-        "pr": {
-          "kind": "provisional",
-          "repository": "cafecito-games/BaristaScript",
-          "head_ref": "m3/issue-141-restoration-warnings",
-          "issue": 141
-        },
-        "blobs": [
-          {
-            "path": "src/bs_analyzer.cpp",
-            "sha256": "741c0489a767bb8110e7be2b941b93a235744da56f6d6ef5a6953601c2b8968c"
-          },
-          {
-            "path": "src/bs_analyzer.h",
-            "sha256": "9f17fbb30eafaeda78c3ff7fc1b47bf4d3e8732b167cbe1727ef18b3c7bda4e5"
-          },
-          {
-            "path": "src/bs_core_constants.h",
-            "sha256": "235d85eff765f0c1994ecd308fd7d325a34a05528d8c62e86723c39a05de1a39"
-          },
-          {
-            "path": "src/bs_parser.cpp",
-            "sha256": "77dd884067c407352a05886baca2bb90cff18334e58879568367e397f3925ed4"
-          },
-          {
-            "path": "tests/native/builtin_metadata_analyzer_tests.cpp",
-            "sha256": "a1344e535ae6ee9fff8a63f34924ac42d0475c658fb49fc9f79a6c2d2c034d68"
-          },
-          {
-            "path": "tests/native/warning_producer_analyzer_tests.cpp",
-            "sha256": "02009d0b60b92a1dc5f49dc773fe257c5a3c3decdd7bdcab8bb6da08d2ac6d00"
-          },
-          {
-            "path": "tests/native_suites.json",
-            "sha256": "cd86cbb23bae977bdf9006ed32e728e502c050509abb132349e5a55f67ba7281"
-          }
-        ],
-        "results": [
-          {
-            "command": [
-              "python3",
-              "tests/run_native_suites.py",
-              "--godot",
-              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
-              "--suite",
-              "warning_producer_analyzer"
-            ],
-            "exit": 0,
-            "log_sha256": "05fd418f5a5033505e323d72877f44e458ca25cddc62cb92c4cb3e252f056861",
-            "result": "16 cases / 769 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors; grouped R1 builtin/CLASS RETURN-before-STATIC and R2 enum-conversion-before-compound warning pairs with initialized/builtin/selective-suppression controls. Original helpers remain #31."
-          }
-        ]
+        "kind": "merged",
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/183",
+        "commit": "e51e197f29910d73cb0db1491754f9bd458c6e63"
       },
       "branch_keys": [
         "reduce_call/local utility and builtin/native constructors",
@@ -13569,54 +13520,9 @@
         }
       ],
       "evidence": {
-        "kind": "candidate",
-        "pr": {
-          "kind": "provisional",
-          "repository": "cafecito-games/BaristaScript",
-          "head_ref": "m3/issue-141-restoration-warnings",
-          "issue": 141
-        },
-        "blobs": [
-          {
-            "path": "project/tests/analyzer_test.gd",
-            "sha256": "14ee5a7ccaaeb14d7feb12e4244fcc0c99b64f9027333dcc57470cac195e3809"
-          },
-          {
-            "path": "src/bs_analyzer.cpp",
-            "sha256": "741c0489a767bb8110e7be2b941b93a235744da56f6d6ef5a6953601c2b8968c"
-          },
-          {
-            "path": "src/bs_analyzer.h",
-            "sha256": "9f17fbb30eafaeda78c3ff7fc1b47bf4d3e8732b167cbe1727ef18b3c7bda4e5"
-          },
-          {
-            "path": "src/bs_analyzer_finalization.cpp",
-            "sha256": "4b5d2c4d2d02515078085d057bb6f32e49d185f5a8f11e42b10a9daeeb9195dc"
-          },
-          {
-            "path": "tests/native/warning_producer_analyzer_tests.cpp",
-            "sha256": "02009d0b60b92a1dc5f49dc773fe257c5a3c3decdd7bdcab8bb6da08d2ac6d00"
-          },
-          {
-            "path": "tests/native_suites.json",
-            "sha256": "cd86cbb23bae977bdf9006ed32e728e502c050509abb132349e5a55f67ba7281"
-          }
-        ],
-        "results": [
-          {
-            "command": [
-              "python3",
-              "tests/run_native_suites.py",
-              "--godot",
-              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
-              "--suite",
-              "warning_producer_analyzer"
-            ],
-            "exit": 0,
-            "log_sha256": "05fd418f5a5033505e323d72877f44e458ca25cddc62cb92c4cb3e252f056861",
-            "result": "16 cases / 769 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors; grouped R1 builtin/CLASS RETURN-before-STATIC and R2 enum-conversion-before-compound warning pairs with initialized/builtin/selective-suppression controls. Original helpers remain #31."
-          }
-        ]
+        "kind": "merged",
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/183",
+        "commit": "e51e197f29910d73cb0db1491754f9bd458c6e63"
       },
       "branch_keys": [
         "warning queue/severity and final error classification",
@@ -15326,58 +15232,9 @@
         }
       ],
       "evidence": {
-        "kind": "candidate",
-        "pr": {
-          "kind": "provisional",
-          "repository": "cafecito-games/BaristaScript",
-          "head_ref": "m3/issue-141-restoration-warnings",
-          "issue": 141
-        },
-        "blobs": [
-          {
-            "path": "project/tests/analyzer_test.gd",
-            "sha256": "14ee5a7ccaaeb14d7feb12e4244fcc0c99b64f9027333dcc57470cac195e3809"
-          },
-          {
-            "path": "src/bs_analyzer.cpp",
-            "sha256": "741c0489a767bb8110e7be2b941b93a235744da56f6d6ef5a6953601c2b8968c"
-          },
-          {
-            "path": "src/bs_analyzer.h",
-            "sha256": "9f17fbb30eafaeda78c3ff7fc1b47bf4d3e8732b167cbe1727ef18b3c7bda4e5"
-          },
-          {
-            "path": "src/bs_analyzer_flow_finality.cpp",
-            "sha256": "0276867991b054b90fb6cf07e62930a7a4d2f1e9ac318e186ee84ad40f3cf7b2"
-          },
-          {
-            "path": "tests/native/get_node_analyzer_tests.cpp",
-            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
-          },
-          {
-            "path": "tests/native/warning_producer_analyzer_tests.cpp",
-            "sha256": "02009d0b60b92a1dc5f49dc773fe257c5a3c3decdd7bdcab8bb6da08d2ac6d00"
-          },
-          {
-            "path": "tests/native_suites.json",
-            "sha256": "cd86cbb23bae977bdf9006ed32e728e502c050509abb132349e5a55f67ba7281"
-          }
-        ],
-        "results": [
-          {
-            "command": [
-              "python3",
-              "tests/run_native_suites.py",
-              "--godot",
-              "/Users/christian/.codex/baristascript-m3/tools/godot-4.7.2/Godot.app/Contents/MacOS/Godot",
-              "--suite",
-              "warning_producer_analyzer"
-            ],
-            "exit": 0,
-            "log_sha256": "05fd418f5a5033505e323d72877f44e458ca25cddc62cb92c4cb3e252f056861",
-            "result": "16 cases / 769 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors; grouped R1 builtin/CLASS RETURN-before-STATIC and R2 enum-conversion-before-compound warning pairs with initialized/builtin/selective-suppression controls. Original helpers remain #31."
-          }
-        ]
+        "kind": "merged",
+        "pr": "https://github.com/cafecito-games/BaristaScript/pull/183",
+        "commit": "e51e197f29910d73cb0db1491754f9bd458c6e63"
       },
       "branch_keys": [
         "suite/statement exit summaries and visited function recovery",
