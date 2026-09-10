@@ -76,6 +76,41 @@ void AnalyzerSettings::strict_dynamic(bool enabled) {
 	set(strict_dynamic_setting, enabled);
 }
 
+StrictAnalyzerSettingsScope::SavedSetting StrictAnalyzerSettingsScope::save(const String &path) {
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	SavedSetting saved_setting;
+	saved_setting.path = path;
+	saved_setting.present = settings->has_setting(path);
+	saved_setting.value = saved_setting.present ? settings->get_setting(path) : Variant();
+	return saved_setting;
+}
+
+void StrictAnalyzerSettingsScope::restore(const SavedSetting &setting) {
+	ProjectSettings::get_singleton()->set_setting(setting.path, setting.present ? setting.value : Variant());
+}
+
+StrictAnalyzerSettingsScope::StrictAnalyzerSettingsScope() :
+		saved_strict_null(save(strict_null_setting)),
+		saved_strict_dynamic(save(strict_dynamic_setting)) {
+	ProjectSettings::get_singleton()->set_setting(saved_strict_null.path, false);
+	ProjectSettings::get_singleton()->set_setting(saved_strict_dynamic.path, false);
+	BSParser::invalidate_analysis_on_strict_settings_change();
+}
+
+StrictAnalyzerSettingsScope::~StrictAnalyzerSettingsScope() {
+	restore(saved_strict_dynamic);
+	restore(saved_strict_null);
+	BSParser::invalidate_analysis_on_strict_settings_change();
+}
+
+void StrictAnalyzerSettingsScope::strict_null(bool enabled) {
+	ProjectSettings::get_singleton()->set_setting(saved_strict_null.path, enabled);
+}
+
+void StrictAnalyzerSettingsScope::strict_dynamic(bool enabled) {
+	ProjectSettings::get_singleton()->set_setting(saved_strict_dynamic.path, enabled);
+}
+
 AnalysisResult analyze_source(const String &source, const String &path) {
 	HashMap<String, String> sources;
 	sources[path] = source;

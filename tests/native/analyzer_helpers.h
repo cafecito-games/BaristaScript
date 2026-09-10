@@ -62,6 +62,28 @@ public:
 	void strict_dynamic(bool enabled);
 };
 
+class StrictAnalyzerSettingsScope {
+	struct SavedSetting {
+		String path;
+		bool present = false;
+		Variant value;
+	};
+	SavedSetting saved_strict_null;
+	SavedSetting saved_strict_dynamic;
+
+	static SavedSetting save(const String &path);
+	static void restore(const SavedSetting &setting);
+
+public:
+	StrictAnalyzerSettingsScope();
+	~StrictAnalyzerSettingsScope();
+	StrictAnalyzerSettingsScope(const StrictAnalyzerSettingsScope &) = delete;
+	StrictAnalyzerSettingsScope &operator=(const StrictAnalyzerSettingsScope &) = delete;
+
+	void strict_null(bool enabled);
+	void strict_dynamic(bool enabled);
+};
+
 AnalysisResult analyze_source(const String &source, const String &path);
 bool source_analyzes(const String &source, const String &path);
 void check_analysis(const AnalysisResult &result,

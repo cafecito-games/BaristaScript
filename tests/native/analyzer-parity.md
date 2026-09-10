@@ -1,8 +1,10 @@
 # Analyzer migration parity inventory
 
-This inventory is grounded in `project/tests/analyzer_test.gd` at `84880e6532e5e78551692fc762f706bc44661eb9`.
-Its `_init()` invokes exactly 90 unique `_test_*` functions, and every invocation has exactly one
-definition. The legacy suite remains enabled in this additive checkpoint.
+This inventory was reconciled with `project/tests/analyzer_test.gd` at integration head
+`fee2f1a79280015b8808b33a0fcc4c38a0fc2ad3` (#140's merged PR #174). Its `_init()` still invokes
+exactly 90 unique `_test_*` functions, and every invocation has exactly one definition. The legacy
+suite remains enabled in this additive checkpoint. The phase-1 native foundation was originally
+grounded at `84880e6532e5e78551692fc762f706bc44661eb9` and rebased without conflict.
 
 ## Additive #139 native foundation
 
@@ -22,19 +24,39 @@ compatibility assertions call `BSTypeCompatibility` directly.
 | `_test_pinned_suite_datatypes` | `f8d954c` | `pinned_suite_datatypes` | 18 sources plus 22 iterator carriers |
 | `_test_native_iterator_annotation_nullability` | `26f1460` | `native_iterator_annotation_nullability` | 9 |
 
-## Existing #140 native coverage
+## Additive cache, settings and public-validity checkpoint
 
-Issue #140 owns 80 already-registered native cases. They are preserved unchanged and are not
+Five more legacy functions are registered under native suite `analyzer_cache`. The source contains
+36 legacy `_expect` calls; the native cases preserve every condition as 47 direct typed assertions
+and guards. Per-case supervisor counts include the `StorageFixture` setup and teardown assertions.
+The sixth case runs all five scenarios twice in forward and reverse order inside the ambient-state
+isolation verifier.
+
+| Legacy function | Native case | Legacy `_expect` calls | Native run assertions | Preserved contract |
+| --- | --- | ---: | ---: | --- |
+| `_test_parser_lifecycle` | `parser_lifecycle` | 4 | 13 | PARSED/FULLY_SOLVED monotonic raise, latched hash, cached identity and presence. |
+| `_test_missing_and_self` | `missing_and_self` | 7 | 11 | Missing admission and inverse-edge rejection, ghost-removal safety, self admission without a self-edge. |
+| `_test_strict_settings` | `strict_settings` | 9 | 13 | Baseline/no-op observations, independent null/dynamic flips, parser invalidation, and override retention. |
+| `_test_can_reference` | `can_reference` | 10 | 12 | Builtin, meta, union, tuple, native ancestry and failed class-path reference decisions through `BSParser::DataType`. |
+| `_test_validate_and_is_valid_agree` | `validate_and_is_valid_agree` | 6 | 8 | Typed parse/analyze, `bs_source_analyzes`, and `BaristaScript::_is_valid()` agree for valid and semantic-error sources. |
+
+The complete suite executes 6 cases and 705 assertions: 57 assertions across the five individually
+filterable cases, then 648 assertions in `repeated_and_reversed_cases_restore_ambient_state`.
+
+## Existing #140 native coverage at the integration head
+
+Issue #140 owns 98 already-registered native cases. They are preserved unchanged and are not
 duplicated here. Their responsibility map is:
 
 | Native suite | Cases | Responsibility | Legacy scenarios it supplements (not yet a deletion-equivalent mapping) |
 | --- | ---: | --- | --- |
 | `cross_file_analyzer` | 16 | imported-name precedence, ambiguity, stale providers, bootstrap and typed lookup | parser/dependency lifecycle, strict settings, declaration commit, namespace/import validation |
-| `provider_analyzer` | 20 | provider ownership, member surfaces, retained generations/failures, witness and nullable heads | callable/member depth, foreign failure replay, trait/conformance and enum surface scenarios |
+| `provider_analyzer` | 21 | provider ownership, member surfaces, retained generations/failures, witness, nullable heads and refresh replay | callable/member depth, foreign failure replay, trait/conformance and enum surface scenarios |
 | `preload_analyzer` | 31 | preload identity, failure replay, recursive ownership, semantic containers | dependency cycles, explicit paths, provider failure replay, constant/container scenarios |
 | `refresh_analyzer` | 13 | refresh publication, invalidation, move/remove, digest/generation and namespace repair | transitive invalidation, move/remove, declaration commit, digest mismatch, namespace change |
+| `source_analyzer` | 17 | public source-input isolation, retained generations, read-only lookup and construction/call diagnostics | parser/dependency lifecycle, validation agreement and callable/member diagnostics |
 
-The exact `TEST_CASE` registrations in those four issue-owned source files remain the authoritative
+The exact `TEST_CASE` registrations in those five issue-owned source files remain the authoritative
 #140 case-name inventory. This checkpoint neither edits nor copies them.
 
 ## Current 90-function inventory
@@ -45,16 +67,16 @@ other rows remain legacy-only work for continuation after #140/#141 stabilize.
 
 | # | Invoked function | Group | Status |
 | ---: | --- | --- | --- |
-| 1 | `_test_parser_lifecycle` | dependency reanalysis | legacy + #140 |
+| 1 | `_test_parser_lifecycle` | dependency reanalysis | native `analyzer_cache` |
 | 2 | `_test_transitive_invalidation` | dependency reanalysis | legacy + #140 |
-| 3 | `_test_missing_and_self` | dependency reanalysis | legacy + #140 |
+| 3 | `_test_missing_and_self` | dependency reanalysis | native `analyzer_cache` |
 | 4 | `_test_move_remove` | dependency reanalysis | legacy + #140 |
 | 5 | `_test_dependency_cycle` | dependency reanalysis | legacy + #140 |
 | 6 | `_test_finalization_raises_dependencies` | dependency reanalysis | legacy + #140 |
-| 7 | `_test_strict_settings` | diagnostics/settings | legacy + #140 |
-| 8 | `_test_can_reference` | dependency reanalysis | legacy-only |
+| 7 | `_test_strict_settings` | diagnostics/settings | native `analyzer_cache` |
+| 8 | `_test_can_reference` | dependency reanalysis | native `analyzer_cache` |
 | 9 | `_test_host_bootstrap_filtering` | dependency reanalysis | legacy + #140 |
-| 10 | `_test_validate_and_is_valid_agree` | diagnostics/settings | legacy-only |
+| 10 | `_test_validate_and_is_valid_agree` | diagnostics/settings | native `analyzer_cache` |
 | 11 | `_test_semantic_errors` | diagnostics/settings | legacy-only |
 | 12 | `_test_undeclared_identifier_diagnostic` | diagnostics/settings | legacy-only |
 | 13 | `_test_review_resolution_regressions` | expressions/calls | legacy-only |
@@ -138,11 +160,11 @@ other rows remain legacy-only work for continuation after #140/#141 stabilize.
 
 ## Remaining gates
 
-- Reconcile the 83 still-live legacy functions after #140 and #141 finish; newly merged scenarios
+- Reconcile the 78 still-live legacy functions after #141 finishes; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
 - Only then remove `analyzer_test.gd`, its UID, and analyzer-only bindings whose live corpus/public
   consumers have independently migrated. `evaluate_corpus` remains live through the corpus cutover.
-- Add `analyzer_flow` to `tests/native_suites.json` atomically in the continuation phase. This
-  checkpoint validates through a temporary manifest edit whose exact bytes are restored.
+- `analyzer_flow` and `analyzer_cache` are now both required by `tests/native_suites.json`; keep
+  their manifest registrations while the remaining additive migration proceeds.

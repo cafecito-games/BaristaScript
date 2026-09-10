@@ -11,6 +11,8 @@
     "provider_analyzer",
     "preload_analyzer",
     "refresh_analyzer",
+    "analyzer_flow",
+    "analyzer_cache",
     "source_analyzer",
     "autoload_analyzer"
   ],
