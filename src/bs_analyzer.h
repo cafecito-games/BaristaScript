@@ -594,6 +594,7 @@ private:
 	void warn_unused_class_members(BSParser::ClassNode *p_class);
 	/** Built-in and custom annotation resolution/validation (Foundry @ c9d5e35). */
 	void resolve_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind = 0);
+	void resolve_autoload_annotation(BSParser::AnnotationNode *p_annotation);
 	bool coerce_annotation_argument(const BSParser::DataType &p_parameter_type, Variant &r_value,
 			const BSParser::ExpressionNode *p_argument, const String &p_context);
 	void resolve_annotation_declaration(BSParser::AnnotationDeclarationNode *p_declaration);

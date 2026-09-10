@@ -11,7 +11,8 @@
     "provider_analyzer",
     "preload_analyzer",
     "refresh_analyzer",
-    "source_analyzer"
+    "source_analyzer",
+    "autoload_analyzer"
   ],
   "editor_import": ["global_class"]
 }

@@ -7611,6 +7611,11 @@ bool BSParser::AnnotationNode::applies_to(uint32_t p_target_kinds) const {
 bool BSParser::validate_annotation_arguments(AnnotationNode *p_annotation) {
 	ERR_FAIL_COND_V_MSG(!valid_annotations.has(p_annotation->name), false, vformat(R"(Annotation "%s" not found to validate.)", p_annotation->name));
 
+	// Autoload binds positional/named slots and reports its own argument-node errors.
+	if (p_annotation->name == SNAME("@autoload")) {
+		return true;
+	}
+
 	const MethodInfo &info = valid_annotations[p_annotation->name].info;
 
 	if (((info.flags & METHOD_FLAG_VARARG) == 0) && p_annotation->arguments.size() > info.arguments.size()) {
