@@ -758,32 +758,24 @@ bool BSAnalyzer::errors_from_index_are_only_m5_deferred(int p_from_index) const 
 	return saw_any;
 }
 
-BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const {
+BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_class, const StringName &p_name, bool *r_found_member, const BSParser::Node *p_source) const {
+	if (r_found_member != nullptr) {
+		*r_found_member = false;
+	}
 	if (p_class == nullptr || p_name == StringName()) {
 		return nullptr;
 	}
-	// Soft mutual path-extends may install CLASS loops for registration; stop identity revisits.
-	HashSet<const BSParser::ClassNode *> visited;
-	for (BSParser::ClassNode *lookup = p_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
-		if (visited.has(lookup)) {
-			break;
-		}
-		visited.insert(lookup);
-		if (!lookup->has_member(p_name)) {
-			continue;
-		}
-		// Foundry @ c9d5e35: resolve_class_member before reading the FUNCTION node / signature.
-		// const_cast: find sites always run during analysis on a live analyzer.
-		const_cast<BSAnalyzer *>(this)->resolve_class_member(lookup, p_name);
-		const BSParser::ClassNode::Member member = lookup->get_member(p_name);
-		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
-			return member.function;
-		}
-		// An ordinary non-function declaration claims the name; do not resurrect a same-named
-		// function further up the chain (Foundry ordinary_member_name_found @ c9d5e35).
+	BSAnalyzer *analyzer = const_cast<BSAnalyzer *>(this);
+	BSParser::ClassNode *owner = analyzer->find_member_in_class_or_trait_chain(p_class, p_name, p_source);
+	if (owner == nullptr) {
 		return nullptr;
 	}
-	return nullptr;
+	if (r_found_member != nullptr) {
+		*r_found_member = true;
+	}
+	analyzer->resolve_class_member(owner, p_name, p_source);
+	const auto &member = owner->get_member(p_name);
+	return member.type == BSParser::ClassNode::Member::FUNCTION ? member.function : nullptr;
 }
 
 bool BSAnalyzer::is_bootstrap_path_allowed(const String &p_path) {
@@ -2646,13 +2638,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			return;
 		}
 	}
-	// Foundry surface: flattened trait members are visible on the implementer (#60).
-	if (current_class != nullptr) {
-		for (int t = 0; t < current_class->resolved_traits.size(); t++) {
-			BSParser::ClassNode *trait = current_class->resolved_traits[t];
-			if (try_bind_identifier_member(p_identifier, trait, false)) {
-				return;
-			}
+	if (BSParser::ClassNode *trait = find_trait_member_in_inheritance_chain(current_class, p_identifier->name, p_identifier)) {
+		if (try_bind_identifier_member(p_identifier, trait, false)) {
+			return;
 		}
 	}
 	// Own class_name / identifier as a CLASS meta handle (`Receiver.Message.…` EXACT_HANDLE).
@@ -3084,8 +3072,9 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						base_type.type_parameter_bound[0].kind == BSParser::DataType::CLASS) {
 					method_owner = base_type.type_parameter_bound[0].class_type;
 				}
+				bool member_claimed = false;
 				if (method_owner != nullptr) {
-					BSParser::FunctionNode *callee = find_class_function(method_owner, p_call->function_name);
+					BSParser::FunctionNode *callee = find_class_function(method_owner, p_call->function_name, &member_claimed, p_call->callee);
 					if (callee != nullptr) {
 						if (base_type.is_meta_type && !callee->is_static) {
 							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(base_type).to_string()), p_call);
@@ -3097,12 +3086,30 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						return;
 					}
 				} else if (is_self && current_class != nullptr) {
-					BSParser::FunctionNode *callee = find_class_function(current_class, p_call->function_name);
+					BSParser::FunctionNode *callee = find_class_function(current_class, p_call->function_name, &member_claimed, p_call->callee);
 					if (callee != nullptr) {
 						validate_local_call(p_call, callee);
 						p_call->is_noreturn = callee->is_noreturn;
 						return;
 					}
+				}
+				// A claimed non-function cannot resurrect a native method or witness.
+				// Reuse the existing member reduction and callee diagnostic before fallback.
+				if (member_claimed && !p_call->is_super) {
+					const int previous_errors = parser->get_errors().size();
+					reduce_expression(subscript);
+					const BSParser::DataType callee_type = subscript->get_datatype();
+					if (parser->get_errors().size() == previous_errors && callee_type.is_set() && !callee_type.is_variant()) {
+						if (callee_type.builtin_type == Variant::CALLABLE) {
+							push_error(vformat(R"*(Name "%s" is a Callable. You can call it with "%s.call()" instead.)*", p_call->function_name, p_call->function_name), p_call->callee);
+						} else {
+							push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, callee_type.to_string()), p_call->callee);
+						}
+					}
+					BSParser::DataType call_type;
+					call_type.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(call_type);
+					return;
 				}
 				if (native_type != StringName()) {
 					MethodInfo method_info;
@@ -3338,47 +3345,51 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				p_call->set_datatype(void_type);
 				return;
 			}
-			BSParser::FunctionNode *callee = find_class_function(current_class, fname);
+			bool member_claimed = false;
+			BSParser::FunctionNode *callee = find_class_function(current_class, fname, &member_claimed, p_call->callee);
 			if (callee != nullptr) {
 				validate_local_call(p_call, callee);
 				p_call->is_noreturn = callee->is_noreturn;
 				return;
 			}
-			// Bare native MethodInfo call on the script's native base (e.g. Node.get_node).
-			if (current_class->base_type.native_type != StringName()) {
-				MethodInfo method_info;
-				if (BSNativeDB::get_method_info(current_class->base_type.native_type, fname, &method_info)) {
-					call_site_validation.reject_named_call_arguments(p_call);
-					call_site_validation.validate_call_arg(method_info, p_call);
-					call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
-					// Foundry treats bare identifier callees as self for unused-signal accounting.
-					mark_implicit_signal_usage(p_call, true);
-					p_call->set_datatype(type_from_property(method_info.return_val));
-					return;
-				}
-			}
-			// Foundry apply_conformance_witness on self after local + native miss.
-			{
-				const BSParser::DataType self_type = current_class->get_datatype();
-				BSParser::FunctionNode *witness = find_conformance_witness(self_type, fname);
-				if (witness != nullptr && (witness->is_static || !self_type.is_meta_type)) {
-					validate_local_call(p_call, witness);
-					p_call->is_noreturn = witness->is_noreturn;
-					return;
-				}
-				if (!p_call->is_super) {
-					String hidden_conformance_source;
-					StringName hidden_conformance_trait;
-					if (find_hidden_conformance_witness(self_type, fname, hidden_conformance_source,
-								hidden_conformance_trait)) {
-						push_error(vformat(R"*(Cannot call "%s()" on "%s": it is supplied by the retroactive conformance to trait "%s" declared in "%s", which this file does not load. Import that file's namespace, or preload it.)*",
-										   fname, self_type.to_string(), hidden_conformance_trait,
-										   bs_diagnostic_file_reference(hidden_conformance_source)),
-								p_call->callee != nullptr ? p_call->callee : static_cast<const BSParser::Node *>(p_call));
-						BSParser::DataType call_type;
-						call_type.kind = BSParser::DataType::VARIANT;
-						p_call->set_datatype(call_type);
+			// Preserve ordinary name claims through both native and witness fallback.
+			if (!member_claimed) {
+				// Bare native MethodInfo call on the script's native base (e.g. Node.get_node).
+				if (current_class->base_type.native_type != StringName()) {
+					MethodInfo method_info;
+					if (BSNativeDB::get_method_info(current_class->base_type.native_type, fname, &method_info)) {
+						call_site_validation.reject_named_call_arguments(p_call);
+						call_site_validation.validate_call_arg(method_info, p_call);
+						call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
+						// Foundry treats bare identifier callees as self for unused-signal accounting.
+						mark_implicit_signal_usage(p_call, true);
+						p_call->set_datatype(type_from_property(method_info.return_val));
 						return;
+					}
+				}
+				// Foundry apply_conformance_witness on self after local + native miss.
+				{
+					const BSParser::DataType self_type = current_class->get_datatype();
+					BSParser::FunctionNode *witness = find_conformance_witness(self_type, fname);
+					if (witness != nullptr && (witness->is_static || !self_type.is_meta_type)) {
+						validate_local_call(p_call, witness);
+						p_call->is_noreturn = witness->is_noreturn;
+						return;
+					}
+					if (!p_call->is_super) {
+						String hidden_conformance_source;
+						StringName hidden_conformance_trait;
+						if (find_hidden_conformance_witness(self_type, fname, hidden_conformance_source,
+									hidden_conformance_trait)) {
+							push_error(vformat(R"*(Cannot call "%s()" on "%s": it is supplied by the retroactive conformance to trait "%s" declared in "%s", which this file does not load. Import that file's namespace, or preload it.)*",
+											   fname, self_type.to_string(), hidden_conformance_trait,
+											   bs_diagnostic_file_reference(hidden_conformance_source)),
+									p_call->callee != nullptr ? p_call->callee : static_cast<const BSParser::Node *>(p_call));
+							BSParser::DataType call_type;
+							call_type.kind = BSParser::DataType::VARIANT;
+							p_call->set_datatype(call_type);
+							return;
+						}
 					}
 				}
 			}
@@ -3874,9 +3885,10 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				receiver_type.is_meta_type = p_subscript->base->get_datatype().is_meta_type;
 			}
 			if (receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr) {
-				bool inherited = false;
+				BSParser::ClassNode *selected = find_member_in_class_or_trait_chain(receiver_type.class_type, p_subscript->attribute->name, p_subscript->attribute);
+				bool inherited = selected != receiver_type.class_type;
 				HashSet<const BSParser::ClassNode *> visited;
-				for (BSParser::ClassNode *lookup = receiver_type.class_type; lookup != nullptr; lookup = lookup->base_type.class_type) {
+				for (BSParser::ClassNode *lookup = selected; lookup != nullptr; lookup = nullptr) {
 					if (visited.has(lookup)) {
 						break;
 					}
@@ -3898,6 +3910,14 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 							p_subscript->reduced_value = member.constant->initializer->reduced_value;
 							p_subscript->is_unmaterialized_constant = !has_materialized_constant_value(member.constant->initializer);
 						}
+						return;
+					}
+					if (member.type == BSParser::ClassNode::Member::ENUM_VALUE) {
+						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+						p_subscript->attribute->set_datatype(member.get_datatype());
+						p_subscript->set_datatype(member.get_datatype());
+						p_subscript->is_constant = true;
+						p_subscript->reduced_value = member.enum_value.value;
 						return;
 					}
 					if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr &&
@@ -9074,6 +9094,19 @@ void BSAnalyzer::check_pending_function_flow_finality() {
 	pending_function_flow_checks.clear();
 }
 
+bool BSAnalyzer::class_satisfies_trait_base(BSParser::ClassNode *p_class, BSParser::ClassNode *p_trait) {
+	if (p_class == nullptr || p_trait == nullptr) {
+		return false;
+	}
+	if (!p_trait->extends_used) {
+		return true;
+	}
+	// The existing concrete compatibility walk uses retained CLASS ancestry and native bases.
+	// It does not resolve a fresh parser by path or accept a declaration-index hint.
+	return p_class->base_type.is_set() && p_trait->base_type.is_set() &&
+			BSTypeCompatibility::is_compatible(p_trait->base_type, p_class->base_type);
+}
+
 void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 	if (p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
 		Ref<BSParserRef> owner = ensure_external_parser(p_class, "While resolving trait uses", p_class);
@@ -9114,6 +9147,13 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 		return;
 	}
 
+	if (!p_class->base_type.is_resolving()) {
+		resolve_class_inheritance(p_class);
+	}
+	if (!p_class->base_type.is_set()) {
+		fail();
+		return;
+	}
 	p_class->resolving_trait_uses = true;
 	p_class->resolved_traits.clear();
 
@@ -9159,9 +9199,24 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 			fail();
 			return;
 		}
+		if (!class_satisfies_trait_base(p_class, trait)) {
+			push_error(vformat(R"(Class "%s" cannot use trait "%s" because it does not inherit from "%s".)",
+							   bs_class_or_trait_diagnostic_name(p_class), bs_class_or_trait_diagnostic_name(trait), trait->base_type.to_string()),
+					source);
+			fail();
+			return;
+		}
 		append_trait_unique(p_class->resolved_traits, trait);
 		for (int t = 0; t < trait->resolved_traits.size(); t++) {
-			append_trait_unique(p_class->resolved_traits, trait->resolved_traits[t]);
+			BSParser::ClassNode *transitive = trait->resolved_traits[t];
+			if (!class_satisfies_trait_base(p_class, transitive)) {
+				push_error(vformat(R"(Class "%s" cannot use trait "%s" because it does not inherit from "%s".)",
+								   bs_class_or_trait_diagnostic_name(p_class), bs_class_or_trait_diagnostic_name(transitive), transitive->base_type.to_string()),
+						source);
+				fail();
+				return;
+			}
+			append_trait_unique(p_class->resolved_traits, transitive);
 		}
 	}
 
@@ -9360,6 +9415,7 @@ Error BSAnalyzer::run_phase_flow_finality() {
 	if (head != nullptr) {
 		check_pending_function_flow_finality();
 		// Foundry FLOW_FINALITY_INVARIANTS: abstract trait requirements after body.
+		validate_trait_conflicts(head);
 		validate_trait_requirements(head);
 	}
 	mark_phase(AnalyzerPhase::FLOW_FINALITY_INVARIANTS);

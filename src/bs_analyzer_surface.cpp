@@ -1048,6 +1048,71 @@ void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_nod
 	}
 }
 
+// Foundry surface:1302-1361: only the compiler's flattened surface is reachable.
+// Abstract receivers additionally expose requirements; lexical outers are never donors.
+BSParser::ClassNode *BSAnalyzer::find_trait_member_in_inheritance_chain(BSParser::ClassNode *p_receiver,
+		const StringName &p_name, const BSParser::Node *p_source) {
+	HashSet<BSParser::ClassNode *> seen_owners;
+	HashSet<BSParser::ClassNode *> seen_traits;
+	const bool allow_abstract = p_receiver != nullptr && (p_receiver->is_trait || p_receiver->is_abstract);
+	for (BSParser::ClassNode *owner = p_receiver; owner != nullptr; owner = owner->base_type.class_type) {
+		if (seen_owners.has(owner)) {
+			break;
+		}
+		seen_owners.insert(owner);
+		if (owner->resolving_trait_uses) {
+			continue;
+		}
+		resolve_used_traits(owner);
+		if (!owner->resolved_trait_uses || owner->failed_trait_uses) {
+			continue;
+		}
+		for (BSParser::ClassNode *trait : owner->resolved_traits) {
+			if (trait == nullptr || seen_traits.has(trait)) {
+				continue;
+			}
+			seen_traits.insert(trait);
+			if (!trait->has_member(p_name)) {
+				continue;
+			}
+			const auto &member = trait->get_member(p_name);
+			switch (member.type) {
+				case BSParser::ClassNode::Member::VARIABLE:
+				case BSParser::ClassNode::Member::CONSTANT:
+				case BSParser::ClassNode::Member::ENUM:
+				case BSParser::ClassNode::Member::ENUM_VALUE:
+				case BSParser::ClassNode::Member::SIGNAL:
+					break;
+				case BSParser::ClassNode::Member::FUNCTION:
+					if (member.function == nullptr || (!allow_abstract && member.function->is_abstract)) {
+						continue;
+					}
+					break;
+				default:
+					continue;
+			}
+			resolve_class_member(trait, p_name, p_source);
+			return trait;
+		}
+	}
+	return nullptr;
+}
+
+BSParser::ClassNode *BSAnalyzer::find_member_in_class_or_trait_chain(BSParser::ClassNode *p_receiver,
+		const StringName &p_name, const BSParser::Node *p_source) {
+	HashSet<BSParser::ClassNode *> visited;
+	for (BSParser::ClassNode *owner = p_receiver; owner != nullptr; owner = owner->base_type.class_type) {
+		if (visited.has(owner)) {
+			break;
+		}
+		visited.insert(owner);
+		if (owner->has_member(p_name)) {
+			return owner;
+		}
+	}
+	return find_trait_member_in_inheritance_chain(p_receiver, p_name, p_source);
+}
+
 void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source) {
 	ERR_FAIL_COND(p_class == nullptr || !p_class->has_member(p_name));
 	resolve_class_member(p_class, p_class->members_indices[p_name], p_source);
@@ -1327,7 +1392,32 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			member.m_tuple->set_datatype(make_tuple_type(member.m_tuple->identifier->name, p_class->fqcn,
 					parser->script_path, element_types, field_names, true));
 		} break;
-		case BSParser::ClassNode::Member::ENUM_VALUE:
+		case BSParser::ClassNode::Member::ENUM_VALUE: {
+			// Foundry surface:1928: unnamed enum values are ordinary flattened members.
+			member.enum_value.identifier->set_datatype(resolving_datatype);
+			if (member.enum_value.custom_value != nullptr) {
+				check_class_member_name_conflict(p_class, member.enum_value.identifier->name, member.enum_value.custom_value);
+				BSParser::EnumNode *previous_enum = current_enum;
+				current_enum = member.enum_value.parent_enum;
+				reduce_expression(member.enum_value.custom_value);
+				current_enum = previous_enum;
+				if (!member.enum_value.custom_value->is_constant) {
+					push_error(R"(Enum values must be constant.)", member.enum_value.custom_value);
+				} else if (!has_materialized_constant_value(member.enum_value.custom_value) || member.enum_value.custom_value->reduced_value.get_type() != Variant::INT) {
+					push_error(R"(Enum values must be integers.)", member.enum_value.custom_value);
+				} else {
+					member.enum_value.value = member.enum_value.custom_value->reduced_value;
+					member.enum_value.resolved = true;
+				}
+			} else {
+				check_class_member_name_conflict(p_class, member.enum_value.identifier->name, member.enum_value.parent_enum);
+				push_error(R"(Enum values must have an explicit integer value.)", member.enum_value.identifier);
+			}
+			if (member.enum_value.parent_enum != nullptr) {
+				member.enum_value.parent_enum->values.set(member.enum_value.index, member.enum_value);
+			}
+			member.enum_value.identifier->set_datatype(make_class_enum_type("<anonymous enum>", p_class, parser->script_path, false));
+		} break;
 		case BSParser::ClassNode::Member::GROUP:
 		case BSParser::ClassNode::Member::UNDEFINED:
 			break;
@@ -1412,6 +1502,13 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		p_identifier->function_source = member.function;
 		p_identifier->function_source_is_static = member.function->is_static;
 		p_identifier->set_datatype(call_site_validation.callable_type_from_function(member.function));
+		return true;
+	}
+	if (member.type == BSParser::ClassNode::Member::ENUM_VALUE) {
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+		p_identifier->set_datatype(member.get_datatype());
+		p_identifier->is_constant = true;
+		p_identifier->reduced_value = member.enum_value.value;
 		return true;
 	}
 	if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
