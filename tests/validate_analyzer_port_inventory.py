@@ -376,7 +376,7 @@ def validate(
                     == {
                         "kind": "provisional",
                         "repository": "cafecito-games/BaristaScript",
-                        "head_ref": "m3/issue-141-s6-s7",
+                        "head_ref": "m3/issue-141-restoration-warnings",
                         "issue": 141,
                     },
                     f"invalid candidate PR locator: {name}",
