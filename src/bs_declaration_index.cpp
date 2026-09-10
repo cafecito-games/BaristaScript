@@ -321,6 +321,22 @@ uint64_t BSDeclarationIndex::_claim_unlocked(const String &p_path) {
 	return token;
 }
 
+uint64_t BSDeclarationIndex::get_refresh_revision(const String &p_path) {
+	std::lock_guard<std::mutex> lock(generation_mutex);
+	const uint64_t *revision = generations.getptr(p_path.simplify_path());
+	return revision != nullptr ? *revision : generation_floor;
+}
+
+bool BSDeclarationIndex::with_current_revision(const String &p_path, uint64_t p_revision, const std::function<void()> &p_publish) {
+	std::lock_guard<std::mutex> lock(generation_mutex);
+	const uint64_t *revision = generations.getptr(p_path.simplify_path());
+	if ((revision != nullptr ? *revision : generation_floor) != p_revision) {
+		return false;
+	}
+	p_publish(); // Metadata only: registry lock is inside the generation lock.
+	return true;
+}
+
 uint64_t BSDeclarationIndex::claim_refresh(const String &p_path) {
 	std::lock_guard<std::mutex> generation_lock(generation_mutex);
 	return _claim_unlocked(p_path);
@@ -366,7 +382,7 @@ bool BSDeclarationIndex::commit_record(uint64_t p_token, const BSDeclarationReco
 	return true;
 }
 
-bool BSDeclarationIndex::remove_path(const String &p_path, uint64_t p_token, Vector<String> *r_changed_namespaces) {
+bool BSDeclarationIndex::remove_path(const String &p_path, uint64_t p_token, Vector<String> *r_changed_namespaces, const std::function<void()> &p_cleanup) {
 	const String path = p_path.simplify_path();
 	std::lock_guard<std::mutex> generation_lock(generation_mutex);
 	if (!_is_token_current_unlocked(path, p_token)) {
@@ -374,15 +390,15 @@ bool BSDeclarationIndex::remove_path(const String &p_path, uint64_t p_token, Vec
 	}
 	std::lock_guard<std::mutex> lock(mutex);
 	_erase_path_unlocked(path, r_changed_namespaces);
+	if (p_cleanup)
+		p_cleanup();
 	return true;
 }
 
 void BSDeclarationIndex::remove_path_unconditional(const String &p_path, Vector<String> *r_changed_namespaces) {
 	const String path = p_path.simplify_path();
-	{
-		std::lock_guard<std::mutex> generation_lock(generation_mutex);
-		generations[path] = ++generation_counter;
-	}
+	std::lock_guard<std::mutex> generation_lock(generation_mutex);
+	generations[path] = ++generation_counter;
 	std::lock_guard<std::mutex> lock(mutex);
 	_erase_path_unlocked(path, r_changed_namespaces);
 }

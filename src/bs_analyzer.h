@@ -432,7 +432,10 @@ public:
 	 * so `_validate()` / `_is_valid()` / probes remain read-only. Only intentional refresh paths
 	 * (e.g. `synchronize_declaration_path_from_source`) should enable this (#52 / PR #59 review).
 	 */
-	void set_update_declaration_index(bool p_enabled) { update_declaration_index = p_enabled; }
+	void set_update_declaration_index(bool p_enabled, uint64_t p_original_claim = 0) {
+		update_declaration_index = p_enabled;
+		refresh_claim = p_original_claim;
+	}
 	bool get_update_declaration_index() const { return update_declaration_index; }
 
 	static bool is_bootstrap_path_allowed(const String &p_path);
@@ -479,6 +482,16 @@ private:
 	bool strict_dynamic_checks = false;
 	bool strict_null_checks = false;
 	bool update_declaration_index = false;
+	uint64_t refresh_claim = 0;
+	int conformance_registration_error_count = 0;
+#ifdef BARISTA_TESTS
+	friend struct RefreshTestAccess;
+	static thread_local std::function<void(const String &, bool)> refresh_publication_hook;
+#endif
+	BSConformanceRegistry::RegistrationResult publish_conformances(const String &p_path,
+			const Vector<BSConformanceRegistry::Conformance> &p_candidates,
+			const Vector<BSConformanceRegistry::ClassTraitBinding> &p_bindings, const HashSet<String> &p_loaded);
+
 	bool reducing_match_pattern_expression = false;
 	BSParser::ClassNode *current_class = nullptr;
 	BSParser::FunctionNode *current_function = nullptr;

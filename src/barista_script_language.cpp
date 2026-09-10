@@ -454,31 +454,29 @@ bool BaristaScriptLanguage::remove_declaration_path(const String &p_path, uint64
 	return removed;
 }
 
-void BaristaScriptLanguage::synchronize_declaration_path_from_source(const String &p_path, const String &p_source) {
-	const String path = p_path.simplify_path();
-	// #52: analysis must not run while holding index mutexes. Only this intentional refresh path
-	// opts into declaration-index mutation; `_validate` / `_is_valid` stay read-only.
-	if (!path.is_empty()) {
-		BSCache::set_source_override(path, p_source);
-	}
+Error BaristaScriptLanguage::synchronize_declaration_path_from_source(const String &p_path, const String &p_source, uint64_t p_original_claim) {
+	const String path = BaristaScript::canonicalize_path(p_path);
+	if (path.is_empty() || !path.begins_with("res://"))
+		return ERR_INVALID_PARAMETER;
+	const uint64_t token = p_original_claim != 0 ? p_original_claim : BSCache::prepare_semantic_refresh(path);
+	HashMap<String, String> overrides;
+	overrides[path] = p_source;
+	BSCacheSourceOverrideGuard source_guard(overrides, true);
 	BSParser parser;
 	BSAnalyzer analyzer(&parser);
-	analyzer.set_update_declaration_index(true);
-	Error err = parser.parse(p_source, path, false);
-	if (err != OK) {
-		const uint64_t token = get_declaration_index().claim_refresh(path);
-		Vector<String> changed;
-		get_declaration_index().remove_path(path, token, &changed);
-		notify_conformance_namespaces_changed(changed);
-		if (!path.is_empty()) {
-			BSCache::clear_source_override(path);
+	analyzer.set_update_declaration_index(true, token);
+	Error error = parser.parse(p_source, path, false);
+	if (error == OK) {
+		// Capture new namespace membership before this refresh publishes any change.
+		for (const String &observer : BSCache::collect_parsers_reaching_namespace(parser.get_tree()->namespace_name)) {
+			if (observer != path)
+				BSCache::prepare_semantic_refresh(observer);
 		}
-		return;
+		error = analyzer.analyze();
+	} else {
+		analyzer.commit_or_remove_declaration(false);
 	}
-	analyzer.analyze();
-	if (!path.is_empty()) {
-		BSCache::clear_source_override(path);
-	}
+	return error;
 }
 
 bool BaristaScriptLanguage::try_resolve_declaration(const String &p_qualified_name, BSDeclarationRecord &r_record) {

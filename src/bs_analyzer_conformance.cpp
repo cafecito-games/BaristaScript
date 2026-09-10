@@ -1062,7 +1062,37 @@ bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, 
 	return valid;
 }
 
+BSConformanceRegistry::RegistrationResult BSAnalyzer::publish_conformances(const String &p_path,
+		const Vector<BSConformanceRegistry::Conformance> &p_candidates,
+		const Vector<BSConformanceRegistry::ClassTraitBinding> &p_bindings, const HashSet<String> &p_loaded) {
+#ifdef BARISTA_TESTS
+	if (auto hook = refresh_publication_hook)
+		hook(parser != nullptr ? parser->script_path : String(), false);
+#endif
+	BSConformanceRegistry::RegistrationResult result;
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	if (parser == nullptr || language == nullptr)
+		return result;
+	BSCache::with_current_source(p_path, parser->analyzed_source, update_declaration_index, [&]() {
+		language->get_declaration_index().with_current_revision(p_path, refresh_claim != 0 ? refresh_claim : parser->source_refresh_revision, [&]() {
+			result = BSConformanceRegistry::get_singleton()->try_replace_file_conformances(p_path, p_candidates, p_bindings, p_loaded);
+		});
+	});
+	return result;
+}
+
 void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
+	// Registration is per declaration: a rejected declaration does not erase valid
+	// candidates from this same replacement. Later/body errors still clear the file.
+	struct RegistrationErrorScope {
+		BSParser *parser;
+		int before;
+		int &count;
+		~RegistrationErrorScope() {
+			if (parser != nullptr)
+				count += parser->get_errors().size() - before;
+		}
+	} registration_errors{ parser, parser != nullptr ? parser->get_errors().size() : 0, conformance_registration_error_count };
 	const String source_file = parser != nullptr ? parser->script_path : String();
 	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
 
@@ -1075,7 +1105,7 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 	if (p_class == nullptr || p_class->conformances.is_empty()) {
 		if (registry != nullptr && !source_file.is_empty()) {
 			const BSConformanceRegistry::RegistrationResult result =
-					registry->try_replace_file_conformances(source_file,
+					publish_conformances(source_file,
 							Vector<BSConformanceRegistry::Conformance>(), trait_bindings,
 							loaded_dependency_closure);
 			for (int i = 0; i < result.binding_conflicts.size(); i++) {
@@ -1313,7 +1343,7 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 	}
 
 	const BSConformanceRegistry::RegistrationResult result =
-			registry->try_replace_file_conformances(source_file, valid_entries, trait_bindings,
+			publish_conformances(source_file, valid_entries, trait_bindings,
 					loaded_dependency_closure);
 	for (int i = 0; i < result.binding_conflicts.size(); i++) {
 		const BSConformanceRegistry::BindingConflict &conflict = result.binding_conflicts[i];

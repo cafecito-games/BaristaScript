@@ -15,6 +15,7 @@
 #include "bs_platform.h"
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 
 /**
@@ -265,7 +266,15 @@ public:
  * dependency edges, and the staged parser/analyzer map restored by issue #27.
  */
 class BSCache {
-	HashMap<String, String> source_overrides;
+public:
+	struct SourceOverride {
+		String source;
+		uint64_t owner = 0; // Zero means absent. Temporary scopes restore the prior owner.
+	};
+
+private:
+	HashMap<String, SourceOverride> source_overrides;
+	uint64_t source_override_counter = 0;
 	HashMap<String, HashSet<String>> dependencies;
 	HashMap<String, HashSet<String>> inverse_dependencies;
 	HashMap<String, Ref<BSParserRef>> parser_map;
@@ -288,6 +297,8 @@ class BSCache {
 	 */
 	static void clear_dependency_edges(BSCache *p_cache, const String &p_path);
 	static void clear_parser_dependency_edges(BSCache *p_cache, const String &p_path);
+	static void prepare_semantic_refresh(const String &p_path, const String &p_to, uint64_t &r_token, uint64_t &r_to_token);
+	static bool remove_semantic_path(const String &p_path, uint64_t p_token);
 	static void update_parser_dependencies(const String &p_path, const barista_script::BSParser *p_parser);
 
 public:
@@ -316,6 +327,18 @@ public:
 	 * branch (fs_cache.cpp:394) has no BaristaScript counterpart yet and is dropped rather than
 	 * stubbed.
 	 */
+	struct SourceRead {
+		String source;
+		Error error = OK;
+		uint64_t override_owner = 0;
+		String error_message;
+	};
+	static SourceRead read_source_code(const String &p_path);
+	// Read disk before locking, then verify override authority while publishing only
+	// metadata. Lock order: cache -> index generation -> index records / registry.
+	static bool with_current_source(const String &p_path, const String &p_source, bool p_require_available, const std::function<void()> &p_publish);
+	static uint64_t install_source_override(const String &p_path, const String &p_source, SourceOverride &r_previous);
+	static void restore_source_override(const String &p_path, uint64_t p_installed_owner, const SourceOverride &p_previous, bool p_preserve_changes);
 	static String get_source_code(const String &p_path);
 
 	// In-memory source-override map, ported from fs_cache.h:105-108 and fs_cache.cpp:423-453.
@@ -353,6 +376,9 @@ public:
 	/** Drops every parsed/analyzed artifact; preserves source overrides. */
 	static void invalidate_analysis();
 
+	/** Capture inverse/namespace closure, detach generations, then claim before analysis. */
+	static uint64_t prepare_semantic_refresh(const String &p_path);
+
 	/** Drops every trace of a path: override, dependency edges, parser/analyzer state. */
 	static void remove_script(const String &p_path);
 
@@ -370,27 +396,24 @@ public:
  * nested overrides preserve an existing edited buffer, including an empty one.
  */
 class BSCacheSourceOverrideGuard {
-	HashMap<String, String> previous;
+	HashMap<String, BSCache::SourceOverride> previous;
+	HashMap<String, uint64_t> installed;
+	bool preserve_changes = false;
 	Vector<String> paths;
 
 public:
-	explicit BSCacheSourceOverrideGuard(const HashMap<String, String> &p_overrides) {
+	explicit BSCacheSourceOverrideGuard(const HashMap<String, String> &p_overrides, bool p_preserve_changes = false) : preserve_changes(p_preserve_changes) {
 		for (const KeyValue<String, String> &entry : p_overrides) {
-			if (BSCache::has_source_override(entry.key)) {
-				previous[entry.key] = BSCache::get_source_code(entry.key);
-			}
-			BSCache::set_source_override(entry.key, entry.value);
+			BSCache::SourceOverride prior;
+			installed[entry.key] = BSCache::install_source_override(entry.key, entry.value, prior);
+			previous[entry.key] = prior;
 			paths.push_back(entry.key);
 		}
 	}
 
 	~BSCacheSourceOverrideGuard() {
 		for (const String &path : paths) {
-			if (previous.has(path)) {
-				BSCache::set_source_override(path, previous[path]);
-			} else {
-				BSCache::clear_source_override(path);
-			}
+			BSCache::restore_source_override(path, installed[path], previous[path], preserve_changes);
 		}
 	}
 

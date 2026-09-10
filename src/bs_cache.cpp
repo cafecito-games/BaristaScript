@@ -11,6 +11,7 @@
 /**************************************************************************/
 
 #include "bs_cache.h"
+#include "barista_script_language.h"
 
 #include <vector>
 
@@ -617,6 +618,7 @@ BSCache::ScopedCorpusState::ScopedCorpusState() {
 	{
 		std::lock_guard<std::mutex> lock(ambient->mutex);
 		local->source_overrides = ambient->source_overrides;
+		local->source_override_counter = ambient->source_override_counter;
 	}
 	corpus_state = local;
 }
@@ -649,47 +651,76 @@ BSCache *BSCache::get_singleton() {
 
 BSCache::BSCache() {}
 
-String BSCache::get_source_code(const String &p_path) {
+BSCache::SourceRead BSCache::read_source_code(const String &p_path) {
 	{
 		BSCache *cache = get_singleton();
 		std::lock_guard<std::mutex> lock(cache->mutex);
-		if (HashMap<String, String>::ConstIterator override = cache->source_overrides.find(p_path)) {
-			return override->value;
-		}
+		if (auto value = cache->source_overrides.find(p_path))
+			return { value->value.source, OK, value->value.owner, String() };
 	}
-
-	{
-		String builtin_source;
-		if (barista_script::BSBuiltinSources::get_source(p_path, builtin_source)) {
-			return builtin_source;
-		}
-	}
-
+	String builtin;
+	if (barista_script::BSBuiltinSources::get_source(p_path, builtin))
+		return { builtin, OK, 0, String() };
 	const Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
-	if (file.is_null()) {
-		ERR_FAIL_V_MSG(String(), "Script '" + p_path + "' could not be opened (error " + String::num((int64_t)FileAccess::get_open_error()) + ").");
-	}
-
+	if (file.is_null())
+		return { String(), FileAccess::get_open_error(), 0, "Script '" + p_path + "' could not be opened (error " + String::num((int64_t)FileAccess::get_open_error()) + ")." };
 	const int64_t length = file->get_length();
 	const PackedByteArray raw = file->get_buffer(length);
-	if (raw.size() != length) {
-		ERR_FAIL_V_MSG(String(), "Script '" + p_path + "' was truncated while being read.");
-	}
-
+	if (raw.size() != length)
+		return { String(), ERR_FILE_CORRUPT, 0, "Script '" + p_path + "' was truncated while being read." };
 	const String source = raw.get_string_from_utf8();
-	if (length > 0 && source.is_empty()) {
-		ERR_FAIL_V_MSG(String(), "Script '" + p_path + "' contains invalid unicode (UTF-8), so it was not loaded. Please ensure that scripts are saved in valid UTF-8 unicode.");
-	}
-	return source;
+	if (length > 0 && source.is_empty())
+		return { String(), ERR_INVALID_DATA, 0, "Script '" + p_path + "' contains invalid unicode (UTF-8), so it was not loaded. Please ensure that scripts are saved in valid UTF-8 unicode." };
+	return { source, OK, 0, String() };
+}
+
+String BSCache::get_source_code(const String &p_path) {
+	const SourceRead read = read_source_code(p_path);
+	ERR_FAIL_COND_V_MSG(read.error != OK, String(), read.error_message);
+	return read.source;
+}
+
+bool BSCache::with_current_source(const String &p_path, const String &p_source, bool p_require_available, const std::function<void()> &p_publish) {
+	const SourceRead read = read_source_code(p_path); // No I/O under any metadata lock.
+	if ((read.error != OK && p_require_available) || (read.error == OK && read.source != p_source))
+		return false;
+	BSCache *cache = get_singleton();
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	const SourceOverride *current = cache->source_overrides.getptr(p_path);
+	if (current != nullptr ? current->source != p_source || current->owner != read.override_owner : read.override_owner != 0)
+		return false;
+	p_publish();
+	return true;
+}
+
+uint64_t BSCache::install_source_override(const String &p_path, const String &p_source, SourceOverride &r_previous) {
+	// Detach caller CoW buffers before retaining them, as the original setter did.
+	const PackedByteArray utf8 = p_source.to_utf8_buffer();
+	const String source = String::utf8(reinterpret_cast<const char *>(utf8.ptr()), utf8.size());
+	BSCache *cache = get_singleton();
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	const SourceOverride *previous = cache->source_overrides.getptr(p_path);
+	r_previous = previous != nullptr ? *previous : SourceOverride();
+	const uint64_t owner = ++cache->source_override_counter;
+	cache->source_overrides[p_path] = { source, owner };
+	return owner;
+}
+
+void BSCache::restore_source_override(const String &p_path, uint64_t p_installed_owner, const SourceOverride &p_previous, bool p_preserve_changes) {
+	BSCache *cache = get_singleton();
+	std::lock_guard<std::mutex> lock(cache->mutex);
+	const SourceOverride *current = cache->source_overrides.getptr(p_path);
+	if (p_preserve_changes && (current == nullptr || current->owner != p_installed_owner))
+		return;
+	if (p_previous.owner != 0)
+		cache->source_overrides[p_path] = p_previous;
+	else
+		cache->source_overrides.erase(p_path);
 }
 
 void BSCache::set_source_override(const String &p_path, const String &p_source) {
-	std::lock_guard<std::mutex> lock(get_singleton()->mutex);
-	// Rebuild via UTF-8 round-trip so the cache never aliases a caller/GDScript CoW buffer.
-	// Shared buffers have been observed to corrupt under dense analyzer_test traffic
-	// (`class_name` -> `class_nane`), which flakes Linux CI.
-	const PackedByteArray utf8 = p_source.to_utf8_buffer();
-	get_singleton()->source_overrides[p_path] = String::utf8(reinterpret_cast<const char *>(utf8.ptr()), utf8.size());
+	SourceOverride ignored;
+	install_source_override(p_path, p_source, ignored);
 }
 
 bool BSCache::has_source_override(const String &p_path) {
@@ -742,30 +773,116 @@ void BSCache::clear_dependency_edges(BSCache *p_cache, const String &p_path) {
 	p_cache->inverse_dependencies.erase(p_path);
 }
 
-void BSCache::remove_script(const String &p_path) {
+void BSCache::prepare_semantic_refresh(const String &p_path, const String &p_to, uint64_t &r_token, uint64_t &r_to_token) {
 	BSCache *cache = get_singleton();
-	if (cache == nullptr) {
-		return;
+	auto *language = barista_script::BaristaScriptLanguage::get_singleton();
+	HashSet<String> seeds;
+	seeds.insert(p_path);
+	if (!p_to.is_empty())
+		seeds.insert(p_to);
+	if (language != nullptr) {
+		for (const String &path : { p_path, p_to }) {
+			barista_script::BSDeclarationRecord record;
+			if (!path.is_empty() && language->get_declaration_index().try_get_by_path(path, record)) {
+				for (const String &observer : collect_parsers_reaching_namespace(record.namespace_name))
+					seeds.insert(observer);
+			}
+		}
 	}
+	Vector<Ref<BSParserRef>> detached;
+	{
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		// Capture both existing inverse maps before dropping any edge. This is only
+		// a transaction-local set; parser and compile maps keep their distinct owners.
+		HashSet<String> affected;
+		List<String> pending;
+		for (const String &seed : seeds)
+			pending.push_back(seed);
+		while (!pending.is_empty()) {
+			const String path = pending.front()->get();
+			pending.pop_front();
+			if (affected.has(path))
+				continue;
+			affected.insert(path);
+			for (const auto *inverse : { &cache->parser_inverse_dependencies, &cache->inverse_dependencies }) {
+				if (const auto *owners = inverse->getptr(path)) {
+					for (const String &owner : *owners)
+						pending.push_back(owner);
+				}
+			}
+		}
+		for (const String &path : affected) {
+			if (language != nullptr)
+				language->get_declaration_index().invalidate_claims(path);
+			barista_script::BSConformanceRegistry::get_singleton()->clear_file(path);
+			if (const auto *ref = cache->parser_map.getptr(path)) {
+				detached.push_back(*ref);
+				if (ref->is_valid()) {
+					(*ref)->abandoned = true;
+					cache->abandoned_parser_map[path].push_back((*ref)->get_instance_id());
+				}
+				cache->parser_map.erase(path);
+			}
+			clear_parser_dependency_edges(cache, path);
+			cache->parser_inverse_dependencies.erase(path);
+			clear_dependency_edges(cache, path);
+		}
+		if (language != nullptr) {
+			if (p_to.is_empty())
+				r_token = language->get_declaration_index().claim_refresh(p_path);
+			else
+				language->get_declaration_index().claim_rename_refresh(p_path, p_to, r_token, r_to_token);
+		}
+	}
+	// detached holds every removed ref until all cache/index/registry locks are gone.
+}
 
-	remove_parser(p_path);
+uint64_t BSCache::prepare_semantic_refresh(const String &p_path) {
+	uint64_t token = 0, unused = 0;
+	prepare_semantic_refresh(p_path, String(), token, unused);
+	return token;
+}
 
-	std::lock_guard<std::mutex> lock(cache->mutex);
-	clear_dependency_edges(cache, p_path);
-	cache->source_overrides.erase(p_path);
+bool BSCache::remove_semantic_path(const String &p_path, uint64_t p_token) {
+	auto *language = barista_script::BaristaScriptLanguage::get_singleton();
+	Vector<String> changed;
+	bool removed = false;
+	{
+		BSCache *cache = get_singleton();
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		removed = language == nullptr || language->get_declaration_index().remove_path(p_path, p_token, &changed, [&]() {
+			barista_script::BSConformanceRegistry::get_singleton()->clear_file(p_path);
+		});
+		if (removed)
+			cache->source_overrides.erase(p_path);
+	}
+	if (language != nullptr && removed)
+		language->notify_conformance_namespaces_changed(changed);
+	return removed;
+}
+
+void BSCache::remove_script(const String &p_path) {
+	const String path = p_path.simplify_path();
+	if (path.is_empty())
+		return;
+	const uint64_t token = prepare_semantic_refresh(path);
+	remove_semantic_path(path, token);
 }
 
 void BSCache::move_script(const String &p_from, const String &p_to) {
-	if (p_from == p_to || p_from.is_empty()) {
+	const String from = p_from.simplify_path(), to = p_to.simplify_path();
+	if (from == to || from.is_empty() || to.is_empty())
 		return;
+	uint64_t from_token = 0, to_token = 0;
+	prepare_semantic_refresh(from, to, from_token, to_token);
+	remove_semantic_path(from, from_token);
+	const SourceRead source = read_source_code(to);
+	auto *language = barista_script::BaristaScriptLanguage::get_singleton();
+	if (language != nullptr && source.error == OK) {
+		language->synchronize_declaration_path_from_source(to, source.source, to_token);
+	} else {
+		remove_semantic_path(to, to_token);
 	}
-	// The moved script keeps nothing of its old dependency edges; whoever reloads it records them
-	// again against the new path, which is why p_to is not consulted here.
-	remove_parser(p_from);
-	BSCache *cache = get_singleton();
-	std::lock_guard<std::mutex> lock(cache->mutex);
-	clear_dependency_edges(cache, p_from);
-	cache->source_overrides.erase(p_from);
 }
 
 void BSCache::clear() {
@@ -1034,31 +1151,40 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 	const String owner = p_owner.simplify_path();
 
 	{
-		std::lock_guard<std::mutex> lock(cache->mutex);
-		if (cache->cleared) {
-			r_error = ERR_BUSY;
-			return ref;
-		}
-
-		if (cache->parser_map.has(path)) {
-			ref = cache->parser_map[path];
-			if (ref.is_null()) {
-				r_error = ERR_INVALID_DATA;
+		std::unique_lock<std::mutex> lock(cache->mutex);
+		bool source_checked = false;
+		bool external_source_exists = false;
+		for (;;) {
+			if (cache->cleared) {
+				r_error = ERR_BUSY;
 				return ref;
 			}
-		} else {
-			// Missing files must not invent cache entries or dependency edges (unless an
-			// in-memory override or builtin source supplies the text). Checked under the
-			// cache lock so we do not re-enter through has_source_override().
-			String builtin_source;
-			const bool has_builtin = barista_script::BSBuiltinSources::get_source(path, builtin_source);
-			if (!cache->source_overrides.has(path) && !has_builtin && !FileAccess::file_exists(path)) {
+			if (cache->parser_map.has(path)) {
+				ref = cache->parser_map[path];
+				if (ref.is_null()) {
+					r_error = ERR_INVALID_DATA;
+					return ref;
+				}
+				break;
+			}
+			if (cache->source_overrides.has(path) || external_source_exists) {
+				ref.instantiate();
+				ref->path = path;
+				cache->parser_map[path] = ref;
+				break;
+			}
+			if (source_checked) {
+				// Missing files must not invent entries or dependency edges.
 				r_error = ERR_FILE_NOT_FOUND;
 				return ref;
 			}
-			ref.instantiate();
-			ref->path = path;
-			cache->parser_map[path] = ref;
+			// Admission can consult disk/builtin sources only outside the cache
+			// lock. Recheck all in-memory state after reacquiring it.
+			lock.unlock();
+			String builtin_source;
+			external_source_exists = barista_script::BSBuiltinSources::get_source(path, builtin_source) || FileAccess::file_exists(path);
+			source_checked = true;
+			lock.lock();
 		}
 
 		// Record edges only after the path is admitted so missing files cannot leave ghost

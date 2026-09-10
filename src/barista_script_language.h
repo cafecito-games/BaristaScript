@@ -148,7 +148,7 @@ public:
 	uint64_t claim_declaration_refresh(const String &p_path);
 	bool commit_declaration_record(uint64_t p_token, const BSDeclarationRecord &p_record);
 	bool remove_declaration_path(const String &p_path, uint64_t p_token);
-	void synchronize_declaration_path_from_source(const String &p_path, const String &p_source);
+	Error synchronize_declaration_path_from_source(const String &p_path, const String &p_source, uint64_t p_original_claim = 0);
 	/**
 	 * Name lookup with digest validation (#44 leftover / #58). When source is available and the
 	 * stored digest mismatches, discards the stale entry, schedules reanalysis, and retries.

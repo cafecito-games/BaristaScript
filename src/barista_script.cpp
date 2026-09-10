@@ -74,9 +74,23 @@ godot::String BaristaScript::_get_source_code() const {
 
 void BaristaScript::_set_source_code(const godot::String &p_code) {
 	source_code = p_code;
+	const String path = canonicalize_path(get_path());
+	if (!path.is_empty() && path.begins_with("res://")) {
+		BSCache::set_source_override(path, p_code);
+		if (auto *language = BaristaScriptLanguage::get_singleton())
+			language->synchronize_declaration_path_from_source(path, p_code);
+	}
 }
 
 godot::Error BaristaScript::_reload(bool) {
+	// FoundryScript::reload analyzes its existing source; load_source_code is the
+	// separate disk producer. Keep unsaved and empty resource buffers authoritative.
+	const String path = canonicalize_path(get_path());
+	if (path.is_empty())
+		return godot::OK;
+	if (auto *language = BaristaScriptLanguage::get_singleton()) {
+		return language->synchronize_declaration_path_from_source(path, source_code);
+	}
 	return godot::OK;
 }
 

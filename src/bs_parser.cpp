@@ -7,6 +7,7 @@
 /**************************************************************************/
 
 #include "bs_parser.h"
+#include "barista_script_language.h"
 
 #include <climits>
 
@@ -558,6 +559,10 @@ Error BSParser::parse(const String &p_source_code, const String &p_script_path, 
 	// (`class_name` -> `class_nane`), flaking Linux CI.
 	const PackedByteArray source_utf8 = p_source_code.to_utf8_buffer();
 	String source = String::utf8(reinterpret_cast<const char *>(source_utf8.ptr()), source_utf8.size());
+	analyzed_source = source;
+	if (BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton()) {
+		source_refresh_revision = language->get_declaration_index().get_refresh_revision(p_script_path);
+	}
 	int cursor_line = -1;
 	int cursor_column = -1;
 	for_completion = p_for_completion;
