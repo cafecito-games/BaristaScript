@@ -418,15 +418,20 @@ TEST_SUITE("preload_analyzer") {
 		}
 	}
 	TEST_CASE("preload_of_cyclic_inheritance_remains_invalid") {
-		StorageFixture fixture;
-		BS_TEST_REQUIRE(!provider(fixture, "inherit_a", "extends \"inherit_b.barista\"\n").is_empty());
-		BS_TEST_REQUIRE(!provider(fixture, "inherit_b", "extends \"inherit_a.barista\"\n").is_empty());
-		BSParser consumer;
-		BS_TEST_REQUIRE(consumer.parse("const P = preload(\"inherit_a.barista\")\n", "res://tests/x3/consumer.barista", false) == OK);
-		BSAnalyzer analyzer(&consumer);
-		CHECK(analyzer.analyze() != OK);
-		auto *load = static_cast<BSParser::PreloadNode *>(consumer.get_tree()->get_member("P").constant->initializer);
-		diagnostic(consumer, "Could not preload resource script \"res://tests/x3/inherit_a.barista\".", load->path);
+		for (bool first_a : { true, false }) {
+			StorageFixture fixture;
+			BS_TEST_REQUIRE(!provider(fixture, "inherit_a", "extends \"inherit_b.barista\"\n").is_empty());
+			BS_TEST_REQUIRE(!provider(fixture, "inherit_b", "extends \"inherit_a.barista\"\n").is_empty());
+			for (int use = 0; use < 3; ++use) {
+				const String file = (first_a == (use != 1)) ? "inherit_a.barista" : "inherit_b.barista";
+				BSParser consumer;
+				BS_TEST_REQUIRE(consumer.parse("const P = preload(\"" + file + "\")\n", "res://tests/x3/consumer.barista", false) == OK);
+				BSAnalyzer analyzer(&consumer);
+				CHECK(analyzer.analyze() != OK);
+				auto *load = static_cast<BSParser::PreloadNode *>(consumer.get_tree()->get_member("P").constant->initializer);
+				diagnostic(consumer, "Could not preload resource script \"res://tests/x3/" + file + "\".", load->path);
+			}
+		}
 	}
 	TEST_CASE("cold_probe_reentrancy_terminates_without_consumer_load_edges") {
 		StorageFixture fixture;
@@ -516,5 +521,94 @@ TEST_SUITE("preload_analyzer") {
 		CHECK(BSAnalyzer::has_materialized_constant_value(null_value));
 		CHECK(null_value->reduced_value.get_type() == Variant::NIL);
 		CHECK(consumer.get_tree()->get_member("RealNull").get_datatype().is_nullable);
+	}
+	TEST_CASE("semantic_container_selection_preserves_retained_handle") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "selected", "class_name SelectedProvider\nconst VALUE = 17\n").is_empty());
+		for (const String &selection : { String("[P][0]"), String("A[0]"), String("{\"provider\": P}[\"provider\"]"), String("D[\"provider\"]"), String("(P, 1).0"), String("T.0"), String("{P: P}[P]"), String("[1, P][-1]") }) {
+			CAPTURE(selection);
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("const P = preload(\"selected.barista\")\nconst A = [P]\nconst D = {\"provider\": P}\nconst T = (P, 1)\nconst Selected = " + selection + "\nvar value: int = Selected.VALUE\nvar instance: Selected\n", "res://tests/x3/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() == OK);
+			no_errors(consumer);
+			auto *selected = consumer.get_tree()->get_member("Selected").constant->initializer;
+			CHECK(selected->is_constant);
+			CHECK_FALSE(BSAnalyzer::has_materialized_constant_value(selected));
+			CHECK(selected->get_datatype().is_meta_type);
+			CHECK(selected->get_datatype().class_type == consumer.get_tree()->get_member("P").get_datatype().class_type);
+			CHECK(consumer.get_tree()->get_member("instance").get_datatype().class_type == selected->get_datatype().class_type);
+		}
+	}
+	TEST_CASE("semantic_script_dictionary_keys_keep_duplicate_identity") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "key", "class_name KeyProvider\n").is_empty());
+		for (const String &key : { String("P"), String("Alias") }) {
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("const P = preload(\"key.barista\")\nconst Alias = P\nvar mapping = {\n\tP: 1,\n\t" + key + ": 2,\n}\n", "res://tests/x3/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() != OK);
+			auto *mapping = static_cast<BSParser::DictionaryNode *>(consumer.get_tree()->get_member("mapping").variable->initializer);
+			BS_TEST_REQUIRE(mapping->elements.size() == 2);
+			diagnostic(consumer, "Key \"res://tests/x3/key.barista\" was already used in this dictionary (at line 4).", mapping->elements[1].key);
+		}
+	}
+	TEST_CASE("semantic_container_truth_follows_constant_aliases") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "truth", "class_name TruthProvider\n").is_empty());
+		for (const String &condition : { String("[P]"), String("A"), String("Alias"), String("D"), String("T"), String("not []"), String("not null") }) {
+			CAPTURE(condition);
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("const P = preload(\"truth.barista\")\nconst A = [P]\nconst Alias = A\nconst D = {\"provider\": P}\nconst T = (P, 1)\nconst Selected = preload(\"truth.barista\" if " + condition + " else \"missing.barista\")\n", "res://tests/x3/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() == OK);
+			no_errors(consumer);
+			CHECK(consumer.get_tree()->get_member("Selected").get_datatype().class_type == consumer.get_tree()->get_member("P").get_datatype().class_type);
+		}
+	}
+	TEST_CASE("nested_inheritance_reentrant_base_is_legal_in_both_orders") {
+		for (bool first_a : { true, false }) {
+			StorageFixture fixture;
+			const String a = provider(fixture, "order_a", "extends \"order_b.barista\"\n");
+			const String b = provider(fixture, "order_b", "class Child extends \"order_a.barista\":\n\tpass\n");
+			BS_TEST_REQUIRE(!a.is_empty() && !b.is_empty());
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("const P = preload(\"" + (first_a ? a : b) + "\")\n", "res://tests/x3/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() == OK);
+			no_errors(consumer);
+			Error error = OK;
+			auto a_ref = BSCache::get_parser(a, BSParserRef::INHERITANCE_SOLVED, error);
+			BS_TEST_REQUIRE(a_ref.is_valid() && error == OK);
+			auto b_ref = BSCache::get_parser(b, BSParserRef::INHERITANCE_SOLVED, error);
+			BS_TEST_REQUIRE(b_ref.is_valid() && error == OK);
+			CHECK(a_ref->get_parser()->get_tree()->base_type.class_type == b_ref->get_parser()->get_tree());
+			CHECK(b_ref->get_parser()->get_tree()->get_member("Child").m_class->base_type.class_type == a_ref->get_parser()->get_tree());
+		}
+	}
+	TEST_CASE("semantic_selection_rejects_missing_elements_and_preserves_materialized_values") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "indexed", "class_name IndexedProvider\n").is_empty());
+		for (bool dictionary : { false, true }) {
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("const P = preload(\"indexed.barista\")\nconst A = [P]\nconst D = {\"provider\": P}\nvar value = " + String(dictionary ? "D[\"missing\"]" : "A[2]") + "\n", "res://tests/x3/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() != OK);
+			auto *selection = static_cast<BSParser::SubscriptNode *>(consumer.get_tree()->get_member("value").variable->initializer);
+			diagnostic(consumer, dictionary ? "Cannot get index \"missing\" from \"Dictionary\"." : "Cannot get index \"2\" from \"Array\".", selection->index);
+		}
+		BSParser ordinary;
+		BS_TEST_REQUIRE(ordinary.parse("const A = [17][0]\nconst D = {\"value\": 23}[\"value\"]\nconst T = (31, 1).0\nconst N = [null][0]\n", "res://tests/x3/ordinary.barista", false) == OK);
+		BSAnalyzer analyzer(&ordinary);
+		CHECK(analyzer.analyze() == OK);
+		no_errors(ordinary);
+		for (const auto &entry : { std::pair<const char *, int>("A", 17), { "D", 23 }, { "T", 31 } }) {
+			auto *value = ordinary.get_tree()->get_member(entry.first).constant->initializer;
+			CHECK(BSAnalyzer::has_materialized_constant_value(value));
+			CHECK(int64_t(value->reduced_value) == entry.second);
+		}
+		auto *null_value = ordinary.get_tree()->get_member("N").constant->initializer;
+		CHECK(BSAnalyzer::has_materialized_constant_value(null_value));
+		CHECK(null_value->reduced_value.get_type() == Variant::NIL);
 	}
 }

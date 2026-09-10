@@ -81,7 +81,7 @@ constexpr Instantiable INSTANTIABLE[] = {
 	{ "ImplicitBase", true },
 	{ "PathDerived", true },
 	{ "RelativeDerived", true },
-	{ "CycleA", true },
+	{ "CycleA", false },
 	{ "ChainHead", true },
 	{ "InnerDerived", true },
 	{ "BrokenBody", false },

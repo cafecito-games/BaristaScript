@@ -68,6 +68,109 @@ static bool _is_static_script_handle(const BSParser::ExpressionNode *p_expressio
 			p_expression->get_datatype().class_type != nullptr;
 }
 
+static bool _has_known_constant_truth(const BSParser::ExpressionNode *p_expression);
+static bool _constant_truth(const BSParser::ExpressionNode *p_expression);
+static bool _select_semantic_constant(const BSParser::SubscriptNode *p_subscript,
+		const BSParser::ExpressionNode *&r_selected, HashSet<const BSParser::ExpressionNode *> &r_visited);
+
+// Follow only already-resolved constant syntax. This borrows the retained AST;
+// it never resolves another owner, calls user code, or creates a runtime carrier.
+static const BSParser::ExpressionNode *_constant_origin(const BSParser::ExpressionNode *p_expression,
+		HashSet<const BSParser::ExpressionNode *> &r_visited) {
+	while (p_expression != nullptr && p_expression->is_constant && !r_visited.has(p_expression)) {
+		r_visited.insert(p_expression);
+		if (p_expression->type == BSParser::Node::IDENTIFIER) {
+			const auto *identifier = static_cast<const BSParser::IdentifierNode *>(p_expression);
+			if (identifier->constant_source != nullptr) {
+				p_expression = identifier->constant_source->initializer;
+				continue;
+			}
+		} else if (p_expression->type == BSParser::Node::TERNARY_OPERATOR) {
+			const auto *ternary = static_cast<const BSParser::TernaryOpNode *>(p_expression);
+			if (_has_known_constant_truth(ternary->condition)) {
+				p_expression = _constant_truth(ternary->condition) ? ternary->true_expr : ternary->false_expr;
+				continue;
+			}
+		} else if (p_expression->type == BSParser::Node::SUBSCRIPT) {
+			const BSParser::ExpressionNode *selected = nullptr;
+			if (_select_semantic_constant(static_cast<const BSParser::SubscriptNode *>(p_expression), selected, r_visited)) {
+				p_expression = selected;
+				continue;
+			}
+		}
+		return p_expression;
+	}
+	return nullptr;
+}
+
+static bool _constant_key_equal(const BSParser::ExpressionNode *p_left, const BSParser::ExpressionNode *p_right, bool &r_known) {
+	const bool left_handle = _is_static_script_handle(p_left), right_handle = _is_static_script_handle(p_right);
+	const bool left_value = BSAnalyzer::has_materialized_constant_value(p_left), right_value = BSAnalyzer::has_materialized_constant_value(p_right);
+	r_known = (left_handle || left_value) && (right_handle || right_value);
+	if (!r_known) {
+		return false;
+	}
+	if (left_handle || right_handle) {
+		return left_handle && right_handle && p_left->get_datatype().class_type == p_right->get_datatype().class_type;
+	}
+	// Use the same String/StringName-aware key comparator as actual Dictionary get.
+	Dictionary key;
+	key[p_left->reduced_value] = true;
+	return key.has(p_right->reduced_value);
+}
+
+static bool _select_semantic_constant(const BSParser::SubscriptNode *p_subscript,
+		const BSParser::ExpressionNode *&r_selected, HashSet<const BSParser::ExpressionNode *> &r_visited) {
+	r_selected = nullptr;
+	if (p_subscript->base == nullptr || !p_subscript->base->is_constant ||
+			BSAnalyzer::has_materialized_constant_value(p_subscript->base)) {
+		return false;
+	}
+	const auto *origin = _constant_origin(p_subscript->base, r_visited);
+	if (origin == nullptr) {
+		return false;
+	}
+	const Vector<BSParser::ExpressionNode *> *elements = nullptr;
+	if (origin->type == BSParser::Node::ARRAY) {
+		elements = &static_cast<const BSParser::ArrayNode *>(origin)->elements;
+	} else if (origin->type == BSParser::Node::TUPLE_LITERAL) {
+		elements = &static_cast<const BSParser::TupleLiteralNode *>(origin)->elements;
+	} else if (origin->type == BSParser::Node::CALL && static_cast<const BSParser::CallNode *>(origin)->is_tuple_construction) {
+		elements = &static_cast<const BSParser::CallNode *>(origin)->arguments;
+	}
+	if (elements != nullptr) {
+		int64_t index = 0;
+		if (p_subscript->is_attribute && !p_subscript->is_tuple_index && p_subscript->attribute != nullptr && origin->get_datatype().kind == BSParser::DataType::TUPLE) {
+			index = origin->get_datatype().get_tuple_field_index(p_subscript->attribute->name);
+		} else if (BSAnalyzer::has_materialized_constant_value(p_subscript->index) && p_subscript->index->reduced_value.get_type() == Variant::INT) {
+			index = p_subscript->index->reduced_value;
+			if (index < 0 && origin->type == BSParser::Node::ARRAY) {
+				index += elements->size();
+			}
+		} else {
+			return false;
+		}
+		if (index >= 0 && index < elements->size()) {
+			r_selected = (*elements)[index];
+		}
+		return true;
+	}
+	if (origin->type == BSParser::Node::DICTIONARY && p_subscript->index != nullptr && p_subscript->index->is_constant) {
+		for (const auto &pair : static_cast<const BSParser::DictionaryNode *>(origin)->elements) {
+			bool known = false;
+			if (_constant_key_equal(pair.key, p_subscript->index, known)) {
+				r_selected = pair.value;
+				return true;
+			}
+			if (!known) {
+				return false;
+			}
+		}
+		return true;
+	}
+	return false;
+}
+
 static bool _has_known_constant_truth(const BSParser::ExpressionNode *p_expression) {
 	if (BSAnalyzer::has_materialized_constant_value(p_expression) || _is_static_script_handle(p_expression)) {
 		return true;
@@ -75,11 +178,16 @@ static bool _has_known_constant_truth(const BSParser::ExpressionNode *p_expressi
 	if (p_expression == nullptr || !p_expression->is_constant || !p_expression->is_unmaterialized_constant) {
 		return false;
 	}
-	// A pure container needs an unavailable element to carry this marker, so it
-	// cannot be empty. Unknown scalar results never claim a truth value.
-	const auto type = p_expression->get_datatype();
-	return p_expression->type == BSParser::Node::ARRAY || p_expression->type == BSParser::Node::DICTIONARY ||
-			p_expression->type == BSParser::Node::TUPLE_LITERAL || type.kind == BSParser::DataType::TUPLE || type.is_tagged_union_type();
+	HashSet<const BSParser::ExpressionNode *> visited;
+	const auto *origin = _constant_origin(p_expression, visited);
+	if (origin == nullptr) {
+		return false;
+	}
+	// Only known nonempty literal/tuple structure proves truth. In particular an
+	// arbitrary unavailable Array-returning operation may produce an empty array.
+	const auto type = origin->get_datatype();
+	return origin->type == BSParser::Node::ARRAY || origin->type == BSParser::Node::DICTIONARY ||
+			origin->type == BSParser::Node::TUPLE_LITERAL || type.kind == BSParser::DataType::TUPLE || type.is_tagged_union_type();
 }
 
 static void _preserve_unmaterialized_constant(BSParser::ExpressionNode *p_expression, const Vector<BSParser::ExpressionNode *> &p_children) {
@@ -873,6 +981,21 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 	class_meta.builtin_type = Variant::OBJECT;
 	p_class->set_datatype(class_meta);
 
+	const auto acquire_base_head = [&](const String &p_path, bool p_head_is_base, Error &r_error) {
+		Ref<BSParserRef> ref = get_depended_parser(p_path, BSParserRef::PARSED, r_error);
+		if (ref.is_valid() && r_error == OK) {
+			// Keep the known edge in the existing RESOLVING datatype before recursive
+			// acquisition. A -> B -> A is then visible as actual ancestry while a
+			// legal nested Child -> A -> B is not confused with a parser load cycle.
+			// A quoted path with a nested tail is not yet a known head-base edge.
+			if (p_head_is_base && ref->get_parser() != nullptr) {
+				p_class->base_type.class_type = ref->get_parser()->get_tree();
+			}
+			r_error = ref->raise_status(BSParserRef::INHERITANCE_SOLVED);
+		}
+		return ref;
+	};
+
 	BSParser::DataType result;
 	if (!p_class->extends_used) {
 		result.kind = BSParser::DataType::NATIVE;
@@ -889,7 +1012,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			push_error(vformat(R"(Cannot depend on "%s": path is outside the bootstrap allowed dependency root.)", path), p_class);
 		}
 		Error err = OK;
-		Ref<BSParserRef> base_ref = get_depended_parser(path, BSParserRef::INHERITANCE_SOLVED, err);
+		Ref<BSParserRef> base_ref = acquire_base_head(path, p_class->extends.is_empty(), err);
 		if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr || base_ref->get_parser()->get_tree() == nullptr) {
 			push_error(vformat(R"(Could not resolve base script "%s".)", path), p_class);
 			p_class->base_type = BSParser::DataType();
@@ -1003,7 +1126,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 					push_error(vformat(R"(Cannot depend on global class "%s" at "%s": path is outside the bootstrap allowed dependency root.)", qualified, path), p_class);
 				}
 				Error err = OK;
-				Ref<BSParserRef> base_ref = get_depended_parser(path, BSParserRef::INHERITANCE_SOLVED, err);
+				Ref<BSParserRef> base_ref = acquire_base_head(path, true, err);
 				if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr) {
 					push_error(vformat(R"(Could not resolve global class base "%s".)", qualified), p_class);
 					p_class->base_type = BSParser::DataType();
@@ -1099,10 +1222,11 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 	}
 
 	// Foundry surface:833-841 @ c9d5e35. Reentrant cache acquisition can
-	// return a head whose inheritance is still resolving; that is also a cycle.
+	// return an in-progress head while resolving a legal nested child. Only
+	// concrete class ancestry proves a cycle; parser phase is not an edge.
 	HashSet<const BSParser::ClassNode *> inheritance_chain;
 	for (const BSParser::ClassNode *base = result.class_type; base != nullptr; base = base->base_type.class_type) {
-		if (base == p_class || base->base_type.is_resolving() || inheritance_chain.has(base)) {
+		if (base == p_class || inheritance_chain.has(base)) {
 			push_error("Cyclic inheritance.", p_class);
 			failed_name_lookups.insert(p_class);
 			p_class->base_type = BSParser::DataType();
@@ -3820,7 +3944,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 		// Pin14667-14683: an already-materialized ordinary constant uses Variant get.
 		// Local literal reducers eagerly fold earlier than the pin; direct literal indexing
 		// must still pass the static branch below (including its distinct diagnostics).
-		if (p_subscript->base->is_constant && p_subscript->index != nullptr && p_subscript->index->is_constant &&
+		if (has_materialized_constant_value(p_subscript->base) && has_materialized_constant_value(p_subscript->index) &&
 				p_subscript->base->type != BSParser::Node::ARRAY && p_subscript->base->type != BSParser::Node::DICTIONARY &&
 				!base_type.is_meta_type && p_subscript->base->reduced_value.get_type() != Variant::OBJECT) {
 			bool reduced = false;
@@ -4170,6 +4294,7 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 	// Godot Dictionary supplies the same string/StringName key equivalence as Foundry's
 	// StringLikeVariantComparator, so it also preserves the first value line for diagnostics.
 	Dictionary first_value_lines;
+	HashMap<const BSParser::ClassNode *, int> script_key_lines;
 	for (int i = 0; i < p_dictionary->elements.size(); i++) {
 		const auto &element = p_dictionary->elements[i];
 		if (p_dictionary->style == BSParser::DictionaryNode::PYTHON_DICT) {
@@ -4177,7 +4302,18 @@ void BSAnalyzer::reduce_dictionary(BSParser::DictionaryNode *p_dictionary) {
 		}
 		reduce_expression(element.value);
 
-		if (has_materialized_constant_value(element.key)) {
+		if (element.key != nullptr && element.key->is_constant && _is_static_script_handle(element.key)) {
+			const auto key_type = element.key->get_datatype();
+			if (script_key_lines.has(key_type.class_type)) {
+				// The pin prints a Script Object ID. M3 has no runtime Script object;
+				// normalize only that interpolation to its retained canonical path.
+				push_error(vformat(R"(Key "%s" was already used in this dictionary (at line %d).)", key_type.script_path,
+								   int(script_key_lines[key_type.class_type])),
+						element.key);
+			} else {
+				script_key_lines[key_type.class_type] = element.value != nullptr ? element.value->start_line : element.key->start_line;
+			}
+		} else if (has_materialized_constant_value(element.key)) {
 			if (first_value_lines.has(element.key->reduced_value)) {
 				push_error(vformat(R"(Key "%s" was already used in this dictionary (at line %d).)", element.key->reduced_value,
 								   int(first_value_lines[element.key->reduced_value])),
@@ -7139,6 +7275,23 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			BSParser::SubscriptNode *subscript = static_cast<BSParser::SubscriptNode *>(p_expression);
 			const int error_count = parser->get_errors().size();
 			reduce_subscript(subscript);
+			if (!subscript->is_constant && parser->get_errors().size() == error_count) {
+				HashSet<const BSParser::ExpressionNode *> visited;
+				const BSParser::ExpressionNode *selected = nullptr;
+				if (_select_semantic_constant(subscript, selected, visited)) {
+					if (selected != nullptr && selected->is_constant) {
+						subscript->is_constant = true;
+						subscript->is_unmaterialized_constant = !has_materialized_constant_value(selected);
+						subscript->reduced_value = selected->reduced_value;
+						subscript->set_datatype(selected->get_datatype());
+					} else if (selected == nullptr && subscript->index != nullptr) {
+						// Preserve the invalid-index diagnostic without printing absent NIL
+						// as a value. Only the unavailable container interpolation is static.
+						const String index = _is_static_script_handle(subscript->index) ? subscript->index->get_datatype().script_path : subscript->index->reduced_value.stringify();
+						push_error(vformat(R"(Cannot get index "%s" from "%s".)", index, subscript->base->get_datatype().to_string()), subscript->index);
+					}
+				}
+			}
 			if (!subscript->is_constant && parser->get_errors().size() == error_count) {
 				bool reduced = false;
 				Variant value = make_expression_reduced_value(subscript, reduced);
