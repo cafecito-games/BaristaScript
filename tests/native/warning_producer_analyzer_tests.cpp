@@ -220,6 +220,27 @@ TEST_SUITE("warning_producer_analyzer") {
 			warning(parser, 1, BSWarning::STATIC_CALLED_ON_INSTANCE, "The function \"static_func()\" is a static function but was called from an instance. Instead, it should be directly called from the type: \"TestStaticCalledOnInstance.static_func()\".", 19, 5, 24);
 			warning(parser, 2, BSWarning::STATIC_CALLED_ON_INSTANCE, "The function \"static_func()\" is a static function but was called from an instance. Instead, it should be directly called from the type: \"Inner.static_func()\".", 23, 5, 24);
 		}
+		// Pin9028-9037 emits discard before static for a root nonvoid instance call.
+		BSParser combined;
+		BS_TEST_REQUIRE(combined.parse("func test():\n\t\"\".num_uint64(1)\n", "res://tests/combined_order.barista", false) == OK);
+		BSAnalyzer analyzer(&combined);
+		CHECK(analyzer.analyze() == OK);
+		diagnostics(combined);
+		CHECK(combined.get_errors().is_empty());
+		CHECK(combined.get_warnings().size() == 2);
+		warning(combined, 0, BSWarning::RETURN_VALUE_DISCARDED, "The function \"num_uint64()\" returns a value that will be discarded if not used.", 2, 5, 21);
+		warning(combined, 1, BSWarning::STATIC_CALLED_ON_INSTANCE, "The function \"num_uint64()\" is a static function but was called from an instance. Instead, it should be directly called from the type: \"String.num_uint64()\".", 2, 5, 21);
+		BSParser class_calls;
+		const String class_source = "class_name OrderCalls\nstatic func value() -> int:\n\treturn 1\nfunc test():\n\tvar other := OrderCalls.new()\n\tother.value()\n\tprint(other.value())\n\tprint(OrderCalls.value())\n\tprint(self.value())\n\tprint(value())\n";
+		BS_TEST_REQUIRE(class_calls.parse(class_source, "res://tests/class_order.barista", false) == OK);
+		BSAnalyzer class_analyzer(&class_calls);
+		CHECK(class_analyzer.analyze() == OK);
+		diagnostics(class_calls);
+		CHECK(class_calls.get_errors().is_empty());
+		CHECK(class_calls.get_warnings().size() == 3);
+		warning(class_calls, 0, BSWarning::RETURN_VALUE_DISCARDED, "The function \"value()\" returns a value that will be discarded if not used.", 6, 5, 18);
+		warning(class_calls, 1, BSWarning::STATIC_CALLED_ON_INSTANCE, "The function \"value()\" is a static function but was called from an instance. Instead, it should be directly called from the type: \"OrderCalls.value()\".", 6, 5, 18);
+		warning(class_calls, 2, BSWarning::STATIC_CALLED_ON_INSTANCE, "The function \"value()\" is a static function but was called from an instance. Instead, it should be directly called from the type: \"OrderCalls.value()\".", 7, 11, 24);
 	}
 	TEST_CASE("original_unassigned_variable") {
 		StorageFixture storage;
@@ -257,6 +278,48 @@ TEST_SUITE("warning_producer_analyzer") {
 			diagnostics(parser);
 			CHECK(rendered(parser) == R"EXPECTED(~~ WARNING at line 4: (UNASSIGNED_VARIABLE_OP_ASSIGN) The variable "__" is modified with the compound-assignment operator "+=" but was not previously initialized.)EXPECTED");
 			warning(parser, 0, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, "The variable \"__\" is modified with the compound-assignment operator \"+=\" but was not previously initialized.", 4, 5, 13);
+		}
+		profile.level(BSWarning::INT_AS_ENUM_WITHOUT_CAST, BSWarning::WARN);
+		profile.level(BSWarning::UNUSED_VARIABLE, BSWarning::IGNORE);
+		for (const char *declaration : { "var value: E", "var value: E = E.A", "var value: int" }) {
+			BSParser compound;
+			const String input = String("enum E:\n\tA = 0\nfunc test():\n\t") + declaration + "\n\tvalue += 1\n";
+			if (compound.parse(input, "res://tests/compound_order.barista", false) != OK) {
+				CHECK(false);
+				diagnostics(compound);
+				continue;
+			}
+			BSAnalyzer analyzer(&compound);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(compound);
+			CHECK(compound.get_errors().is_empty());
+			const bool is_enum = String(declaration).contains(": E");
+			const bool initialized = String(declaration).contains("= E.A");
+			CHECK(compound.get_warnings().size() == (is_enum && !initialized ? 2 : 1));
+			if (is_enum)
+				warning(compound, 0, BSWarning::INT_AS_ENUM_WITHOUT_CAST, "Integer used when an enum value is expected. If this is intended, cast the integer to the enum type using the \"as\" keyword.", 5, 14, 15);
+			if (!initialized)
+				warning(compound, is_enum ? 1 : 0, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, "The variable \"value\" is modified with the compound-assignment operator \"+=\" but was not previously initialized.", 5, 5, 15);
+		}
+		// Suppressing either member of the combined pair preserves the other producer.
+		for (bool suppress_enum : { true, false }) {
+			BSParser compound;
+			const String ignored = suppress_enum ? "int_as_enum_without_cast" : "unassigned_variable_op_assign";
+			const String input = String("enum E:\n\tA = 0\nfunc test():\n\tvar value: E\n\t@warning_ignore(\"") + ignored + "\")\n\tvalue += 1\n";
+			if (compound.parse(input, "res://tests/compound_suppression.barista", false) != OK) {
+				CHECK(false);
+				diagnostics(compound);
+				continue;
+			}
+			BSAnalyzer analyzer(&compound);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(compound);
+			CHECK(compound.get_errors().is_empty());
+			CHECK(compound.get_warnings().size() == 1);
+			if (suppress_enum)
+				warning(compound, 0, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, "The variable \"value\" is modified with the compound-assignment operator \"+=\" but was not previously initialized.", 6, 5, 15);
+			else
+				warning(compound, 0, BSWarning::INT_AS_ENUM_WITHOUT_CAST, "Integer used when an enum value is expected. If this is intended, cast the integer to the enum type using the \"as\" keyword.", 6, 14, 15);
 		}
 	}
 	TEST_CASE("helper_blocked_user_call_producer_has_direct_same_file_control") {

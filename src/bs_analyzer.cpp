@@ -3051,7 +3051,9 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	// coroutine *statement* (root position) still warns about a probably-forgotten "await".
 	// Coroutine[void] root discards are exempt: fire-and-forget launches lose no result value.
 #ifdef DEBUG_ENABLED
-	Finally warn_missing_await([&]() {
+	bool static_called_on_instance = false;
+	String static_receiver_type;
+	Finally warn_call_result([&]() {
 		const BSParser::DataType call_type = p_call->get_datatype();
 		// Foundry c9d5e35:8230-8236,9028-9032. All dispatch exits publish metadata;
 		// PRELOAD has its own parser producer and never enters this call consumer.
@@ -3059,6 +3061,11 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				!(call_type.kind == BSParser::DataType::BUILTIN && call_type.builtin_type == Variant::NIL) &&
 				!(p_call->is_super && p_call->function_name == SNAME("_init"))) {
 			push_warning(p_call, BSWarning::RETURN_VALUE_DISCARDED, { String(p_call->function_name) });
+		}
+
+		// Same-line warnings retain Foundry's producer order: discarded result, then static call.
+		if (static_called_on_instance) {
+			push_warning(p_call, BSWarning::STATIC_CALLED_ON_INSTANCE, { String(p_call->function_name), static_receiver_type });
 		}
 
 		if (call_type.is_coroutine && !p_is_await && p_is_root && !coroutine_result_is_void(call_type)) {
@@ -3095,11 +3102,12 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		if (subscript != nullptr && subscript->is_attribute && subscript->attribute != nullptr) {
 			reduce_expression(subscript->base);
 			const bool is_self = subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF;
-			auto warn_static_instance = [&](bool is_static, const BSParser::DataType &receiver) {
+			auto record_static_instance = [&](bool is_static, const BSParser::DataType &receiver) {
 #ifdef DEBUG_ENABLED
 				// Foundry c9d5e35:9034-9037; only selected ordinary method metadata enters here.
 				if (is_static && !receiver.is_meta_type && !is_self) {
-					push_warning(p_call, BSWarning::STATIC_CALLED_ON_INSTANCE, { String(p_call->function_name), receiver.to_string() });
+					static_called_on_instance = true;
+					static_receiver_type = receiver.to_string();
 				}
 #endif
 			};
@@ -3222,7 +3230,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						call_site_validation.reject_named_call_arguments(p_call);
 						if (receiver.is_meta_type && !(method->info.flags & METHOD_FLAG_STATIC))
 							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(receiver).to_string()), p_call);
-						warn_static_instance(method->info.flags & METHOD_FLAG_STATIC, receiver);
+						record_static_instance(method->info.flags & METHOD_FLAG_STATIC, receiver);
 						call_site_validation.validate_call_arg(method->info, p_call);
 						const auto result = type_from_property(method->info.return_val);
 						p_call->set_datatype(result);
@@ -3265,7 +3273,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 							p_call->set_datatype(callee->get_datatype());
 							return;
 						}
-						warn_static_instance(callee->is_static, base_type);
+						record_static_instance(callee->is_static, base_type);
 						validate_local_call(p_call, callee);
 						p_call->is_noreturn = callee->is_noreturn;
 						return;
@@ -3299,7 +3307,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (native_type != StringName()) {
 					MethodInfo method_info;
 					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
-						warn_static_instance(method_info.flags & METHOD_FLAG_STATIC, base_type);
+						record_static_instance(method_info.flags & METHOD_FLAG_STATIC, base_type);
 						call_site_validation.reject_named_call_arguments(p_call);
 						call_site_validation.validate_call_arg(method_info, p_call);
 						call_site_validation.validate_typed_object_signal_api_args(base_type, p_call, is_self);
@@ -7985,12 +7993,6 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				// Parameters and binds point to smaller nodes without an assignments field.
 				if (assignee->source == BSParser::IdentifierNode::LOCAL_VARIABLE && assignee->variable_source != nullptr) {
 					assignee->variable_source->assignments++;
-#ifdef DEBUG_ENABLED
-					// Foundry c9d5e35:8003-8009: this store has already incremented the counter.
-					if (assignment->operation != BSParser::AssignmentNode::OP_NONE && assignee->variable_source->assignments == 1) {
-						push_warning(assignment, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, { String(assignee->name), _operator_name(assignment->variant_op) });
-					}
-#endif
 				}
 			}
 			// Foundry reduce_assignment @ c9d5e35: type assignee with narrowing still active so a
@@ -8179,6 +8181,17 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 					}
 				}
 			}
+#ifdef DEBUG_ENABLED
+			// Foundry c9d5e35:8003-8009: compatibility/conversion diagnostics precede
+			// this warning; the store's scalar counter was incremented before reduction.
+			if (assignment->operation != BSParser::AssignmentNode::OP_NONE && assignment->assignee != nullptr && assignment->assignee->type == BSParser::Node::IDENTIFIER) {
+				const auto *assignee = static_cast<const BSParser::IdentifierNode *>(assignment->assignee);
+				if (assignee->source == BSParser::IdentifierNode::LOCAL_VARIABLE && assignee->variable_source != nullptr && assignee->variable_source->assignments == 1) {
+					push_warning(assignment, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, { String(assignee->name), _operator_name(assignment->variant_op) });
+				}
+			}
+#endif
+
 		} break;
 		default:
 			break;

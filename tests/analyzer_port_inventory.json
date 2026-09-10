@@ -12996,7 +12996,7 @@
         "blobs": [
           {
             "path": "src/bs_analyzer.cpp",
-            "sha256": "f6ea03de0419a6729e79f34da2ba1a0f70e6c47f825e1f0174a87ca190277f7a"
+            "sha256": "741c0489a767bb8110e7be2b941b93a235744da56f6d6ef5a6953601c2b8968c"
           },
           {
             "path": "src/bs_analyzer.h",
@@ -13016,7 +13016,7 @@
           },
           {
             "path": "tests/native/warning_producer_analyzer_tests.cpp",
-            "sha256": "79aa247424008bf53075c25334a2bc363da6c59606a022db6fbab67bdeebbf75"
+            "sha256": "02009d0b60b92a1dc5f49dc773fe257c5a3c3decdd7bdcab8bb6da08d2ac6d00"
           },
           {
             "path": "tests/native_suites.json",
@@ -13034,8 +13034,8 @@
               "warning_producer_analyzer"
             ],
             "exit": 0,
-            "log_sha256": "fff11d616e3327bb9226e88eda5fa0b09c969288fe0be5038bd7f8bfb2e64a29",
-            "result": "16 cases / 669 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors. Original helpers remain #31."
+            "log_sha256": "05fd418f5a5033505e323d72877f44e458ca25cddc62cb92c4cb3e252f056861",
+            "result": "16 cases / 769 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors; grouped R1 builtin/CLASS RETURN-before-STATIC and R2 enum-conversion-before-compound warning pairs with initialized/builtin/selective-suppression controls. Original helpers remain #31."
           }
         ]
       },
@@ -13583,7 +13583,7 @@
           },
           {
             "path": "src/bs_analyzer.cpp",
-            "sha256": "f6ea03de0419a6729e79f34da2ba1a0f70e6c47f825e1f0174a87ca190277f7a"
+            "sha256": "741c0489a767bb8110e7be2b941b93a235744da56f6d6ef5a6953601c2b8968c"
           },
           {
             "path": "src/bs_analyzer.h",
@@ -13595,7 +13595,7 @@
           },
           {
             "path": "tests/native/warning_producer_analyzer_tests.cpp",
-            "sha256": "79aa247424008bf53075c25334a2bc363da6c59606a022db6fbab67bdeebbf75"
+            "sha256": "02009d0b60b92a1dc5f49dc773fe257c5a3c3decdd7bdcab8bb6da08d2ac6d00"
           },
           {
             "path": "tests/native_suites.json",
@@ -13613,8 +13613,8 @@
               "warning_producer_analyzer"
             ],
             "exit": 0,
-            "log_sha256": "fff11d616e3327bb9226e88eda5fa0b09c969288fe0be5038bd7f8bfb2e64a29",
-            "result": "16 cases / 669 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors. Original helpers remain #31."
+            "log_sha256": "05fd418f5a5033505e323d72877f44e458ca25cddc62cb92c4cb3e252f056861",
+            "result": "16 cases / 769 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors; grouped R1 builtin/CLASS RETURN-before-STATIC and R2 enum-conversion-before-compound warning pairs with initialized/builtin/selective-suppression controls. Original helpers remain #31."
           }
         ]
       },
@@ -15340,7 +15340,7 @@
           },
           {
             "path": "src/bs_analyzer.cpp",
-            "sha256": "f6ea03de0419a6729e79f34da2ba1a0f70e6c47f825e1f0174a87ca190277f7a"
+            "sha256": "741c0489a767bb8110e7be2b941b93a235744da56f6d6ef5a6953601c2b8968c"
           },
           {
             "path": "src/bs_analyzer.h",
@@ -15356,7 +15356,7 @@
           },
           {
             "path": "tests/native/warning_producer_analyzer_tests.cpp",
-            "sha256": "79aa247424008bf53075c25334a2bc363da6c59606a022db6fbab67bdeebbf75"
+            "sha256": "02009d0b60b92a1dc5f49dc773fe257c5a3c3decdd7bdcab8bb6da08d2ac6d00"
           },
           {
             "path": "tests/native_suites.json",
@@ -15374,8 +15374,8 @@
               "warning_producer_analyzer"
             ],
             "exit": 0,
-            "log_sha256": "fff11d616e3327bb9226e88eda5fa0b09c969288fe0be5038bd7f8bfb2e64a29",
-            "result": "16 cases / 669 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors. Original helpers remain #31."
+            "log_sha256": "05fd418f5a5033505e323d72877f44e458ca25cddc62cb92c4cb3e252f056861",
+            "result": "16 cases / 769 assertions: nine literal originals repeated twice, two helper-blocked direct producer controls, exact spans/order, six warning severity/suppression controls and annotation/default/capture/consumed/await/preload neighbors; grouped R1 builtin/CLASS RETURN-before-STATIC and R2 enum-conversion-before-compound warning pairs with initialized/builtin/selective-suppression controls. Original helpers remain #31."
           }
         ]
       },
