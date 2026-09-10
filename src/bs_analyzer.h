@@ -597,6 +597,7 @@ private:
 	 */
 	BSParser::DataType resolve_enum_values(BSParser::EnumNode *p_enum, const BSParser::DataType &p_enum_type, BSParser::ClassNode *p_owner);
 	/** Foundry make_class_enum_type shell used before resolve_enum_values. */
+	static BSParser::DataType make_standalone_global_enum_type(BSParser::ClassNode *p_head, const String &p_script_path, bool p_meta = true);
 	static BSParser::DataType make_class_enum_type(const StringName &p_enum_name, BSParser::ClassNode *p_class, const String &p_script_path, bool p_meta = true);
 	/** Foundry make_tuple_type: precise static tuple shape with read-only Array erasure. */
 	static BSParser::DataType make_tuple_type(const StringName &p_tuple_name, const String &p_owner_fqcn,

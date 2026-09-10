@@ -1417,7 +1417,11 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			if ((class_name != StringName() && name == class_name) ||
 					(global_name != StringName() && name == global_name)) {
 				if (current_class == parser->get_tree() && (current_class->is_enum_file || current_class->is_tuple_file)) {
-					return type_from_metatype(resolve_global_head(String(name), p_type_node));
+					result = type_from_metatype(resolve_global_head(String(name), p_type_node));
+					if (!result.is_variant()) {
+						result.is_nullable = result.is_nullable || p_type_node->is_nullable;
+					}
+					return result;
 				}
 				result = current_class->get_datatype();
 				result.is_meta_type = false;
@@ -1437,6 +1441,9 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		bool lookup_error = false;
 		BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
 		if (lookup_error || !indexed.is_variant()) {
+			if (!indexed.is_variant()) {
+				indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
+			}
 			return indexed;
 		}
 		if (ClassDB::class_exists(name)) {
@@ -1522,6 +1529,9 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 	bool lookup_error = false;
 	BSParser::DataType indexed = resolve_named_type(qualified, p_type_node, lookup_error);
 	if (lookup_error || indexed.kind != BSParser::DataType::VARIANT) {
+		if (!indexed.is_variant()) {
+			indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
+		}
 		return indexed;
 	}
 	// Exact namespace identities win; remaining suffixes are declaration members, not index entries.
@@ -1773,7 +1783,7 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 	}
 	if (p_class->is_enum_file && p_class->enum_file_decl != nullptr && p_class->enum_file_decl->identifier != nullptr) {
 		BSParser::EnumNode *declaration = p_class->enum_file_decl;
-		resolve_enum_values(declaration, make_class_enum_type(declaration->identifier->name, p_class, parser->script_path, true), p_class);
+		resolve_enum_values(declaration, make_standalone_global_enum_type(p_class, parser->script_path), p_class);
 		analyze_enum_function_signatures(declaration, p_class);
 	}
 	if (!p_class->type_parameters.is_empty()) {
@@ -2211,7 +2221,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				type = type_from_metatype(current_enum->get_datatype());
 			} else {
 				const StringName enum_name = current_enum->identifier != nullptr ? current_enum->identifier->name : StringName("<unnamed enum>");
-				type = make_class_enum_type(enum_name, current_class, parser->script_path, false);
+				type = current_class->is_enum_file
+						? make_standalone_global_enum_type(current_class, parser->script_path, false)
+						: make_class_enum_type(enum_name, current_class, parser->script_path, false);
 			}
 			p_identifier->set_datatype(type);
 			if (element.resolved) {
@@ -8700,7 +8712,7 @@ BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSP
 BSParser::DataType BSAnalyzer::resolve_global_head(const String &p_name, const BSParser::Node *p_source) {
 	BSParser::ClassNode *head = parser->get_tree();
 	if (head->is_enum_file && head->enum_file_decl != nullptr) {
-		return resolve_enum_values(head->enum_file_decl, make_class_enum_type(StringName(p_name), head, parser->script_path, true), head);
+		return resolve_enum_values(head->enum_file_decl, make_standalone_global_enum_type(head, parser->script_path), head);
 	}
 	if (head->is_tuple_file && head->tuple_file_decl != nullptr) {
 		BSParser::TupleNode *tuple = head->tuple_file_decl;

@@ -530,6 +530,14 @@ BSParser::DataType BSAnalyzer::make_class_enum_type(const StringName &p_enum_nam
 	return type;
 }
 
+// Foundry make_standalone_global_enum_type @ c9d5e35: an enum_name identity is
+// its declaration's global name, with no extra owning-class/member prefix.
+BSParser::DataType BSAnalyzer::make_standalone_global_enum_type(BSParser::ClassNode *p_head, const String &p_script_path, bool p_meta) {
+	BSParser::DataType type = make_class_enum_type(p_head->get_global_name(), nullptr, p_script_path, p_meta);
+	type.class_type = p_head;
+	return type;
+}
+
 BSParser::DataType BSAnalyzer::make_tuple_type(const StringName &p_tuple_name, const String &p_owner_fqcn,
 		const String &p_script_path, const Vector<BSParser::DataType> &p_element_types,
 		const Vector<StringName> &p_field_names, bool p_meta) {

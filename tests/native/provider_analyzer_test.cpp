@@ -18,6 +18,19 @@ using namespace barista_script::native_tests;
 
 namespace barista_script {
 struct ProviderTestAccess {
+	static BSParser::DataType head_type(BSAnalyzer &analyzer, const StringName &name, bool nullable) {
+		BSParser::IdentifierNode identifier;
+		identifier.name = name;
+		BSParser::TypeNode use_site;
+		use_site.type_chain.push_back(&identifier);
+		use_site.is_nullable = nullable;
+		auto *previous = analyzer.current_class;
+		analyzer.current_class = analyzer.parser->get_tree();
+		const auto type = analyzer.datatype_from_type_node(&use_site);
+		analyzer.current_class = previous;
+		return type;
+	}
+
 	static BSParser::FunctionNode *witness(BSAnalyzer &analyzer, const BSParser::DataType &type, const StringName &name) {
 		BSAnalyzer::ForeignAnalyzerVisibilityScope visibility(&analyzer);
 		return analyzer.find_conformance_witness(type, name);
@@ -26,6 +39,8 @@ struct ProviderTestAccess {
 	static Ref<BSParserRef> owner(BSAnalyzer &analyzer, const BSParser::ClassNode *node, const BSParser::Node *site) { return analyzer.ensure_external_parser(node, "native owner check", site); }
 	static int cached_owners(BSAnalyzer &analyzer) { return analyzer.external_class_parser_cache.size(); }
 	static void strict(BSAnalyzer &analyzer) { analyzer.strict_dynamic_checks = true; }
+	static void strict_null(BSAnalyzer &analyzer) { analyzer.strict_null_checks = true; }
+	static bool same_type(BSAnalyzer &analyzer, const BSParser::DataType &a, const BSParser::DataType &b) { return analyzer.datatype_strict_identity_equal(a, b); }
 	static void interface(BSAnalyzer &analyzer, BSParser::ClassNode *node, const BSParser::Node *site) { analyzer.analyze_class_interface(node, site); }
 	static void body(BSAnalyzer &analyzer, BSParser::ClassNode *node, const BSParser::Node *site) { analyzer.analyze_class_body(node, site); }
 
@@ -537,6 +552,116 @@ TEST_SUITE("provider_analyzer") {
 				diagnostic(parser, body ? "Could not resolve class \"Broken\". The class is declared in \"res://tests/x2/broken.barista\", which has errors, the first at line 3: Cannot return value of type \"String\" because the function return type is \"int\"." : "Could not resolve class \"Broken\".", 1, 1, 1, 14);
 			}
 			BSCache::remove_script(path);
+		}
+	}
+
+	TEST_CASE("global_enum_identity_is_standalone_and_phase_independent") {
+		StorageFixture fixture;
+		for (const bool namespaced : { false, true }) {
+			const String global = namespaced ? "repair_x2.Head" : "Head";
+			BSParser::DataType previous_type;
+			Ref<BSParserRef> previous_owner;
+			const String declaration = (namespaced ? String("namespace repair_x2\n") : String()) + String("enum_name Head:\n\tZERO = 0\n");
+			for (const bool warm : { false, true }) {
+				for (const bool qualified : { false, true }) {
+					BSCache::clear();
+					const String path = provider(fixture, "head", declaration);
+					BS_TEST_REQUIRE(!path.is_empty());
+					Error error = OK;
+					if (warm) {
+						auto owner = BSCache::get_parser(path, BSParserRef::INTERFACE_SOLVED, error);
+						BS_TEST_REQUIRE(error == OK && owner.is_valid());
+					}
+					const String name = qualified ? global : String("Head");
+					const String source = (namespaced ? String("import repair_x2\n") : String()) + String("var value: ") + name + String(" = Head.ZERO\n");
+					BSParser consumer;
+					BS_TEST_REQUIRE(consumer.parse(source, fixture.path("consumer.barista"), false) == OK);
+					BSAnalyzer analyzer(&consumer);
+					CHECK(analyzer.analyze() == OK);
+					no_errors(consumer);
+					const auto type = consumer.get_tree()->get_member("value").get_datatype();
+					CHECK(type.enum_type == StringName(global));
+					CHECK(type.native_type == StringName(global));
+					BS_TEST_REQUIRE(consumer.get_depended_parsers().has(path));
+					const auto owner = consumer.get_depended_parsers()[path];
+					BS_TEST_REQUIRE(owner.is_valid());
+					CHECK(owner->raise_status(BSParserRef::INTERFACE_SOLVED) == OK);
+					const auto owner_type = owner->get_parser()->get_tree()->enum_file_decl->get_datatype();
+					CHECK(owner_type.enum_type == StringName(global));
+					CHECK(owner_type.native_type == StringName(global));
+					CHECK(type.native_type == owner_type.native_type);
+					if (previous_owner.is_valid()) {
+						CHECK(ProviderTestAccess::same_type(analyzer, previous_type, type));
+					}
+					previous_type = type;
+					previous_owner = owner;
+				}
+			}
+		}
+	}
+	TEST_CASE("indexed_nullable_heads_preserve_marker_and_strict_assignment_contract") {
+		StorageFixture fixture;
+		for (int kind = 0; kind < 3; ++kind) {
+			const String declaration = kind == 0 ? "class_name Head\n" : kind == 1 ? "tuple_name Head(value: int, count: int)\n"
+																				   : "enum_name Head:\n\tZERO = 0\n";
+			for (const bool warm : { false, true }) {
+				for (const bool qualified : { false, true }) {
+					BSCache::clear();
+					const String path = provider(fixture, "head", String("namespace repair_x2\n") + declaration);
+					BS_TEST_REQUIRE(!path.is_empty());
+					Error error = OK;
+					if (warm) {
+						auto owner = BSCache::get_parser(path, BSParserRef::INTERFACE_SOLVED, error);
+						BS_TEST_REQUIRE(error == OK && owner.is_valid());
+					}
+					const String name = qualified ? "repair_x2.Head" : "Head";
+					for (const bool nullable_destination : { true, false }) {
+						if (!warm) {
+							BSCache::remove_parser(path);
+						}
+						const String source = String("import repair_x2\nvar value: ") + name + String("?\nvar target: ") + name + (nullable_destination ? String("?") : String()) + String(" = value\n");
+						BSParser consumer;
+						BS_TEST_REQUIRE(consumer.parse(source, fixture.path("consumer.barista"), false) == OK);
+						BSAnalyzer analyzer(&consumer);
+						ProviderTestAccess::strict_null(analyzer);
+						const Error result = analyzer.analyze();
+						CHECK(consumer.get_tree()->get_member("value").get_datatype().is_nullable);
+						CHECK(consumer.get_tree()->get_member("target").get_datatype().is_nullable == nullable_destination);
+						if (nullable_destination) {
+							CHECK(result == OK);
+							no_errors(consumer);
+						} else {
+							CHECK(result != OK);
+							const String type_name = kind == 0 ? "Head" : "repair_x2.Head";
+							const String message = String("Cannot assign a value of type \"") + type_name + String("?\" to a variable of type \"") + type_name + String("\".");
+							// Identifier `value` follows the literal prefix `var target: <name> = `.
+							diagnostic(consumer, message, 3, name.length() + 16, 3, name.length() + 21);
+						}
+					}
+				}
+			}
+		}
+	}
+	TEST_CASE("same_file_enum_and_tuple_head_annotations_preserve_nullable_marker") {
+		StorageFixture fixture;
+		for (const bool tuple : { false, true }) {
+			const String source = tuple ? "tuple_name Head(value: int, count: int)\n" : "enum_name Head:\n	Empty\n	Next(value: Head?)\n";
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, fixture.path("head.barista"), false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			no_errors(parser);
+			// The internal TypeNode consumer is also used for same-file head queries.
+			// Tuple files admit no host members; use its resolved head without inventing syntax.
+			const auto nullable = ProviderTestAccess::head_type(analyzer, "Head", true);
+			CHECK(nullable.is_nullable);
+			CHECK_FALSE(ProviderTestAccess::head_type(analyzer, "Head", false).is_nullable);
+			if (!tuple) {
+				const auto type = parser.get_tree()->enum_file_decl->get_datatype();
+				BS_TEST_REQUIRE(type.get_enum_case_payload("Next") != nullptr);
+				BS_TEST_REQUIRE(type.get_enum_case_payload("Next")->field_types.size() == 1);
+				CHECK(type.get_enum_case_payload("Next")->field_types[0].is_nullable);
+			}
 		}
 	}
 }
