@@ -17,7 +17,8 @@
     "witness_scope_analyzer",
     "variadic_callable_analyzer",
     "builtin_metadata_analyzer",
-    "get_node_analyzer"
+    "get_node_analyzer",
+    "numeric_consumer_analyzer"
   ],
   "editor_import": [
     "global_class"

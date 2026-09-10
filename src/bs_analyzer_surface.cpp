@@ -1310,6 +1310,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 						type.type_source = BSParser::DataType::INFERRED;
 					}
 				} else if (constant_type_ok && type.is_set() && !type.is_variant() && initializer_type.is_set()) {
+					warn_plain_enum_conversion(type, initializer_type, member.variable->initializer);
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
