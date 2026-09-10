@@ -7191,7 +7191,10 @@ void BSAnalyzer::resolve_for(BSParser::ForNode *p_for) {
 		options.allow_implicit_conversion = p_conversion;
 		options.strict_dynamic = strict_dynamic_checks;
 		options.strict_null = strict_null_checks;
-		return BSTypeCompatibility::check(p_target, p_source, options).compatible;
+		const BSTypeCompatibility::Result result = BSTypeCompatibility::check(p_target, p_source, options);
+		// The shared checker admits native downcasts with a runtime check. Foundry's
+		// FOR books those in its reverse-compatibility/conversion branch below.
+		return result.compatible && !(result.requires_runtime_check && p_target.kind == BSParser::DataType::NATIVE && p_source.kind == BSParser::DataType::NATIVE);
 	};
 	if (p_for->variable) {
 		if (p_for->datatype_specifier) {
