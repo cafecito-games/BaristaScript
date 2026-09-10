@@ -415,13 +415,130 @@ Error BSAnalyzer::validate_annotation_declarations() {
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
 
+// Static annotation validation from Foundry c9d5e35:4112-4248. Project-global
+// autoload indexing/ordering and singleton execution remain outside M3.
+void BSAnalyzer::resolve_autoload_annotation(BSParser::AnnotationNode *p_annotation) {
+	if (p_annotation->is_resolved) {
+		return;
+	}
+	p_annotation->is_resolved = true;
+	const int previous_errors = parser->get_errors().size();
+	BSParser::ClassNode *head = parser->get_tree();
+	bool valid = true;
+	int count = 0;
+	for (BSParser::AnnotationNode *annotation : head->annotations) {
+		if (annotation != nullptr && annotation->name == SNAME("@autoload")) {
+			count++;
+		}
+	}
+	if (count > 1) {
+		push_error(R"("@autoload" annotation can only be used once per script.)", p_annotation);
+		valid = false;
+	}
+	if (head->identifier == nullptr || head->trait_name_used || head->is_enum_file || head->is_tuple_file) {
+		push_error(R"("@autoload" requires "class_name".)", p_annotation);
+		valid = false;
+	}
+	// Direct interface consumers must have the same ultimate native-base evidence
+	// as the ordinary inheritance-first analyzer path, including foreign bases.
+	if (!head->base_type.is_resolving()) {
+		resolve_class_inheritance(head);
+	}
+	const StringName native_base = head->base_type.native_type;
+	if (native_base == StringName() || !ClassDB::is_parent_class(native_base, SNAME("Node"))) {
+		push_error(R"("@autoload" requires the script to inherit from "Node".)", p_annotation);
+		valid = false;
+	}
+	Array dependency_names;
+	int64_t order = 0;
+	bool bound[2] = { false, false };
+	bool seen_named = false;
+	int next_positional = 0;
+	for (int i = 0; i < p_annotation->arguments.size(); i++) {
+		BSParser::ExpressionNode *argument = p_annotation->arguments[i];
+		const StringName name = i < p_annotation->argument_names.size() ? p_annotation->argument_names[i] : StringName();
+		int slot = -1;
+		if (name == StringName()) {
+			if (seen_named) {
+				push_error(R"(Positional argument after named argument in annotation "@autoload".)", argument);
+				valid = false;
+				continue;
+			}
+			slot = next_positional++;
+		} else {
+			seen_named = true;
+			if (name == SNAME("depends_on")) {
+				slot = 0;
+			} else if (name == SNAME("order_id")) {
+				slot = 1;
+			} else {
+				push_error(vformat(R"(Annotation "@autoload" has no parameter named "%s".)", name), argument);
+				valid = false;
+				continue;
+			}
+		}
+		if (slot >= 2) {
+			push_error(vformat(R"(Annotation "@autoload" takes at most 2 argument(s), but %d were given.)", p_annotation->arguments.size()), argument);
+			valid = false;
+			continue;
+		}
+		if (bound[slot]) {
+			push_error(vformat(R"(Parameter "%s" of annotation "@autoload" was specified more than once.)", slot == 0 ? "depends_on" : "order_id"), argument);
+			valid = false;
+			continue;
+		}
+		bound[slot] = true;
+		reduce_expression(argument);
+		if (slot == 0) {
+			if (argument->type != BSParser::Node::ARRAY) {
+				push_error(R"(Argument "depends_on" of annotation "@autoload" must be an array of class names.)", argument);
+				valid = false;
+				continue;
+			}
+			const auto *dependencies = static_cast<BSParser::ArrayNode *>(argument);
+			for (int d = 0; d < dependencies->elements.size(); d++) {
+				const BSParser::ExpressionNode *dependency = dependencies->elements[d];
+				const BSParser::DataType type = dependency->get_datatype();
+				// #140's reduction owns candidate authority and the foreign parser lifetime.
+				// Never revive a rejected name from a raw ScriptServer/index hint.
+				StringName identity;
+				if (type.is_meta_type && type.kind == BSParser::DataType::CLASS && type.class_type != nullptr) {
+					identity = type.class_type->get_global_name();
+				}
+				if (identity == StringName()) {
+					push_error(vformat(R"(Dependency %d of annotation "@autoload" must resolve to a script class.)", d + 1), dependency);
+					valid = false;
+				} else {
+					dependency_names.push_back(identity);
+				}
+			}
+		} else {
+			if (!has_materialized_constant_value(argument) || argument->reduced_value.get_type() != Variant::INT) {
+				push_error(R"(Argument "order_id" of annotation "@autoload" must be a constant integer expression.)", argument);
+				valid = false;
+				continue;
+			}
+			const int64_t value = argument->reduced_value;
+			if (value < INT32_MIN || value > INT32_MAX) {
+				push_error(R"("order_id" of annotation "@autoload" must fit in a 32-bit signed integer.)", argument);
+				valid = false;
+				continue;
+			}
+			order = value;
+		}
+	}
+	if (valid && parser->get_errors().size() == previous_errors) {
+		p_annotation->resolved_arguments.push_back(dependency_names);
+		p_annotation->resolved_arguments.push_back(order);
+	}
+}
+
 void BSAnalyzer::resolve_annotation(BSParser::AnnotationNode *p_annotation, uint32_t p_target_kind) {
 	if (p_annotation == nullptr) {
 		return;
 	}
 	if (p_annotation->name == SNAME("@autoload")) {
-		// Autoload argument validation remains follow-up under #60 surface depth.
-		p_annotation->is_resolved = true;
+		resolve_autoload_annotation(p_annotation);
 		return;
 	}
 	if (p_annotation->is_custom) {

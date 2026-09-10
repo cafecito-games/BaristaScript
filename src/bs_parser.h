@@ -658,8 +658,8 @@ public:
 		Vector<ExpressionNode *> arguments;
 		// Parallel to `arguments`: the explicit parameter name for each argument written as
 		// `name = value` at the use site, or an empty `StringName` for a positional argument.
-		// Named arguments are only recognized for custom annotation usages; the analyzer maps
-		// the names to declaration parameters. Built-in annotations keep positional-only entries.
+		// Named arguments are recognized for custom annotations and @autoload; the analyzer
+		// binds the names to parameters. Other built-ins keep positional-only entries.
 		Vector<StringName> argument_names;
 		Vector<Variant> resolved_arguments;
 
