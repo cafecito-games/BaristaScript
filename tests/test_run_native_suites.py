@@ -125,12 +125,28 @@ class RuntimeTests(unittest.TestCase):
     def test_real_assertion_failure(self):
         artifact = runner.read_artifact(BUILD_DIR)
         with runner.staged_project(artifact) as project:
-            completed = runner.invoke(GODOT, project, "runner_failure", "", "failure-check", 60)
-        reasons = runner.evaluate(completed.returncode, completed.stdout, "runner_failure", "",
+            completed = runner.invoke(GODOT, project, "runner_failure", "intentional failing assertion", "failure-check", 60)
+        reasons = runner.evaluate(completed.returncode, completed.stdout, "runner_failure", "intentional failing assertion",
                                   "failure-check", artifact["build_id"])
         self.assertTrue(reasons, completed.stdout)
         self.assertNotEqual(completed.returncode, 0, completed.stdout)
         self.assertIn('"failed_assertions":1', completed.stdout)
+
+    def test_warning_settings_restore_after_real_failed_assertions(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        case = "warning settings restore after failed assertions"
+        with runner.staged_project(artifact) as project:
+            completed = runner.invoke(GODOT, project, "runner_failure", case, "settings-cleanup", 60)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+        records = [json.loads(line[len(runner.RESULT_PREFIX):]) for line in completed.stdout.splitlines()
+                   if line.startswith(runner.RESULT_PREFIX)]
+        self.assertEqual(len(records), 1, completed.stdout)
+        record = records[0]
+        self.assertEqual(record["cases"], 1, completed.stdout)
+        self.assertEqual(record["failed_cases"], 1, completed.stdout)
+        self.assertEqual(record["failed_assertions"], 2, completed.stdout)
+        self.assertGreater(record["assertions"], 2, completed.stdout)
+        self.assertIn("settings restoration checked after both failed assertions", completed.stdout)
 
     def test_missing_library_subprocess(self):
         artifact = runner.read_artifact(BUILD_DIR)
