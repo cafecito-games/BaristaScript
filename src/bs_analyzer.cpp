@@ -3495,10 +3495,12 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 			} else if (strict_dynamic_checks) {
 				push_error(vformat(R"(Cannot resolve member "%s" on type "%s" in strict dynamic mode.)", name, receiver.to_string()), p_subscript->attribute);
 			} else {
+#ifdef DEBUG_ENABLED
 				Vector<String> symbols;
 				symbols.push_back(String(name));
 				symbols.push_back(receiver.to_string());
 				push_warning(p_subscript, BSWarning::UNSAFE_PROPERTY_ACCESS, symbols);
+#endif
 				mark_node_unsafe(p_subscript);
 			}
 		}
