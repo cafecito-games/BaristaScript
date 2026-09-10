@@ -13,6 +13,7 @@
     "refresh_analyzer",
     "analyzer_flow",
     "analyzer_cache",
+    "analyzer_type_compatibility",
     "source_analyzer",
     "autoload_analyzer"
   ],

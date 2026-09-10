@@ -43,6 +43,26 @@ isolation verifier.
 The complete suite executes 6 cases and 705 assertions: 57 assertions across the five individually
 filterable cases, then 648 assertions in `repeated_and_reversed_cases_restore_ambient_state`.
 
+## Additive type-compatibility checkpoint
+
+Six more legacy functions are mapped one-for-one into native suite
+`analyzer_type_compatibility`. Their 58 legacy `_expect` contracts are preserved with direct
+`BSParser`/`BSAnalyzer` source analysis, ordered parser-error checks, typed AST/`DataType`
+inspection, warning-absence checks, and declaration-index isolation. A seventh case repeats all
+six scenarios in forward and reverse order under the ambient-state isolation verifier.
+
+| Legacy function | Native case | Preserved contracts |
+| --- | --- | ---: |
+| `_test_union_union_assignability` | `union_union_assignability` | 10 |
+| `_test_union_store_carrier_select` | `union_store_carrier_select` | 8 |
+| `_test_enum_self_payload_field_leg` | `enum_self_payload_field_leg` | 13 |
+| `_test_self_contract_assign_return` | `self_contract_assign_return` | 11 |
+| `_test_self_contract_gradual_union` | `self_contract_gradual_union` | 8 |
+| `_test_ordinary_assignment_and_return_consumers` | `ordinary_assignment_and_return_consumers` | 8 |
+
+`_test_complete_self_referential_enum_type` and `_test_local_tuple_and_literal_consumers` remain
+legacy-only and are intentionally outside this checkpoint.
+
 ## Existing #140 native coverage at the integration head
 
 Issue #140 owns 98 already-registered native cases. They are preserved unchanged and are not
@@ -117,8 +137,8 @@ other rows remain legacy-only work for continuation after #140/#141 stabilize.
 | 48 | `_test_builtin_annotation_resolve` | declarations | legacy-only |
 | 49 | `_test_custom_annotation_surface` | declarations | legacy + #140 |
 | 50 | `_test_type_alias_surface` | declarations | legacy-only |
-| 51 | `_test_union_union_assignability` | expressions/calls | legacy-only |
-| 52 | `_test_union_store_carrier_select` | expressions/calls | legacy-only |
+| 51 | `_test_union_union_assignability` | expressions/calls | native `analyzer_type_compatibility` |
+| 52 | `_test_union_store_carrier_select` | expressions/calls | native `analyzer_type_compatibility` |
 | 53 | `_test_enum_case_match_and_case_binds` | expressions/calls | legacy-only |
 | 54 | `_test_contextual_case_shorthand` | expressions/calls | legacy-only |
 | 55 | `_test_tagged_union_match_exhaustiveness` | flow/finality | legacy-only |
@@ -141,12 +161,12 @@ other rows remain legacy-only work for continuation after #140/#141 stabilize.
 | 72 | `_test_trait_target_assignability` | traits/conformance | legacy-only |
 | 73 | `_test_witness_collision_arbitration` | traits/conformance | legacy + #140 |
 | 74 | `_test_self_type_parameter_compat` | traits/conformance | legacy-only |
-| 75 | `_test_enum_self_payload_field_leg` | declarations | legacy-only |
+| 75 | `_test_enum_self_payload_field_leg` | declarations | native `analyzer_type_compatibility` |
 | 76 | `_test_complete_self_referential_enum_type` | declarations | legacy-only |
-| 77 | `_test_self_contract_assign_return` | expressions/calls | legacy-only |
-| 78 | `_test_self_contract_gradual_union` | expressions/calls | legacy-only |
+| 77 | `_test_self_contract_assign_return` | expressions/calls | native `analyzer_type_compatibility` |
+| 78 | `_test_self_contract_gradual_union` | expressions/calls | native `analyzer_type_compatibility` |
 | 79 | `_test_local_tuple_and_literal_consumers` | expressions/calls | legacy-only |
-| 80 | `_test_ordinary_assignment_and_return_consumers` | expressions/calls | legacy-only |
+| 80 | `_test_ordinary_assignment_and_return_consumers` | expressions/calls | native `analyzer_type_compatibility` |
 | 81 | `_test_steps_1_5_repair_regressions` | expressions/calls | legacy-only |
 | 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | legacy-only |
 | 83 | `_test_local_enum_value_cycles` | declarations | legacy-only |
@@ -160,11 +180,12 @@ other rows remain legacy-only work for continuation after #140/#141 stabilize.
 
 ## Remaining gates
 
-- Reconcile the 78 still-live legacy functions after #141 finishes; newly merged scenarios
+- Reconcile the 72 still-live legacy functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
 - Only then remove `analyzer_test.gd`, its UID, and analyzer-only bindings whose live corpus/public
   consumers have independently migrated. `evaluate_corpus` remains live through the corpus cutover.
-- `analyzer_flow` and `analyzer_cache` are now both required by `tests/native_suites.json`; keep
-  their manifest registrations while the remaining additive migration proceeds.
+- `analyzer_flow`, `analyzer_cache`, and `analyzer_type_compatibility` are required by
+  `tests/native_suites.json`; keep their manifest registrations while the remaining additive
+  migration proceeds.
