@@ -84,6 +84,46 @@ godot --headless --path project --script res://tests/smoke_test.gd
 The smoke test verifies that `example.barista` loads as `BaristaScript`, retains
 its source, and cannot instantiate.
 
+## Run native C++ tests
+
+Tokenizer contracts run as doctest cases inside a test-enabled extension hosted by an
+unmodified Godot 4.7 runtime. Select the executable explicitly:
+
+```sh
+scons api_version=4.7 target=template_debug barista_tests=yes
+python3 tests/test_run_native_suites.py --godot "$(command -v godot)"
+python3 tests/run_native_suites.py --godot "$(command -v godot)"
+```
+
+For CMake, select its artifact directory:
+
+```sh
+cmake -S . -B build/native-cmake -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
+cmake --build build/native-cmake --parallel
+python3 tests/run_native_suites.py --godot "$(command -v godot)" --build-dir build/native-cmake
+```
+
+Both options default off and require the debug target. Native objects/libraries are isolated
+from ordinary distribution builds; each run stages a disposable fixture project. A missing
+or wrong library, unknown/empty selection, failed assertion, crash, timeout, or missing
+completion record returns nonzero. `--suite tokenizer --case integer_range_is_exact` selects
+one exact case. `--list` is informational and never counts as verification. See the
+[native test conventions and parity checklist](tests/native/README.md).
+
+All remaining GDScript suites still run against the ordinary debug artifact:
+
+```sh
+scons api_version=4.7 target=template_debug barista_tests=no
+godot --headless --path project --editor --quit
+python3 tests/run_gdscript_suites.py --godot "$(command -v godot)"
+python3 tests/verify_native_surface.py --binary-dir project/bin --target-type template_debug
+```
+
+CI exercises both native build systems and test-on → test-off → test-on transitions without
+clearing caches, checks ordinary debug/release artifacts for test code, and retains every
+legacy suite/corpus gate. Add native suites to `tests/native_suites.json`; CI consumes the
+whole manifest without filters.
+
 ## Layout
 
 - `src/barista_script_language.*` implements language registration metadata.

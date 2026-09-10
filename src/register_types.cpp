@@ -21,6 +21,10 @@
 #include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
 
+#ifdef BARISTA_TESTS
+#include "native_test_runner.h"
+#endif
+
 #ifdef DEBUG_ENABLED
 #include "barista_script_parse_cache.h"
 #endif // DEBUG_ENABLED
@@ -44,6 +48,9 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 		return;
 	}
 
+#ifdef BARISTA_TESTS
+	GDREGISTER_CLASS(BaristaNativeTestRunner);
+#endif
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);

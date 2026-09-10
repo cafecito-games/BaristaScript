@@ -38,6 +38,7 @@ EXCLUDED_DIRECTORIES = {
     "build",
     "gen",
     "godot-cpp",
+    "thirdparty",
     "__pycache__",
 }
 

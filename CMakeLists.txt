@@ -6,6 +6,7 @@ if(CMAKE_C_COMPILER)
 endif()
 
 set(LIBNAME "barista_script")
+option(BARISTA_TESTS "Build isolated native C++ tests" OFF)
 set(GODOT_PROJECT_DIR "project" CACHE STRING "The directory of a Godot project folder")
 set(GODOTCPP_API_VERSION "4.7" CACHE STRING "Godot API version" FORCE)
 set(GODOTCPP_BUILD_PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/build_profile.json" CACHE FILEPATH "godot-cpp build profile" FORCE)
@@ -13,6 +14,14 @@ set(GODOTCPP_BUILD_PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/build_profile.json" CACH
 # Make sure all the dependencies are satisfied
 find_package(Python3 3.4 REQUIRED)
 find_program(GIT git REQUIRED)
+if(BARISTA_TESTS)
+    set(GODOTCPP_BUILD_PROFILE "${CMAKE_CURRENT_BINARY_DIR}/native-build-profile.json" CACHE FILEPATH "godot-cpp test build profile" FORCE)
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/native_test_build.py"
+        --profile "${GODOTCPP_BUILD_PROFILE}" RESULT_VARIABLE NATIVE_PROFILE_RESULT)
+    if(NOT NATIVE_PROFILE_RESULT EQUAL 0)
+        message(FATAL_ERROR "Cannot generate native test bindings profile")
+    endif()
+endif()
 
 # Ensure godot-cpp submodule has been updated
 if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/godot-cpp/src")
@@ -154,6 +163,27 @@ if(DOC_XML)
     endif()
 endif()
 
+if(BARISTA_TESTS)
+    if(NOT GODOTCPP_TARGET STREQUAL "template_debug")
+        message(FATAL_ERROR "BARISTA_TESTS requires GODOTCPP_TARGET=template_debug")
+    endif()
+    set(NATIVE_HEADER "${CMAKE_CURRENT_BINARY_DIR}/native-gen/native_build_id.h")
+    file(GLOB NATIVE_SOURCES CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tests/native/*.cpp")
+    file(GLOB NATIVE_INPUTS CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tests/native/*"
+        "${PROJECT_SOURCE_DIR}/src/*.cpp" "${PROJECT_SOURCE_DIR}/src/*.h"
+        "${PROJECT_SOURCE_DIR}/thirdparty/doctest/*")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${NATIVE_INPUTS}
+        "${PROJECT_SOURCE_DIR}/scripts/native_test_build.py")
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/native_test_build.py"
+        --header "${NATIVE_HEADER}" RESULT_VARIABLE NATIVE_RESULT)
+    if(NOT NATIVE_RESULT EQUAL 0)
+        message(FATAL_ERROR "Cannot identify native test build")
+    endif()
+    target_sources(${LIBNAME} PRIVATE ${NATIVE_SOURCES})
+    target_include_directories(${LIBNAME} PRIVATE src tests/native thirdparty/doctest "${CMAKE_CURRENT_BINARY_DIR}/native-gen")
+    target_compile_definitions(${LIBNAME} PRIVATE BARISTA_TESTS DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+endif()
+
 target_link_libraries(${LIBNAME} PRIVATE godot-cpp)
 
 # See the SConstruct note: an unhandled warning code in bs_warning.cpp's message switch is a build
@@ -166,16 +196,24 @@ target_compile_options(${LIBNAME} PRIVATE
 # Require at least C++17 for this target
 set_property(TARGET ${LIBNAME} PROPERTY CXX_STANDARD 17)
 
-set_target_properties(${LIBNAME}
-    PROPERTIES
-    # The generator expression here prevents msvc from adding a Debug or Release subdir.
-    RUNTIME_OUTPUT_DIRECTORY "$<1:${PROJECT_SOURCE_DIR}/bin/${GODOTCPP_PLATFORM}>"
+if(BARISTA_TESTS)
+    set(BARISTA_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/native-bin")
+else()
+    set(BARISTA_OUTPUT_DIR "${PROJECT_SOURCE_DIR}/bin/${GODOTCPP_PLATFORM}")
+endif()
+set_target_properties(${LIBNAME} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "$<1:${BARISTA_OUTPUT_DIR}>"
+    LIBRARY_OUTPUT_DIRECTORY "$<1:${BARISTA_OUTPUT_DIR}>"
+    OUTPUT_NAME "${LIBNAME}${BARISTA_SCRIPT_SUFFIX}")
 
-    OUTPUT_NAME "${LIBNAME}${BARISTA_SCRIPT_SUFFIX}"
-)
-
-set(GODOT_PROJECT_BINARY_DIR "${PROJECT_SOURCE_DIR}/${GODOT_PROJECT_DIR}/bin/${GODOTCPP_PLATFORM}")
-
-add_custom_command(TARGET ${LIBNAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${LIBNAME}>" "${GODOT_PROJECT_BINARY_DIR}/$<TARGET_FILE_NAME:${LIBNAME}>"
-)
+if(BARISTA_TESTS)
+    add_custom_command(TARGET ${LIBNAME} POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/native_test_build.py"
+            --header "${NATIVE_HEADER}" --library "$<TARGET_FILE:${LIBNAME}>"
+            --artifact "${CMAKE_CURRENT_BINARY_DIR}/native-artifact.json")
+else()
+    set(GODOT_PROJECT_BINARY_DIR "${PROJECT_SOURCE_DIR}/${GODOT_PROJECT_DIR}/bin/${GODOTCPP_PLATFORM}")
+    add_custom_command(TARGET ${LIBNAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GODOT_PROJECT_BINARY_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${LIBNAME}>" "${GODOT_PROJECT_BINARY_DIR}/$<TARGET_FILE_NAME:${LIBNAME}>")
+endif()

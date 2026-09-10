@@ -5,3 +5,6 @@
 # silently rewrite the very drift these fixtures assert on.
 project/tests/corpus/** -text
 project/tests/corpus_fixtures/** -text
+
+# Preserve the pinned upstream doctest header, including its original whitespace.
+thirdparty/doctest/doctest.h -whitespace
