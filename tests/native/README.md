@@ -19,8 +19,11 @@ record. The verifier requires exit 0, one matching record, positive execution co
 zero failures. Crashes, assertion failures, timeouts, missing runners/libraries and empty
 selections fail closed. The hidden `runner_failure` suite is an actual failing assertion
 used only by the supervisor's subprocess tests; it is excluded from the suite manifest.
-Fatal `REQUIRE` failures abort in these exception-disabled builds and are caught as failed
-subprocesses; `CHECK` failures retain the usual doctest summary and completion counts.
+In these exception-disabled builds both `REQUIRE` and `CHECK` record failures and continue:
+vendored doctest has no exception to unwind a failed precondition. Use an explicit early-return
+guard before dereferencing/indexing a failed precondition (`test_require.h` supplies one).
+Scope guards restore settings on normal completion and early return; the supervisor regression
+executes an intentionally failing warning-settings assertion and verifies restoration.
 
 Each run copies the fixture into a temporary directory under the host application-data root,
 sets Godot's custom `user://` directory to that disposable root (including logs), and preserves existing `res://` paths

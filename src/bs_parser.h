@@ -2211,6 +2211,9 @@ private:
 	// front-end can only be exercised from inside a running Godot; the probe needs the node
 	// allocation list and the error list to render what a test compares. It reads and never mutates.
 	friend class BaristaScriptParserProbe;
+#ifdef BARISTA_TESTS
+	friend struct ParserTestAccess;
+#endif
 	bool _is_tool = false;
 	String script_path;
 	HashMap<String, Ref<BSParserRef>> depended_parsers;
