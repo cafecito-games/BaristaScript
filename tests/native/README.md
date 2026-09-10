@@ -71,3 +71,12 @@ fails instead of letting equal truncated streams count as replay evidence.
 The parser, warning and platform migration inventory, unchanged-fixture provenance,
 settings restoration checks, and retained adapter consumers are documented in
 [parser_warning_platform_parity.md](parser_warning_platform_parity.md).
+
+## Cache, declaration index and global classes
+
+Native suites `cache`, `declaration_index` and `global_class` preserve the existing storage and
+engine-boundary contracts. See [the scenario mapping and isolation rules](storage-parity.md).
+`global_class` additionally requires a real editor import in its disposable project, declared
+once in `tests/native_suites.json`; the supervisor prepares it before native execution. Run
+`python3 tests/test_native_storage.py --godot /path/to/stock-godot` to exercise preparation and
+assertion-failure cleanup (add `--build-dir build/native-cmake` for that artifact).

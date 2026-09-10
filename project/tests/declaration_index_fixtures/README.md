@@ -26,16 +26,23 @@ Each record:
 - `uint8` declares_retroactive_conformances
 - `uint64` record checksum over the record body
 
-## Regenerating fixtures
+## Fixture provenance and validation
 
-Fixtures are produced by `BaristaScriptDeclarationIndexProbe` under
-`template_debug`. See `project/tests/declaration_index_test.gd`.
+The five fixtures were produced by `BaristaScriptDeclarationIndexProbe` under
+`template_debug` via `project/tests/declaration_index_test.gd` at immutable commit
+`1fe5964cd78150651a9d9a4890586ee6a5245aa2`. `tests/native/declaration_index_test.cpp`
+preserves the same typed records and mutations, compares disposable candidate bytes to
+these read-only fixtures, and exercises the production loader on both copies. Validate with:
+
+```
+scons api_version=4.7 target=template_debug barista_tests=yes
+python3 tests/run_native_suites.py --godot /path/to/stock-godot --suite declaration_index
+```
 
 | File | How it is produced |
 |---|---|
 | `golden_index.bsi` | Two records (class + declaration-only conformance) flushed under `FORMAT_VERSION` |
-| `old_version.bsi` | `golden_index.bsi` with version bytes forced to `FORMAT_VERSION + 1` and checksum recomputed via probe helpers where needed; for negative load tests the suite also mutates bytes in memory |
+| `old_version.bsi` | Golden with version byte at offset 4 set to `FORMAT_VERSION + 1` and its last checksum byte incremented; version rejection takes precedence |
 | `bad_magic.bsi` | golden with magic clobbered |
 | `truncated.bsi` | golden truncated |
-| `trailing_bytes.bsi` | golden with an extra trailing byte before the file checksum region is invalidated |
 | `bad_checksum.bsi` | golden with one payload byte flipped |

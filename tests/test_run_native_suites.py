@@ -84,7 +84,7 @@ class ResultTests(unittest.TestCase):
             binary = root / "library.template_debug.so"
             binary.write_bytes(b"ordinary extension")
             self.assertEqual([], verify_native_surface.verify_surface(root, "template_debug"))
-            for marker in verify_native_surface.NATIVE_MARKERS:
+            for marker in verify_native_surface.NATIVE_MARKERS + verify_native_surface.RETIRED_ADAPTER_MARKERS:
                 binary.write_bytes(b"ordinary extension" + marker)
                 self.assertTrue(verify_native_surface.verify_surface(root, "template_debug"))
 
