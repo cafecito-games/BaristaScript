@@ -85,6 +85,95 @@ const BSParser::ExpressionNode *_find_fold_expression(const BSParser::ClassNode 
 	return nullptr;
 }
 
+// This is an observer of the analyzed AST, not a second datatype computation.
+void _inspect_statement_datatypes(const BSParser::Node *p_node, const String &p_path, Dictionary &r_nodes) {
+	if (p_node == nullptr) {
+		return;
+	}
+	Dictionary data;
+	const BSParser::DataType &type = p_node->get_datatype();
+	data["datatype"] = type.to_string();
+	data["type_source"] = (int)type.type_source;
+	data["is_set"] = type.is_set();
+	data["is_hard_type"] = type.is_hard_type();
+	r_nodes[p_path] = data;
+	auto child = [&](const BSParser::Node *p_child, const String &p_name) {
+		_inspect_statement_datatypes(p_child, p_path + String("/") + p_name, r_nodes);
+	};
+	switch (p_node->type) {
+		case BSParser::Node::SUITE: {
+			const auto *suite = static_cast<const BSParser::SuiteNode *>(p_node);
+			for (int i = 0; i < suite->statements.size(); i++) {
+				child(suite->statements[i], itos(i));
+			}
+		} break;
+		case BSParser::Node::FOR: {
+			const auto *loop = static_cast<const BSParser::ForNode *>(p_node);
+			data["use_conversion_assign"] = loop->use_conversion_assign;
+			child(loop->variable, "iterator");
+			child(loop->list, "list");
+			child(loop->loop, "loop");
+		} break;
+		case BSParser::Node::WHILE: {
+			const auto *loop = static_cast<const BSParser::WhileNode *>(p_node);
+			child(loop->condition, "condition");
+			child(loop->loop, "loop");
+		} break;
+		case BSParser::Node::IF: {
+			const auto *branch = static_cast<const BSParser::IfNode *>(p_node);
+			child(branch->true_block, "true");
+			child(branch->false_block, "false");
+		} break;
+		case BSParser::Node::MATCH: {
+			const auto *match = static_cast<const BSParser::MatchNode *>(p_node);
+			for (int i = 0; i < match->branches.size(); i++) {
+				child(match->branches[i], itos(i));
+			}
+		} break;
+		case BSParser::Node::MATCH_BRANCH: {
+			const auto *branch = static_cast<const BSParser::MatchBranchNode *>(p_node);
+			child(branch->block, "block");
+			for (int i = 0; i < branch->patterns.size(); i++) {
+				child(branch->patterns[i], "pattern" + itos(i));
+			}
+		} break;
+		case BSParser::Node::PATTERN: {
+			const auto *pattern = static_cast<const BSParser::PatternNode *>(p_node);
+			for (int i = 0; i < pattern->array.size(); i++) {
+				child(pattern->array[i], itos(i));
+			}
+			for (int i = 0; i < pattern->dictionary.size(); i++) {
+				child(pattern->dictionary[i].value_pattern, itos(i));
+			}
+		} break;
+		case BSParser::Node::RETURN:
+			child(static_cast<const BSParser::ReturnNode *>(p_node)->return_value, "value");
+			break;
+		case BSParser::Node::ASSERT:
+			child(static_cast<const BSParser::AssertNode *>(p_node)->condition, "condition");
+			break;
+		case BSParser::Node::ARRAY: {
+			const auto *array = static_cast<const BSParser::ArrayNode *>(p_node);
+			for (int i = 0; i < array->elements.size(); i++) {
+				child(array->elements[i], itos(i));
+			}
+		} break;
+		case BSParser::Node::DICTIONARY: {
+			const auto *dictionary = static_cast<const BSParser::DictionaryNode *>(p_node);
+			for (int i = 0; i < dictionary->elements.size(); i++) {
+				child(dictionary->elements[i].key, "key" + itos(i));
+				child(dictionary->elements[i].value, "value" + itos(i));
+			}
+		} break;
+		case BSParser::Node::LITERAL: {
+			const auto *literal = static_cast<const BSParser::LiteralNode *>(p_node);
+			data["value_type"] = (int)literal->reduced_value.get_type();
+		} break;
+		default:
+			break;
+	}
+}
+
 } // namespace
 
 void BaristaScriptAnalyzerProbe::_bind_methods() {
@@ -97,6 +186,7 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("enum_carrier_compatibility_controls"), &BaristaScriptAnalyzerProbe::enum_carrier_compatibility_controls);
 	ClassDB::bind_method(D_METHOD("fold_expression", "expression_source"), &BaristaScriptAnalyzerProbe::fold_expression);
 	ClassDB::bind_method(D_METHOD("inspect_expression_source", "source", "path"), &BaristaScriptAnalyzerProbe::inspect_expression_source);
+	ClassDB::bind_method(D_METHOD("inspect_function_source", "source", "path", "function"), &BaristaScriptAnalyzerProbe::inspect_function_source);
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
 	ClassDB::bind_method(D_METHOD("is_semantically_valid", "source", "path"), &BaristaScriptAnalyzerProbe::is_semantically_valid);
 	ClassDB::bind_method(D_METHOD("validate_source", "source", "path", "warnings", "safe_lines"), &BaristaScriptAnalyzerProbe::validate_source, DEFVAL(true), DEFVAL(false));
@@ -711,6 +801,37 @@ godot::Dictionary BaristaScriptAnalyzerProbe::inspect_expression_source(const go
 	BSCache::clear_source_override(path);
 	result["valid"] = err == OK && errors.is_empty();
 	result["errors"] = errors;
+	return result;
+}
+
+Dictionary BaristaScriptAnalyzerProbe::inspect_function_source(const String &p_source, const String &p_path, const StringName &p_function) const {
+	Dictionary result;
+	Dictionary nodes;
+	PackedStringArray errors;
+	Error err = ERR_BUG;
+	{
+		BSCache::set_source_override(p_path, p_source);
+		BSParser parser;
+		BSAnalyzer analyzer(&parser);
+		err = parser.parse(p_source, p_path, false);
+		if (err == OK) {
+			err = analyzer.analyze();
+		}
+		for (const BSParser::ParserError &error : parser.get_errors()) {
+			errors.push_back(error.message);
+		}
+		const BSParser::ClassNode *tree = parser.get_tree();
+		if (tree != nullptr && tree->has_member(p_function)) {
+			const BSParser::ClassNode::Member member = tree->get_member(p_function);
+			if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
+				_inspect_statement_datatypes(member.function->body, "body", nodes);
+			}
+		}
+	}
+	BSCache::clear_source_override(p_path);
+	result["valid"] = err == OK && errors.is_empty();
+	result["errors"] = errors;
+	result["nodes"] = nodes;
 	return result;
 }
 
