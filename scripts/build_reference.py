@@ -8,7 +8,7 @@ import hashlib
 from html.parser import HTMLParser
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -88,7 +88,7 @@ def extract_toolchain(destination, pin):
         for member in bundle:
             if not member.name.startswith(prefix) or not member.isfile():
                 continue
-            relative = Path(member.name[len(prefix):])
+            relative = PurePosixPath(member.name[len(prefix):])
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError(f"{archive}: unsafe archive path {relative}")
             if not (str(relative).startswith(("doc/classes/", "doc/tools/", "misc/utility/")) or str(relative) == "version.py"):
@@ -170,7 +170,7 @@ def build(source, output, temporary, pin):
         shutil.copyfile(path, authored / path.name)
     environment = dict(os.environ, SOURCE_DATE_EPOCH="0", PYTHONHASHSEED="0")
     subprocess.run([sys.executable, str(engine / "doc/tools/make_rst.py"),
-                    str(engine / "doc/classes"), str(authored), "--filter", r"/doc_classes/BaristaScript[^/]*\.xml$",
+                    str(engine / "doc/classes"), str(authored), "--filter", r"BaristaScript(?:Language|ResourceLoader)?\.xml$",
                     "--output", str(rst)], check=True, env=environment)
     links = engine_links(engine, pin["godot_docs_version"])
     for name in SUPPORTED:
