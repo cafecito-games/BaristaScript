@@ -2669,6 +2669,8 @@ private:
 #endif // TOOLS_ENABLED
 
 public:
+	String analyzed_source;
+	uint64_t source_refresh_revision = 0;
 	Error parse(const String &p_source_code, const String &p_script_path, bool p_for_completion, bool p_parse_body = true);
 	// `BSTokenizerBuffer::set_code_buffer()` takes a `PackedByteArray`, which is the byte-array type
 	// godot-cpp's `FileAccess` returns; upstream spells both `Vector<uint8_t>` (fs_parser.h:2601 @

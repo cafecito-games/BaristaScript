@@ -14,6 +14,7 @@
 #include "bs_platform.h"
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 
 namespace barista_script {
@@ -127,6 +128,8 @@ public:
 	 * Claims a generation token for a refresh of `p_path`. An older concurrent analysis cannot
 	 * commit after a newer claim for the same path.
 	 */
+	uint64_t get_refresh_revision(const String &p_path);
+	bool with_current_revision(const String &p_path, uint64_t p_revision, const std::function<void()> &p_publish);
 	uint64_t claim_refresh(const String &p_path);
 	void claim_rename_refresh(const String &p_from, const String &p_to, uint64_t &r_from_token, uint64_t &r_to_token);
 	void invalidate_claims(const String &p_path);
@@ -144,7 +147,7 @@ public:
 	 * Removes the path when `p_token` is current. Used for failed analysis (drop stale metadata)
 	 * and for delete/rename of the old path.
 	 */
-	bool remove_path(const String &p_path, uint64_t p_token, Vector<String> *r_changed_namespaces = nullptr);
+	bool remove_path(const String &p_path, uint64_t p_token, Vector<String> *r_changed_namespaces = nullptr, const std::function<void()> &p_cleanup = {});
 
 	/**
 	 * Unconditional remove used when synchronizing the live path set (absent files). Bumps the

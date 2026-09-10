@@ -54,6 +54,10 @@
 
 namespace barista_script {
 
+#ifdef BARISTA_TESTS
+thread_local std::function<void(const String &, bool)> BSAnalyzer::refresh_publication_hook;
+#endif
+
 namespace {
 
 // Static metatypes have semantic identity but no runtime Variant payload in M3.
@@ -9416,6 +9420,10 @@ Error BSAnalyzer::analyze() {
 }
 
 void BSAnalyzer::commit_or_remove_declaration(bool p_success) {
+#ifdef BARISTA_TESTS
+	if (auto hook = refresh_publication_hook)
+		hook(parser != nullptr ? parser->script_path : String(), true);
+#endif
 	if (!update_declaration_index) {
 		return;
 	}
@@ -9427,17 +9435,21 @@ void BSAnalyzer::commit_or_remove_declaration(bool p_success) {
 	if (path.is_empty() || !path.begins_with("res://")) {
 		return;
 	}
-	const uint64_t token = language->claim_declaration_refresh(path);
-	if (!p_success) {
-		language->remove_declaration_path(path, token);
-		return;
-	}
+	const uint64_t token = refresh_claim != 0 ? refresh_claim : parser->source_refresh_revision;
 	BSParser::ClassNode *head = parser->get_tree();
-	if (head == nullptr) {
-		language->remove_declaration_path(path, token);
+	if (!p_success || head == nullptr) {
+		Vector<String> changed;
+		BSCache::with_current_source(path, parser->analyzed_source, true, [&]() {
+			language->get_declaration_index().remove_path(path, token, &changed, [&]() {
+				if (conformance_registration_error_count == 0 || parser->get_errors().size() != conformance_registration_error_count) {
+					BSConformanceRegistry::get_singleton()->clear_file(path);
+				}
+			});
+		});
+		language->notify_conformance_namespaces_changed(changed);
 		return;
 	}
-	const String source = BSCache::get_source_code(path);
+	const String &source = parser->analyzed_source;
 	BSDeclarationRecord record;
 	record.path = path;
 	record.source_digest = BSDeclarationIndex::compute_source_digest(source);
@@ -9469,8 +9481,15 @@ void BSAnalyzer::commit_or_remove_declaration(bool p_success) {
 			record.global_annotations.push_back(annotation_name);
 		}
 	}
-	language->commit_declaration_record(token, record);
-	ScriptServer::bump_global_class_cache_version();
+	Vector<String> changed;
+	bool committed = false;
+	BSCache::with_current_source(path, source, true, [&]() {
+		committed = language->get_declaration_index().commit_record(token, record, &changed);
+	});
+	if (committed) {
+		language->notify_conformance_namespaces_changed(changed);
+		ScriptServer::bump_global_class_cache_version();
+	}
 }
 
 bool bs_source_analyzes(const String &p_source, const String &p_path) {
