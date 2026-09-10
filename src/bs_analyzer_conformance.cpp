@@ -366,14 +366,9 @@ void BSAnalyzer::raise_declared_conformance_dependencies() {
 		}
 		visited.insert(dependency_path);
 		loaded_dependency_closure.insert(dependency_path);
-		Ref<BSParserRef> dependency_ref = parser->get_depended_parser_for(dependency_path);
-		if (dependency_ref.is_null()) {
-			Error err = OK;
-			dependency_ref = BSCache::get_parser(dependency_path, BSParserRef::PARSED, err, parser->script_path);
-			if (err != OK || dependency_ref.is_null()) {
-				continue;
-			}
-		} else if (dependency_ref->raise_status(BSParserRef::PARSED) != OK) {
+		Error err = OK;
+		Ref<BSParserRef> dependency_ref = get_depended_parser(dependency_path, BSParserRef::PARSED, err);
+		if (err != OK || dependency_ref.is_null()) {
 			continue;
 		}
 		const BSParser *dependency_parser = dependency_ref->get_parser();
@@ -398,6 +393,15 @@ void BSAnalyzer::raise_declared_conformance_dependencies() {
 }
 
 void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class) {
+	if (p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
+		Ref<BSParserRef> owner = ensure_external_parser(p_class, "While resolving function signature", p_function);
+		if (owner.is_valid()) {
+			ForeignAnalyzerVisibilityScope visibility(owner->get_analyzer());
+			owner->get_analyzer()->resolve_function_signature_in_class(p_function, p_class);
+		}
+		return;
+	}
+
 	if (p_function == nullptr) {
 		return;
 	}
@@ -504,8 +508,7 @@ bool BSAnalyzer::find_trait_implementation(BSParser::ClassNode *p_class, const S
 		}
 		if (current_class->base_type.kind == BSParser::DataType::SCRIPT && !current_class->base_type.script_path.is_empty()) {
 			Error err = OK;
-			Ref<BSParserRef> base_ref = BSCache::get_parser(current_class->base_type.script_path, BSParserRef::INTERFACE_SOLVED, err,
-					parser != nullptr ? parser->script_path : String());
+			Ref<BSParserRef> base_ref = get_depended_parser(current_class->base_type.script_path, BSParserRef::INTERFACE_SOLVED, err);
 			if (base_ref.is_valid() && err == OK && base_ref->get_parser() != nullptr) {
 				current_class = base_ref->get_parser()->get_tree();
 				continue;
@@ -870,8 +873,7 @@ BSParser::ClassNode *BSAnalyzer::resolve_conformance_target(BSParser::Conformanc
 	if ((r_target_type.kind == BSParser::DataType::CLASS || r_target_type.kind == BSParser::DataType::SCRIPT) &&
 			!r_target_type.script_path.is_empty()) {
 		Error err = OK;
-		Ref<BSParserRef> ref = BSCache::get_parser(r_target_type.script_path, BSParserRef::INTERFACE_SOLVED, err,
-				parser != nullptr ? parser->script_path : String());
+		Ref<BSParserRef> ref = get_depended_parser(r_target_type.script_path, BSParserRef::INTERFACE_SOLVED, err);
 		if (ref.is_valid() && err == OK && ref->get_parser() != nullptr) {
 			return ref->get_parser()->get_tree();
 		}
@@ -947,8 +949,7 @@ BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_
 			return nullptr;
 		}
 		Error err = OK;
-		Ref<BSParserRef> trait_ref = BSCache::get_parser(record.path, BSParserRef::INTERFACE_SOLVED, err,
-				parser != nullptr ? parser->script_path : String());
+		Ref<BSParserRef> trait_ref = get_depended_parser(record.path, BSParserRef::INTERFACE_SOLVED, err);
 		if (trait_ref.is_null() || err != OK || trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
 			push_error(vformat(R"(Could not resolve trait "%s".)", name), p_source);
 			return nullptr;
@@ -1365,7 +1366,8 @@ BSParser::FunctionNode *BSAnalyzer::find_conformance_witness(const BSParser::Dat
 	auto witness_for_target = [&](const String &p_target_fqcn) -> BSParser::FunctionNode * {
 		String declaring_file;
 		int conformance_index = -1;
-		if (!registry->find_witness_location(p_target_fqcn, p_method, declaring_file, conformance_index)) {
+		StringName trait_identity;
+		if (!registry->find_witness_location(p_target_fqcn, p_method, declaring_file, conformance_index, &trait_identity)) {
 			return nullptr;
 		}
 
@@ -1389,19 +1391,44 @@ BSParser::FunctionNode *BSAnalyzer::find_conformance_witness(const BSParser::Dat
 				declaring_class = declaring_ref->get_parser()->get_tree();
 			}
 		}
-		if (declaring_class == nullptr || conformance_index < 0 ||
-				conformance_index >= declaring_class->conformances.size()) {
+		if (declaring_class == nullptr) {
 			return nullptr;
 		}
-
-		const BSParser::ConformanceNode *conformance = declaring_class->conformances[conformance_index];
-		if (conformance == nullptr) {
-			return nullptr;
-		}
-		for (int w = 0; w < conformance->witnesses.size(); w++) {
-			BSParser::FunctionNode *witness = conformance->witnesses[w];
-			if (witness != nullptr && witness->identifier != nullptr && witness->identifier->name == p_method) {
-				return witness;
+		// Registry positions belong to its current generation. Re-find the selected
+		// target/trait identity in the retained generation before borrowing a witness.
+		for (const BSParser::ConformanceNode *conformance : declaring_class->conformances) {
+			if (conformance == nullptr || conformance->target == nullptr) {
+				continue;
+			}
+			const BSParser::DataType target = conformance->target->get_datatype();
+			String target_identity;
+			if (target.class_type != nullptr) {
+				target_identity = target.class_type->fqcn;
+			} else if (target.kind == BSParser::DataType::NATIVE) {
+				target_identity = String(target.native_type);
+			} else if (target.kind == BSParser::DataType::BUILTIN) {
+				target_identity = Variant::get_type_name(target.builtin_type);
+			} else {
+				target_identity = target.script_path;
+			}
+			if (target_identity != p_target_fqcn) {
+				continue;
+			}
+			bool matches_trait = false;
+			for (const BSParser::ClassNode::TraitUse &use : conformance->traits) {
+				for (const BSParser::ClassNode *trait : bs_trait_identity_closure_nodes(use.resolved_trait)) {
+					if (bs_trait_identity_name(trait) == trait_identity) {
+						matches_trait = true;
+					}
+				}
+			}
+			if (!matches_trait) {
+				continue;
+			}
+			for (BSParser::FunctionNode *witness : conformance->witnesses) {
+				if (witness != nullptr && witness->identifier != nullptr && witness->identifier->name == p_method) {
+					return witness;
+				}
 			}
 		}
 		return nullptr;
@@ -1525,8 +1552,7 @@ void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {
 		} else if ((target_type.kind == BSParser::DataType::CLASS || target_type.kind == BSParser::DataType::SCRIPT) &&
 				!target_type.script_path.is_empty()) {
 			Error err = OK;
-			Ref<BSParserRef> ref = BSCache::get_parser(target_type.script_path, BSParserRef::INTERFACE_SOLVED, err,
-					parser != nullptr ? parser->script_path : String());
+			Ref<BSParserRef> ref = get_depended_parser(target_type.script_path, BSParserRef::INTERFACE_SOLVED, err);
 			if (ref.is_valid() && err == OK && ref->get_parser() != nullptr) {
 				target = ref->get_parser()->get_tree();
 			}

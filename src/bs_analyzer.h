@@ -445,6 +445,10 @@ public:
 	friend class BaristaScriptAnalyzerProbe;
 #endif
 
+#ifdef BARISTA_TESTS
+	friend struct ProviderTestAccess;
+#endif
+
 	BSParser *get_parser() const { return parser; }
 	AnalyzerPhase get_highest_completed_phase() const { return highest_completed_phase; }
 
@@ -507,6 +511,13 @@ private:
 	Error run_phase_conformance_witness_body();
 	Error run_phase_finalize();
 
+	// Pinned DependencyParserAccess: an AST pointer is owned by a retained parser, never by a path.
+	friend class ::BSCache; // Cleanup counts this retained-ref holder alongside parser load edges.
+	HashMap<const BSParser::ClassNode *, Ref<BSParserRef>> external_class_parser_cache;
+	HashMap<const BSParser::ClassNode *, HashSet<const BSParser::Node *>> missing_owner_sites;
+	Ref<BSParserRef> get_depended_parser(const String &p_path, BSParserRef::Status p_status, Error &r_error);
+	Ref<BSParserRef> ensure_external_parser(const BSParser::ClassNode *p_class, const char *p_context, const BSParser::Node *p_source);
+	BSParser::DataType resolve_global_head(const String &p_name, const BSParser::Node *p_source);
 	void resolve_class_inheritance(BSParser::ClassNode *p_class);
 	/**
 	 * Foundry get_class_node_current_scope_classes @ c9d5e35 (`fs_analyzer_surface.cpp`):
@@ -854,7 +865,7 @@ private:
 	};
 	HashSet<const BSParser::Node *> failed_name_lookups;
 	NameLookup lookup_declaration(const String &p_name, BSParser::ClassNode *p_scope, const BSParser::Node *p_source, const String &p_symbol_kind);
-	BSParser::DataType named_type_from_lookup(const NameLookup &p_lookup);
+	BSParser::DataType named_type_from_lookup(const NameLookup &p_lookup, const BSParser::Node *p_source);
 	BSParser::DataType resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error);
 	BSParser::DataType resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source, bool &r_error);
 	bool errors_are_only_m5_deferred() const;

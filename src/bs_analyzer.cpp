@@ -785,6 +785,16 @@ Error BSAnalyzer::run_phase_preflight() {
 }
 
 void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
+	if (p_class != nullptr && parser != nullptr && !parser->has_class(p_class) &&
+			!p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
+		Ref<BSParserRef> owner = ensure_external_parser(p_class, "While resolving class inheritance", p_class);
+		if (owner.is_valid()) {
+			ForeignAnalyzerVisibilityScope visibility(owner->get_analyzer());
+			owner->get_analyzer()->resolve_class_inheritance(p_class);
+		}
+		return;
+	}
+
 	if (p_class == nullptr) {
 		return;
 	}
@@ -831,7 +841,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			push_error(vformat(R"(Cannot depend on "%s": path is outside the bootstrap allowed dependency root.)", path), p_class);
 		}
 		Error err = OK;
-		Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser != nullptr ? parser->script_path : String());
+		Ref<BSParserRef> base_ref = get_depended_parser(path, BSParserRef::INHERITANCE_SOLVED, err);
 		if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr || base_ref->get_parser()->get_tree() == nullptr) {
 			push_error(vformat(R"(Could not resolve base script "%s".)", path), p_class);
 			p_class->base_type = BSParser::DataType();
@@ -938,7 +948,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 					push_error(vformat(R"(Cannot depend on global class "%s" at "%s": path is outside the bootstrap allowed dependency root.)", qualified, path), p_class);
 				}
 				Error err = OK;
-				Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser != nullptr ? parser->script_path : String());
+				Ref<BSParserRef> base_ref = get_depended_parser(path, BSParserRef::INHERITANCE_SOLVED, err);
 				if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr) {
 					push_error(vformat(R"(Could not resolve global class base "%s".)", qualified), p_class);
 					p_class->base_type = BSParser::DataType();
@@ -1406,6 +1416,9 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			const StringName global_name = current_class->get_global_name();
 			if ((class_name != StringName() && name == class_name) ||
 					(global_name != StringName() && name == global_name)) {
+				if (current_class == parser->get_tree() && (current_class->is_enum_file || current_class->is_tuple_file)) {
+					return type_from_metatype(resolve_global_head(String(name), p_type_node));
+				}
 				result = current_class->get_datatype();
 				result.is_meta_type = false;
 				result.type_arguments.clear();
@@ -1511,9 +1524,104 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 	if (lookup_error || indexed.kind != BSParser::DataType::VARIANT) {
 		return indexed;
 	}
+	// Exact namespace identities win; remaining suffixes are declaration members, not index entries.
+	for (int prefix_size = p_type_node->type_chain.size() - 1; prefix_size > 0; --prefix_size) {
+		String prefix;
+		for (int i = 0; i < prefix_size; ++i) {
+			if (i > 0) {
+				prefix += ".";
+			}
+			prefix += String(p_type_node->type_chain[i]->name);
+		}
+		BSParser::DataType base = prefix_size == 1
+				? resolve_named_type_in_scope(StringName(prefix), p_type_node, lookup_error)
+				: resolve_named_type(prefix, p_type_node, lookup_error);
+		if (lookup_error) {
+			return base;
+		}
+		if (base.is_variant()) {
+			continue;
+		}
+		for (int i = prefix_size; i < p_type_node->type_chain.size(); ++i) {
+			BSParser::IdentifierNode *part = p_type_node->type_chain[i];
+			BSParser::ClassNode *owner = base.class_type;
+			HashSet<const BSParser::ClassNode *> visited;
+			while (owner != nullptr && !owner->has_member(part->name) && !visited.has(owner)) {
+				visited.insert(owner);
+				owner = owner->base_type.class_type;
+			}
+			if ((base.kind != BSParser::DataType::CLASS && base.kind != BSParser::DataType::SCRIPT) ||
+					owner == nullptr || !owner->has_member(part->name)) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			resolve_class_member(owner, part->name, part);
+			const BSParser::ClassNode::Member member = owner->get_member(part->name);
+			if (member.type != BSParser::ClassNode::Member::CLASS && member.type != BSParser::ClassNode::Member::ENUM && member.type != BSParser::ClassNode::Member::TUPLE) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			base = type_from_metatype(member.get_datatype());
+		}
+		base.is_nullable = p_type_node->is_nullable;
+		return base;
+	}
 	push_error(vformat(R"(Could not find type "%s".)", qualified), p_type_node->type_chain[0]);
 	result.kind = BSParser::DataType::VARIANT;
 	return result;
+}
+
+Ref<BSParserRef> BSAnalyzer::get_depended_parser(const String &p_path, BSParserRef::Status p_status, Error &r_error) {
+	Ref<BSParserRef> ref = parser != nullptr ? parser->get_depended_parser_for(p_path) : Ref<BSParserRef>();
+	r_error = ref.is_valid() ? ref->raise_status(p_status) : ERR_FILE_NOT_FOUND;
+	return ref;
+}
+
+Ref<BSParserRef> BSAnalyzer::ensure_external_parser(const BSParser::ClassNode *p_class, const char *p_context, const BSParser::Node *p_source) {
+	if (p_class == nullptr || parser == nullptr || parser->has_class(p_class) ||
+			p_class->is_native_conformance_shim || p_class->is_builtin_conformance_shim) {
+		return Ref<BSParserRef>();
+	}
+	if (!external_class_parser_cache.has(p_class)) {
+		Ref<BSParserRef> found;
+		List<BSParser *> pending;
+		HashSet<const BSParser *> visited;
+		pending.push_back(parser);
+		while (!pending.is_empty() && found.is_null()) {
+			BSParser *owner = pending.front()->get();
+			pending.pop_front();
+			if (visited.has(owner)) {
+				continue;
+			}
+			visited.insert(owner);
+			for (const KeyValue<String, Ref<BSParserRef>> &edge : owner->get_depended_parsers()) {
+				if (edge.value.is_null()) {
+					continue;
+				}
+				// A latched analyzer failure does not erase ownership of its parsed nodes.
+				BSParser *dependency = edge.value->get_parser();
+				if (dependency == nullptr) {
+					continue;
+				}
+				if (dependency->has_class(p_class)) {
+					found = edge.value;
+					break;
+				}
+				pending.push_back(dependency);
+			}
+		}
+		external_class_parser_cache.insert(p_class, found);
+	}
+	const Ref<BSParserRef> ref = external_class_parser_cache[p_class];
+	if (ref.is_null() && !missing_owner_sites[p_class].has(p_source)) {
+		missing_owner_sites[p_class].insert(p_source);
+		push_error(vformat(R"(Parser bug (please report): Could not find external parser for class "%s". (%s))",
+						   bs_class_or_trait_diagnostic_name(p_class), p_context),
+				p_source);
+	}
+	return ref;
 }
 
 void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSParser::Node *p_source) {
@@ -1532,13 +1640,9 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 
 	Ref<BSParserRef> parser_ref;
 	if (!owns_class) {
-		const String path = _class_script_path_for_foreign_resolve(p_class);
-		if (!path.is_empty()) {
-			Error err = OK;
-			parser_ref = BSCache::get_parser(path, BSParserRef::PARSED, err, parser->script_path);
-			if (err != OK) {
-				parser_ref = Ref<BSParserRef>();
-			}
+		parser_ref = ensure_external_parser(p_class, "While resolving class interface", p_source);
+		if (parser_ref.is_null()) {
+			return;
 		}
 	}
 
@@ -2225,6 +2329,10 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		const StringName global_name = current_class->get_global_name();
 		if ((class_name != StringName() && p_identifier->name == class_name) ||
 				(global_name != StringName() && p_identifier->name == global_name)) {
+			if (current_class == parser->get_tree() && (current_class->is_enum_file || current_class->is_tuple_file)) {
+				p_identifier->set_datatype(resolve_global_head(String(p_identifier->name), p_identifier));
+				return;
+			}
 			BSParser::DataType class_meta = current_class->get_datatype();
 			if (!class_meta.is_set() || class_meta.is_variant()) {
 				class_meta.kind = BSParser::DataType::CLASS;
@@ -2369,8 +2477,25 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 		return nullptr;
 	};
 	if (parser != nullptr) {
-		if (BSParser::ClassNode *owner = find_owner(find_owner, parser->head)) {
-			declaring_class = owner;
+		List<BSParser *> pending;
+		HashSet<const BSParser *> visited;
+		pending.push_back(parser);
+		while (!pending.is_empty()) {
+			BSParser *candidate = pending.front()->get();
+			pending.pop_front();
+			if (candidate == nullptr || visited.has(candidate)) {
+				continue;
+			}
+			visited.insert(candidate);
+			if (BSParser::ClassNode *owner = find_owner(find_owner, candidate->get_tree())) {
+				declaring_class = owner;
+				break;
+			}
+			for (const KeyValue<String, Ref<BSParserRef>> &edge : candidate->get_depended_parsers()) {
+				if (edge.value.is_valid()) {
+					pending.push_back(edge.value->get_parser());
+				}
+			}
 		}
 	}
 	// Foundry get_function_signature @ c9d5e35: bare async script/local calls type as
@@ -2618,6 +2743,11 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (method_owner != nullptr) {
 					BSParser::FunctionNode *callee = find_class_function(method_owner, p_call->function_name);
 					if (callee != nullptr) {
+						if (base_type.is_meta_type && !callee->is_static) {
+							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(base_type).to_string()), p_call);
+							p_call->set_datatype(callee->get_datatype());
+							return;
+						}
 						validate_local_call(p_call, callee);
 						p_call->is_noreturn = callee->is_noreturn;
 						return;
@@ -2876,6 +3006,10 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			BSParser::get_builtin_type(constructor_name) == Variant::VARIANT_MAX && !p_call->is_noreturn) {
 		reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_call->callee));
 		const BSParser::DataType callee_type = p_call->callee->get_datatype();
+		if (callee_type.kind == BSParser::DataType::TUPLE && callee_type.is_meta_type) {
+			reduce_call_tuple_construction(p_call, callee_type);
+			return;
+		}
 		if (callee_type.kind == BSParser::DataType::BUILTIN && callee_type.builtin_type == Variant::CALLABLE) {
 			if (callee_type.has_method_signature) {
 				const int previous_errors = parser->get_errors().size();
@@ -3275,6 +3409,31 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						p_subscript->set_datatype(signal_type);
 						return;
 					}
+					if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr &&
+							(!receiver_type.is_meta_type || member.function->is_static)) {
+						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
+						p_subscript->attribute->function_source = member.function;
+						p_subscript->attribute->function_source_is_static = member.function->is_static;
+						const BSParser::DataType callable = call_site_validation.callable_type_from_function(member.function);
+						p_subscript->attribute->set_datatype(callable);
+						p_subscript->set_datatype(callable);
+						return;
+					}
+					if (member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::TUPLE ||
+							member.type == BSParser::ClassNode::Member::ENUM) {
+						p_subscript->attribute->set_datatype(member.get_datatype());
+						p_subscript->set_datatype(member.get_datatype());
+						return;
+					}
+					if (receiver_type.is_meta_type && member.type != BSParser::ClassNode::Member::TYPE_ALIAS) {
+						push_error(vformat(R"(Cannot find member "%s" in base "%s".)", p_subscript->attribute->name,
+										   type_from_metatype(receiver_type).to_string()),
+								p_subscript->attribute);
+						BSParser::DataType error;
+						error.kind = BSParser::DataType::VARIANT;
+						p_subscript->set_datatype(error);
+						return;
+					}
 					break;
 				}
 			}
@@ -3307,6 +3466,40 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						return;
 					}
 				}
+			}
+		}
+		const BSParser::DataType receiver = p_subscript->base->get_datatype();
+		if ((receiver.kind == BSParser::DataType::CLASS || receiver.kind == BSParser::DataType::SCRIPT) && p_subscript->attribute != nullptr) {
+			// Engine properties/method values remain the final ordinary class surface.
+			const StringName name = p_subscript->attribute->name;
+			const StringName native = receiver.native_type;
+			if (native != StringName()) {
+				if (!receiver.is_meta_type) {
+					const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(native, false);
+					for (int i = 0; i < properties.size(); i++) {
+						const Dictionary property = properties[i];
+						if (StringName(property.get("name", String())) == name) {
+							p_subscript->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+							return;
+						}
+					}
+				}
+				MethodInfo method;
+				if (BSNativeDB::get_method_info(native, name, &method) && (!receiver.is_meta_type || (method.flags & METHOD_FLAG_STATIC))) {
+					p_subscript->set_datatype(call_site_validation.explicit_callable_type_from_info(method));
+					return;
+				}
+			}
+			if (receiver.is_meta_type) {
+				push_error(vformat(R"(Cannot find member "%s" in base "%s".)", name, type_from_metatype(receiver).to_string()), p_subscript->attribute);
+			} else if (strict_dynamic_checks) {
+				push_error(vformat(R"(Cannot resolve member "%s" on type "%s" in strict dynamic mode.)", name, receiver.to_string()), p_subscript->attribute);
+			} else {
+				Vector<String> symbols;
+				symbols.push_back(String(name));
+				symbols.push_back(receiver.to_string());
+				push_warning(p_subscript, BSWarning::UNSAFE_PROPERTY_ACCESS, symbols);
+				mark_node_unsafe(p_subscript);
 			}
 		}
 	} else {
@@ -7541,13 +7734,9 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 
 	Ref<BSParserRef> parser_ref;
 	if (!owns_class) {
-		const String path = _class_script_path_for_foreign_resolve(p_class);
-		if (!path.is_empty()) {
-			Error err = OK;
-			parser_ref = BSCache::get_parser(path, BSParserRef::PARSED, err, parser->script_path);
-			if (err != OK) {
-				parser_ref = Ref<BSParserRef>();
-			}
+		parser_ref = ensure_external_parser(p_class, "While resolving class body", p_source);
+		if (parser_ref.is_null()) {
+			return;
 		}
 	}
 
@@ -8307,6 +8496,15 @@ void BSAnalyzer::check_pending_function_flow_finality() {
 }
 
 void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
+	if (p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
+		Ref<BSParserRef> owner = ensure_external_parser(p_class, "While resolving trait uses", p_class);
+		if (owner.is_valid()) {
+			ForeignAnalyzerVisibilityScope visibility(owner->get_analyzer());
+			owner->get_analyzer()->resolve_used_traits(p_class);
+		}
+		return;
+	}
+
 	if (p_class == nullptr) {
 		return;
 	}
@@ -8476,7 +8674,7 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 		return result;
 	}
 	Error error = OK;
-	Ref<BSParserRef> provider = BSCache::get_parser(result.record.path, BSParserRef::PARSED, error, parser != nullptr ? parser->script_path : String());
+	Ref<BSParserRef> provider = get_depended_parser(result.record.path, BSParserRef::PARSED, error);
 	if (provider.is_null() || error != OK || provider->get_parser() == nullptr || !provider->get_parser()->get_errors().is_empty()) {
 		push_error(vformat(R"(Could not resolve %s "%s": provider "%s" could not be parsed.)", p_symbol_kind, p_name, result.record.path), p_source);
 		failed_name_lookups.insert(p_source);
@@ -8488,50 +8686,78 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source, bool &r_error) {
 	const NameLookup lookup = lookup_declaration(String(p_name), current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
 	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup);
+	return named_type_from_lookup(lookup, p_source);
 }
 
 BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error) {
 	const NameLookup lookup = lookup_declaration(p_qualified, nullptr, p_source, "type");
 	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup);
+	return named_type_from_lookup(lookup, p_source);
 }
 
-BSParser::DataType BSAnalyzer::named_type_from_lookup(const NameLookup &p_lookup) {
+BSParser::DataType BSAnalyzer::resolve_global_head(const String &p_name, const BSParser::Node *p_source) {
+	BSParser::ClassNode *head = parser->get_tree();
+	if (head->is_enum_file && head->enum_file_decl != nullptr) {
+		return resolve_enum_values(head->enum_file_decl, make_class_enum_type(StringName(p_name), head, parser->script_path, true), head);
+	}
+	if (head->is_tuple_file && head->tuple_file_decl != nullptr) {
+		BSParser::TupleNode *tuple = head->tuple_file_decl;
+		if (tuple->get_datatype().is_resolving()) {
+			push_error(vformat(R"(Tuple "%s" cannot contain itself by value.)", p_name), p_source);
+			BSParser::DataType error;
+			error.kind = BSParser::DataType::VARIANT;
+			return error;
+		}
+		if (!tuple->get_datatype().is_set()) {
+			BSParser::DataType resolving;
+			resolving.kind = BSParser::DataType::RESOLVING;
+			tuple->set_datatype(resolving);
+			BSParser::ClassNode *previous = current_class;
+			current_class = head;
+			Vector<BSParser::DataType> types;
+			Vector<StringName> names;
+			for (const BSParser::TupleNode::Field &field : tuple->fields) {
+				types.push_back(type_from_metatype(datatype_from_type_node(field.type)));
+				names.push_back(field.identifier->name);
+			}
+			current_class = previous;
+			tuple->set_datatype(make_tuple_type(StringName(p_name), String(), parser->script_path, types, names, true));
+		}
+		return tuple->get_datatype();
+	}
+	return head->get_datatype();
+}
+
+BSParser::DataType BSAnalyzer::named_type_from_lookup(const NameLookup &p_lookup, const BSParser::Node *p_source) {
 	BSParser::DataType result;
 	result.kind = BSParser::DataType::VARIANT;
 	if (p_lookup.status != NameLookupStatus::FOUND) {
 		return result;
 	}
-	if (p_lookup.indexed) {
-		const BSDeclarationRecord &record = p_lookup.record;
-		switch (record.kind) {
-			case BSDeclarationKind::ENUM:
-				result.kind = BSParser::DataType::ENUM;
-				result.enum_type = StringName(record.qualified_name);
-				result.builtin_type = Variant::INT;
-				break;
-			case BSDeclarationKind::TUPLE:
-				result.kind = BSParser::DataType::TUPLE;
-				result.builtin_type = Variant::ARRAY;
-				break;
-			case BSDeclarationKind::TRAIT:
-			case BSDeclarationKind::CLASS:
-			case BSDeclarationKind::GENERIC_CLASS:
-				result.kind = BSParser::DataType::CLASS;
-				result.script_path = record.path;
-				result.native_type = StringName(record.base_type);
-				result.builtin_type = Variant::OBJECT;
-				break;
-			default:
-				break;
-		}
-	} else {
-		result.kind = BSParser::DataType::CLASS;
-		result.script_path = ScriptServer::get_global_class_path(StringName(p_lookup.qualified));
-		result.native_type = ScriptServer::get_global_class_native_base(StringName(p_lookup.qualified));
-		result.builtin_type = Variant::OBJECT;
+	const String path = p_lookup.indexed ? p_lookup.record.path : ScriptServer::get_global_class_path(StringName(p_lookup.qualified));
+	if (!is_bootstrap_path_allowed(path)) {
+		push_error(vformat(R"(Cannot depend on "%s": path is outside the bootstrap allowed dependency root.)", path), p_source);
+		return result;
 	}
+	if (path.simplify_path() == parser->script_path.simplify_path()) {
+		return type_from_metatype(resolve_global_head(p_lookup.qualified, p_source));
+	}
+	Error error = OK;
+	Ref<BSParserRef> ref = get_depended_parser(path, BSParserRef::INHERITANCE_SOLVED, error);
+	if (ref.is_null() || error != OK || ref->get_parser() == nullptr || ref->get_parser()->get_tree() == nullptr) {
+		push_error(vformat(R"(Could not resolve type "%s" from "%s".)", p_lookup.qualified, path), p_source);
+		return result;
+	}
+	BSAnalyzer *owner = ref->get_analyzer();
+	BSParser *provider = ref->get_parser();
+	const int errors = provider->get_errors().size();
+	ForeignAnalyzerVisibilityScope visibility(owner);
+	result = owner->resolve_global_head(p_lookup.qualified, provider->get_tree());
+	if (provider->get_errors().size() > errors || !result.is_set() || result.is_variant()) {
+		push_error(vformat(R"(Could not resolve type "%s" from "%s".)", p_lookup.qualified, path), p_source);
+		result.kind = BSParser::DataType::VARIANT;
+	}
+	result = type_from_metatype(result);
 	result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 	return result;
 }
