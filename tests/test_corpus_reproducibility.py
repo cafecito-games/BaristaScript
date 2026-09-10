@@ -506,11 +506,119 @@ class OfflineProducer(unittest.TestCase):
         for name, record in provenance["files"].items():
             self.assertEqual(hashlib.sha256((source / name).read_bytes()).hexdigest(), record["sha256"])
             self.assertEqual(record["source"], (self.importer.CORPUS_SUBPATH / name).as_posix())
+        for name, record in provenance['auxiliary_sources'].items():
+            data = (fixtures / name).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), record['sha256'])
+            target = self.root / record['source']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
         self.fresh = self.root / "fresh"
         summary = self.importer.import_corpus(self.root, self.fresh)
         self.importer.write_readme(self.fresh, summary)
         self.committed = self.root / "committed"
         shutil.copytree(self.fresh, self.committed)
+
+    def test_restored_original_blocks_and_shared_helper_provenance(self):
+        inv = json.loads((self.fresh / 'source_map.json').read_text())
+        self.assertEqual(len(inv['sources']), 33)
+        self.assertEqual(sum(r['original_expected_block'].count('~~ WARNING at line ') for r in inv['sources']), 53)
+        self.assertEqual(sum(r['original_expected_block'].count('>> ERROR at line ') for r in inv['sources']), 9)
+        for record in inv['sources']:
+            original = (self.root / record['identity']).read_bytes()
+            self.assertEqual(hashlib.sha256(original).hexdigest(), record['sha256'])
+            transformed = self.importer.patch(original, record['transformations'], record['identity'])
+            self.assertEqual(transformed, (self.fresh / record['imported_path']).read_bytes())
+            self.assertEqual(hashlib.sha256(transformed).hexdigest(), record['imported_sha256'])
+            if record['imported_path'] != 'warnings/narrowing_conversion.barista':
+                self.assertEqual(record['expected_block'], record['original_expected_block'])
+        support = json.loads((self.root / 'fresh_support/source_map.json').read_text())['sources'][0]
+        self.assertEqual(support['sha256'], '8d6ca9203daed3ca56c75fd6fd52401b68f3171c1f92d7893bb8793d6cf952f4')
+        self.assertEqual([p['line'] for p in support['transformations']], [89, 90, 139, 140])
+        self.assertTrue(all(p['before'] == 'long' and p['after'] == 'int' for p in support['transformations']))
+
+    def test_complete_later_line_and_stage_set_drift_are_detected(self):
+        path = self.committed / 'features/contextual_tagged_union_shorthand.norun.out'
+        before = path.read_bytes()
+        lines = before.splitlines(keepends=True)
+        mutations = [b''.join(lines[:1] + lines[2:]), before + lines[1],
+                     b''.join([lines[0], lines[2], lines[1], *lines[3:]]),
+                     b''.join([lines[0], lines[1].replace(b'needs', b'requires'), *lines[2:]])]
+        for data in mutations:
+            path.write_bytes(data)
+            self.assertIn('differs from a fresh import: features/contextual_tagged_union_shorthand.norun.out',
+                          self.importer.compare_trees(self.committed, self.fresh))
+        path.write_bytes(before)
+        stages = self.committed / 'case_stages.json'
+        before = stages.read_bytes()
+        document = json.loads(before)
+        document['cases']['warnings/deprecated_operators.barista'] = 'parser'
+        document['cases']['features/type_alias_declarations.barista'] = 'analyzer'
+        stages.write_text(json.dumps(document, indent=2) + '\n')
+        self.assertIn('differs from a fresh import: case_stages.json', self.importer.compare_trees(self.committed, self.fresh))
+        stages.write_bytes(before)
+
+    def test_projection_and_helper_preimages_fail_without_publication(self):
+        inputs = [self.root / self.importer.CORPUS_SUBPATH / 'warnings/narrowing_conversion.fs',
+                  self.root / self.importer.CORPUS_SUBPATH / 'warnings/narrowing_conversion.out',
+                  self.root / self.importer.CORPUS_SUBPATH.parent / 'utils.notest.fs']
+        for path in inputs:
+            original = path.read_bytes()
+            path.write_bytes(original.replace(b'12.345', b'12.346') if path.suffix == '.fs' and b'12.345' in original else original + b'drift')
+            with self.subTest(path=path), self.assertRaises((ValueError, SystemExit)):
+                self.importer.import_corpus(self.root, self.fresh)
+            path.write_bytes(original)
+            self.assertEqual(self.importer.compare_trees(self.committed, self.fresh), [])
+        helper = inputs[-1]
+        original = helper.read_bytes()
+        helper.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.importer.import_corpus(self.root, self.fresh)
+        helper.write_bytes(original)
+
+    def test_transaction_restores_present_and_absent_owned_outputs(self):
+        from unittest.mock import patch
+        import itertools
+        summary = self.importer._generate_corpus(self.root, self.root / 'summary')
+        baseline_template = json.loads((ROOT / 'tests/corpus_baseline.json').read_text())
+        # A miniature has fewer parser-only cases; its upstream arithmetic still binds every disposition.
+        with patch.object(self.importer, 'PARSER_UPSTREAM_TOTAL', len(summary['cases']) + 4):
+            for present, failure in itertools.product((False, True), range(3)):
+                case_root = self.root / ('transaction-' + str(present) + '-' + str(failure))
+                case_root.mkdir()
+                dest, support, baseline = case_root / 'parser', case_root / 'support', case_root / 'baseline.json'
+                if present:
+                    for directory in (dest, support):
+                        directory.mkdir()
+                        (directory / 'previous').write_bytes(b'exact previous bytes')
+                    baseline.write_text(json.dumps(baseline_template))
+                targets = [dest, support, baseline]
+                before = {str(p): p.read_bytes() for p in case_root.rglob('*') if p.is_file()}
+                replace = self.importer.os.replace
+                def fail(source, target):
+                    if target == targets[failure] and source.name in ('fresh', 'support', 'baseline.json'):
+                        raise OSError('injected publication failure')
+                    return replace(source, target)
+                with patch.object(self.importer, 'BASELINE_PATH', baseline), patch.object(self.importer.os, 'replace', side_effect=fail):
+                    with self.assertRaisesRegex(OSError, 'injected'):
+                        self.importer.import_corpus(self.root, dest, support_destination=support, publish_baseline=True)
+                self.assertEqual({str(p): p.read_bytes() for p in case_root.rglob('*') if p.is_file()}, before)
+                if not present:
+                    self.assertTrue(all(not p.exists() for p in targets))
+
+    def test_success_preserves_other_corpus_entry_and_bytes(self):
+        from unittest.mock import patch
+        baseline = self.root / 'baseline.json'
+        original = json.loads((ROOT / 'tests/corpus_baseline.json').read_text())
+        original['corpora']['analyzer']['comment'] = 'independent future delivery stays exact'
+        baseline.write_text(json.dumps(original))
+        other = self.root / 'other-corpus'
+        other.mkdir()
+        (other / 'owned').write_bytes(b'other importer bytes')
+        summary = self.importer._generate_corpus(self.root, self.root / 'summary')
+        with patch.object(self.importer, 'BASELINE_PATH', baseline), patch.object(self.importer, 'PARSER_UPSTREAM_TOTAL', len(summary['cases']) + 4):
+            self.importer.import_corpus(self.root, self.fresh, publish_baseline=True)
+        self.assertEqual(json.loads(baseline.read_text())['corpora']['analyzer'], original['corpora']['analyzer'])
+        self.assertEqual((other / 'owned').read_bytes(), b'other importer bytes')
 
     def test_real_producer_detects_same_count_bytes_additions_and_removals(self):
         self.assertEqual(self.importer.compare_trees(self.committed, self.fresh), [])
@@ -587,6 +695,7 @@ class FullProducer(unittest.TestCase):
             destination = record["destination"]
             if (ROOT / destination).is_dir():
                 shutil.copytree(ROOT / destination, self.root / destination)
+        shutil.copytree(ROOT / "project/tests/corpus_support", self.root / "project/tests/corpus_support")
         self.revision = registry["revision"]
 
     def snapshot(self, root):
@@ -775,6 +884,42 @@ class FullProducer(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.run_importer().returncode, 0)
 
+    def test_actual_support_delivery_missing_drift_and_extra_are_rejected(self):
+        support = self.root / 'project/tests/corpus_support/parser'
+        for name in ('utils.notest.barista', 'source_map.json'):
+            path = support / name
+            before = path.read_bytes()
+            path.write_bytes(before + b'drift')
+            self.assertNotEqual(self.run_importer().returncode, 0)
+            path.unlink()
+            self.assertNotEqual(self.run_importer().returncode, 0)
+            path.write_bytes(before)
+        (support / 'extra.notest.barista').write_text('unexpected')
+        self.assertNotEqual(self.run_importer().returncode, 0)
+        (support / 'extra.notest.barista').unlink()
+        self.assertEqual(self.run_importer().returncode, 0)
+
+    def test_support_parent_symlink_is_rejected_without_following(self):
+        parent = self.root / 'project/tests/corpus_support'
+        outside = self.root / 'outside-support'
+        parent.rename(outside)
+        parent.symlink_to(outside, target_is_directory=True)
+        result = self.run_importer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('symlink', result.stdout + result.stderr)
+
+    def test_even_empty_or_null_debt_is_rejected(self):
+        path = self.root / 'tests/corpus_baseline.json'
+        original = path.read_bytes()
+        for value in ({}, None):
+            baseline = json.loads(original)
+            baseline['corpora']['parser']['analyzer_deferred'] = value
+            path.write_text(json.dumps(baseline))
+            result = self.run_importer()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('analyzer_deferred', result.stdout + result.stderr)
+        path.write_bytes(original)
+
     def test_owned_metadata_mutations_fail_real_check(self):
         path = self.root / "tests/corpus_baseline.json"
         original = path.read_text()
@@ -784,7 +929,7 @@ class FullProducer(unittest.TestCase):
             if field == "foundry_revision":
                 parser[field] = "0" * 40
             elif field == "analyzer_deferred":
-                parser[field][next(iter(parser[field]))] += " drift"
+                parser[field] = {}
             else:
                 parser[field]["rewritten"][next(iter(parser[field]["rewritten"]))] += " drift"
             path.write_text(json.dumps(baseline))

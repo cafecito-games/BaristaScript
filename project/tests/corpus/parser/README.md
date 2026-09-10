@@ -22,22 +22,17 @@ Each `.out` is a complete static diagnostic block followed by exactly one LF. Th
 `case_stages.json` assigns each runnable case its explicit frontend stage; helpers have no entries.
 Do not use `--update-expectations` here: the importer owns sources, expectations and stages.
 
-## What these cases assert at oracle checkpoint A
+## Static frontend coverage
 
-All 340 cases remain at **parser** stage. A `BS_TEST_OK` expectation means this
-source parses without a diagnostic. It does not assert analyzer success or runtime behavior.
-The four analyzer-error debts and all 29 warning cases await #31 checkpoint B after semantic
-restoration. The static oracle is exercised separately by miniature analyzer fixtures. No upstream
-runtime transcript is compared, and no case function executes.
+Exactly 33 cases run through the analyzer (the four original analyzer-error cases and all
+29 warning cases); the remaining 307 assert parser coverage.
+`BS_TEST_OK` means acceptance at that case's explicit stage. The deprecated-operators control
+asserts analyzer acceptance with zero warnings. No runtime transcript or case function executes.
 
-## Cases whose expectation M3 must restore
+The original blocks contain 53 warnings and 9 errors. The single documented D1 fractional
+float-to-int expectation override projects these to 52 warnings and 10 errors. `source_map.json`
+binds each selected original source/output hash, full original block, adapted bytes and final expectation.
 
-Upstream marks 4 of these `FS_TEST_ANALYZER_ERROR`: the parser
-accepts them and the *analyzer* rejects them. With no analyzer their honest M2 expectation is the
-parse outcome, so each is listed in `tests/corpus_baseline.json` under `analyzer_deferred` together
-with the upstream diagnostic it owes:
-
-- `errors/export_enum_wrong_array_type.barista`
-- `errors/export_enum_wrong_type.barista`
-- `errors/export_tool_button_requires_tool_mode.barista`
-- `features/contextual_tagged_union_shorthand.norun.barista`
+The real `utils.notest.barista` auxiliary lives at `res://tests/corpus_support/parser/`, outside
+aggregate discovery. Its source map records the pinned bytes and four exact D1 annotation patches.
+The parser importer owns that support tree transactionally alongside this corpus and its baseline.

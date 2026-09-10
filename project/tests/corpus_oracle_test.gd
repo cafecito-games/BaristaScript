@@ -213,10 +213,10 @@ func _test_filesystem_aliases() -> void:
 			DirAccess.remove_absolute(alias)
 	var absolute := ProjectSettings.globalize_path(imported)
 	var harness := Harness.new()
-	harness.fixture_stages[absolute] = "analyzer"
+	harness.fixture_stages[absolute] = "parser"
 	var cases := [{"path": absolute.path_join("unused_variable.barista")}]
 	_expect(not harness._assign_stages(absolute, cases, true).is_empty(), "absolute imported update refused")
-	_expect(harness._assign_stages(absolute, cases, false).is_empty() and cases[0].stage == "parser", "absolute imported cases use manifest stage")
+	_expect(harness._assign_stages(absolute, cases, false).is_empty() and cases[0].stage == "analyzer", "absolute imported cases use manifest stage")
 	if not directory.is_case_sensitive(absolute):
 		var different_case := absolute.to_upper()
 		var case_harness := Harness.new()

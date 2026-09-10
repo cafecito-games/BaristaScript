@@ -188,29 +188,49 @@ class InventoryContract(unittest.TestCase):
         )
 
     def test_candidate_exact_blobs_and_results(self):
-        def candidate(d):
-            return next(
-                f["evidence"]
-                for f in d["behavior_families"]
-                if f.get("evidence", {}).get("kind") == "candidate"
-            )
+        document = copy.deepcopy(self.original)
+        family = next(f for f in document["behavior_families"] if f["id"] == "S5-builtin-metadata")
+        paths = sorted({ref["path"] for ref in family["symbols"] + family["tests"]})
+        # Synthetic evidence exercises the schema only; it is never production provenance.
+        fixture_result = "unit-fixture-only: synthetic successful candidate result"
+        family["evidence"] = {
+            "kind": "candidate",
+            "pr": {
+                "kind": "provisional",
+                "repository": "cafecito-games/BaristaScript",
+                "head_ref": "m3/issue-141-restoration-warnings",
+                "issue": 141,
+            },
+            "blobs": [{"path": path, "sha256": inventory.digest((inventory.ROOT / path).read_bytes())}
+                      for path in paths],
+            "results": [{"command": ["unit-fixture-only"], "exit": 0,
+                         "result": fixture_result, "log_sha256": inventory.digest(fixture_result.encode())}],
+        }
+        inventory.validate(document, foundry_dir=FOUNDRY, complete=True)
 
-        self.rejected(
+        def candidate(d):
+            return next(f["evidence"] for f in d["behavior_families"] if f["id"] == "S5-builtin-metadata")
+
+        def rejected(mutate, message):
+            changed = copy.deepcopy(document)
+            mutate(changed)
+            with self.assertRaisesRegex(ValueError, message):
+                inventory.validate(changed, foundry_dir=FOUNDRY, complete=True)
+
+        rejected(
             lambda d: candidate(d)["blobs"][0].update(sha256="0" * 64),
             "stale candidate blob",
         )
-        self.rejected(
+        rejected(
             lambda d: candidate(d)["results"][0].update(exit=1),
             "invalid candidate result",
         )
-        self.rejected(
+        rejected(
             lambda d: candidate(d)["pr"].update(head_ref="wrong"),
             "candidate PR locator",
         )
-        self.rejected(
-            lambda d: candidate(d)["blobs"][0].update(
-                path="tests/analyzer_port_inventory.json"
-            ),
+        rejected(
+            lambda d: candidate(d)["blobs"][0].update(path="tests/analyzer_port_inventory.json"),
             "circular candidate",
         )
 

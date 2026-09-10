@@ -2,6 +2,30 @@
   "repository": "cafecito-games/Foundry",
   "revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
   "files": {
+    "errors/export_enum_wrong_array_type.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/export_enum_wrong_array_type.fs",
+      "sha256": "66dab1c930f01725edbf0fbd2ff7f4817b804b940e20ba7abc334ef7c6d754ae"
+    },
+    "errors/export_enum_wrong_array_type.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/export_enum_wrong_array_type.out",
+      "sha256": "e8b9485bd5658ae2af10afa585f8f73e47c8ff39caa34cbb7944cb74c58be47a"
+    },
+    "errors/export_enum_wrong_type.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/export_enum_wrong_type.fs",
+      "sha256": "c85d582757fa04e502b8ca57e585c5187bc865b64ad9635eaafad6ad1c517cf7"
+    },
+    "errors/export_enum_wrong_type.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/export_enum_wrong_type.out",
+      "sha256": "66b5088e0db7b99b9152bfc1713e8d24fd185d4d1cfb6e0b5fec8ccc1ad40404"
+    },
+    "errors/export_tool_button_requires_tool_mode.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/export_tool_button_requires_tool_mode.fs",
+      "sha256": "55613c9f29aa3d32285547b9f273e9be3f41aa1b5c9c516d21e402e9b212c366"
+    },
+    "errors/export_tool_button_requires_tool_mode.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/errors/export_tool_button_requires_tool_mode.out",
+      "sha256": "668b80fb6bb6a3fe3f164569fca2d25a50120a75d6a597e49f87ce886b91d76e"
+    },
     "errors/fixed_width_integer_long_below_min.fs": {
       "source": "modules/foundry_script/tests/scripts/parser/errors/fixed_width_integer_long_below_min.fs",
       "sha256": "7ba64ee1f5b4b118184b574f6f576446f1f3f527231c0a9bf0349ebf79ce31f8"
@@ -98,6 +122,14 @@
       "source": "modules/foundry_script/tests/scripts/parser/features/abstract_keyword_top_level_class_name.norun.out",
       "sha256": "a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d"
     },
+    "features/contextual_tagged_union_shorthand.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/contextual_tagged_union_shorthand.norun.fs",
+      "sha256": "e65919b21971bc550512abe41e49c715b9f8a985e0e93daa2a0e78f48b71d249"
+    },
+    "features/contextual_tagged_union_shorthand.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/features/contextual_tagged_union_shorthand.norun.out",
+      "sha256": "44c9b0700b44d047caf539fc1dde43ed5675100f38e16a2cd128da8540800b59"
+    },
     "features/enum_host_functions.norun.fs": {
       "source": "modules/foundry_script/tests/scripts/parser/features/enum_host_functions.norun.fs",
       "sha256": "a74188e290b0b358e8cb806d998947094f3456af38f2c32c895d46a317faae8c"
@@ -134,6 +166,166 @@
       "source": "modules/foundry_script/tests/scripts/parser/features/type_alias_declarations.out",
       "sha256": "3179dd97a1cf8f32b9e6bd5eeadacb87b6e0930cdd6bd1904a335dbadc607d4c"
     },
+    "warnings/assert_always_true.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/assert_always_true.fs",
+      "sha256": "e3b284793139f5ecb5e4d8d9d11c86d71e35781cf903beb4b3aa9115bfac01a5"
+    },
+    "warnings/assert_always_true.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/assert_always_true.out",
+      "sha256": "66d9ec6fdede3d545ea3701d62598237e91714bc94c6c2bbcc507af96e082231"
+    },
+    "warnings/confusable_identifier.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/confusable_identifier.fs",
+      "sha256": "3c4661650d7ca51d1cfbdd3ad7e444db9dcddcbeabfb68ba16efa966a7691279"
+    },
+    "warnings/confusable_identifier.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/confusable_identifier.out",
+      "sha256": "e4def3d745cd77fce76f90d80ca665b4ec05aac04326d966dbfa427b48f60f34"
+    },
+    "warnings/deprecated_operators.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/deprecated_operators.fs",
+      "sha256": "18cf1fa101eb0389004633fb1047690499627397eb1e22396fefe3febfb6404f"
+    },
+    "warnings/deprecated_operators.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/deprecated_operators.out",
+      "sha256": "a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d"
+    },
+    "warnings/empty_file.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file.norun.fs",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "warnings/empty_file.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file.norun.out",
+      "sha256": "9eb543e1c1d3b0bc303e1da0d8a7ca832f02157ec0b9916358cb8d1d1383eddf"
+    },
+    "warnings/empty_file_comment.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file_comment.norun.fs",
+      "sha256": "beb24faf5d9a84c87e972c00b78ceafe3843f1651299c50cbef286a391b682d4"
+    },
+    "warnings/empty_file_comment.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file_comment.norun.out",
+      "sha256": "9eb543e1c1d3b0bc303e1da0d8a7ca832f02157ec0b9916358cb8d1d1383eddf"
+    },
+    "warnings/empty_file_newline.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file_newline.norun.fs",
+      "sha256": "6a3cf5192354f71615ac51034b3e97c20eda99643fcaf5bbe6d41ad59bd12167"
+    },
+    "warnings/empty_file_newline.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file_newline.norun.out",
+      "sha256": "9eb543e1c1d3b0bc303e1da0d8a7ca832f02157ec0b9916358cb8d1d1383eddf"
+    },
+    "warnings/empty_file_newline_comment.norun.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file_newline_comment.norun.fs",
+      "sha256": "0ecc628ff9cb33a53a5c735157ee3278e713ba6aa4e74d05c5030a34b2c414de"
+    },
+    "warnings/empty_file_newline_comment.norun.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/empty_file_newline_comment.norun.out",
+      "sha256": "9eb543e1c1d3b0bc303e1da0d8a7ca832f02157ec0b9916358cb8d1d1383eddf"
+    },
+    "warnings/enum_assign_int_without_casting.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/enum_assign_int_without_casting.fs",
+      "sha256": "ac7434f1cfa20f6582606e9285fd30f54c65d92698d7c943d04f9ed412e4b6ed"
+    },
+    "warnings/enum_assign_int_without_casting.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/enum_assign_int_without_casting.out",
+      "sha256": "bb03e3644349b7fdba7ada34fec16d86bac50ea973282c66563ee2ac1e649c0d"
+    },
+    "warnings/incompatible_ternary.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/incompatible_ternary.fs",
+      "sha256": "05bf69a797d5356965d4133563e7a15a84f69ec4d1e2f18860f0cf425d1b53d2"
+    },
+    "warnings/incompatible_ternary.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/incompatible_ternary.out",
+      "sha256": "3496d005e550beaa75ca4ccde9a9487a535d913ab9500c5cb3a1a984be141fb2"
+    },
+    "warnings/integer_division.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/integer_division.fs",
+      "sha256": "12223dd0db65d5b26ac619178ace38deab1b487339e7ce309e6cba7ca254dcca"
+    },
+    "warnings/integer_division.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/integer_division.out",
+      "sha256": "f4692c856864d1f135057e90d696dc8932ae3d2646b3e8f1c02ff96cc16b37fb"
+    },
+    "warnings/match_default_not_at_end.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/match_default_not_at_end.fs",
+      "sha256": "4c4554ad9156509b53b78b607432743e8dd786cdabf517015e8656d1afdbd060"
+    },
+    "warnings/match_default_not_at_end.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/match_default_not_at_end.out",
+      "sha256": "44b0eaeebe29d46d8aad63568c289487fd4f9495836545b1646797287f589e20"
+    },
+    "warnings/narrowing_conversion.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/narrowing_conversion.fs",
+      "sha256": "d41e732170651e7e7fd4fbf88c952be4415dfecfc6e7ba3052644150465bbde4"
+    },
+    "warnings/narrowing_conversion.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/narrowing_conversion.out",
+      "sha256": "1fe04723a6512407f3ee65ba7a3b22e5360eda37611809ba4d9ef63c90baa471"
+    },
+    "warnings/return_value_discarded.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/return_value_discarded.fs",
+      "sha256": "ac3cad17e5d5bb1d040f165177b947bd27fbccb68af981432babaa4609b97d65"
+    },
+    "warnings/return_value_discarded.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/return_value_discarded.out",
+      "sha256": "0e77156bd6cd1dfa87cac6154ef299ca3e65215a3366bbefe664a29f8e7e567c"
+    },
+    "warnings/return_value_discarded_builtin_and_utility.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/return_value_discarded_builtin_and_utility.fs",
+      "sha256": "8cd6c6e71c31e693677fe7d375bcb64f8eef59b051ad91ca6dfb1ec9cac5f32b"
+    },
+    "warnings/return_value_discarded_builtin_and_utility.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/return_value_discarded_builtin_and_utility.out",
+      "sha256": "8036288f03cb7f6a2e6910f7f94be0783111ce550daa0040de4e1885a7006493"
+    },
+    "warnings/shadowed_constant.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_constant.fs",
+      "sha256": "d49fd8034b610a9b054f11f080ab88283222c3ff5f90090d022693e628eb6c5b"
+    },
+    "warnings/shadowed_constant.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_constant.out",
+      "sha256": "8e80cbed89bebe2a6136f38ac6919adc633ad047f08e05a8b20514df19464a32"
+    },
+    "warnings/shadowed_global_identifier.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_global_identifier.fs",
+      "sha256": "0dd33d63ab76ef1b5104f68a23f708e9f6afd4087eed85bf1f3a5ff5fc09a024"
+    },
+    "warnings/shadowed_global_identifier.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_global_identifier.out",
+      "sha256": "ab9b8355c9b2f2896743a26430e6c29341dd45b4456d8675855ee2ca0aeb7cb3"
+    },
+    "warnings/shadowed_variable_class.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_variable_class.fs",
+      "sha256": "2ad1842c62e57bc44fe46cc1051b87d66312cef586056da77b2bdbb1e10f8649"
+    },
+    "warnings/shadowed_variable_class.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_variable_class.out",
+      "sha256": "411d171b047200e5e34d0c1842cf727b5291386240dbc29e674b108c438cdb45"
+    },
+    "warnings/shadowed_variable_function.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_variable_function.fs",
+      "sha256": "acac24c5d840e907dc984ecf632e96165b479003ff83b9af1e894e5239252194"
+    },
+    "warnings/shadowed_variable_function.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/shadowed_variable_function.out",
+      "sha256": "853da125c6f625b2b63d6d80d685ccac8935aea171517c2ea82c4e5d169cc868"
+    },
+    "warnings/standalone_expression.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/standalone_expression.fs",
+      "sha256": "4eb5000737363c0714ff725e213ac4e05ad096f52fb9d0e1fe11e0eb7b7ea5a0"
+    },
+    "warnings/standalone_expression.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/standalone_expression.out",
+      "sha256": "34ff4912ba56b99b2e89ec3e4eb2527b92dff18ee5e40424c7429434337fcb1f"
+    },
+    "warnings/standalone_ternary.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/standalone_ternary.fs",
+      "sha256": "7ec406352a1aadbf5fab0bf53ba44281c7708da6920e918fa58a8a1bac5a3e8b"
+    },
+    "warnings/standalone_ternary.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/standalone_ternary.out",
+      "sha256": "83ae7f89c413be3c1d06979d2ee76d6b1aeb98603a9222d9c462d0de4aec119e"
+    },
     "warnings/static_called_on_instance.fs": {
       "source": "modules/foundry_script/tests/scripts/parser/warnings/static_called_on_instance.fs",
       "sha256": "980a1ecb0ce4884c96db16036c49842c7b09daf4120d99aafca318ac0ce41373"
@@ -141,6 +333,76 @@
     "warnings/static_called_on_instance.out": {
       "source": "modules/foundry_script/tests/scripts/parser/warnings/static_called_on_instance.out",
       "sha256": "5776e1b42044bd2a042fc185f6e1b8fec11e2881c4e7067d40c796bfc9ddfa5d"
+    },
+    "warnings/unassigned_variable.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unassigned_variable.fs",
+      "sha256": "a88dfefdfaf0bb1d0a9465eca654fbf752153c23d7030de8ba41aafa1676689d"
+    },
+    "warnings/unassigned_variable.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unassigned_variable.out",
+      "sha256": "fabb859e02f6ae7c86042a7c12f54bb6d091b73833aff6c7b5ae91e92d4eb0b0"
+    },
+    "warnings/unassigned_variable_op_assign.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unassigned_variable_op_assign.fs",
+      "sha256": "6474a3f9aebd47303424ac480a47967707da78c28afe0925e71773028ee6777a"
+    },
+    "warnings/unassigned_variable_op_assign.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unassigned_variable_op_assign.out",
+      "sha256": "4a95dcc2f2893aa66f60c6f51eca46f0b925e5baebaac68ec51b02a312331c28"
+    },
+    "warnings/unreachable_code_after_return.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unreachable_code_after_return.fs",
+      "sha256": "498b860e91b1ed169c357e41c8db6b371b6d37ab9e3218e01f5ec7d2b0e430ec"
+    },
+    "warnings/unreachable_code_after_return.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unreachable_code_after_return.out",
+      "sha256": "1e292f57dee8a2e283ae7aaab858389628f9fc2a092fc5cf948099f5841096a4"
+    },
+    "warnings/unreachable_code_after_return_bug_55154.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unreachable_code_after_return_bug_55154.fs",
+      "sha256": "30ffd2beadef649e714ee6ff12539bcac58a020cafeb997f1f35019cc19e7216"
+    },
+    "warnings/unreachable_code_after_return_bug_55154.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unreachable_code_after_return_bug_55154.out",
+      "sha256": "59af7404ad9982a2d49da1a025b75b4389d232451f27e32fb4ff4a9eec706096"
+    },
+    "warnings/unreachable_code_in_property_accessor.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unreachable_code_in_property_accessor.fs",
+      "sha256": "ba0f87436d073e2c44b074d4f6bea9ce74919a7cdea33870d5ffbeffc147aab2"
+    },
+    "warnings/unreachable_code_in_property_accessor.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unreachable_code_in_property_accessor.out",
+      "sha256": "00510cad0400e81cffb41e66f7d8735c87051d41ef6d19c71e02de11c2b27c8d"
+    },
+    "warnings/unused_argument.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unused_argument.fs",
+      "sha256": "1a7d1d21853aa4a66de67291925e4d41dd6217cc9c2cad992648f239b2d3e827"
+    },
+    "warnings/unused_argument.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unused_argument.out",
+      "sha256": "6928546dfa08aff36940a8c9d93edcc71d8ae925653385c30f55af4b1274782f"
+    },
+    "warnings/unused_constant.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unused_constant.fs",
+      "sha256": "86e68acb70da11179dff8a18088cbd317ff593a7508656a161db588c0bf0fa4c"
+    },
+    "warnings/unused_constant.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unused_constant.out",
+      "sha256": "65c2507dd0e8dfb636a80595f7e01299f18d1607ad36fc0a4c5b2357cdcae699"
+    },
+    "warnings/unused_variable.fs": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unused_variable.fs",
+      "sha256": "38e8c7578eda4fb3d63ec3a5d01a990f75e8fb3ad928cd031c0928d21f28e497"
+    },
+    "warnings/unused_variable.out": {
+      "source": "modules/foundry_script/tests/scripts/parser/warnings/unused_variable.out",
+      "sha256": "a6100a79959427dac808069bf4106d86d4cf696b4e0cc69d13c357e4a804acf0"
+    }
+  },
+  "auxiliary_sources": {
+    "utils.notest.fs": {
+      "source": "modules/foundry_script/tests/scripts/utils.notest.fs",
+      "sha256": "8d6ca9203daed3ca56c75fd6fd52401b68f3171c1f92d7893bb8793d6cf952f4"
     }
   }
 }

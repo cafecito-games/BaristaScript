@@ -199,6 +199,8 @@ def validate_registration(root: Path = ROOT, *, baseline_path: Path | None = Non
         corpus = corpora[name]
         if not isinstance(corpus, dict):
             raise ValueError(f"corpus {name!r}: baseline must be an object")
+        if "analyzer_deferred" in corpus:
+            raise ValueError("obsolete analyzer_deferred field is forbidden")
         imported = corpus.get("imported", True)  # compatibility with the initial parser ledger
         if type(imported) is not bool or imported != (record["state"] == "active"):
             raise ValueError(f"corpus {name!r}: imported boolean must agree with registry state")

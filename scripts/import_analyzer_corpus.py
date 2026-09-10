@@ -125,6 +125,25 @@ def change(data, start, end, after, rule, **extra):
             'rule': rule, 'occurrences': 1, **extra}
 
 
+def source_policy_changes(data: bytes, path: str, policy: dict) -> list[dict]:
+    """Shared exact-preimage adapter for imported cases and auxiliary sources."""
+    if path not in policy['source_edits']:
+        return []
+    edits = policy['source_edits'][path]
+    if set(edits) != {'sha256', 'patches'} or edits['sha256'] != sha(data):
+        raise ValueError(f'{path}: source edit hash preimage mismatch')
+    patch(data, edits['patches'], path)
+    return edits['patches']
+
+
+def source_record(data, path, relative, role, changes, references):
+    transformed = patch(data, changes, path)
+    return {'upstream_path': path, 'identity': SCRIPTS + '/' + path,
+            'sha256': sha(data), 'git_blob': hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest(),
+            'role': role, 'imported_path': relative, 'imported_sha256': sha(transformed),
+            'transformations': sorted(changes, key=lambda p: p['start']), 'references': references}
+
+
 def path_map(files: dict[str, bytes], uri: str):
     mapping = {}
     for path in sorted(files):
@@ -332,16 +351,8 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
             references.append({'kind': kind, 'literal': literal, 'target': target,
                                'relocated': after, 'intentional_missing': intentional})
             changes.append(change(data, start, end, after, 'resource-literal', target=target))
-        if path in policy['source_edits']:
-            edits = policy['source_edits'][path]
-            if set(edits) != {'sha256', 'patches'} or edits['sha256'] != sha(data):
-                raise ValueError(f'{path}: source edit hash preimage mismatch')
-            changes.extend(edits['patches'])
-        transformed = patch(data, changes, path)
-        record = {'upstream_path': path, 'identity': SCRIPTS + '/' + path,
-                  'sha256': sha(data), 'git_blob': hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest(),
-                  'role': role, 'imported_path': relative, 'imported_sha256': sha(transformed),
-                  'transformations': sorted(changes, key=lambda p: p['start']), 'references': references}
+        changes.extend(source_policy_changes(data, path, policy))
+        record = source_record(data, path, relative, role, changes, references)
         if role == 'case':
             output = path[:-3] + '.out'
             status = files[output].split(b'\n')[0].decode()

@@ -1,1 +1,2 @@
-BS_TEST_OK
+~~ WARNING at line 4: (UNREACHABLE_CODE) Unreachable code (statement after return) in function "@property_getter()".
+~~ WARNING at line 7: (UNREACHABLE_CODE) Unreachable code (statement after return) in function "@property_setter()".
