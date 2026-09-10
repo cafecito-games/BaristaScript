@@ -7068,6 +7068,10 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 		FlowFinalityContext::FlowNarrowingScope flow_scope(flow_finality, !p_is_lambda);
 		analyze_suite(p_function->body);
 	}
+	// Foundry resolve_function_body checks every resolved body, including lambdas and witnesses.
+	// Keep those consumers in our existing flow phase, after successful body analysis.
+	// resolved_body above ensures each parser-owned function is queued exactly once.
+	pending_function_flow_checks.push_back(p_function);
 	warn_unused_parameters(p_function);
 	warn_unused_locals(p_function->body);
 	current_function = previous;
@@ -7647,121 +7651,261 @@ bool BSAnalyzer::collect_uncovered_tagged_union_cases(const BSParser::MatchNode 
 	return true;
 }
 
-bool BSAnalyzer::node_terminates(const BSParser::Node *p_node) const {
-	if (p_node == nullptr) {
+// Foundry c9d5e35 fs_analyzer.cpp:5087-5308: one reachable suite summary.
+BSAnalyzer::SuiteExitState BSAnalyzer::get_suite_exit_state(const BSParser::SuiteNode *p_suite) const {
+	SuiteExitState result;
+	if (p_suite == nullptr) {
+		return result;
+	}
+
+	for (const BSParser::Node *statement : p_suite->statements) {
+		const SuiteExitState statement_exit = get_statement_exit_state(statement);
+		result.has_return = result.has_return || statement_exit.has_return;
+		result.has_noreturn = result.has_noreturn || statement_exit.has_noreturn;
+
+		if (statement_exit.always_terminates) {
+			result.always_terminates = true;
+			return result;
+		}
+	}
+
+	return result;
+}
+
+// Returns the trailing `match` that would have terminated the suite if it had covered its subject's
+// domain, so the missing-return diagnostic can name the uncovered values. Returns null for every other
+// cause of a fallthrough.
+const BSParser::MatchNode *BSAnalyzer::find_non_covering_match_cause(const BSParser::SuiteNode *p_suite) const {
+	if (p_suite == nullptr || p_suite->statements.is_empty()) {
+		return nullptr;
+	}
+
+	const BSParser::Node *last_statement = p_suite->statements[p_suite->statements.size() - 1];
+	if (last_statement == nullptr) {
+		return nullptr;
+	}
+	if (last_statement->type == BSParser::Node::SUITE) {
+		return find_non_covering_match_cause(static_cast<const BSParser::SuiteNode *>(last_statement));
+	}
+	if (last_statement->type != BSParser::Node::MATCH) {
+		return nullptr;
+	}
+
+	const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(last_statement);
+	if (match_node->branches.is_empty()) {
+		return nullptr;
+	}
+	// An open plain-enum subject has its own diagnostic, which needs no uncovered value list.
+	if (match_node->uncovered_domain_values.is_empty() && !match_node->subject_domain_is_open_enum) {
+		return nullptr;
+	}
+	for (const BSParser::MatchBranchNode *branch : match_node->branches) {
+		if (branch == nullptr || !get_suite_exit_state(branch->block).always_terminates) {
+			return nullptr; // A branch falls through on its own; coverage is not the missing piece.
+		}
+	}
+	return match_node;
+}
+
+BSAnalyzer::SuiteExitState BSAnalyzer::get_statement_exit_state(const BSParser::Node *p_statement) const {
+	SuiteExitState result;
+	if (p_statement == nullptr) {
+		return result;
+	}
+
+	switch (p_statement->type) {
+		case BSParser::Node::RETURN:
+			result.always_terminates = true;
+			result.has_return = true;
+			break;
+		case BSParser::Node::CALL: {
+			const BSParser::CallNode *call = static_cast<const BSParser::CallNode *>(p_statement);
+			if (call->is_noreturn) {
+				result.always_terminates = true;
+				result.has_noreturn = true;
+			}
+		} break;
+		case BSParser::Node::IF: {
+			const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(p_statement);
+			const SuiteExitState true_exit = get_suite_exit_state(if_node->true_block);
+			const SuiteExitState false_exit = get_suite_exit_state(if_node->false_block);
+
+			result.has_return = true_exit.has_return || false_exit.has_return;
+			result.has_noreturn = true_exit.has_noreturn || false_exit.has_noreturn;
+			result.always_terminates = if_node->false_block != nullptr && true_exit.always_terminates && false_exit.always_terminates;
+		} break;
+		case BSParser::Node::MATCH: {
+			const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(p_statement);
+			bool all_branches_terminate = !match_node->branches.is_empty();
+			bool has_wildcard = false;
+			for (const BSParser::MatchBranchNode *branch : match_node->branches) {
+				const SuiteExitState branch_exit = get_suite_exit_state(branch != nullptr ? branch->block : nullptr);
+				result.has_return = result.has_return || branch_exit.has_return;
+				result.has_noreturn = result.has_noreturn || branch_exit.has_noreturn;
+				all_branches_terminate = all_branches_terminate && branch_exit.always_terminates;
+				has_wildcard = has_wildcard || (branch != nullptr && branch->has_wildcard);
+			}
+			// A `match` whose branches provably cover the subject's whole domain leaves no fallthrough,
+			// exactly as a wildcard branch does.
+			result.always_terminates = (has_wildcard || match_node->covers_subject_domain) && all_branches_terminate;
+		} break;
+		case BSParser::Node::WHILE: {
+			const BSParser::WhileNode *while_node = static_cast<const BSParser::WhileNode *>(p_statement);
+			const SuiteExitState loop_exit = get_suite_exit_state(while_node->loop);
+			result.has_return = loop_exit.has_return;
+			result.has_noreturn = loop_exit.has_noreturn;
+			result.always_terminates = while_node->loop != nullptr && while_node->condition != nullptr && while_node->condition->is_constant &&
+					while_node->condition->reduced_value.booleanize() && !suite_has_reachable_break(while_node->loop);
+		} break;
+		case BSParser::Node::FOR: {
+			// Preserve possible reachable returns from a FOR body in the shared summary.
+			// The pinned summary omits FOR; the issue contract requires this evidence without
+			// proving that the loop executes, so FOR never guarantees a function exit.
+			const SuiteExitState loop_exit = get_suite_exit_state(static_cast<const BSParser::ForNode *>(p_statement)->loop);
+			result.has_return = loop_exit.has_return;
+			result.has_noreturn = loop_exit.has_noreturn;
+		} break;
+		case BSParser::Node::SUITE:
+			result = get_suite_exit_state(static_cast<const BSParser::SuiteNode *>(p_statement));
+			break;
+		default:
+			break;
+	}
+
+	return result;
+}
+
+bool BSAnalyzer::suite_has_reachable_break(const BSParser::SuiteNode *p_suite) const {
+	if (p_suite == nullptr) {
 		return false;
 	}
-	if (p_node->type == BSParser::Node::RETURN) {
-		return true;
-	}
-	if (p_node->type == BSParser::Node::CALL && static_cast<const BSParser::CallNode *>(p_node)->is_noreturn) {
-		return true;
-	}
-	if (p_node->type == BSParser::Node::SUITE) {
-		return suite_has_return(static_cast<const BSParser::SuiteNode *>(p_node));
-	}
-	if (p_node->type == BSParser::Node::IF) {
-		const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(p_node);
-		return suite_has_return(if_node->true_block) && suite_has_return(if_node->false_block);
+
+	for (const BSParser::Node *statement : p_suite->statements) {
+		if (statement_has_reachable_break(statement)) {
+			return true;
+		}
+		if (get_statement_exit_state(statement).always_terminates) {
+			return false;
+		}
 	}
 	return false;
 }
 
-bool BSAnalyzer::suite_has_return(const BSParser::SuiteNode *p_suite) const {
-	if (p_suite == nullptr) {
+bool BSAnalyzer::statement_has_reachable_break(const BSParser::Node *p_statement) const {
+	if (p_statement == nullptr) {
 		return false;
 	}
-	for (int i = 0; i < p_suite->statements.size(); i++) {
-		const BSParser::Node *statement = p_suite->statements[i];
-		if (statement == nullptr) {
-			continue;
-		}
-		if (node_terminates(statement)) {
+
+	switch (p_statement->type) {
+		case BSParser::Node::BREAK:
 			return true;
+		case BSParser::Node::IF: {
+			const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(p_statement);
+			return suite_has_reachable_break(if_node->true_block) || suite_has_reachable_break(if_node->false_block);
 		}
-		if (statement->type == BSParser::Node::IF) {
-			const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(statement);
-			if (suite_has_return(if_node->true_block) && suite_has_return(if_node->false_block)) {
-				return true;
-			}
-		}
-		if (statement->type == BSParser::Node::MATCH) {
-			const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(statement);
-			if (!match_node->covers_subject_domain || match_node->branches.is_empty()) {
-				continue;
-			}
-			bool all_branches = true;
-			for (int b = 0; b < match_node->branches.size(); b++) {
-				if (match_node->branches[b] == nullptr || !suite_has_return(match_node->branches[b]->block)) {
-					all_branches = false;
-					break;
+		case BSParser::Node::MATCH: {
+			const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(p_statement);
+			for (const BSParser::MatchBranchNode *branch : match_node->branches) {
+				if (branch != nullptr && suite_has_reachable_break(branch->block)) {
+					return true;
 				}
 			}
-			if (all_branches) {
-				return true;
-			}
+			return false;
 		}
-		if (statement->type == BSParser::Node::SUITE && suite_has_return(static_cast<const BSParser::SuiteNode *>(statement))) {
-			return true;
-		}
+		case BSParser::Node::SUITE:
+			return suite_has_reachable_break(static_cast<const BSParser::SuiteNode *>(p_statement));
+		default:
+			return false;
 	}
-	return false;
 }
 
-bool BSAnalyzer::node_has_explicit_return(const BSParser::Node *p_node) const {
-	if (p_node == nullptr) {
-		return false;
-	}
-	if (p_node->type == BSParser::Node::RETURN) {
-		return true;
-	}
-	if (p_node->type == BSParser::Node::SUITE) {
-		return suite_has_explicit_return(static_cast<const BSParser::SuiteNode *>(p_node));
-	}
-	if (p_node->type == BSParser::Node::IF) {
-		const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(p_node);
-		return suite_has_explicit_return(if_node->true_block) || suite_has_explicit_return(if_node->false_block);
-	}
-	if (p_node->type == BSParser::Node::MATCH) {
-		const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(p_node);
-		for (int b = 0; b < match_node->branches.size(); b++) {
-			if (match_node->branches[b] != nullptr && suite_has_explicit_return(match_node->branches[b]->block)) {
-				return true;
-			}
-		}
-	}
-	if (p_node->type == BSParser::Node::WHILE) {
-		return suite_has_explicit_return(static_cast<const BSParser::WhileNode *>(p_node)->loop);
-	}
-	if (p_node->type == BSParser::Node::FOR) {
-		return suite_has_explicit_return(static_cast<const BSParser::ForNode *>(p_node)->loop);
-	}
-	return false;
-}
-
-bool BSAnalyzer::suite_has_explicit_return(const BSParser::SuiteNode *p_suite) const {
+void BSAnalyzer::warn_unreachable_after_noreturn(const BSParser::SuiteNode *p_suite) {
+#ifdef DEBUG_ENABLED
 	if (p_suite == nullptr) {
-		return false;
+		return;
 	}
+
 	for (int i = 0; i < p_suite->statements.size(); i++) {
-		if (node_has_explicit_return(p_suite->statements[i])) {
-			return true;
+		const BSParser::Node *statement = p_suite->statements[i];
+		warn_unreachable_after_noreturn_in_statement(statement);
+
+		const SuiteExitState statement_exit = get_statement_exit_state(statement);
+		if (statement_exit.always_terminates) {
+			if (statement_exit.has_noreturn && i + 1 < p_suite->statements.size()) {
+				const StringName function_name = current_function && current_function->identifier ? current_function->identifier->name : StringName("<anonymous lambda>");
+				const BSParser::Node *following = p_suite->statements[i + 1];
+				// The parser already owns direct-return warnings, including IF/MATCH summaries.
+				// A resolved noreturn path can overlap that same origin; preserve its one warning.
+				bool already_queued = false;
+				for (const BSParser::PendingWarning &warning : parser->pending_warnings) {
+					if (warning.source == following && warning.code == BSWarning::UNREACHABLE_CODE) {
+						already_queued = true;
+						break;
+					}
+				}
+				if (following != nullptr && !already_queued) {
+					Vector<String> symbols;
+					symbols.push_back(String(function_name));
+					push_warning(following, BSWarning::UNREACHABLE_CODE, symbols);
+				}
+			}
+			return;
 		}
 	}
-	return false;
+#else
+	(void)p_suite;
+#endif // DEBUG_ENABLED
+}
+
+void BSAnalyzer::warn_unreachable_after_noreturn_in_statement(const BSParser::Node *p_statement) {
+#ifdef DEBUG_ENABLED
+	if (p_statement == nullptr) {
+		return;
+	}
+
+	switch (p_statement->type) {
+		case BSParser::Node::IF: {
+			const BSParser::IfNode *if_node = static_cast<const BSParser::IfNode *>(p_statement);
+			warn_unreachable_after_noreturn(if_node->true_block);
+			warn_unreachable_after_noreturn(if_node->false_block);
+		} break;
+		case BSParser::Node::MATCH: {
+			const BSParser::MatchNode *match_node = static_cast<const BSParser::MatchNode *>(p_statement);
+			for (const BSParser::MatchBranchNode *branch : match_node->branches) {
+				warn_unreachable_after_noreturn(branch != nullptr ? branch->block : nullptr);
+			}
+		} break;
+		case BSParser::Node::WHILE: {
+			const BSParser::WhileNode *while_node = static_cast<const BSParser::WhileNode *>(p_statement);
+			warn_unreachable_after_noreturn(while_node->loop);
+		} break;
+		case BSParser::Node::FOR: {
+			const BSParser::ForNode *for_node = static_cast<const BSParser::ForNode *>(p_statement);
+			warn_unreachable_after_noreturn(for_node->loop);
+		} break;
+		case BSParser::Node::SUITE:
+			warn_unreachable_after_noreturn(static_cast<const BSParser::SuiteNode *>(p_statement));
+			break;
+		default:
+			break;
+	}
+#else
+	(void)p_statement;
+#endif // DEBUG_ENABLED
 }
 
 void BSAnalyzer::check_function_flow_finality(BSParser::FunctionNode *p_function) {
 	if (p_function == nullptr || !p_function->has_body || p_function->body == nullptr) {
 		return;
 	}
-
+	BSParser::FunctionNode *previous_function = current_function;
+	current_function = p_function;
+	const SuiteExitState body_exit = get_suite_exit_state(p_function->body);
+	warn_unreachable_after_noreturn(p_function->body);
 	if (p_function->is_noreturn) {
-		// Foundry SuiteExitState: has_return is recursive RETURN-only; noreturn calls set
-		// always_terminates without has_return.
-		if (suite_has_explicit_return(p_function->body)) {
+		if (body_exit.has_return) {
 			push_error(R"(A "@noreturn" function cannot return.)", p_function);
-		} else if (!suite_has_return(p_function->body)) {
+		} else if (!body_exit.always_terminates) {
 			push_error(R"(A "@noreturn" function cannot complete normally.)", p_function);
 		}
 	}
@@ -7769,24 +7913,24 @@ void BSAnalyzer::check_function_flow_finality(BSParser::FunctionNode *p_function
 	const BSParser::DataType return_type = p_function->get_datatype();
 	const bool expects_value = return_type.is_set() && !return_type.is_variant() &&
 			!(return_type.kind == BSParser::DataType::BUILTIN && return_type.builtin_type == Variant::NIL);
-	if (expects_value && !p_function->is_noreturn) {
-		if (!suite_has_return(p_function->body)) {
+	if (expects_value && !p_function->is_noreturn && !body_exit.always_terminates) {
+		const BSParser::MatchNode *incomplete_match = find_non_covering_match_cause(p_function->body);
+		if (incomplete_match != nullptr && incomplete_match->subject_domain_is_open_enum) {
+			push_error(vformat(R"(Not all code paths return a value. The "match" over "%s" leaves the undeclared values of its integer carrier unhandled; add an unguarded "_" or bind branch.)", incomplete_match->subject_domain_name), p_function);
+		} else if (incomplete_match != nullptr) {
+			push_error(vformat(R"(Not all code paths return a value. The "match" over "%s" does not cover: %s.)", incomplete_match->subject_domain_name, incomplete_match->uncovered_domain_values), p_function);
+		} else {
 			push_error(R"(Not all code paths return a value.)", p_function);
 		}
 	}
+	current_function = previous_function;
+}
 
-#ifdef DEBUG_ENABLED
-	for (int i = 0; i + 1 < p_function->body->statements.size(); i++) {
-		const BSParser::Node *statement = p_function->body->statements[i];
-		if (statement != nullptr && (statement->type == BSParser::Node::RETURN || (statement->type == BSParser::Node::CALL && static_cast<const BSParser::CallNode *>(statement)->is_noreturn))) {
-			const StringName function_name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
-			Vector<String> symbols;
-			symbols.push_back(String(function_name));
-			push_warning(p_function->body->statements[i + 1], BSWarning::UNREACHABLE_CODE, symbols);
-			break;
-		}
+void BSAnalyzer::check_pending_function_flow_finality() {
+	for (BSParser::FunctionNode *function : pending_function_flow_checks) {
+		check_function_flow_finality(function);
 	}
-#endif
+	pending_function_flow_checks.clear();
 }
 
 void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
@@ -8016,12 +8160,7 @@ Error BSAnalyzer::run_phase_flow_finality() {
 		flow_finality.check_final_member_assignments(head);
 		flow_finality.check_final_static_assignments(head);
 		flow_finality.check_final_local_assignments(head);
-		for (int i = 0; i < head->members.size(); i++) {
-			const BSParser::ClassNode::Member &member = head->members[i];
-			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
-				check_function_flow_finality(member.function);
-			}
-		}
+		check_pending_function_flow_finality();
 		// Foundry FLOW_FINALITY_INVARIANTS: abstract trait requirements after body.
 		validate_trait_requirements(head);
 	}
@@ -8033,6 +8172,14 @@ Error BSAnalyzer::run_phase_conformance_witness_body() {
 	resolve_conformance_bodies(parser->get_tree());
 	// Foundry @ c9d5e35: witness bodies need their own unqualified-shorthand sweep.
 	report_unqualified_contextual_enum_cases();
+	if (parser->get_errors().is_empty()) {
+		// Witness bodies are produced after the main flow phase. Drain their own newly
+		// analyzed functions here without rerunning earlier functions or final-assignment passes.
+		check_pending_function_flow_finality();
+		if (!parser->get_errors().is_empty()) {
+			run_phase_finalize(); // Retain queued flow warnings on this late flow failure too.
+		}
+	}
 	mark_phase(AnalyzerPhase::CONFORMANCE_WITNESS_BODY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }

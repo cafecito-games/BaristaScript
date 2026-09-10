@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="BaristaScriptLanguage" inherits="ScriptLanguageExtension">
+	<brief_description>
+		Godot's registered language integration for BaristaScript source files.
+	</brief_description>
+	<description>
+		The extension registers one language instance during startup and unregisters it during shutdown. Its language name and resource type are [code skip-lint]BaristaScript[/code], and its recognized extension is [code]barista[/code]. Obtain the registered instance through [Engine]; applications normally use [BaristaScript] and [ResourceLoader] instead of constructing or registering a second language.
+		[codeblock lang=gdscript]
+		for index in Engine.get_script_language_count():
+		    var language := Engine.get_script_language(index)
+		    if language is BaristaScriptLanguage:
+		        print("BaristaScript is registered")
+		[/codeblock]
+		The inherited [ScriptLanguageExtension] hooks serve Godot's editor. Validation parses and semantically analyzes source, reports ordered error locations, and lists top-level functions when the source is valid. Warnings and safe-line information are available in debug builds. The language also supplies tokenizer-derived reserved words and supported global declaration metadata. [method BaristaScript.is_valid] is the consumer-facing boolean validation entry point.
+		This class adds no script-callable methods or properties of its own. Native parser, cache, and declaration-index helpers are implementation details. The inherited hooks do not imply that every editor capability is implemented: completion, symbol lookup, automatic indentation, function generation, built-in templates, debugging, profiling, script execution, and script-declaration documentation are currently unavailable. The extension's authored class help is separate from documentation inside BaristaScript source files.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>

@@ -40,6 +40,7 @@ func _init() -> void:
 	_test_named_arg_and_connect_callable(failures)
 	_test_callable_signal_constructor_and_typed_receiver_depth(failures)
 	_test_match_and_flow(failures)
+	_test_pinned_suite_exit_summary(failures)
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
 	_test_final_member_and_static_assignment(failures)
@@ -1261,19 +1262,9 @@ func _test_match_and_flow(failures: PackedStringArray) -> void:
 	var incomplete := _src_class("MatchIncomplete extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n")
 	var incomplete_report: Dictionary = probe.validate_source(incomplete, "res://tests/match_incomplete.barista", true)
 	_expect(failures, incomplete_report.get("valid", true) == false, "non-exhaustive bool match / missing return invalid")
-	var saw_flow := false
-	var saw_warn := false
-	for err in incomplete_report.get("errors", []):
-		if "Not all code paths return a value" in str(err.get("message", "")):
-			saw_flow = true
-	for warn in incomplete_report.get("warnings", []):
-		if "NON_EXHAUSTIVE" in str(warn.get("string_code", "")) or "non-exhaustive" in str(warn.get("message", "")).to_lower():
-			saw_warn = true
-	_expect(failures, saw_flow or incomplete_report.get("valid", true) == false, "flow/finality or match coverage fails closed")
-	# Warning may be present when match is typed as bool; flow error alone is also sufficient AC signal.
-	_expect(failures, true, "match/flow phase exercised")
-	if saw_warn:
-		pass
+	_expect(failures, _errors_are_exact(incomplete_report.get("errors", []), [[
+		'Not all code paths return a value. The "match" over "bool" does not cover: false.', 2, 1]]),
+		"non-covering bool match emits its exact function-flow error")
 
 	var exhaustive := _src_class("MatchOk extends Node\nfunc check(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\t\tfalse:\n\t\t\treturn 0\n")
 	var ok_report: Dictionary = probe.analyze_source(exhaustive, "res://tests/match_ok.barista")
@@ -5545,3 +5536,112 @@ func _test_constant_producer_child_evidence(failures: PackedStringArray) -> void
 		_expect(failures, probe.validate_source(control.source, path, true) == report, "constant producer repeat is stable: %s" % control.case)
 	ProjectSettings.set_setting("debug/barista_script/warnings/enable", previous_enable)
 	ProjectSettings.set_setting("debug/barista_script/warnings/redundant_await", previous_redundant)
+
+
+func _test_pinned_suite_exit_summary(failures: PackedStringArray) -> void:
+	# Foundry c9d5e35 fs_analyzer.cpp:5052-5308 and test_match_finality.h.
+	# All sources, including abort and infinite loops, are analyzed text only.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var keys := ["enable", "unreachable_code", "non_exhaustive_match", "open_enum_match_without_default"]
+	var saved: Array = []
+	for key in keys:
+		saved.append(ProjectSettings.get_setting("debug/barista_script/warnings/" + key))
+		ProjectSettings.set_setting("debug/barista_script/warnings/" + key, true if key == "enable" else 1)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var cases: Array = [
+		["while_true", "func f() -> int:\n\twhile true:\n\t\tpass\n", [], [], 8],
+		["while_truthy", "func f() -> int:\n\twhile 1:\n\t\tpass\n", [], [], 8],
+		["own_break", "func f() -> int:\n\twhile true:\n\t\tbreak\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["own_break_then_return", "func f() -> int:\n\twhile true:\n\t\tbreak\n\treturn 1\n", [], [], 8],
+		["conditional_break", "func f(flag: bool) -> int:\n\twhile true:\n\t\tif flag:\n\t\t\tbreak\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["nested_while_break", "func f() -> int:\n\twhile true:\n\t\twhile true:\n\t\t\tbreak\n", [], [], 8],
+		["nested_for_break", "func f() -> int:\n\twhile true:\n\t\tfor _i in range(1):\n\t\t\tbreak\n", [], [], 8],
+		["unreachable_break", "func f() -> int:\n\twhile true:\n\t\tpush_fatal(\"stop\")\n\t\tbreak\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 9, 4, 14]], 8],
+		["false_while", "func f() -> int:\n\twhile false:\n\t\tpass\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["unknown_while", "func f(flag: bool) -> int:\n\twhile flag:\n\t\tpass\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["for_no_guaranteed_exit", "func f() -> int:\n\tfor _i in range(1):\n\t\treturn 1\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["if_without_else", "func f(flag: bool) -> int:\n\tif flag:\n\t\treturn 1\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["generic_pass", "func f() -> int:\n\tpass\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["noreturn_pass", "@noreturn\nfunc f() -> void:\n\tpass\n", [["A \"@noreturn\" function cannot complete normally.", 2, 1]], [], 8],
+		["noreturn_return", "@noreturn\nfunc f() -> void:\n\treturn\n", [["A \"@noreturn\" function cannot return.", 2, 1]], [], 8],
+		["abort_unreachable_return", "@noreturn\nfunc f() -> void:\n\tpush_fatal(\"stop\")\n\treturn\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 5, 4, 11]], 8],
+		["for_reachable_return", "@noreturn\nfunc f() -> void:\n\tfor _i in range(1):\n\t\treturn\n\tpush_fatal(\"stop\")\n", [["A \"@noreturn\" function cannot return.", 2, 1]], [], 8],
+		["for_unreachable_return", "@noreturn\nfunc f() -> void:\n\tfor _i in range(1):\n\t\tpush_fatal(\"stop\")\n\t\treturn\n\tpush_fatal(\"stop\")\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 5, 9, 5, 15]], 8],
+		["nested_warning_if", "func f(flag: bool) -> void:\n\tif flag:\n\t\tpush_fatal(\"stop\")\n\t\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 9, 4, 13]], 8],
+		["nested_warning_while", "func f(flag: bool) -> void:\n\twhile flag:\n\t\tpush_fatal(\"stop\")\n\t\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 9, 4, 13]], 8],
+		["nested_warning_for", "func f() -> void:\n\tfor _i in range(1):\n\t\tpush_fatal(\"stop\")\n\t\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 9, 4, 13]], 8],
+		["nested_warning_match", "func f(flag: bool) -> void:\n\tmatch flag:\n\t\t_:\n\t\t\tpush_fatal(\"stop\")\n\t\t\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 5, 13, 5, 17]], 8],
+		["two_functions", "func f() -> void:\n\tpush_fatal(\"stop\")\n\tpass\nfunc g() -> void:\n\tpush_fatal(\"stop\")\n\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 3, 5, 3, 9], ["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"g()\".", 6, 5, 6, 9]], 8],
+		["lambda_warning", "func f() -> void:\n\tvar _callback := func() -> void:\n\t\tpush_fatal(\"stop\")\n\t\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"<anonymous lambda>()\".", 4, 9, 4, 13]], 8],
+		["nested_class_warning", "class C:\n\tfunc f() -> void:\n\t\tpush_fatal(\"stop\")\n\t\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 9, 4, 13]], 8],
+		["return_warning_once", "func f() -> void:\n\treturn\n\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 3, 5, 3, 9]], 8],
+		["abort_return_then_pass", "func f() -> void:\n\tpush_fatal(\"stop\")\n\treturn\n\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 3, 5, 3, 11], ["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 5, 4, 9]], 8],
+		["nested_terminator_warning", "func f(flag: bool) -> void:\n\tif flag:\n\t\treturn\n\telse:\n\t\tpush_fatal(\"stop\")\n\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 6, 5, 6, 9]], 8],
+		["bool_gap", "func f(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n", [["Not all code paths return a value. The \"match\" over \"bool\" does not cover: false.", 1, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"bool\". Unhandled: false. Add the missing patterns or a \"_\" wildcard branch.", 2, 5, 4, 22]], 8],
+		["bool_unrelated_fallthrough", "func f(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\tpass\n", [["Not all code paths return a value.", 1, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"bool\". Unhandled: false. Add the missing patterns or a \"_\" wildcard branch.", 2, 5, 4, 22]], 8],
+		["bool_branch_fallthrough", "func f(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\tpass\n", [["Not all code paths return a value.", 1, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"bool\". Unhandled: false. Add the missing patterns or a \"_\" wildcard branch.", 2, 5, 4, 18]], 8],
+		["bool_complete", "func f(flag: bool) -> int:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn 1\n\t\tfalse:\n\t\t\treturn 0\n", [], [], 8],
+		["tagged_gap", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n", [["Not all code paths return a value. The \"match\" over \"E\" does not cover: B.", 4, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"E\". Unhandled: B. Add the missing patterns or a \"_\" wildcard branch.", 5, 5, 7, 22]], 8],
+		["nullable_gap", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E?) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n\t\tE.B(var _x):\n\t\t\treturn 2\n", [["Not all code paths return a value. The \"match\" over \"E\" does not cover: null.", 4, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"E\". Unhandled: null. Add the missing patterns or a \"_\" wildcard branch.", 5, 5, 9, 22]], 8],
+		["enum_open", "enum E:\n\tA = 0\n\tB = 1\nfunc f(value: E) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n\t\tE.B:\n\t\t\treturn 2\n", [["Not all code paths return a value. The \"match\" over \"E\" leaves the undeclared values of its integer carrier unhandled; add an unguarded \"_\" or bind branch.", 4, 1]], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"E\" has no unguarded \"_\" or bind branch. \"E\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 5, 5, 9, 22]], 8],
+		["original_noreturn_paths_norun", "@noreturn\nfunc abort_user() -> void:\n\tpush_fatal(\"abort\")\n\nfunc returns_from_push_fatal() -> int:\n\tpush_fatal(\"not implemented\")\n\nfunc returns_from_user_noreturn() -> int:\n\tabort_user()\n\nfunc returns_from_if(flag: bool) -> int:\n\tif flag:\n\t\treturn 1\n\telse:\n\t\tabort_user()\n\nfunc returns_from_all_if_noreturn(flag: bool) -> int:\n\tif flag:\n\t\tabort_user()\n\telse:\n\t\tpush_fatal(\"stop\")\n\nfunc returns_from_match(value: int) -> String:\n\tmatch value:\n\t\t0:\n\t\t\tabort_user()\n\t\t_:\n\t\t\tpush_fatal(\"stop\")\n\nfunc returns_from_while_true() -> int:\n\twhile true:\n\t\tabort_user()\n", [], [], 8],
+		["original_noreturn_function_return", "@noreturn\nfunc invalid_return() -> void:\n\treturn\n", [["A \"@noreturn\" function cannot return.", 2, 1]], [], 8],
+		["original_noreturn_function_fallthrough", "@noreturn\nfunc invalid_fallthrough() -> void:\n\tprint(\"fallthrough\")\n", [["A \"@noreturn\" function cannot complete normally.", 2, 1]], [], 8],
+		["original_noreturn_unreachable_norun", "@noreturn\nfunc abort_user() -> void:\n\tpush_fatal(\"abort\")\n\nfunc unreachable_after_noreturn() -> void:\n\tabort_user()\n\tprint(\"unreachable\")\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"unreachable_after_noreturn()\".", 7, 5, 7, 25]], 8],
+		["body_unknown_call", "func f() -> int:\n\tunknown_abort()\n", [["Identifier \"unknown_abort\" not declared in the current scope.", 2, 5]], [], 5],
+		["body_failure_before_flow", "func f() -> int:\n\tmissing_name\n", [["Identifier \"missing_name\" not declared in the current scope.", 2, 5]], [], 5],
+		["parse_failure_before_flow", "func f(\n", [["Expected closing \")\" after function parameters.", 1, 7]], [], -1],
+		["lambda_missing_return", "func f() -> void:\n\tvar _callback := func() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 2, 22]], [], 8],
+		["nested_class_missing_return", "class C:\n\tfunc f() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 2, 5]], [], 8],
+		["parser_overlap", "func f(flag: bool) -> void:\n\tif flag:\n\t\tpush_fatal(\"stop\")\n\t\treturn\n\telse:\n\t\treturn\n\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 4, 9, 4, 15], ["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 7, 5, 7, 9]], 8],
+		["match_break", "func f(flag: bool) -> int:\n\twhile true:\n\t\tmatch flag:\n\t\t\t_:\n\t\t\t\tbreak\n", [["Not all code paths return a value.", 1, 1]], [], 8],
+		["unreachable_if_break", "func f(flag: bool) -> int:\n\twhile true:\n\t\tif flag:\n\t\t\treturn 1\n\t\telse:\n\t\t\tpush_fatal(\"stop\")\n\t\tbreak\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"f()\".", 7, 9, 7, 14]], 8],
+		["tagged_gap_complete", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n\t\tE.B(var _x):\n\t\t\treturn 2\n", [], [], 8],
+		["nullable_gap_complete", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E?) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n\t\tE.B(var _x):\n\t\t\treturn 2\n\t\tnull:\n\t\t\treturn 0\n", [], [], 8],
+		["enum_open_complete", "enum E:\n\tA = 0\n\tB = 1\nfunc f(value: E) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n\t\tE.B:\n\t\t\treturn 2\n\t\t_:\n\t\t\treturn 0\n", [], [], 8],
+		["guarded_case", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E, flag: bool) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n\t\tE.B(var _x) when flag:\n\t\t\treturn 2\n", [["Not all code paths return a value. The \"match\" over \"E\" does not cover: B.", 4, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"E\". Unhandled: B. Add the missing patterns or a \"_\" wildcard branch.", 5, 5, 9, 22]], 8],
+		["refutable_case", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E) -> int:\n\tmatch value:\n\t\tE.A:\n\t\t\treturn 1\n\t\tE.B(1):\n\t\t\treturn 2\n", [["Not all code paths return a value. The \"match\" over \"E\" does not cover: B.", 4, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"E\". Unhandled: B. Add the missing patterns or a \"_\" wildcard branch.", 5, 5, 9, 22]], 8],
+		["witness_missing_return", "trait T:\n\tabstract func witness_missing_return() -> int\nextend Node uses T:\n\tfunc witness_missing_return() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 4, 5]], [], 8],
+		["witness_warning", "trait T:\n\tabstract func witness_warning() -> void\nextend Node uses T:\n\tfunc witness_warning() -> void:\n\t\tpush_fatal(\"stop\")\n\t\tpass\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"witness_warning()\".", 6, 9, 6, 13]], 8],
+		["witness_loop", "trait T:\n\tabstract func witness_loop() -> int\nextend Node uses T:\n\tfunc witness_loop() -> int:\n\t\twhile true:\n\t\t\tpass\n", [], [], 8],
+		["witness_body_failure", "trait T:\n\tabstract func witness_body_failure() -> int\nextend Node uses T:\n\tfunc witness_body_failure() -> int:\n\t\tmissing_name\n", [["Identifier \"missing_name\" not declared in the current scope.", 5, 9]], [], 7],
+	]
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before_records: Array = index.get_records().duplicate(true)
+	var token := index.claim_refresh("res://tests/suite_exit_generation_probe.barista")
+	for fixture in cases:
+		var path: String = "res://tests/suite_exit_" + fixture[0] + ".barista"
+		var expected_valid: bool = fixture[2].is_empty()
+		var report: Dictionary = probe.validate_source(fixture[1], path, true)
+		var analysis: Dictionary = probe.analyze_source(fixture[1], path)
+		_expect(failures, report.get("valid") == expected_valid and _errors_are_exact(report.get("errors", []), fixture[2]), fixture[0] + " exact flow errors: " + str(report))
+		_expect(failures, _warnings_are_exact(report.get("warnings", []), fixture[3]), fixture[0] + " exact flow warnings: " + str(report))
+		var expected_messages: PackedStringArray = []
+		for error in fixture[2]:
+			expected_messages.append(error[0])
+		_expect(failures, analysis.get("valid") == expected_valid and analysis.get("phase") == fixture[4] and analysis.get("errors") == expected_messages and not analysis.has("warnings"), fixture[0] + " exact phase/error boundary: " + str(analysis))
+		_expect(failures, probe.is_semantically_valid(fixture[1], path) == expected_valid, fixture[0] + " semantic validity agrees")
+		_expect(failures, probe.validate_source(fixture[1], path, true) == report and probe.analyze_source(fixture[1], path) == analysis, fixture[0] + " repeated analysis is stable")
+	_expect(failures, index.get_records() == before_records, "flow analysis preserves complete declaration records")
+	_expect(failures, index.claim_refresh("res://tests/suite_exit_generation_probe.barista") == token + 1, "flow analysis never advances declaration generation")
+	# Severity changes use the same parser queue, even when a flow error forces finalization.
+	for fixture in cases:
+		if fixture[0] not in ["nested_warning_if", "bool_gap", "enum_open"]:
+			continue
+		var warning: Array = fixture[3][0]
+		var setting: String = "debug/barista_script/warnings/" + warning[0].to_lower()
+		for level in [0, 1, 2]:
+			ProjectSettings.set_setting(setting, level)
+			BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+			var expected_errors: Array = fixture[2].duplicate(true)
+			if level == 2:
+				expected_errors.append([warning[1] + " (Warning treated as error.)", warning[2], warning[3]])
+			var report: Dictionary = probe.validate_source(fixture[1], "res://tests/flow_warning_setting.barista", true)
+			_expect(failures, report.get("valid") == expected_errors.is_empty() and _errors_are_exact(report.get("errors", []), expected_errors), fixture[0] + " severity " + str(level) + " exact errors: " + str(report))
+			_expect(failures, _warnings_are_exact(report.get("warnings", []), fixture[3] if level == 1 else []), fixture[0] + " severity exact warning stream")
+		ProjectSettings.set_setting(setting, 1)
+	# parse/body failure must not be mistaken for a flow failure; the exact cases above expose
+	# phase -1/5 (and late witness body 7), versus finalization phase 8 after a flow error.
+	for i in range(keys.size()):
+		ProjectSettings.set_setting("debug/barista_script/warnings/" + keys[i], saved[i])
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
