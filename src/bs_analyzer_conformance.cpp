@@ -94,19 +94,6 @@ BSParser::ClassNode *_find_local_class_by_name(BSParser::ClassNode *p_root, cons
 	return nullptr;
 }
 
-BSParser::ClassNode *_find_local_trait_by_name(BSParser::ClassNode *p_owner, const String &p_name) {
-	for (BSParser::ClassNode *scope = p_owner; scope != nullptr; scope = scope->outer) {
-		if (!scope->has_member(StringName(p_name))) {
-			continue;
-		}
-		const BSParser::ClassNode::Member member = scope->get_member(StringName(p_name));
-		if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr && member.m_class->is_trait) {
-			return member.m_class;
-		}
-	}
-	return nullptr;
-}
-
 BSParser::DataType _self_type_for_class(BSParser::ClassNode *p_class) {
 	BSParser::DataType self_type;
 	if (p_class == nullptr) {
@@ -919,7 +906,7 @@ BSParser::ClassNode *BSAnalyzer::resolve_conformance_target(BSParser::Conformanc
 	return nullptr;
 }
 
-BSParser::ClassNode *BSAnalyzer::resolve_conformance_trait_use(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source) {
+BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source) {
 	const String name = p_trait_use.to_string();
 	if (name.is_empty()) {
 		return nullptr;
@@ -930,29 +917,33 @@ BSParser::ClassNode *BSAnalyzer::resolve_conformance_trait_use(BSParser::ClassNo
 	}
 
 	BSParser::ClassNode *trait = p_trait_use.resolved_trait;
-	if (trait == nullptr) {
-		trait = _find_local_trait_by_name(p_scope, name);
+	if (trait == nullptr && !name.contains(".")) {
+		for (BSParser::ClassNode *scope = p_scope; scope != nullptr; scope = scope->outer) {
+			if (!scope->has_member(StringName(name))) {
+				continue;
+			}
+			const BSParser::ClassNode::Member member = scope->get_member(StringName(name));
+			if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr || !member.m_class->is_trait) {
+				push_error(vformat(R"("%s" is not a trait.)", name), _trait_use_source(p_trait_use, p_scope));
+				return nullptr;
+			}
+			trait = member.m_class;
+			break;
+		}
 	}
 	if (trait == nullptr) {
-		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-		BSDeclarationRecord record;
-		bool found = false;
-		if (language != nullptr) {
-			found = language->try_resolve_declaration(name, record);
-			if (!found && p_scope != nullptr && !p_scope->namespace_name.is_empty()) {
-				found = language->try_resolve_declaration(p_scope->namespace_name + String(".") + name, record);
-			}
-			if (!found && p_scope != nullptr) {
-				for (int j = 0; j < p_scope->imports.size(); j++) {
-					found = language->try_resolve_declaration(p_scope->imports[j] + String(".") + name, record);
-					if (found) {
-						break;
-					}
-				}
-			}
+		const BSParser::Node *source = _trait_use_source(p_trait_use, p_scope);
+		const NameLookup lookup = lookup_declaration(name, p_scope, source, "trait");
+		if (lookup.status == NameLookupStatus::ERROR) {
+			return nullptr;
 		}
-		if (!found || record.kind != BSDeclarationKind::TRAIT) {
-			push_error(vformat(R"(Could not find trait "%s".)", name), p_source);
+		if (lookup.status == NameLookupStatus::MISSING) {
+			push_error(vformat(R"(Could not find trait "%s".)", name), source);
+			return nullptr;
+		}
+		const BSDeclarationRecord &record = lookup.record;
+		if (!lookup.indexed || record.kind != BSDeclarationKind::TRAIT) {
+			push_error(vformat(R"("%s" is not a trait.)", name), source);
 			return nullptr;
 		}
 		Error err = OK;
@@ -970,6 +961,14 @@ BSParser::ClassNode *BSAnalyzer::resolve_conformance_trait_use(BSParser::ClassNo
 	}
 
 	p_trait_use.resolved_trait = trait;
+	return trait;
+}
+
+BSParser::ClassNode *BSAnalyzer::resolve_conformance_trait_use(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source) {
+	BSParser::ClassNode *trait = resolve_trait_reference(p_scope, p_trait_use, p_source);
+	if (trait == nullptr) {
+		return nullptr;
+	}
 	resolve_used_traits(trait);
 	analyze_class_interface(trait);
 	return trait;
