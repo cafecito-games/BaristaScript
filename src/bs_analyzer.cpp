@@ -68,6 +68,8 @@ static bool _is_static_script_handle(const BSParser::ExpressionNode *p_expressio
 			p_expression->get_datatype().class_type != nullptr;
 }
 
+static bool _convert_constant_dictionary_key(const BSParser::DataType &p_type, Variant &r_key);
+
 static bool _has_known_constant_truth(const BSParser::ExpressionNode *p_expression);
 static bool _constant_truth(const BSParser::ExpressionNode *p_expression);
 static bool _select_semantic_constant(const BSParser::SubscriptNode *p_subscript,
@@ -92,8 +94,13 @@ static const BSParser::ExpressionNode *_constant_origin(const BSParser::Expressi
 				continue;
 			}
 		} else if (p_expression->type == BSParser::Node::SUBSCRIPT) {
+			const auto *subscript = static_cast<const BSParser::SubscriptNode *>(p_expression);
+			if (subscript->is_attribute && subscript->attribute != nullptr && subscript->attribute->constant_source != nullptr) {
+				p_expression = subscript->attribute->constant_source->initializer;
+				continue;
+			}
 			const BSParser::ExpressionNode *selected = nullptr;
-			if (_select_semantic_constant(static_cast<const BSParser::SubscriptNode *>(p_expression), selected, r_visited)) {
+			if (_select_semantic_constant(subscript, selected, r_visited)) {
 				p_expression = selected;
 				continue;
 			}
@@ -103,9 +110,9 @@ static const BSParser::ExpressionNode *_constant_origin(const BSParser::Expressi
 	return nullptr;
 }
 
-static bool _constant_key_equal(const BSParser::ExpressionNode *p_left, const BSParser::ExpressionNode *p_right, bool &r_known) {
-	const bool left_handle = _is_static_script_handle(p_left), right_handle = _is_static_script_handle(p_right);
-	const bool left_value = BSAnalyzer::has_materialized_constant_value(p_left), right_value = BSAnalyzer::has_materialized_constant_value(p_right);
+static bool _constant_key_equal(const BSParser::ExpressionNode *p_left, const BSParser::ExpressionNode *p_right, bool &r_known, const Variant *p_lookup_key = nullptr) {
+	const bool left_handle = _is_static_script_handle(p_left), right_handle = p_lookup_key == nullptr && _is_static_script_handle(p_right);
+	const bool left_value = BSAnalyzer::has_materialized_constant_value(p_left), right_value = p_lookup_key != nullptr || BSAnalyzer::has_materialized_constant_value(p_right);
 	r_known = (left_handle || left_value) && (right_handle || right_value);
 	if (!r_known) {
 		return false;
@@ -116,7 +123,7 @@ static bool _constant_key_equal(const BSParser::ExpressionNode *p_left, const BS
 	// Use the same String/StringName-aware key comparator as actual Dictionary get.
 	Dictionary key;
 	key[p_left->reduced_value] = true;
-	return key.has(p_right->reduced_value);
+	return key.has(p_lookup_key != nullptr ? *p_lookup_key : p_right->reduced_value);
 }
 
 static bool _select_semantic_constant(const BSParser::SubscriptNode *p_subscript,
@@ -142,23 +149,37 @@ static bool _select_semantic_constant(const BSParser::SubscriptNode *p_subscript
 		int64_t index = 0;
 		if (p_subscript->is_attribute && !p_subscript->is_tuple_index && p_subscript->attribute != nullptr && origin->get_datatype().kind == BSParser::DataType::TUPLE) {
 			index = origin->get_datatype().get_tuple_field_index(p_subscript->attribute->name);
-		} else if (BSAnalyzer::has_materialized_constant_value(p_subscript->index) && p_subscript->index->reduced_value.get_type() == Variant::INT) {
+		} else if (BSAnalyzer::has_materialized_constant_value(p_subscript->index) &&
+				(p_subscript->index->reduced_value.get_type() == Variant::INT ||
+						(origin->type == BSParser::Node::ARRAY && p_subscript->index->reduced_value.get_type() == Variant::FLOAT))) {
 			index = p_subscript->index->reduced_value;
 			if (index < 0 && origin->type == BSParser::Node::ARRAY) {
 				index += elements->size();
 			}
 		} else {
-			return false;
+			// A constant alias uses ordinary get's invalid-index diagnostic; direct
+			// literal and tuple legality is checked before reaching this selector.
+			return origin->type == BSParser::Node::ARRAY && BSAnalyzer::has_materialized_constant_value(p_subscript->index);
 		}
 		if (index >= 0 && index < elements->size()) {
 			r_selected = (*elements)[index];
 		}
 		return true;
 	}
-	if (origin->type == BSParser::Node::DICTIONARY && p_subscript->index != nullptr && p_subscript->index->is_constant) {
+	if (origin->type == BSParser::Node::DICTIONARY &&
+			((p_subscript->is_attribute && p_subscript->attribute != nullptr) ||
+					(p_subscript->index != nullptr && p_subscript->index->is_constant))) {
+		Variant lookup_key;
+		const bool materialized_key = p_subscript->is_attribute || BSAnalyzer::has_materialized_constant_value(p_subscript->index);
+		if (materialized_key) {
+			lookup_key = p_subscript->is_attribute ? Variant(p_subscript->attribute->name) : p_subscript->index->reduced_value;
+			if (!_convert_constant_dictionary_key(origin->get_datatype(), lookup_key)) {
+				return true; // A known invalid copied key cannot select an element.
+			}
+		}
 		for (const auto &pair : static_cast<const BSParser::DictionaryNode *>(origin)->elements) {
 			bool known = false;
-			if (_constant_key_equal(pair.key, p_subscript->index, known)) {
+			if (_constant_key_equal(pair.key, p_subscript->index, known, materialized_key ? &lookup_key : nullptr)) {
 				r_selected = pair.value;
 				return true;
 			}
@@ -390,6 +411,27 @@ static bool _construct_builtin_variant(Variant::Type p_target_type, const Varian
 	r_converted = Variant((GDExtensionConstVariantPtr)storage);
 	gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
 	_make_constant_containers_read_only(r_converted);
+	return true;
+}
+
+static bool _convert_constant_dictionary_key(const BSParser::DataType &p_type, Variant &r_key) {
+	if (p_type.kind == BSParser::DataType::BUILTIN &&
+			p_type.builtin_type == Variant::DICTIONARY && p_type.has_container_element_type(0)) {
+		// Pin Dictionary::getptr validates a copied key through ContainerTypeValidate.
+		// M3 omits runtime descriptors, but known builtin keys can use the same strict
+		// conversion before lookup. Keep the original index AST/value for diagnostics.
+		const BSParser::DataType key_type = p_type.get_container_element_type(0);
+		if (key_type.kind == BSParser::DataType::BUILTIN && key_type.builtin_type != Variant::NIL &&
+				key_type.builtin_type != Variant::OBJECT && !key_type.is_meta_type && !key_type.is_type_handle_annotation &&
+				!(key_type.is_nullable && r_key.get_type() == Variant::NIL) && key_type.builtin_type != r_key.get_type()) {
+			Variant converted;
+			if (!Variant::can_convert_strict(r_key.get_type(), key_type.builtin_type) ||
+					!_construct_builtin_variant(key_type.builtin_type, r_key, converted)) {
+				return false;
+			}
+			r_key = converted;
+		}
+	}
 	return true;
 }
 
@@ -3941,6 +3983,14 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 			p_subscript->set_datatype(result_type);
 			return;
 		}
+		// Preserve constant alias lookup before static key-type rejection, just as the
+		// materialized path does. Direct literals keep their existing static checks.
+		if (p_subscript->base->type != BSParser::Node::ARRAY && p_subscript->base->type != BSParser::Node::DICTIONARY && !base_type.is_meta_type) {
+			p_subscript->set_datatype(result_type);
+			if (reduce_semantic_constant_subscript(p_subscript)) {
+				return;
+			}
+		}
 		// Pin14667-14683: an already-materialized ordinary constant uses Variant get.
 		// Local literal reducers eagerly fold earlier than the pin; direct literal indexing
 		// must still pass the static branch below (including its distinct diagnostics).
@@ -4135,24 +4185,30 @@ Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_ex
 			base_type.builtin_type = Variant::DICTIONARY;
 		}
 	}
-	if (base.get_type() == Variant::DICTIONARY && base_type.kind == BSParser::DataType::BUILTIN &&
-			base_type.builtin_type == Variant::DICTIONARY && base_type.has_container_element_type(0)) {
-		// Pin Dictionary::getptr validates a copied key through ContainerTypeValidate.
-		// M3 omits runtime descriptors, but known builtin keys can use the same strict
-		// conversion before lookup. Keep the original index AST/value for diagnostics.
-		const BSParser::DataType key_type = base_type.get_container_element_type(0);
-		if (key_type.kind == BSParser::DataType::BUILTIN && key_type.builtin_type != Variant::NIL &&
-				key_type.builtin_type != Variant::OBJECT && !key_type.is_meta_type && !key_type.is_type_handle_annotation &&
-				!(key_type.is_nullable && index.get_type() == Variant::NIL) && key_type.builtin_type != index.get_type()) {
-			Variant converted;
-			if (!Variant::can_convert_strict(index.get_type(), key_type.builtin_type) ||
-					!_construct_builtin_variant(key_type.builtin_type, index, converted)) {
-				return Variant();
-			}
-			index = converted;
-		}
+	if (base.get_type() == Variant::DICTIONARY && !_convert_constant_dictionary_key(base_type, index)) {
+		return Variant();
 	}
 	return base.get(index, &r_reduced);
+}
+
+bool BSAnalyzer::reduce_semantic_constant_subscript(BSParser::SubscriptNode *p_subscript) {
+	HashSet<const BSParser::ExpressionNode *> visited;
+	const BSParser::ExpressionNode *selected = nullptr;
+	if (_select_semantic_constant(p_subscript, selected, visited)) {
+		if (selected != nullptr && selected->is_constant) {
+			p_subscript->is_constant = true;
+			p_subscript->is_unmaterialized_constant = !has_materialized_constant_value(selected);
+			p_subscript->reduced_value = selected->reduced_value;
+			p_subscript->set_datatype(selected->get_datatype());
+		} else if (selected == nullptr && !p_subscript->is_attribute && p_subscript->index != nullptr) {
+			// Preserve the invalid-index diagnostic without printing absent NIL
+			// as a value. Only the unavailable container interpolation is static.
+			const String index = _is_static_script_handle(p_subscript->index) ? p_subscript->index->get_datatype().script_path : p_subscript->index->reduced_value.stringify();
+			push_error(vformat(R"(Cannot get index "%s" from "%s".)", index, p_subscript->base->get_datatype().to_string()), p_subscript->index);
+		}
+		return true;
+	}
+	return false;
 }
 
 void BSAnalyzer::publish_constant_subscript(BSParser::SubscriptNode *p_subscript, const Variant &p_value) {
@@ -7276,21 +7332,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			const int error_count = parser->get_errors().size();
 			reduce_subscript(subscript);
 			if (!subscript->is_constant && parser->get_errors().size() == error_count) {
-				HashSet<const BSParser::ExpressionNode *> visited;
-				const BSParser::ExpressionNode *selected = nullptr;
-				if (_select_semantic_constant(subscript, selected, visited)) {
-					if (selected != nullptr && selected->is_constant) {
-						subscript->is_constant = true;
-						subscript->is_unmaterialized_constant = !has_materialized_constant_value(selected);
-						subscript->reduced_value = selected->reduced_value;
-						subscript->set_datatype(selected->get_datatype());
-					} else if (selected == nullptr && subscript->index != nullptr) {
-						// Preserve the invalid-index diagnostic without printing absent NIL
-						// as a value. Only the unavailable container interpolation is static.
-						const String index = _is_static_script_handle(subscript->index) ? subscript->index->get_datatype().script_path : subscript->index->reduced_value.stringify();
-						push_error(vformat(R"(Cannot get index "%s" from "%s".)", index, subscript->base->get_datatype().to_string()), subscript->index);
-					}
-				}
+				reduce_semantic_constant_subscript(subscript);
 			}
 			if (!subscript->is_constant && parser->get_errors().size() == error_count) {
 				bool reduced = false;

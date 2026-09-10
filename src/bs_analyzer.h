@@ -669,6 +669,7 @@ private:
 	void reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple);
 	void reject_constant_materialization(BSParser::ExpressionNode *p_expression);
 	Variant make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced);
+	bool reduce_semantic_constant_subscript(BSParser::SubscriptNode *p_subscript);
 	void publish_constant_subscript(BSParser::SubscriptNode *p_subscript, const Variant &p_value);
 	void materialize_constant_initializer(BSParser::ConstantNode *p_constant);
 	void check_assignable_inference(BSParser::AssignableNode *p_assignable, const char *p_kind);

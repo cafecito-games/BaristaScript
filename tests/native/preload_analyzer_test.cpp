@@ -540,6 +540,82 @@ TEST_SUITE("preload_analyzer") {
 			CHECK(consumer.get_tree()->get_member("instance").get_datatype().class_type == selected->get_datatype().class_type);
 		}
 	}
+	TEST_CASE("semantic_selection_uses_existing_numeric_keys_and_member_origins") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "selected2", "class_name SelectedProvider2\nconst VALUE = 17\n").is_empty());
+		BS_TEST_REQUIRE(!provider(fixture, "owner2", "const VALUES = [preload(\"selected2.barista\")]\n").is_empty());
+		const char *declarations[] = {
+			"const Selected = [Q][0.0]\n",
+			"const D: Dictionary[float, Variant] = {1.0: Q}\nconst Selected = D[1]\n",
+			"const D: Dictionary[int, Variant] = {1: Q}\nconst Selected = D[1.9]\n",
+			"const Selected = P.VALUES[0]\n",
+			"const D = {\"value\": Q}\nconst Selected = D.value\n",
+		};
+		for (const char *declaration : declarations) {
+			INFO(std::string(declaration));
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse(String("const Q = preload(\"selected2.barista\")\nconst P = preload(\"owner2.barista\")\n") + declaration + "var value: int = Selected.VALUE\nvar instance: Selected\n", "res://tests/x3/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() == OK);
+			no_errors(consumer);
+			auto *selected = consumer.get_tree()->get_member("Selected").constant->initializer;
+			CHECK(selected->is_constant);
+			CHECK_FALSE(BSAnalyzer::has_materialized_constant_value(selected));
+			CHECK(selected->get_datatype().is_meta_type);
+			CHECK(selected->get_datatype().class_type == consumer.get_tree()->get_member("Q").get_datatype().class_type);
+			CHECK(consumer.get_tree()->get_member("instance").get_datatype().class_type == selected->get_datatype().class_type);
+			auto *selection = static_cast<BSParser::SubscriptNode *>(selected);
+			if (String(declaration).contains("D[1]")) {
+				CHECK(selection->index->reduced_value.get_type() == Variant::INT);
+				CHECK(int64_t(selection->index->reduced_value) == 1);
+			} else if (String(declaration).contains("D[1.9]")) {
+				CHECK(selection->index->reduced_value.get_type() == Variant::FLOAT);
+				CHECK(double(selection->index->reduced_value) == 1.9);
+			}
+		}
+		BSParser ordinary;
+		BS_TEST_REQUIRE(ordinary.parse("const A = [17][0.0]\nconst D: Dictionary[float, int] = {1.0: 23}\nconst F = D[1]\nconst I: Dictionary[int, int] = {1: 31}\nconst N = I[1.9]\nconst Named = {\"value\": 41}\nconst Attr = Named.value\n", "res://tests/x3/ordinary.barista", false) == OK);
+		BSAnalyzer analyzer(&ordinary);
+		CHECK(analyzer.analyze() == OK);
+		no_errors(ordinary);
+		for (const auto &entry : { std::pair<const char *, int>("A", 17), { "F", 23 }, { "N", 31 }, { "Attr", 41 } }) {
+			auto *value = ordinary.get_tree()->get_member(entry.first).constant->initializer;
+			CHECK(BSAnalyzer::has_materialized_constant_value(value));
+			CHECK(int64_t(value->reduced_value) == entry.second);
+		}
+	}
+	TEST_CASE("semantic_numeric_selection_preserves_rejected_key_and_index_diagnostics") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "lookup", "class_name LookupProvider\n").is_empty());
+		for (bool handle : { false, true }) {
+			for (const String &selection : { String("A[2.9]"), String("A[\"bad\"]"), String("D[2]"), String("D[\"bad\"]"), String("I[1e40]") }) {
+				CAPTURE(handle);
+				INFO(std::string(selection.utf8().get_data()));
+				BSParser consumer;
+				BS_TEST_REQUIRE(consumer.parse("const P = preload(\"lookup.barista\")\nconst A = [" + String(handle ? "P" : "17") + "]\nconst D: Dictionary[float, Variant] = {1.0: " + String(handle ? "P" : "17") + "}\nconst I: Dictionary[int, Variant] = {1: " + String(handle ? "P" : "17") + "}\nvar value = " + selection + "\n", "res://tests/x3/consumer.barista", false) == OK);
+				BSAnalyzer analyzer(&consumer);
+				CHECK(analyzer.analyze() != OK);
+				auto *lookup = static_cast<BSParser::SubscriptNode *>(consumer.get_tree()->get_member("value").variable->initializer);
+				// Pin constant-alias get diagnoses the original key, even after a copied
+				// numeric key was converted or rejected. Only absent container text differs.
+				const String base = handle ? lookup->base->get_datatype().to_string() : lookup->base->reduced_value.stringify();
+				diagnostic(consumer, "Cannot get index \"" + lookup->index->reduced_value.stringify() + "\" from \"" + base + "\".", lookup->index);
+				CHECK_FALSE(lookup->is_constant);
+				if (selection == "D[2]") {
+					CHECK(lookup->index->reduced_value.get_type() == Variant::INT);
+					CHECK(int64_t(lookup->index->reduced_value) == 2);
+				} else if (selection == "A[2.9]") {
+					CHECK(lookup->index->reduced_value.get_type() == Variant::FLOAT);
+					CHECK(double(lookup->index->reduced_value) == 2.9);
+				}
+			}
+			BSParser missing;
+			BS_TEST_REQUIRE(missing.parse("const P = preload(\"lookup.barista\")\nconst D = {\"value\": " + String(handle ? "P" : "17") + "}\nconst Selected = D.missing\n", "res://tests/x3/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&missing);
+			CHECK(analyzer.analyze() != OK);
+			diagnostic(missing, "Assigned value for constant \"Selected\" isn't a constant expression.", missing.get_tree()->get_member("Selected").constant->initializer);
+		}
+	}
 	TEST_CASE("semantic_script_dictionary_keys_keep_duplicate_identity") {
 		StorageFixture fixture;
 		BS_TEST_REQUIRE(!provider(fixture, "key", "class_name KeyProvider\n").is_empty());
