@@ -431,6 +431,56 @@ class FailClosedTest(unittest.TestCase):
         self.assertIn("godot_cpp/variant/variant.hpp", result.stdout + result.stderr)
         self.assertIn("bypasses the platform seam", result.stdout + result.stderr)
 
+    def test_a_paired_port_source_cannot_use_a_header_mapped_by_its_header(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source_root = Path(scratch) / "src"
+            source_root.mkdir()
+            (source_root / "bs_tokenizer.cpp").write_text(
+                '#include "bs_tokenizer.h"\n#include <godot_cpp/variant/variant.hpp>\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--source-root", str(source_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("godot_cpp/variant/variant.hpp", result.stdout + result.stderr)
+        self.assertIn("bypasses the platform seam", result.stdout + result.stderr)
+
+    def test_a_port_file_cannot_use_a_godot_cpp_header_mapped_elsewhere(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source_root = Path(scratch) / "src"
+            source_root.mkdir()
+            (source_root / "bs_tokenizer.h").write_text(
+                '#include "bs_platform.h"\n#include <godot_cpp/classes/project_settings.hpp>\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--source-root", str(source_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("godot_cpp/classes/project_settings.hpp", result.stdout + result.stderr)
+        self.assertIn("bypasses the platform seam", result.stdout + result.stderr)
+
+    def test_a_port_file_cannot_use_an_unmapped_godot_cpp_header(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source_root = Path(scratch) / "src"
+            source_root.mkdir()
+            (source_root / "bs_tokenizer.h").write_text(
+                '#include "bs_platform.h"\n#include <godot_cpp/variant/dictionary.hpp>\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--source-root", str(source_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("godot_cpp/variant/dictionary.hpp", result.stdout + result.stderr)
+        self.assertIn("bypasses the platform seam", result.stdout + result.stderr)
+
+    def test_a_system_header_in_a_port_file_is_not_an_engine_boundary(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source_root = Path(scratch) / "src"
+            source_root.mkdir()
+            (source_root / "bs_tokenizer.h").write_text(
+                '#include "bs_platform.h"\n#include <cstdint>\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--source-root", str(source_root))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_a_relative_private_seam_include_bypasses_the_umbrella(self):
         with tempfile.TemporaryDirectory() as scratch:
             source_root = Path(scratch) / "src"

@@ -10,8 +10,6 @@
 
 #ifdef DEBUG_ENABLED
 
-#include <godot_cpp/core/class_db.hpp>
-
 namespace barista_script {
 
 String BSWarning::get_message() const {

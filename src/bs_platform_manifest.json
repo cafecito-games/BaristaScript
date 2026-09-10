@@ -50,6 +50,7 @@
 	],
 	"seam_support_headers": [
 		"godot_cpp/core/memory.hpp",
+		"godot_cpp/core/object.hpp",
 		"godot_cpp/templates/local_vector.hpp",
 		"godot_cpp/classes/dir_access.hpp",
 		"godot_cpp/variant/packed_byte_array.hpp"

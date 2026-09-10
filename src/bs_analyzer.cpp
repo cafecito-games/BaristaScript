@@ -49,9 +49,6 @@
 #include "bs_utility_functions.h"
 #include "bs_warning.h"
 
-#include <godot_cpp/core/gdextension_interface_loader.hpp>
-#include <godot_cpp/variant/utility_functions.hpp>
-
 namespace barista_script {
 
 #ifdef BARISTA_TESTS
@@ -403,17 +400,9 @@ static bool _construct_builtin_variant(Variant::Type p_target_type, const Varian
 	// GDExtension operation is exposed through the generated interface loader rather than the
 	// godot-cpp Variant wrapper. Copy the constructed native value into the owning wrapper before
 	// destroying the temporary ABI value.
-	alignas(8) uint8_t storage[GODOT_CPP_VARIANT_SIZE]{};
-	const GDExtensionConstVariantPtr arguments[1] = { p_source._native_ptr() };
-	GDExtensionCallError error{};
-	gdextension_interface::variant_construct((GDExtensionVariantType)p_target_type,
-			(GDExtensionUninitializedVariantPtr)storage, arguments, 1, &error);
-	if (error.error != GDEXTENSION_CALL_OK) {
-		gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
+	if (!BSVariantOperators::construct(p_target_type, p_source, r_converted)) {
 		return false;
 	}
-	r_converted = Variant((GDExtensionConstVariantPtr)storage);
-	gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
 	_make_constant_containers_read_only(r_converted);
 	return true;
 }

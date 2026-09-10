@@ -17,4 +17,5 @@
 struct BSVariantOperators {
 	static bool has_validated_evaluator(godot::Variant::Operator p_op, godot::Variant::Type p_a, godot::Variant::Type p_b);
 	static godot::Variant::Type get_return_type(godot::Variant::Operator p_op, godot::Variant::Type p_a, godot::Variant::Type p_b);
+	static bool construct(godot::Variant::Type p_type, const godot::Variant &p_source, godot::Variant &r_value);
 };

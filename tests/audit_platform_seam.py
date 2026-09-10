@@ -304,21 +304,16 @@ def check_seam_include_allowlist(paths, umbrella, local_edges, failures):
         failures.append("declared seam file {} is not reachable from {}".format(path, umbrella))
 
 
-def mapped_headers_by_ported_file(manifest):
-    """The godot-cpp mappings owned by each renamed file in the upstream port set."""
-    mapped = {}
-    for entry in manifest["entries"]:
-        if not isinstance(entry, dict):
-            continue
-        headers = set(as_string_list(entry.get("godot_cpp_headers")))
-        for site in as_string_list(entry.get("sites")):
-            upstream_name = PurePosixPath(site.rsplit(":", 1)[0]).name
-            local_name = "bs_" + upstream_name[3:] if upstream_name.startswith("fs_") else upstream_name
-            mapped.setdefault(local_name, set()).update(headers)
-    return mapped
+def ported_file_names(manifest):
+    """Local names of every source and header in the manifest-declared upstream port set."""
+    names = set()
+    for source in as_string_list(manifest["upstream"].get("port_set")):
+        upstream_name = PurePosixPath(source).name
+        names.add("bs_" + upstream_name[3:] if upstream_name.startswith("fs_") else upstream_name)
+    return names
 
 
-def check_frontend_boundary(source_root, seam_paths, umbrella, mapped_headers, failures):
+def check_frontend_boundary(source_root, seam_paths, umbrella, ported_files, failures):
     """Reject direct engine includes and private seam includes outside the owned seam."""
     if not source_root.is_dir():
         failures.append("no frontend source root at {}".format(source_root))
@@ -332,7 +327,8 @@ def check_frontend_boundary(source_root, seam_paths, umbrella, mapped_headers, f
         text = strip_cpp_comments(path.read_text(encoding="utf-8"))
         for _delimiter, include in INCLUDE_PATTERN.findall(text):
             normalized = normalize_include(include)
-            if normalized.startswith(engine_prefixes) or normalized in mapped_headers.get(path.name, set()):
+            direct_godot_cpp = path.name in ported_files and normalized.startswith("godot_cpp/")
+            if normalized.startswith(engine_prefixes) or direct_godot_cpp:
                 failures.append("{} includes {}, which bypasses the platform seam".format(path, include))
             if PurePosixPath(normalized).name in private_names:
                 failures.append(
@@ -665,7 +661,7 @@ def main(argv=None):
         arguments.source_root,
         seam_paths + original_seam_paths,
         umbrella,
-        mapped_headers_by_ported_file(manifest),
+        ported_file_names(manifest),
         failures,
     )
     for header in sorted(drift):

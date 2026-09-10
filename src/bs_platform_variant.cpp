@@ -10,6 +10,21 @@
 
 #include <godot_cpp/core/gdextension_interface_loader.hpp>
 
+bool BSVariantOperators::construct(Variant::Type p_type, const Variant &p_source, Variant &r_value) {
+	alignas(8) uint8_t storage[GODOT_CPP_VARIANT_SIZE]{};
+	const GDExtensionConstVariantPtr arguments[1] = { p_source._native_ptr() };
+	GDExtensionCallError error{};
+	gdextension_interface::variant_construct((GDExtensionVariantType)p_type,
+			(GDExtensionUninitializedVariantPtr)storage, arguments, 1, &error);
+	if (error.error != GDEXTENSION_CALL_OK) {
+		gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
+		return false;
+	}
+	r_value = Variant((GDExtensionConstVariantPtr)storage);
+	gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
+	return true;
+}
+
 bool BSVariantOperators::has_validated_evaluator(Variant::Operator p_op, Variant::Type p_a, Variant::Type p_b) {
 	if (p_op < 0 || p_op >= Variant::OP_MAX || p_a < 0 || p_a >= Variant::VARIANT_MAX || p_b < 0 || p_b >= Variant::VARIANT_MAX) {
 		return false;

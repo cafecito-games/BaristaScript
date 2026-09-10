@@ -52,6 +52,9 @@
 #include <godot_cpp/core/class_db.hpp>
 // core/object/object.h -- only PropertyInfo is used; godot-cpp keeps it under core/, not classes/.
 #include <godot_cpp/core/property_info.hpp>
+// BaristaScript's parse cache also resolves retained parser references through ObjectDB. This is
+// extension support rather than an upstream mapping, and is declared in seam_support_headers.
+#include <godot_cpp/core/object.hpp>
 // core/object/ref_counted.h -- core declares RefCounted and Ref<T> together.
 #include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
