@@ -95,8 +95,6 @@ target_sources(${LIBNAME}
     src/bs_tokenizer.h
     src/bs_tokenizer_buffer.cpp
     src/bs_tokenizer_buffer.h
-    src/bs_tokenizer_probe.cpp
-    src/bs_tokenizer_probe.h
     src/register_types.cpp
     src/register_types.h
     src/barista_script.cpp
@@ -207,11 +205,13 @@ set_target_properties(${LIBNAME} PROPERTIES
     OUTPUT_NAME "${LIBNAME}${BARISTA_SCRIPT_SUFFIX}")
 
 if(BARISTA_TESTS)
-    add_custom_command(TARGET ${LIBNAME} POST_BUILD
+    add_custom_target(native_artifact ALL
+        DEPENDS ${LIBNAME}
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/native_test_build.py"
             --header "${NATIVE_HEADER}" --library "$<TARGET_FILE:${LIBNAME}>"
             --artifact "${CMAKE_CURRENT_BINARY_DIR}/native-artifact.json")
 else()
+    file(REMOVE "${CMAKE_CURRENT_BINARY_DIR}/native-artifact.json")
     set(GODOT_PROJECT_BINARY_DIR "${PROJECT_SOURCE_DIR}/${GODOT_PROJECT_DIR}/bin/${GODOTCPP_PLATFORM}")
     add_custom_command(TARGET ${LIBNAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${GODOT_PROJECT_BINARY_DIR}"

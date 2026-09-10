@@ -8,6 +8,7 @@
 """Failure propagation tests; --godot additionally exercises actual native subprocesses."""
 import argparse
 import json
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,7 @@ class ResultTests(unittest.TestCase):
         self.assertTrue(self.evaluate(runner.RESULT_PREFIX + "not json"))
         self.assertTrue(self.evaluate(self.record(cases=True)))
         self.assertTrue(self.evaluate(self.record(protocol=True)))
+        self.assertTrue(self.evaluate(self.record(extra=1)))
 
     def test_timeout_is_failure_with_diagnostics(self):
         result = runner.supervise([sys.executable, "-c", "import time; time.sleep(5)"], 0.05)
@@ -86,6 +88,23 @@ class ResultTests(unittest.TestCase):
                 binary.write_bytes(b"ordinary extension" + marker)
                 self.assertTrue(verify_native_surface.verify_surface(root, "template_debug"))
 
+    def test_wrong_or_stale_artifact_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = root / "native.so"
+            library.write_bytes(b"test artifact")
+            artifact = dict(library=str(library), sha256=hashlib.sha256(library.read_bytes()).hexdigest(),
+                            build_id=runner.build_identity())
+            metadata = root / "native-artifact.json"
+            metadata.write_text(json.dumps(artifact))
+            self.assertEqual(artifact, runner.read_artifact(root))
+            library.write_bytes(b"wrong artifact")
+            self.assertRaises(ValueError, runner.read_artifact, root)
+            library.write_bytes(b"test artifact")
+            artifact["build_id"] = "previous source revision"
+            metadata.write_text(json.dumps(artifact))
+            self.assertRaises(ValueError, runner.read_artifact, root)
+
     def test_missing_library_fails(self):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertRaises((ValueError, OSError), runner.read_artifact, Path(temporary))
@@ -93,6 +112,16 @@ class ResultTests(unittest.TestCase):
 
 @unittest.skipUnless(GODOT, "pass --godot to run real native subprocess checks")
 class RuntimeTests(unittest.TestCase):
+    def test_runtime_state_is_disposable(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        with runner.staged_project(artifact) as project:
+            state = project.parent
+            completed = runner.invoke(GODOT, project, "tokenizer", "integer_range_is_exact", "state-check", 60)
+            self.assertEqual([], runner.evaluate(completed.returncode, completed.stdout, "tokenizer",
+                              "integer_range_is_exact", "state-check", artifact["build_id"]), completed.stdout)
+            self.assertTrue((state / "logs/godot.log").is_file(), "Godot user:// logs must stay in disposable state")
+        self.assertFalse(state.exists())
+
     def test_real_assertion_failure(self):
         artifact = runner.read_artifact(BUILD_DIR)
         with runner.staged_project(artifact) as project:
@@ -113,9 +142,21 @@ class RuntimeTests(unittest.TestCase):
                                         "missing-check", artifact["build_id"]))
         self.assertNotIn(runner.RESULT_PREFIX, completed.stdout)
 
+    def test_ordinary_library_cannot_supply_runner(self):
+        import sys
+        platform_name = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
+        candidates = sorted((runner.ROOT / "project/bin" / platform_name).glob("*template_debug*"))
+        self.assertTrue(candidates, "build an ordinary debug extension before native integration checks")
+        artifact = runner.read_artifact(BUILD_DIR)
+        with runner.staged_project(dict(artifact, library=str(candidates[0]))) as project:
+            completed = runner.invoke(GODOT, project, "tokenizer", "", "wrong-library-check", 5)
+        self.assertTrue(runner.evaluate(completed.returncode, completed.stdout, "tokenizer", "",
+                                        "wrong-library-check", artifact["build_id"]))
+        self.assertNotIn(runner.RESULT_PREFIX, completed.stdout)
+
     def test_unknown_case_and_query_emit_no_execution_evidence(self):
         artifact = runner.read_artifact(BUILD_DIR)
-        for case, listing in (("no such case", False), ("", True)):
+        for case, listing in (("no such case", False), ("INTEGER_RANGE_IS_EXACT", False), ("", True)):
             with runner.staged_project(artifact) as project:
                 completed = runner.invoke(GODOT, project, "tokenizer", case, "query-check", 60,
                                           listing=listing)

@@ -9,23 +9,30 @@
 import argparse
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def write_header(destination):
+def build_identity():
     inputs = sorted({*ROOT.glob("src/*.h"), *ROOT.glob("src/*.cpp"),
-                     *ROOT.glob("tests/native/*"), *ROOT.glob("thirdparty/doctest/*"),
-                     ROOT / "SConstruct", ROOT / "CMakeLists.txt", Path(__file__).resolve(),
+                     *ROOT.glob("tests/native/*"), *ROOT.glob("thirdparty/doctest/*"), *ROOT.glob("doc_classes/*.xml"),
+                     ROOT / "SConstruct", ROOT / "CMakeLists.txt", ROOT / "build_profile.json", Path(__file__).resolve(),
+                     ROOT / "scripts/generate_global_api.py", ROOT / ".gitmodules",
                      ROOT / "godot-cpp/gdextension/extension_api-4-7.json"})
     digest = hashlib.sha256()
     for path in inputs:
         if path.is_file():
             digest.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
+    digest.update(subprocess.check_output(["git", "-C", str(ROOT / "godot-cpp"), "rev-parse", "HEAD"]))
+    return digest.hexdigest()
+
+
+def write_header(destination):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    content = '#pragma once\n#define BS_NATIVE_BUILD_ID "' + digest.hexdigest() + '"\n'
+    content = '#pragma once\n#define BS_NATIVE_BUILD_ID "' + build_identity() + '"\n'
     if not destination.exists() or destination.read_text() != content:
         destination.write_text(content)
 

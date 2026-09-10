@@ -22,11 +22,12 @@ used only by the supervisor's subprocess tests; it is excluded from the suite ma
 Fatal `REQUIRE` failures abort in these exception-disabled builds and are caught as failed
 subprocesses; `CHECK` failures retain the usual doctest summary and completion counts.
 
-Each run copies the fixture into a temporary directory, preserves existing `res://` paths
+Each run copies the fixture into a temporary directory under the host application-data root,
+sets Godot's custom `user://` directory to that disposable root (including logs), and preserves existing `res://` paths
 and first-scan extension registration, and installs only the explicitly selected test
 artifact. It never imports or edits the ordinary project or its libraries. The build
 records the artifact's SHA-256 and a fingerprint of its source/API/framework inputs.
-SCons test objects and libraries live under `build/native-scons/`; CMake uses the selected
+SCons test bindings, objects and libraries live under `build/native-scons/`; CMake uses the selected
 build directory and `native-bin/`. Normal debug/release objects exclude the framework,
 runner and cases. `verify_native_surface.py` checks the resulting distribution binaries.
 
@@ -53,6 +54,11 @@ continues to assert `BS_CORPUS 24/24 skipped=0` through the guarded GDScript run
 | `malformed_utf8_names_the_offending_byte` | Five raw byte sequences through decode_source; exact offsets 3/0 and valid café. |
 | `integer_range_is_exact` | Four exact typed integer payloads, three overflow spellings and spaced signed minimum. |
 | `signed_literal_folding_boundaries` | Adjacent expression-start signs fold; spaced signs and signs after values remain operators. |
+
+The old/new suites passed concurrently under stock Godot at checkpoint
+`0e0a59dabe52b5d2e00c5370fd7e32f79b2f19d6`; independent per-scenario review approved
+parity before deleting the tokenizer GDScript suite/UID and its otherwise-unused probe.
+The baseline source remains available at the immutable commit above.
 
 `tokenizer_helpers.*` retains the old probe's typed/tab-separated rendering and stored-literal
 selection. It is a C++ utility, with no script binding. Exhausting the scan bound now explicitly

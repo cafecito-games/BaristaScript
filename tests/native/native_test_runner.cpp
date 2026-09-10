@@ -90,13 +90,13 @@ bool BaristaNativeTestRunner::_process(double) {
 	context.setOption("list-test-cases", listing);
 	const int result = context.run();
 	if (!listing && completed_run) {
-		std::cout << BS_NATIVE_RESULT_PREFIX << "{\"protocol\":" << BS_NATIVE_PROTOCOL_VERSION
-				  << ",\"suite\":\"" << suite.json_escape().utf8().get_data()
-				  << "\",\"case\":\"" << case_name.json_escape().utf8().get_data()
-				  << "\",\"nonce\":\"" << nonce.json_escape().utf8().get_data()
-				  << "\",\"build_id\":\"" << BS_NATIVE_BUILD_ID
-				  << "\",\"cases\":" << completed_cases << ",\"assertions\":" << assertions
-				  << ",\"failed_cases\":" << failed_cases << ",\"failed_assertions\":" << failed_assertions << "}" << std::endl;
+		std::cout << BS_NATIVE_RESULT_PREFIX
+				  << godot::vformat(BS_NATIVE_RESULT_FORMAT, BS_NATIVE_PROTOCOL_VERSION,
+							 suite.json_escape(), case_name.json_escape(), nonce.json_escape(), BS_NATIVE_BUILD_ID,
+							 completed_cases, assertions, failed_cases, failed_assertions)
+							 .utf8()
+							 .get_data()
+				  << std::endl;
 	}
 	quit(result || (!listing && (!completed_run || completed_cases == 0 || assertions == 0)) ? 1 : 0);
 	return false;

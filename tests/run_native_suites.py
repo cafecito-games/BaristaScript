@@ -12,6 +12,8 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -21,10 +23,16 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from native_test_build import build_identity
+
 DEFAULT_BUILD_DIR = ROOT / "build/native-scons"
 PROTOCOL = (ROOT / "tests/native/result_protocol.h").read_text()
 RESULT_PREFIX = re.search(r'#define BS_NATIVE_RESULT_PREFIX "([^"]+)"', PROTOCOL)[1]
 PROTOCOL_VERSION = int(re.search(r"#define BS_NATIVE_PROTOCOL_VERSION (\d+)", PROTOCOL)[1])
+RESULT_FORMAT = json.loads(next(line.split(" ", 2)[2] for line in PROTOCOL.splitlines()
+                                if line.startswith("#define BS_NATIVE_RESULT_FORMAT ")))
+RESULT_FIELDS = set(re.findall(r'"([a-z_]+)":', RESULT_FORMAT))
 
 
 def select_suites(requested):
@@ -41,16 +49,29 @@ def read_artifact(build_dir):
     library = Path(artifact["library"])
     if not library.is_file() or hashlib.sha256(library.read_bytes()).hexdigest() != artifact["sha256"]:
         raise ValueError(f"missing or wrong native test library: {library}; rebuild with tests enabled")
-    if not artifact.get("build_id"):
-        raise ValueError("native test artifact has no build identity")
+    if artifact.get("build_id") != build_identity():
+        raise ValueError("native test artifact does not match current build inputs; rebuild with tests enabled")
     return artifact
+
+
+def godot_data_path():
+    """Desktop host data roots used by stock Godot's custom user directory setting."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support"
+    if sys.platform == "win32":
+        return Path(os.environ["APPDATA"])
+    if sys.platform.startswith("linux"):
+        return Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+    raise ValueError(f"unsupported native test host: {sys.platform}")
 
 
 @contextmanager
 def staged_project(artifact):
     # No import runs against the ordinary fixture. Its res:// paths remain identical, while
     # writable state, descriptor and the selected library belong to this disposable project.
-    with tempfile.TemporaryDirectory(prefix="barista-native-") as temporary:
+    data_path = godot_data_path()
+    data_path.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="barista-native-", dir=data_path) as temporary:
         project = Path(temporary) / "project"
         shutil.copytree(ROOT / "project", project,
                         ignore=shutil.ignore_patterns(".godot", "bin"))
@@ -58,7 +79,9 @@ def staged_project(artifact):
         # This empty scene supplies project selection only; it contains no test bootstrap.
         descriptor = project / "project.godot"
         descriptor.write_text(descriptor.read_text().replace(
-            "[application]", '[application]\nrun/main_scene="res://native_host.tscn"', 1))
+            "[application]", '[application]\nrun/main_scene="res://native_host.tscn"\n'
+            'config/use_custom_user_dir=true\n'
+            f'config/custom_user_dir_name="{Path(temporary).name}"', 1))
         (project / "native_host.tscn").write_text('[gd_scene format=3]\n\n[node name="NativeHost" type="Node"]\n')
         (project / "bin").mkdir()
         library = Path(artifact["library"])
@@ -103,6 +126,8 @@ def evaluate(returncode, output, suite, case, nonce, build_id):
         return failures + [f"expected one completion record, found {len(records)}"]
     try:
         record = json.loads(records[0])
+        if not isinstance(record, dict) or set(record) != RESULT_FIELDS:
+            raise ValueError("completion fields do not match the shared protocol")
         for key, expected in dict(protocol=PROTOCOL_VERSION, suite=suite, case=case, nonce=nonce,
                                   build_id=build_id).items():
             if type(record[key]) is not type(expected) or record[key] != expected:
@@ -131,7 +156,7 @@ def main(argv=None):
     try:
         suites = select_suites(args.suite)
         artifact = read_artifact(args.build_dir)
-        if args.timeout <= 0 or any(c in args.case for c in "*?,"):
+        if not math.isfinite(args.timeout) or args.timeout <= 0 or any(c in args.case for c in "*?,"):
             raise ValueError("timeout must be positive and --case must be an exact name")
         failed = False
         for suite in suites:

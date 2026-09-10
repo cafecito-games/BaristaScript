@@ -48,7 +48,12 @@ Run the following command to download godot-cpp:
 
 # The extension consumes this option; do not forward it as an unknown godot-cpp option.
 ARGUMENTS.pop("barista_tests", None)
-env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
+if env["barista_tests"]:
+    # The test-only SceneTree profile must not delete/reuse ordinary generated bindings.
+    env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs},
+                    variant_dir="build/native-scons/godot-cpp", duplicate=False)
+else:
+    env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
 
 env.Append(CPPPATH=["src/"])
 
