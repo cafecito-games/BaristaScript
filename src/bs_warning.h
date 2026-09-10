@@ -374,45 +374,6 @@ public:
 	static bool is_confusable_identifier(const String &p_identifier);
 };
 
-/**
- * The registry's test seam.
- *
- * godot-cpp's `String`, `StringName` and `Variant` are engine-backed
- * (`godot-cpp/gen/include/godot_cpp/variant/string.hpp:84`), so there is no standalone C++ test
- * binary in this repository and every assertion about `BSWarning` has to be made from inside a
- * loaded Godot runtime. This class is the only door: it binds the registry's queries, and nothing
- * else, so `project/tests/warning_registry_test.gd` can iterate the whole vocabulary.
- *
- * It deliberately exposes no enumerator constants. The test derives every code from
- * `get_warning_count()` and asks the registry for the rest, so a second copy of the vocabulary
- * cannot drift out of step with the first.
- *
- * Registered only under `DEBUG_ENABLED`, like the registry it wraps.
- */
-class BaristaScriptWarningRegistry : public RefCounted {
-	GDCLASS(BaristaScriptWarningRegistry, RefCounted)
-
-protected:
-	static void _bind_methods();
-
-public:
-	int get_warning_count() const;
-	String get_name_from_code(int p_code) const;
-	int get_code_from_name(const String &p_name) const;
-	String get_setting_path_from_code(int p_code) const;
-	int get_default_level(int p_code) const;
-	Dictionary get_property_info(int p_code) const;
-	String get_message(int p_code, const PackedStringArray &p_symbols) const;
-	Dictionary resolve_level(int p_code, const Variant &p_setting) const;
-	Dictionary resolve_level_from_project_settings(int p_code) const;
-	PackedInt32Array line_lengths_of(const String &p_source) const;
-	bool has_valid_position(int p_code, int p_start_line, int p_start_column, int p_end_line, int p_end_column, const PackedInt32Array &p_line_lengths) const;
-	Dictionary to_validate_dictionary(const Dictionary &p_warning, const PackedInt32Array &p_line_lengths) const;
-	Array sort_warnings(const Array &p_warnings) const;
-	bool unicode_security_available() const;
-	bool is_confusable_identifier(const String &p_identifier) const;
-};
-
 } // namespace barista_script
 
 #endif // DEBUG_ENABLED

@@ -1,6 +1,7 @@
 # Native C++ tests
 
-`TEST_SUITE("tokenizer")` / `TEST_CASE("name")` in C++ own case identities.
+`TEST_SUITE("tokenizer")`, `TEST_SUITE("parser")`, `TEST_SUITE("warnings")` and
+`TEST_SUITE("platform")` / `TEST_CASE("name")` in C++ own case identities.
 `tests/native_suites.json` alone declares required suites; the Python supervisor and CI
 run the whole manifest by default. New `tests/native/*.cpp` files are discovered by both
 build systems. Include `doctest.h` and call internal C++ APIs directly.
@@ -19,8 +20,11 @@ record. The verifier requires exit 0, one matching record, positive execution co
 zero failures. Crashes, assertion failures, timeouts, missing runners/libraries and empty
 selections fail closed. The hidden `runner_failure` suite is an actual failing assertion
 used only by the supervisor's subprocess tests; it is excluded from the suite manifest.
-Fatal `REQUIRE` failures abort in these exception-disabled builds and are caught as failed
-subprocesses; `CHECK` failures retain the usual doctest summary and completion counts.
+In these exception-disabled builds both `REQUIRE` and `CHECK` record failures and continue:
+vendored doctest has no exception to unwind a failed precondition. Use an explicit early-return
+guard before dereferencing/indexing a failed precondition (`test_require.h` supplies one).
+Scope guards restore settings on normal completion and early return; the supervisor regression
+executes an intentionally failing warning-settings assertion and verifies restoration.
 
 Each run copies the fixture into a temporary directory under the host application-data root,
 sets Godot's custom `user://` directory to that disposable root (including logs), and preserves existing `res://` paths
@@ -63,6 +67,10 @@ The baseline source remains available at the immutable commit above.
 `tokenizer_helpers.*` retains the old probe's typed/tab-separated rendering and stored-literal
 selection. It is a C++ utility, with no script binding. Exhausting the scan bound now explicitly
 fails instead of letting equal truncated streams count as replay evidence.
+
+The parser, warning and platform migration inventory, unchanged-fixture provenance,
+settings restoration checks, and retained adapter consumers are documented in
+[parser_warning_platform_parity.md](parser_warning_platform_parity.md).
 
 ## Cache, declaration index and global classes
 
