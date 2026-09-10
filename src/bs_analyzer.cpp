@@ -676,8 +676,32 @@ void BSAnalyzer::validate_bootstrap_namespace_imports() {
 	if (head == nullptr) {
 		return;
 	}
-	for (int i = 0; i < head->imports.size(); i++) {
-		validate_bootstrap_namespace_import(head->imports[i]);
+	HashSet<String> checked;
+	for (const String &import : head->imports) {
+		if (checked.has(import)) {
+			continue;
+		}
+		checked.insert(import);
+		if (!bootstrap_root_storage().is_empty()) {
+			validate_bootstrap_namespace_import(import);
+			continue;
+		}
+		// Foundry validate_imports / namespace_has_annotations @ c9d5e35. Discovery
+		// includes named descendants, but does not change exact conformance visibility.
+		bool exists = false;
+		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+		if (language != nullptr) {
+			for (const BSDeclarationRecord &record : language->get_declaration_index().get_records()) {
+				if ((record.has_head_declaration() || !record.global_annotations.is_empty() || record.declares_retroactive_conformances) &&
+						(record.namespace_name == import || record.namespace_name.begins_with(import + String(".")))) {
+					exists = true;
+					break;
+				}
+			}
+		}
+		if (!exists) {
+			push_error(vformat(R"(Could not find imported namespace "%s".)", import), head);
+		}
 	}
 }
 
@@ -830,50 +854,6 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		int extends_index = 1;
 		bool found = false;
 
-		// D7: native names remain flat — only a single-identifier extends can be a native class.
-		if (p_class->extends.size() == 1 && ClassDB::class_exists(first)) {
-			result.kind = BSParser::DataType::NATIVE;
-			result.native_type = first;
-			result.builtin_type = Variant::OBJECT;
-			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-			found = true;
-		}
-
-		if (!found) {
-			String qualified;
-			for (int i = 0; i < p_class->extends.size(); i++) {
-				if (i > 0) {
-					qualified += ".";
-				}
-				qualified += String(p_class->extends[i]->name);
-			}
-			if (ScriptServer::is_global_class(StringName(qualified))) {
-				const String path = ScriptServer::get_global_class_path(StringName(qualified));
-				if (!is_bootstrap_path_allowed(path)) {
-					push_error(vformat(R"(Cannot depend on global class "%s" at "%s": path is outside the bootstrap allowed dependency root.)", qualified, path), p_class);
-				}
-				Error err = OK;
-				Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser != nullptr ? parser->script_path : String());
-				if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr) {
-					push_error(vformat(R"(Could not resolve global class base "%s".)", qualified), p_class);
-					p_class->base_type = BSParser::DataType();
-					return;
-				}
-				BSParser::ClassNode *base_class = base_ref->get_parser()->get_tree();
-				result.kind = BSParser::DataType::CLASS;
-				result.class_type = base_class;
-				result.script_path = path;
-				result.native_type = ScriptServer::get_global_class_native_base(StringName(qualified));
-				if (result.native_type == StringName() && base_class != nullptr) {
-					result.native_type = base_class->base_type.native_type;
-				}
-				result.builtin_type = Variant::OBJECT;
-				result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-				found = true;
-				extends_index = p_class->extends.size(); // Fully consumed by the qualified global name.
-			}
-		}
-
 		if (!found) {
 			// Foundry same-file / scope class lookup @ c9d5e35 (`fs_analyzer_surface.cpp`).
 			List<BSParser::ClassNode *> script_classes;
@@ -922,6 +902,61 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 					return;
 				}
 			}
+		}
+
+		if (!found) {
+			String qualified;
+			for (int i = 0; i < p_class->extends.size(); i++) {
+				if (i > 0) {
+					qualified += ".";
+				}
+				qualified += String(p_class->extends[i]->name);
+			}
+			const NameLookup lookup = lookup_declaration(qualified, p_class, first_id, "base class");
+			if (lookup.status == NameLookupStatus::ERROR) {
+				p_class->base_type = BSParser::DataType();
+				return;
+			}
+			if (lookup.status == NameLookupStatus::FOUND) {
+				qualified = lookup.qualified;
+				if (lookup.indexed && (lookup.record.kind == BSDeclarationKind::ENUM || lookup.record.kind == BSDeclarationKind::TUPLE)) {
+					push_error(vformat(R"(Cannot use %s "%s" in extends chain.)", bs_declaration_kind_name(lookup.record.kind), qualified), first_id);
+					p_class->base_type = BSParser::DataType();
+					return;
+				}
+				const String path = lookup.indexed ? lookup.record.path : ScriptServer::get_global_class_path(StringName(qualified));
+				if (!is_bootstrap_path_allowed(path)) {
+					push_error(vformat(R"(Cannot depend on global class "%s" at "%s": path is outside the bootstrap allowed dependency root.)", qualified, path), p_class);
+				}
+				Error err = OK;
+				Ref<BSParserRef> base_ref = BSCache::get_parser(path, BSParserRef::INHERITANCE_SOLVED, err, parser != nullptr ? parser->script_path : String());
+				if (base_ref.is_null() || err != OK || base_ref->get_parser() == nullptr) {
+					push_error(vformat(R"(Could not resolve global class base "%s".)", qualified), p_class);
+					p_class->base_type = BSParser::DataType();
+					return;
+				}
+				BSParser::ClassNode *base_class = base_ref->get_parser()->get_tree();
+				result.kind = BSParser::DataType::CLASS;
+				result.class_type = base_class;
+				result.script_path = path;
+				result.native_type = lookup.indexed ? StringName(lookup.record.base_type) : ScriptServer::get_global_class_native_base(StringName(qualified));
+				if (result.native_type == StringName() && base_class != nullptr) {
+					result.native_type = base_class->base_type.native_type;
+				}
+				result.builtin_type = Variant::OBJECT;
+				result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+				found = true;
+				extends_index = p_class->extends.size(); // Fully consumed by the qualified global name.
+			}
+		}
+
+		// D7: native names remain flat — only a single-identifier extends can be a native class.
+		if (!found && p_class->extends.size() == 1 && ClassDB::class_exists(first)) {
+			result.kind = BSParser::DataType::NATIVE;
+			result.native_type = first;
+			result.builtin_type = Variant::OBJECT;
+			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			found = true;
 		}
 
 		if (!found) {
@@ -1350,25 +1385,19 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
+		bool lookup_error = false;
+		BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
+		if (lookup_error || !indexed.is_variant()) {
+			return indexed;
+		}
 		if (ClassDB::class_exists(name)) {
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = name;
 			result.builtin_type = Variant::OBJECT;
 		} else {
-			BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node);
-			if (indexed.kind != BSParser::DataType::VARIANT) {
-				return indexed;
-			}
-			if (ScriptServer::is_global_class(name)) {
-				result.kind = BSParser::DataType::CLASS;
-				result.script_path = ScriptServer::get_global_class_path(name);
-				result.native_type = ScriptServer::get_global_class_native_base(name);
-				result.builtin_type = Variant::OBJECT;
-			} else {
-				push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
-				result.kind = BSParser::DataType::VARIANT;
-				return result;
-			}
+			push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
 		}
 		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 		return result;
@@ -1441,8 +1470,9 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		}
 	}
 
-	BSParser::DataType indexed = resolve_named_type(qualified, p_type_node);
-	if (indexed.kind != BSParser::DataType::VARIANT) {
+	bool lookup_error = false;
+	BSParser::DataType indexed = resolve_named_type(qualified, p_type_node, lookup_error);
+	if (lookup_error || indexed.kind != BSParser::DataType::VARIANT) {
 		return indexed;
 	}
 	push_error(vformat(R"(Could not find type "%s".)", qualified), p_type_node->type_chain[0]);
@@ -2200,6 +2230,17 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		p_identifier->set_datatype(self_handle);
 		return;
 	}
+	bool lookup_error = false;
+	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier, lookup_error);
+	if (lookup_error) {
+		p_identifier->set_datatype(indexed);
+		return;
+	}
+	if (!indexed.is_variant()) {
+		indexed.is_meta_type = true;
+		p_identifier->set_datatype(indexed);
+		return;
+	}
 	// Native classes are expression-position class handles after locals and members have missed.
 	// This also lets match patterns distinguish an unshadowed native type from a value pattern.
 	if (ClassDB::class_exists(p_identifier->name)) {
@@ -2212,12 +2253,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		native_meta.is_constant = true;
 		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
 		p_identifier->set_datatype(native_meta);
-		return;
-	}
-	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier);
-	if (!indexed.is_variant()) {
-		indexed.is_meta_type = true;
-		p_identifier->set_datatype(indexed);
 		return;
 	}
 	if (CoreConstants::is_global_constant(p_identifier->name)) {
@@ -8281,19 +8316,6 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 		r_traits.push_back(p_trait);
 	};
 
-	auto find_local_trait = [](BSParser::ClassNode *p_owner, const String &p_name) -> BSParser::ClassNode * {
-		for (BSParser::ClassNode *scope = p_owner; scope != nullptr; scope = scope->outer) {
-			if (!scope->has_member(StringName(p_name))) {
-				continue;
-			}
-			const BSParser::ClassNode::Member member = scope->get_member(StringName(p_name));
-			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr && member.m_class->is_trait) {
-				return member.m_class;
-			}
-		}
-		return nullptr;
-	};
-
 	for (int i = 0; i < p_class->used_traits.size(); i++) {
 		BSParser::ClassNode::TraitUse &use = p_class->used_traits.write[i];
 		const String name = use.to_string();
@@ -8307,57 +8329,12 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 			return;
 		}
 
-		BSParser::ClassNode *trait = use.resolved_trait;
+		const BSParser::Node *source = use.name.is_empty() ? static_cast<const BSParser::Node *>(p_class) : use.name[0];
+		BSParser::ClassNode *trait = resolve_trait_reference(p_class, use, source);
 		if (trait == nullptr) {
-			trait = find_local_trait(p_class, name);
-		}
-		if (trait == nullptr) {
-			BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-			BSDeclarationRecord record;
-			bool found = false;
-			if (language != nullptr) {
-				found = language->try_resolve_declaration(name, record);
-				if (!found && !p_class->namespace_name.is_empty()) {
-					found = language->try_resolve_declaration(p_class->namespace_name + String(".") + name, record);
-				}
-				if (!found) {
-					for (int j = 0; j < p_class->imports.size(); j++) {
-						found = language->try_resolve_declaration(p_class->imports[j] + String(".") + name, record);
-						if (found) {
-							break;
-						}
-					}
-				}
-			}
-			if (!found) {
-				push_error(vformat(R"(Could not find trait "%s".)", name), p_class);
-				fail();
-				return;
-			}
-			if (record.kind != BSDeclarationKind::TRAIT) {
-				push_error(vformat(R"("%s" is not a trait.)", name), p_class);
-				fail();
-				return;
-			}
-			Error err = OK;
-			Ref<BSParserRef> trait_ref = BSCache::get_parser(record.path, BSParserRef::INTERFACE_SOLVED, err, parser != nullptr ? parser->script_path : String());
-			if (trait_ref.is_null() || err != OK || trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
-				push_error(vformat(R"(Could not resolve trait "%s".)", name), p_class);
-				fail();
-				return;
-			}
-			trait = trait_ref->get_parser()->get_tree();
-			if (trait == nullptr || !trait->is_trait) {
-				push_error(vformat(R"("%s" is not a trait.)", name), p_class);
-				fail();
-				return;
-			}
-		} else if (!trait->is_trait) {
-			push_error(vformat(R"("%s" is not a trait.)", name), p_class);
 			fail();
 			return;
 		}
-
 		use.resolved_trait = trait;
 		resolve_used_traits(trait);
 		if (trait->failed_trait_uses || (!trait->resolved_trait_uses && trait->resolving_trait_uses)) {
@@ -8386,29 +8363,112 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 	}
 }
 
-BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source) {
-	const String qualified = p_name;
-	BSParser::ClassNode *head = parser != nullptr ? parser->get_tree() : nullptr;
-	BSParser::DataType indexed = resolve_named_type(qualified, p_source);
-	if (indexed.is_variant() && head != nullptr && !head->namespace_name.is_empty()) {
-		indexed = resolve_named_type(head->namespace_name + String(".") + qualified, p_source);
+BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSParser::ClassNode *p_scope, const BSParser::Node *p_source, const String &p_symbol_kind) {
+	// Foundry get_imported_global_class / get_namespace_global_class_from_type_chain
+	// @ c9d5e35. #140 requires the complete sorted qualified candidate set.
+	NameLookup result;
+	if (failed_name_lookups.has(p_source)) {
+		result.status = NameLookupStatus::ERROR;
+		return result;
 	}
-	if (indexed.is_variant() && head != nullptr) {
-		for (const String &import : head->imports) {
-			indexed = resolve_named_type(import + String(".") + qualified, p_source);
-			if (!indexed.is_variant()) {
-				break;
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	auto exists = [&](const String &p_candidate) {
+		return ScriptServer::has_global_class_candidate(StringName(p_candidate));
+	};
+	if (p_name.contains(".") || p_scope == nullptr) {
+		if (exists(p_name)) {
+			result.qualified = p_name;
+		}
+	} else {
+		// Nested classes inherit file namespace/import context from the head.
+		BSParser::ClassNode *head = p_scope;
+		while (head->outer != nullptr) {
+			head = head->outer;
+		}
+		const String own = head->namespace_name + String(".") + p_name;
+		if (!head->namespace_name.is_empty() && exists(own)) {
+			result.qualified = own;
+		} else {
+			Vector<String> candidates;
+			HashSet<String> seen;
+			for (const String &import : head->imports) {
+				const String candidate = import + String(".") + p_name;
+				if (!seen.has(candidate) && exists(candidate)) {
+					seen.insert(candidate);
+					candidates.push_back(candidate);
+				}
+			}
+			candidates.sort();
+			if (candidates.size() > 1) {
+				String choices;
+				for (int i = 0; i < candidates.size(); i++) {
+					if (i > 0) {
+						choices += i == candidates.size() - 1 ? " and " : ", ";
+					}
+					choices += String("\"") + candidates[i] + String("\"");
+				}
+				push_error(vformat(R"(Could not resolve %s "%s": imported declarations %s are ambiguous.)", p_symbol_kind, p_name, choices), p_source);
+				failed_name_lookups.insert(p_source);
+				result.status = NameLookupStatus::ERROR;
+				return result;
+			}
+			if (!candidates.is_empty()) {
+				result.qualified = candidates[0];
+			} else if (exists(p_name)) {
+				result.qualified = p_name;
 			}
 		}
 	}
-	return indexed;
+	if (result.qualified.is_empty()) {
+		return result;
+	}
+	result.status = NameLookupStatus::FOUND;
+	result.indexed = language != nullptr && language->get_declaration_index().try_get_by_qualified_name(result.qualified, result.record);
+	if (!result.indexed) {
+		return result;
+	}
+	// A selected index hint is never a miss. Reject it here without invoking the
+	// intentional refresh seam, which can remove/replace the candidate and hide it
+	// behind a lower priority or engine global. General refresh remains #140 X5.
+	const String source = BSCache::get_source_code(result.record.path);
+	const BSGlobalClass head = bs_resolve_global_class_from_source(source, result.record.path);
+	if (source.is_empty() || BSDeclarationIndex::compute_source_digest(source) != result.record.source_digest ||
+			!head.declarations_parsed || head.name != result.record.qualified_name || head.kind != result.record.kind) {
+		push_error(vformat(R"(Could not resolve %s "%s": declaration "%s" from "%s" is stale or invalid.)", p_symbol_kind, p_name, result.qualified, result.record.path), p_source);
+		failed_name_lookups.insert(p_source);
+		result.status = NameLookupStatus::ERROR;
+		return result;
+	}
+	Error error = OK;
+	Ref<BSParserRef> provider = BSCache::get_parser(result.record.path, BSParserRef::PARSED, error, parser != nullptr ? parser->script_path : String());
+	if (provider.is_null() || error != OK || provider->get_parser() == nullptr || !provider->get_parser()->get_errors().is_empty()) {
+		push_error(vformat(R"(Could not resolve %s "%s": provider "%s" could not be parsed.)", p_symbol_kind, p_name, result.record.path), p_source);
+		failed_name_lookups.insert(p_source);
+		result.status = NameLookupStatus::ERROR;
+	}
+	return result;
 }
 
-BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source) {
+BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source, bool &r_error) {
+	const NameLookup lookup = lookup_declaration(String(p_name), current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
+	r_error = lookup.status == NameLookupStatus::ERROR;
+	return named_type_from_lookup(lookup);
+}
+
+BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error) {
+	const NameLookup lookup = lookup_declaration(p_qualified, nullptr, p_source, "type");
+	r_error = lookup.status == NameLookupStatus::ERROR;
+	return named_type_from_lookup(lookup);
+}
+
+BSParser::DataType BSAnalyzer::named_type_from_lookup(const NameLookup &p_lookup) {
 	BSParser::DataType result;
-	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-	BSDeclarationRecord record;
-	if (language != nullptr && language->try_resolve_declaration(p_qualified, record)) {
+	result.kind = BSParser::DataType::VARIANT;
+	if (p_lookup.status != NameLookupStatus::FOUND) {
+		return result;
+	}
+	if (p_lookup.indexed) {
+		const BSDeclarationRecord &record = p_lookup.record;
 		switch (record.kind) {
 			case BSDeclarationKind::ENUM:
 				result.kind = BSParser::DataType::ENUM;
@@ -8428,22 +8488,15 @@ BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSP
 				result.builtin_type = Variant::OBJECT;
 				break;
 			default:
-				result.kind = BSParser::DataType::VARIANT;
 				break;
 		}
-		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		return result;
-	}
-	if (ScriptServer::is_global_class(StringName(p_qualified))) {
+	} else {
 		result.kind = BSParser::DataType::CLASS;
-		result.script_path = ScriptServer::get_global_class_path(StringName(p_qualified));
-		result.native_type = ScriptServer::get_global_class_native_base(StringName(p_qualified));
+		result.script_path = ScriptServer::get_global_class_path(StringName(p_lookup.qualified));
+		result.native_type = ScriptServer::get_global_class_native_base(StringName(p_lookup.qualified));
 		result.builtin_type = Variant::OBJECT;
-		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		return result;
 	}
-	(void)p_source;
-	result.kind = BSParser::DataType::VARIANT;
+	result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 	return result;
 }
 
