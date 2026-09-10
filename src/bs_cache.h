@@ -288,6 +288,8 @@ private:
 	friend class BSParserRef;
 #ifdef BARISTA_TESTS
 	friend struct ProviderCacheTestAccess;
+	friend struct SourceReadTestAccess;
+	static std::function<Error(const String &, PackedByteArray *)> source_read_hook;
 #endif
 
 	/**
@@ -323,9 +325,8 @@ public:
 
 	/**
 	 * The script source for a path: the in-memory override when one is set (an edited-but-unsaved
-	 * buffer), otherwise the file on disk. Ported from fs_cache.cpp:392; Foundry's builtin-source
-	 * branch (fs_cache.cpp:394) has no BaristaScript counterpart yet and is dropped rather than
-	 * stubbed.
+	 * buffer), then registered builtin source, otherwise the file on disk. SourceRead preserves
+	 * read failures distinctly from a successful empty source.
 	 */
 	struct SourceRead {
 		String source;

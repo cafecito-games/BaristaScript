@@ -7,7 +7,9 @@
 /**************************************************************************/
 
 #include "bs_global_class.h"
+#include "bs_script_server.h"
 #include "storage_fixture.h"
+#include "test_require.h"
 
 #include <godot_cpp/classes/class_db_singleton.hpp>
 #include <godot_cpp/classes/config_file.hpp>
@@ -15,6 +17,7 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/script.hpp>
+#include <string>
 
 using namespace barista_script;
 using namespace barista_script::native_tests;
@@ -352,4 +355,57 @@ TEST_SUITE("global_class") {
 			}
 		}
 	}
-} // TEST_SUITE
+	TEST_CASE("semantic_lookup_rejects_stale_engine_evidence_and_prefers_current_private_base") {
+		StorageFixture fixture;
+		const String path = fixture_path("flat_weapon.barista");
+		bool found_engine = false;
+		for (const Dictionary &entry : ScriptServer::_engine_global_class_list())
+			if (String(entry.get("class", String())) == "FlatWeapon")
+				found_engine = true;
+		BS_TEST_REQUIRE(found_engine);
+		const auto original = BSCache::read_source_code(path);
+		BS_TEST_REQUIRE(original.error == OK);
+		CHECK(ScriptServer::is_global_class("FlatWeapon"));
+		for (bool indexed : { false, true }) {
+			if (indexed) {
+				const auto record = BSDeclarationIndex::record_from_global_class(path, original.source, bs_resolve_global_class_from_source(original.source, path));
+				BS_TEST_REQUIRE(fixture.index().commit_record(fixture.index().claim_refresh(path), record));
+			}
+			BSCache::set_source_override(path, "class_name Renamed\n");
+			const auto revision = fixture.index().get_refresh_revision(path);
+			CHECK_FALSE(ScriptServer::is_global_class("FlatWeapon"));
+			CHECK(ScriptServer::get_global_class_path("FlatWeapon").is_empty());
+			CHECK(ScriptServer::get_global_class_native_base("FlatWeapon") == StringName());
+			List<StringName> names;
+			ScriptServer::get_global_class_list(&names);
+			CHECK(names.find(StringName("FlatWeapon")) == nullptr);
+			CHECK(fixture.index().get_refresh_revision(path) == revision);
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("var value: FlatWeapon\n", "res://tests/source/engine_consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() != OK);
+			for (const auto &failure : consumer.get_errors()) {
+				INFO(std::string(failure.message.utf8().get_data()));
+				INFO(failure.line);
+				INFO(failure.column);
+				CHECK(consumer.get_errors().size() == 1);
+			}
+			BS_TEST_REQUIRE(consumer.get_errors().size() == 1);
+			const auto &error = consumer.get_errors().front()->get();
+			CHECK(error.message == "Could not resolve type \"FlatWeapon\": declaration \"FlatWeapon\" from \"res://tests/global_class_fixtures/flat_weapon.barista\" is stale or invalid.");
+			const auto *site = consumer.get_tree()->get_member("value").variable->datatype_specifier;
+			CHECK(error.line == site->start_line);
+			CHECK(error.column == site->start_column);
+			CHECK(error.end_line == site->end_line);
+			CHECK(error.end_column == site->end_column);
+		}
+		const String current = "class_name FlatWeapon extends RefCounted\n";
+		BSCache::set_source_override(path, current);
+		BS_TEST_REQUIRE(BaristaScriptLanguage::get_singleton()->synchronize_declaration_path_from_source(path, current) == OK);
+		CHECK(ScriptServer::get_global_class_native_base("FlatWeapon") == StringName("RefCounted"));
+		BSCache::set_source_override(path, "");
+		BS_TEST_REQUIRE(BaristaScriptLanguage::get_singleton()->synchronize_declaration_path_from_source(path, "") == OK);
+		CHECK_FALSE(ScriptServer::is_global_class("FlatWeapon"));
+		CHECK(ScriptServer::get_global_class_path("FlatWeapon").is_empty());
+	}
+}

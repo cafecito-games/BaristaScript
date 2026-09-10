@@ -2001,6 +2001,14 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 		resolve_class_inheritance(p_class);
 	}
 
+	// Foundry surface 2094: trait-use rejection belongs to this class interface's
+	// failure memoization, including subsequent foreign consumers of the same owner.
+	resolve_used_traits(p_class);
+	if (p_class->failed_trait_uses) {
+		current_class = previous_class;
+		return;
+	}
+
 	// Foundry: resolve base CLASS interface before members; propagate INTERFACE failures.
 	if (p_class->base_type.kind == BSParser::DataType::CLASS && p_class->base_type.class_type != nullptr) {
 		BSParser::ClassNode *base_class = p_class->base_type.class_type;
@@ -2987,12 +2995,12 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 
-			// A local class metatype's new() produces that precise class value, so subsequent
-			// method calls retain their local signatures instead of degrading to native Object.
+			// Foundry constructor admission @ c9d5e35:8805-8834,17037-17043. Native
+			// and local class handles construct their instance type before ordinary method lookup.
 			if (subscript->base != nullptr && p_call->function_name == SNAME("new")) {
 				const BSParser::DataType class_meta_type = subscript->base->get_datatype();
-				if (class_meta_type.kind == BSParser::DataType::CLASS && class_meta_type.is_meta_type) {
-					BSParser::FunctionNode *initializer = find_class_function(class_meta_type.class_type, SNAME("_init"));
+				if ((class_meta_type.kind == BSParser::DataType::CLASS || class_meta_type.kind == BSParser::DataType::NATIVE) && class_meta_type.is_meta_type) {
+					BSParser::FunctionNode *initializer = class_meta_type.kind == BSParser::DataType::CLASS ? find_class_function(class_meta_type.class_type, SNAME("_init")) : nullptr;
 					if (initializer != nullptr) {
 						validate_local_call(p_call, initializer, class_meta_type.class_type);
 					} else {
@@ -3155,6 +3163,52 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 							return;
 						}
 					}
+				}
+				if (!p_call->is_super && base_type.is_hard_type() && base_type.is_meta_type) {
+					// Foundry c9d5e35:9125-9143: a claimed non-function is diagnosed at the
+					// callee; only a missing name reaches the static-call diagnostic below.
+					bool class_member_claimed = false;
+					HashSet<const BSParser::ClassNode *> visited;
+					for (BSParser::ClassNode *owner = method_owner; owner != nullptr; owner = owner->base_type.class_type) {
+						if (visited.has(owner)) {
+							break;
+						}
+						visited.insert(owner);
+						if (!owner->has_member(p_call->function_name)) {
+							continue;
+						}
+						class_member_claimed = true;
+						const int previous_errors = parser->get_errors().size();
+						reduce_expression(subscript);
+						const BSParser::DataType callee_type = subscript->get_datatype();
+						const bool claimed = callee_type.is_set() && !callee_type.is_variant();
+						if (parser->get_errors().size() == previous_errors && claimed) {
+							if (callee_type.builtin_type == Variant::CALLABLE) {
+								push_error(vformat(R"*(Name "%s" is a Callable. You can call it with "%s.call()" instead.)*", p_call->function_name, p_call->function_name), p_call->callee);
+							} else {
+								push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, callee_type.to_string()), p_call->callee);
+							}
+						}
+						if (claimed || parser->get_errors().size() != previous_errors) {
+							BSParser::DataType call_type;
+							call_type.kind = BSParser::DataType::VARIANT;
+							p_call->set_datatype(call_type);
+							return;
+						}
+						break;
+					}
+					// The same native ancestor surface is available through a CLASS receiver.
+					// Reuse the integer-constant producer used by identifier member lookup.
+					if (!class_member_claimed && native_type != StringName() && ClassDB::class_has_integer_constant(native_type, p_call->function_name)) {
+						const BSParser::DataType callee_type = type_from_variant(ClassDB::class_get_integer_constant(native_type, p_call->function_name));
+						push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, callee_type.to_string()), p_call->callee);
+					} else {
+						push_error(vformat(R"*(Static function "%s()" not found in base "%s".)*", p_call->function_name, base_type.to_string()), p_call);
+					}
+					BSParser::DataType call_type;
+					call_type.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(call_type);
+					return;
 				}
 			}
 		}
@@ -3422,9 +3476,20 @@ void BSAnalyzer::reduce_preload(BSParser::PreloadNode *p_preload) {
 			push_error(vformat(R"(Build task bootstrap cannot preload script "%s"; it is outside the provider bootstrap root "%s".)", bs_diagnostic_file_reference(path), bootstrap_root_storage()), p_preload->path);
 			return;
 		}
-		Ref<BSParserRef> ref = parser->get_depended_parser_for(path);
+		if (path == parser->script_path.simplify_path()) {
+			// Supplied self input already owns its class tree. A cached parser at this
+			// path may belong to a different editor buffer or retained generation.
+			BSParser::DataType type = parser->get_tree()->get_datatype();
+			type.is_meta_type = true;
+			type.is_constant = true;
+			p_preload->set_datatype(type);
+			p_preload->is_unmaterialized_constant = true;
+			return;
+		}
+		Error acquisition_error = OK;
+		Ref<BSParserRef> ref = parser->get_depended_parser_for(path, &acquisition_error);
 		if (ref.is_null()) {
-			push_error(vformat(R"(Preload file "%s" does not exist.)", bs_diagnostic_file_reference(path)), p_preload->path);
+			push_error(vformat(acquisition_error == ERR_FILE_NOT_FOUND ? R"(Preload file "%s" does not exist.)" : R"(Could not preload resource script "%s".)", bs_diagnostic_file_reference(path)), p_preload->path);
 			return;
 		}
 		ref->raise_status(BSParserRef::INHERITANCE_SOLVED);
@@ -9172,21 +9237,16 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 	}
 	result.status = NameLookupStatus::FOUND;
 	result.indexed = language != nullptr && language->get_declaration_index().try_get_by_qualified_name(result.qualified, result.record);
-	if (!result.indexed) {
-		return result;
-	}
-	// A selected index hint is never a miss. Reject it here without invoking the
-	// intentional refresh seam, which can remove/replace the candidate and hide it
-	// behind a lower priority or engine global. General refresh remains #140 X5.
-	const String source = BSCache::get_source_code(result.record.path);
-	const BSGlobalClass head = bs_resolve_global_class_from_source(source, result.record.path);
-	if (source.is_empty() || BSDeclarationIndex::compute_source_digest(source) != result.record.source_digest ||
-			!head.declarations_parsed || head.name != result.record.qualified_name || head.kind != result.record.kind) {
+	// Selection is read-only: an invalid hint still blocks every lower-priority candidate.
+	const bool current = result.indexed ? language->is_declaration_current(result.record) : ScriptServer::resolve_global_class(result.qualified, result.record);
+	if (!current) {
 		push_error(vformat(R"(Could not resolve %s "%s": declaration "%s" from "%s" is stale or invalid.)", p_symbol_kind, p_name, result.qualified, result.record.path), p_source);
 		failed_name_lookups.insert(p_source);
 		result.status = NameLookupStatus::ERROR;
 		return result;
 	}
+	if (!result.indexed)
+		return result;
 	Error error = OK;
 	Ref<BSParserRef> provider = get_depended_parser(result.record.path, BSParserRef::PARSED, error);
 	if (provider.is_null() || error != OK || provider->get_parser() == nullptr || !provider->get_parser()->get_errors().is_empty()) {
@@ -9248,7 +9308,7 @@ BSParser::DataType BSAnalyzer::named_type_from_lookup(const NameLookup &p_lookup
 	if (p_lookup.status != NameLookupStatus::FOUND) {
 		return result;
 	}
-	const String path = p_lookup.indexed ? p_lookup.record.path : ScriptServer::get_global_class_path(StringName(p_lookup.qualified));
+	const String path = p_lookup.record.path;
 	if (!is_bootstrap_path_allowed(path)) {
 		push_error(vformat(R"(Cannot depend on "%s": path is outside the bootstrap allowed dependency root.)", path), p_source);
 		return result;

@@ -2719,7 +2719,7 @@ public:
 	// show diagnostics to a human present them in source order through this view; `errors` itself keeps
 	// emission order, which the compiler and the tests rely on.
 	Vector<const ParserError *> get_errors_in_source_order() const;
-	Ref<BSParserRef> get_depended_parser_for(const String &p_path);
+	Ref<BSParserRef> get_depended_parser_for(const String &p_path, Error *r_error = nullptr);
 	const HashMap<String, Ref<BSParserRef>> &get_depended_parsers();
 	List<String> get_dependencies() const;
 	// The files this one loads solely because they declare retroactive conformances in its own

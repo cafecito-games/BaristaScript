@@ -181,6 +181,10 @@ bool BaristaScriptLanguage::_is_using_templates() {
 }
 
 godot::Dictionary BaristaScriptLanguage::_validate(const godot::String &p_script, const godot::String &p_path, bool p_validate_functions, bool p_validate_errors, bool p_validate_warnings, bool p_validate_safe_lines) const {
+	HashMap<String, String> input;
+	if (!p_path.is_empty())
+		input[BaristaScript::canonicalize_path(p_path)] = p_script;
+	BSCacheSourceOverrideGuard source_scope(input, true);
 	godot::Dictionary result;
 	BSParser parser;
 	BSAnalyzer analyzer(&parser);
@@ -479,30 +483,17 @@ Error BaristaScriptLanguage::synchronize_declaration_path_from_source(const Stri
 	return error;
 }
 
+bool BaristaScriptLanguage::is_declaration_current(const BSDeclarationRecord &p_record) const {
+	const BSCache::SourceRead read = BSCache::read_source_code(p_record.path);
+	if (read.error != OK || BSDeclarationIndex::compute_source_digest(read.source) != p_record.source_digest) {
+		return false;
+	}
+	const BSGlobalClass head = bs_resolve_global_class_from_source(read.source, p_record.path);
+	return head.declarations_parsed && head.name == p_record.qualified_name && head.kind == p_record.kind;
+}
+
 bool BaristaScriptLanguage::try_resolve_declaration(const String &p_qualified_name, BSDeclarationRecord &r_record) {
-	if (p_qualified_name.is_empty()) {
-		return false;
-	}
-	if (!get_declaration_index().try_get_by_qualified_name(p_qualified_name, r_record)) {
-		return false;
-	}
-	const String source = BSCache::get_source_code(r_record.path);
-	if (source.is_empty()) {
-		// Export / unavailable source: trust the shipped digest (M4 contract).
-		return true;
-	}
-	const uint64_t digest = BSDeclarationIndex::compute_source_digest(source);
-	if (digest == r_record.source_digest) {
-		return true;
-	}
-	// Stale metadata cannot resolve (#44 leftover / #58): discard and schedule reanalysis.
-	const String path = r_record.path;
-	const uint64_t token = get_declaration_index().claim_refresh(path);
-	Vector<String> changed;
-	get_declaration_index().remove_path(path, token, &changed);
-	notify_conformance_namespaces_changed(changed);
-	synchronize_declaration_path_from_source(path, source);
-	return get_declaration_index().try_get_by_qualified_name(p_qualified_name, r_record);
+	return !p_qualified_name.is_empty() && get_declaration_index().try_get_by_qualified_name(p_qualified_name, r_record) && is_declaration_current(r_record);
 }
 
 Error BaristaScriptLanguage::flush_declaration_index(const String &p_store_path) {

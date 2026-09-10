@@ -555,6 +555,52 @@ TEST_SUITE("provider_analyzer") {
 		}
 	}
 
+	TEST_CASE("member_and_body_failure_replay_matrix_recovers_after_explicit_refresh") {
+		for (int fault : { 0, 1, 2, 3 }) {
+			StorageFixture fixture;
+			const String bad = fault == 0 ? "class_name Replay\nvar value: Missing\n" : fault == 1 ? "class_name Replay\nconst value = cycle\nconst cycle = value\n"
+					: fault == 2																   ? "class_name Replay\nfunc value() -> int:\n\treturn \"bad\"\n"
+																								   : "class_name Replay\nuses MissingTrait\nvar value: int\n";
+			const String good = fault == 0 ? "class_name Replay\nvar value: int\n" : fault == 1 ? "class_name Replay\nconst value = 1\n"
+					: fault == 2																? "class_name Replay\nfunc value() -> int:\n\treturn 1\n"
+																								: "class_name Replay\nvar value: int\n";
+			const String path = provider(fixture, "replay", bad);
+			BS_TEST_REQUIRE(!path.is_empty());
+			for (bool repaired : { false, true }) {
+				if (repaired) {
+					BSCache::set_source_override(path, good);
+					BS_TEST_REQUIRE(BaristaScriptLanguage::get_singleton()->synchronize_declaration_path_from_source(path, good) == OK);
+				}
+				for (int dependent : { 0, 1 }) {
+					BSParser consumer;
+					BS_TEST_REQUIRE(consumer.parse("var site: int\nvar again: int\n", fixture.path(dependent == 0 ? "first.barista" : "second.barista"), false) == OK);
+					BSAnalyzer analyzer(&consumer);
+					auto owner = consumer.get_depended_parser_for(path);
+					BS_TEST_REQUIRE(owner.is_valid() && owner->raise_status(BSParserRef::INHERITANCE_SOLVED) == OK);
+					for (const StringName &name : { StringName("site"), StringName("again") }) {
+						const auto *site = consumer.get_tree()->get_member(name).get_source_node();
+						if (fault == 2)
+							ProviderTestAccess::body(analyzer, owner->get_parser()->get_tree(), site);
+						else if (fault == 3)
+							ProviderTestAccess::interface(analyzer, owner->get_parser()->get_tree(), site);
+						else
+							ProviderTestAccess::member(analyzer, owner->get_parser()->get_tree(), "value", site);
+					}
+					if (repaired) {
+						CHECK(analyzer.analyze() == OK);
+						no_errors(consumer);
+					} else {
+						CHECK(analyzer.analyze() != OK);
+						diagnostic(consumer, fault == 2 ? "Could not resolve class \"Replay\". The class is declared in \"res://tests/x2/replay.barista\", which has errors, the first at line 3: Cannot return value of type \"String\" because the function return type is \"int\"." : fault == 3 ? "Could not resolve class \"Replay\"."
+																																																																									: "Could not resolve external class member \"value\".",
+								1, 1, 1, 14);
+						CHECK(owner->get_parser()->analyzed_source == bad);
+					}
+				}
+			}
+		}
+	}
+
 	TEST_CASE("global_enum_identity_is_standalone_and_phase_independent") {
 		StorageFixture fixture;
 		for (const bool namespaced : { false, true }) {

@@ -847,13 +847,11 @@ func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
 
 	BaristaScriptParseCache.set_source_override(path, source)
 	var looked := index.lookup_qualified_name("DigestFresh")
-	_expect(failures, not looked.is_empty(), "lookup reanalyzes and restores DigestFresh")
-	_expect(failures, int(looked.get("source_digest", 0)) == BaristaScriptDeclarationIndexProbe.compute_source_digest(source),
-		"restored digest matches current source")
+	_expect(failures, looked.is_empty(), "ordinary lookup rejects stale DigestFresh")
+	_expect(failures, int(_find_record(index, "DigestFresh").get("source_digest", 0)) == 999999,
+		"ordinary lookup preserves stale digest")
 
-	# Re-poison and exercise ScriptServer path surface (#62). Assert restored digest
-	# so a raw try_get_by_qualified_name revert cannot still pass.
-	# Re-set the override: synchronize_declaration_path_from_source clears it.
+	# Re-poison each ScriptServer surface: rejection must leave the original hint intact.
 	var expected_digest := BaristaScriptDeclarationIndexProbe.compute_source_digest(source)
 	token = index.claim_refresh(path)
 	_expect(failures, index.commit_record(token, {
@@ -871,12 +869,12 @@ func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
 	}), "re-poison stale digest for ScriptServer path")
 	BaristaScriptParseCache.set_source_override(path, source)
 	var ss_path := index.script_server_get_global_class_path("DigestFresh")
-	_expect(failures, ss_path == path, "ScriptServer path lookup reanalyzes stale digest")
+	_expect(failures, ss_path.is_empty(), "ScriptServer path lookup rejects stale digest")
 	var after_path := _find_record(index, "DigestFresh")
-	_expect(failures, int(after_path.get("source_digest", 0)) == expected_digest,
-		"ScriptServer path lookup restores current digest")
+	_expect(failures, int(after_path.get("source_digest", 0)) == 999999,
+		"ScriptServer path lookup preserves stale digest")
 
-	# Re-poison again and exercise list-driven resolve before any path heal.
+	# Re-poison again and exercise list-driven resolve.
 	token = index.claim_refresh(path)
 	_expect(failures, index.commit_record(token, {
 		"path": path,
@@ -892,11 +890,11 @@ func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
 		"declares_retroactive_conformances": false,
 	}), "re-poison stale digest for ScriptServer list")
 	BaristaScriptParseCache.set_source_override(path, source)
-	_expect(failures, "DigestFresh" in index.script_server_get_global_class_list(),
-		"ScriptServer class list includes digest-validated private name")
+	_expect(failures, "DigestFresh" not in index.script_server_get_global_class_list(),
+		"ScriptServer class list rejects stale private name")
 	var after_list := _find_record(index, "DigestFresh")
-	_expect(failures, int(after_list.get("source_digest", 0)) == expected_digest,
-		"ScriptServer list lookup restores current digest")
+	_expect(failures, int(after_list.get("source_digest", 0)) == 888888,
+		"ScriptServer list lookup preserves stale digest")
 
 	# native_base fallback also goes through digest-validating resolve.
 	token = index.claim_refresh(path)
@@ -914,14 +912,15 @@ func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
 		"declares_retroactive_conformances": false,
 	}), "re-poison stale digest for ScriptServer native_base")
 	BaristaScriptParseCache.set_source_override(path, source)
-	_expect(failures, String(index.script_server_get_global_class_native_base("DigestFresh")) == "Node",
-		"ScriptServer native_base reanalyzes stale digest")
+	_expect(failures, String(index.script_server_get_global_class_native_base("DigestFresh")).is_empty(),
+		"ScriptServer native_base rejects stale digest")
 	var after_base := _find_record(index, "DigestFresh")
-	_expect(failures, int(after_base.get("source_digest", 0)) == expected_digest,
-		"ScriptServer native_base restores current digest")
+	_expect(failures, int(after_base.get("source_digest", 0)) == 777777,
+		"ScriptServer native_base preserves stale digest")
 
 	var enum_path := "res://tests/digest_enum.barista"
 	var enum_source := "enum_name DigestEnum:\n\tA = 0\n\tB = 1\n"
+	BaristaScriptParseCache.set_source_override(enum_path, enum_source)
 	index.synchronize_path_from_source(enum_path, enum_source)
 	_expect(failures, index.script_server_is_global_class_enum("DigestEnum"),
 		"ScriptServer recognizes synchronized enum")
@@ -941,11 +940,20 @@ func _test_digest_mismatch_discards(failures: PackedStringArray) -> void:
 		"declares_retroactive_conformances": false,
 	}), "stale enum digest commits")
 	BaristaScriptParseCache.set_source_override(enum_path, enum_source)
-	_expect(failures, index.script_server_is_global_class_enum("DigestEnum"),
-		"ScriptServer enum lookup reanalyzes stale digest")
+	_expect(failures, not index.script_server_is_global_class_enum("DigestEnum"),
+		"ScriptServer enum lookup rejects stale digest")
 	var after_enum := _find_record(index, "DigestEnum")
-	_expect(failures, int(after_enum.get("source_digest", 0)) == expected_enum_digest,
-		"ScriptServer enum lookup restores current digest")
+	_expect(failures, int(after_enum.get("source_digest", 0)) == 424242,
+		"ScriptServer enum lookup preserves stale digest")
+	# Only explicit synchronization repairs each rejected provider.
+	index.synchronize_path_from_source(path, source)
+	index.synchronize_path_from_source(enum_path, enum_source)
+	_expect(failures, index.script_server_get_global_class_path("DigestFresh") == path, "explicit refresh restores path")
+	_expect(failures, "DigestFresh" in index.script_server_get_global_class_list(), "explicit refresh restores list")
+	_expect(failures, String(index.script_server_get_global_class_native_base("DigestFresh")) == "Node", "explicit refresh restores base")
+	_expect(failures, int(_find_record(index, "DigestFresh").get("source_digest", 0)) == expected_digest, "explicit refresh restores digest")
+	_expect(failures, index.script_server_is_global_class_enum("DigestEnum"), "explicit refresh restores enum")
+	_expect(failures, int(_find_record(index, "DigestEnum").get("source_digest", 0)) == expected_enum_digest, "explicit refresh restores enum digest")
 	BaristaScriptParseCache.clear_source_override(path)
 	BaristaScriptParseCache.clear_source_override(enum_path)
 	index.clear()

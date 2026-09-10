@@ -525,6 +525,9 @@ private:
 	void check_final_assignments();
 	Error run_phase_conformance_witness_body();
 	Error run_phase_finalize();
+#ifdef DEBUG_ENABLED
+	void validate_mixed_namespace_directory();
+#endif
 
 	// Pinned DependencyParserAccess: an AST pointer is owned by a retained parser, never by a path.
 	friend class ::BSCache; // Cleanup counts this retained-ref holder alongside parser load edges.
