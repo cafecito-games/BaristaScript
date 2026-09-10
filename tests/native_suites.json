@@ -16,7 +16,10 @@
     "trait_surface_analyzer",
     "witness_scope_analyzer",
     "variadic_callable_analyzer",
-    "builtin_metadata_analyzer"
+    "builtin_metadata_analyzer",
+    "get_node_analyzer"
   ],
-  "editor_import": ["global_class"]
+  "editor_import": [
+    "global_class"
+  ]
 }

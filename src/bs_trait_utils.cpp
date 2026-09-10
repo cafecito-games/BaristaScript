@@ -3,7 +3,7 @@
 /*                                                                        */
 /*  Hard fork of Foundry fs_trait_utils.cpp @ c9d5e35. Binding / Self     */
 /*  reify / project_conformance_trait_arguments walkers for ClassTrait   */
-/*  Binding publish (#60). class_has_named_trait remains residual.        */
+/*  R13: static named-trait membership is in bs_type; runtime witnesses are M4.        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */

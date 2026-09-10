@@ -11,7 +11,7 @@
 /*  undecidable laundering remains M5 residual until method/class type   */
 /*  parameters are live. Trait-target assignability consults declared    */
 /*  uses projection and registry recorded-arg conflict (#60). Runtime    */
-/*  Function* store / complete_self_referential_enum remain residual.    */
+/*  R13: runtime Function* store is M4; R04 enum completion is implemented.    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -546,8 +546,8 @@ namespace {
 // Foundry _path_identifies_script @ c9d5e35: a resource path identifies the one class that owns
 // the file. Foundry checks `is_root_script()` so an inner class does not inherit a sibling's
 // path-keyed conformance. BaristaScript has no `is_root_script` flag yet — every compiled
-// `.barista` Script resource is a file owner — so path always identifies. Residual under #60
-// if/when inner-class Script wraps land.
+// `.barista` Script resource is a file owner — so path always identifies. R14: M4 owns
+// runtime inner-class Script wrappers; source classes retain parser-owned CLASS identity (#140).
 bool _path_identifies_script(const Ref<Script> &p_script) {
 	(void)p_script;
 	return true;
@@ -590,7 +590,7 @@ bool _class_has_trait(const BSParser::ClassNode *p_class, const BSParser::ClassN
 			if (registry == nullptr) {
 				return false;
 			}
-			// Residual (#60): no has_script_trait on BaristaScript; registry + native base only.
+			// R14: runtime SCRIPT membership uses registry/native fallback; M4 owns compiled traits.
 			return (_path_identifies_script(current->base_type.script_type) &&
 						   registry->has_conformance(current->base_type.script_path, trait_name)) ||
 					registry->has_conformance(current->base_type.script_type->get_global_name(), trait_name) ||
@@ -1020,7 +1020,7 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 		if (p_source.kind == BSParser::DataType::SCRIPT && p_source.script_type.is_valid() && !p_source.is_meta_type) {
 			const StringName trait_name = bs_trait_identity_name(p_target.class_type);
 			const BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
-			// Residual (#60): BaristaScript has no has_script_trait / parse-trait set yet; membership
+			// R14: M4 owns compiled Script trait membership. Source CLASS membership above is implemented;
 			// for SCRIPT sources is registry + native-base conformance only (Foundry fallback path).
 			result.compatible = registry != nullptr &&
 					((_path_identifies_script(p_source.script_type) &&

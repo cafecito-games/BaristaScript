@@ -242,10 +242,10 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
                 or job.get("permissions") != {"contents": "read"}):
             return "CI requires one unsuppressed Linux corpus-reproducibility job outside the matrix"
         steps = job.get("steps")
-        if not isinstance(steps, list) or len(steps) != 7:
-            return "corpus-reproducibility requires checkout, Python setup, dependency, outputs, upstream checkout, tests and check steps"
+        if not isinstance(steps, list) or len(steps) != 8:
+            return "corpus-reproducibility requires checkout, Python setup, dependency, outputs, upstream checkout, tests, corpus check and complete inventory steps"
         expected = [
-            {"uses": "actions/checkout@v4", "with": {"persist-credentials": "false", "submodules": "false"}},
+            {"uses": "actions/checkout@v4", "with": {"persist-credentials": "false", "submodules": "false", "fetch-depth": "0"}},
             {"uses": "actions/setup-python@v5", "with": {"python-version": "3.x"}},
             {"shell": "bash", "run": "python3 -m pip install -r tests/requirements.txt"},
             {"id": "source", "shell": "bash", "run": 'python3 scripts/check_corpus_reproducibility.py --github-output "$GITHUB_OUTPUT"'},
@@ -258,6 +258,7 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
                 "sparse-checkout": "${{ steps.source.outputs.sparse_paths }}"}},
             {"shell": "bash", "run": "python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry\npython3 tests/test_import_analyzer_corpus.py --foundry .upstream-foundry"},
             {"shell": "bash", "run": "python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry"},
+            {"shell": "bash", "run": "python3 tests/validate_analyzer_port_inventory.py --foundry-dir .upstream-foundry --require-m3-complete\npython3 tests/test_analyzer_port_inventory.py --foundry-dir .upstream-foundry"},
         ]
         for index, (step, required) in enumerate(zip(steps, expected), 1):
             if not isinstance(step, dict):

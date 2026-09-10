@@ -27,8 +27,8 @@
 /*  reduce_call member-miss / hidden-witness fallback;                    */
 /*  reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→     */
 /*  coroutine wrap; Coroutine[T] annotation decode; direct async-call wrap*/
-/*  + mark_coroutine_handle_capture (#60 residual); Self-contract RETURN  */
-/*  assign/return/assignment + receiver-contract stamp (#60 residual).    */
+/*  + mark_coroutine_handle_capture (R02); Self-contract RETURN  */
+/*  assign/return/assignment + receiver-contract stamp (R03, #138).    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -248,7 +248,7 @@ public:
 	 * BSCache, so owner-local failures must be memoized alongside them. Records only
 	 * errors added by the exact class phase/member so a later foreign caller never
 	 * infers failure from unrelated errors already in the owner parser.
-	 * Wired for member path (#118) and class-phase INTERFACE/BODY (#60 residual slice).
+	 * R01/X3: member and class INTERFACE/BODY failures retain their declaring owner (#140).
 	 */
 	class OwnerResolutionFailures {
 	public:
@@ -521,6 +521,9 @@ private:
 		}
 	};
 	BSParser::FunctionNode *current_function = nullptr;
+	// GET_NODE follows the innermost member initializer or parameter-default declaration.
+	const BSParser::Node *get_node_declaration = nullptr;
+	bool get_node_is_static_context() const;
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
 	BSParser::EnumNode *current_enum = nullptr;
 	BSParser::ClassNode *current_enum_owner = nullptr;
@@ -714,6 +717,7 @@ private:
 	std::atomic<bool> indexed_conformance_files_probed{ false };
 	/** Foundry reduce_lambda (@ c9d5e35): Callable type + body under `current_lambda`. */
 	void reduce_lambda(BSParser::LambdaNode *p_lambda);
+	void reduce_get_node(BSParser::GetNodeNode *p_get_node);
 	void reduce_subscript(BSParser::SubscriptNode *p_subscript);
 	void reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple);
 	void reject_constant_materialization(BSParser::ExpressionNode *p_expression);

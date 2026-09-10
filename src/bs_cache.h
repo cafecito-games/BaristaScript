@@ -353,7 +353,8 @@ public:
 	/**
 	 * Records that p_owner loaded p_path. Ported from the dependency bookkeeping inside
 	 * FSCache::get_parser()/get_shallow_script() (fs_cache.cpp:242-245, fs_cache.cpp:525-527);
-	 * hoisted to its own method because the loaders themselves are not ported yet.
+	 * R18/X5: used by the implemented parser/resource refresh paths (#140).
+	 * The distinct compiled-script dependency half remains M4.
 	 */
 	static void record_dependency(const String &p_path, const String &p_owner);
 
