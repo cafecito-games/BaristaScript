@@ -56,9 +56,15 @@ def validate_sources(source):
                 raise ValueError(f"{path}:1: missing {tag}")
         # Bindings, not C++ public visibility, define the supported class members.
         methods = [method.get("name") for method in root.findall("methods/method")]
-        expected = ["is_valid"] if name == "BaristaScript" else []
-        if methods != expected or any(root.find(tag) is not None for tag in ("members", "signals", "constants")):
-            raise ValueError(f"{path}:1: documented members differ from supported bindings {expected}")
+        expected = {"get_build_info": "Dictionary", "is_valid": "bool"} if name == "BaristaScript" else {}
+        if methods != list(expected) or any(root.find(tag) is not None for tag in ("members", "signals", "constants")):
+            raise ValueError(f"{path}:1: documented members differ from supported bindings {list(expected)}")
+        for method in root.findall("methods/method"):
+            method_name = method.get("name")
+            if (method.attrib != {"name": method_name, "qualifiers": "const"}
+                    or [item.attrib for item in method.findall("return")] != [{"type": expected[method_name]}]
+                    or method.findall("param")):
+                raise ValueError(f"{path}:1: documented signature differs from const no-argument instance binding {method_name}")
     missing = SUPPORTED.keys() - found
     if missing:
         raise ValueError(f"{source}: missing supported class XML: {', '.join(sorted(missing))}")

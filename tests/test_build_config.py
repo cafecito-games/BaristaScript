@@ -191,6 +191,23 @@ class MetadataTests(unittest.TestCase):
         (self.root / "build/generated.cpp").write_text("tracked ignored-path edit must remain dirty")
         self.assertEqual(self.metadata()["source"]["state"], "dirty")
 
+    def test_strict_current_query_rejects_two_different_dirty_contents_at_one_head(self):
+        import query_build_info
+        source = self.root / "source.cpp"
+        source.write_text("int content_a = 1;\n")
+        built_a = self.metadata()
+        source.write_text("int content_b = 2;\n")
+        current_b = self.metadata()
+        self.assertEqual(built_a, current_b, "revision/state alone cannot prove current dirty content")
+        with self.assertRaisesRegex(ValueError, "clean"):
+            query_build_info.require_current(built_a, self.root, self.config)
+        self.git(self.root, "add", "source.cpp")
+        with self.assertRaisesRegex(ValueError, "clean"):
+            query_build_info.require_current(built_a, self.root, self.config)
+        self.git(self.root, "restore", "--staged", "source.cpp")
+        self.git(self.root, "restore", "source.cpp")
+        query_build_info.require_current(self.metadata(), self.root, self.config)
+
     def test_dependency_mismatch_and_dirty_checkout_are_reported_and_rejected(self):
         selected = self.metadata()["godot_cpp"]["selected_revision"]
         actual = self.commit(self.dependency, empty=True)

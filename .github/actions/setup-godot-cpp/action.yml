@@ -6,23 +6,23 @@ inputs:
     required: true
     description: Target platform.
   em-version:
-    default: 4.0.11
+    default: ""
     description: Emscripten version.
   windows-compiler:
     required: true
     description: The compiler toolchain to use on Windows ('mingw' or 'msvc').
-    default: mingw
+    default: ""
   mingw-version:
-    default: 12.2.0
+    default: ""
     description: MinGW version.
   ndk-version:
-    default: r28b
+    default: ""
     description: Android NDK version.
   buildtool:
     default: scons
     description: scons or cmake.
   scons-version:
-    default: 4.4.0
+    default: ""
     description: SCons version.
 
 runs:
@@ -33,18 +33,27 @@ runs:
       with:
         python-version: 3.x
 
+    - name: Resolve configured tool versions
+      id: versions
+      shell: bash
+      run: >-
+        python3 scripts/build_config.py --setup --platform "${{ inputs.platform }}" --format github
+        --tool "emscripten=${{ inputs.em-version }}" --tool "mingw=${{ inputs.mingw-version }}"
+        --tool "ndk=${{ inputs.ndk-version }}" --tool "scons=${{ inputs.scons-version }}"
+        --tool "windows_compiler=${{ inputs.windows-compiler }}" >> "$GITHUB_OUTPUT"
+
     - name: Setup Android dependencies
       if: inputs.platform == 'android'
       uses: nttld/setup-ndk@v1
       with:
-        ndk-version: ${{ inputs.ndk-version }}
+        ndk-version: ${{ steps.versions.outputs.ndk }}
         link-to-sdk: true
 
     - name: Setup Web dependencies
       if: inputs.platform == 'web'
       uses: mymindstorm/setup-emsdk@v14
       with:
-        version: ${{ inputs.em-version }}
+        version: ${{ steps.versions.outputs.emscripten }}
         no-cache: true
 
     # Chocolatey's community feed occasionally returns 503 while installing the
@@ -52,39 +61,39 @@ runs:
     # egor-tensin/setup-mingw action itself has no retry loop.
     - name: Setup MinGW (attempt 1)
       id: setup-mingw-1
-      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw'
+      if: inputs.platform == 'windows' && steps.versions.outputs.windows_compiler == 'mingw'
       continue-on-error: true
       uses: egor-tensin/setup-mingw@v2
       with:
-        version: ${{ inputs.mingw-version }}
+        version: ${{ steps.versions.outputs.mingw }}
 
     - name: Wait before MinGW retry
-      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure'
+      if: inputs.platform == 'windows' && steps.versions.outputs.windows_compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure'
       shell: pwsh
       run: Start-Sleep -Seconds 20
 
     - name: Setup MinGW (attempt 2)
       id: setup-mingw-2
-      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure'
+      if: inputs.platform == 'windows' && steps.versions.outputs.windows_compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure'
       continue-on-error: true
       uses: egor-tensin/setup-mingw@v2
       with:
-        version: ${{ inputs.mingw-version }}
+        version: ${{ steps.versions.outputs.mingw }}
 
     - name: Wait before MinGW final retry
-      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure' && steps.setup-mingw-2.outcome == 'failure'
+      if: inputs.platform == 'windows' && steps.versions.outputs.windows_compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure' && steps.setup-mingw-2.outcome == 'failure'
       shell: pwsh
       run: Start-Sleep -Seconds 40
 
     - name: Setup MinGW (attempt 3)
       id: setup-mingw-3
-      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure' && steps.setup-mingw-2.outcome == 'failure'
+      if: inputs.platform == 'windows' && steps.versions.outputs.windows_compiler == 'mingw' && steps.setup-mingw-1.outcome == 'failure' && steps.setup-mingw-2.outcome == 'failure'
       uses: egor-tensin/setup-mingw@v2
       with:
-        version: ${{ inputs.mingw-version }}
+        version: ${{ steps.versions.outputs.mingw }}
 
     - name: Confirm MinGW setup
-      if: inputs.platform == 'windows' && inputs.windows-compiler == 'mingw'
+      if: inputs.platform == 'windows' && steps.versions.outputs.windows_compiler == 'mingw'
       shell: pwsh
       run: |
         $ok = ($env:SETUP_MINGW_1 -eq 'success') -or ($env:SETUP_MINGW_2 -eq 'success') -or ($env:SETUP_MINGW_3 -eq 'success')
@@ -102,7 +111,7 @@ runs:
       shell: bash
       run: |
         python3 -c "import sys; print(sys.version)"
-        python3 -m pip install scons==${{ inputs.scons-version }}
+        python3 -m pip install scons==${{ steps.versions.outputs.scons }}
         scons --version
 
     - name: Install Ninja

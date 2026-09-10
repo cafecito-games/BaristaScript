@@ -24,6 +24,7 @@ protected:
 	static void _bind_methods();
 
 public:
+	godot::Dictionary get_build_info() const;
 	bool _editor_can_reload_from_file() override;
 	void _placeholder_erased(void *p_placeholder) override;
 	bool _can_instantiate() const override;

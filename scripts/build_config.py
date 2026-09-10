@@ -8,6 +8,7 @@
 """Validated version authority shared by builds, generators, CI and diagnostics."""
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -111,6 +112,20 @@ def effective_tools(config, platform=None, supplied=None):
     return result
 
 
+def setup_tools(config, platform, supplied):
+    defaults = effective_tools(config)
+    effective = effective_tools(config, platform)
+    for key, value in supplied.items():
+        if key not in defaults:
+            raise ValueError(f"unknown setup tool: {key}")
+        if not value:
+            continue
+        if value not in (defaults[key], effective[key]):
+            raise ValueError(f"setup {key}: expected configured default/override, actual {value!r}")
+        defaults[key] = value
+    return defaults
+
+
 def validate_selection(config, *, platform, architecture, target, api, precision):
     require_equal("Godot API", config["godot_api"], api)
     require_equal("precision", config["precision"], precision)
@@ -125,6 +140,16 @@ def validate_selection(config, *, platform, architecture, target, api, precision
 
 def api_path(config, root=ROOT):
     return Path(root) / "godot-cpp" / "gdextension" / ("extension_api-" + config["godot_api"].replace(".", "-") + ".json")
+
+
+def validate_api_file(config, actual, root=ROOT):
+    expected = api_path(config, root)
+    try:
+        expected_bytes, actual_bytes = expected.read_bytes(), Path(actual).read_bytes()
+    except OSError as error:
+        raise ValueError(f"cannot read selected API input: {error}") from error
+    require_equal("actual binding API SHA256", hashlib.sha256(expected_bytes).hexdigest(), hashlib.sha256(actual_bytes).hexdigest())
+    validate_api_header(config, parse_json(actual_bytes)["header"])
 
 
 def expected_api_header(config):
@@ -150,12 +175,33 @@ def flat_config(config, platform=None):
             **effective_tools(config, platform), "config_sha256": config_fingerprint(config)}
 
 
+def validate_scons_consumer(text):
+    try:
+        statements = ast.parse(text).body
+    except SyntaxError as error:
+        raise ValueError(f"invalid SConstruct: {error}") from error
+    required = ('versions = load_config()', 'localEnv["api_version"] = versions["godot_api"]',
+                'localEnv["precision"] = versions["precision"]')
+    for source in required:
+        expected = ast.dump(ast.parse(source).body[0])
+        if sum(ast.dump(node) == expected for node in statements) != 1:
+            raise ValueError(f"SConstruct must consume shared configuration: {source}")
+    for field in ("api_version", "precision"):
+        target = ast.dump(ast.parse('localEnv["' + field + '"] = None').body[0].targets[0])
+        assignments = [node for node in statements if isinstance(node, ast.Assign) and any(ast.dump(item) == target for item in node.targets)]
+        if len(assignments) != 1:
+            raise ValueError(f"SConstruct has conflicting {field} assignments")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=CONFIG_PATH)
     parser.add_argument("--platform", choices=sorted(ARCHITECTURES))
     parser.add_argument("--format", choices=("json", "cmake", "github", "format-requirement"), default="json")
     parser.add_argument("--get")
+    parser.add_argument("--setup", action="store_true", help="resolve composite-action defaults and explicit configured overrides")
+    parser.add_argument("--tool", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument("--expect-api-file", type=Path)
     parser.add_argument("--expect-api")
     parser.add_argument("--expect-precision")
     args = parser.parse_args(argv)
@@ -164,7 +210,19 @@ def main(argv=None):
         for field, expected in (("godot_api", args.expect_api), ("precision", args.expect_precision)):
             if expected is not None:
                 require_equal(field, config[field], expected)
+        if args.expect_api_file:
+            validate_api_file(config, args.expect_api_file)
         values = flat_config(config, args.platform)
+        if args.setup:
+            supplied = {}
+            for item in args.tool:
+                key, separator, value = item.partition("=")
+                if not separator or key in supplied:
+                    raise ValueError("setup tool inputs require unique NAME=VALUE entries")
+                supplied[key] = value
+            values.update(setup_tools(config, args.platform, supplied))
+        elif args.tool:
+            raise ValueError("--tool requires --setup")
         if args.get:
             if args.get not in values:
                 raise ValueError(f"configuration key: expected one of {sorted(values)}, actual {args.get!r}")

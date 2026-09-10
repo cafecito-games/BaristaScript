@@ -8,6 +8,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "native_test_runner.h"
+#include "bs_build_info.h"
 #include "doctest.h"
 #include "native_build_id.h"
 #include "result_protocol.h"
@@ -93,7 +94,7 @@ bool BaristaNativeTestRunner::_process(double) {
 		std::cout << BS_NATIVE_RESULT_PREFIX
 				  << godot::vformat(BS_NATIVE_RESULT_FORMAT, BS_NATIVE_PROTOCOL_VERSION,
 							 suite.json_escape(), case_name.json_escape(), nonce.json_escape(), BS_NATIVE_BUILD_ID,
-							 completed_cases, assertions, failed_cases, failed_assertions)
+							 barista_script::bs_get_build_info_json(), completed_cases, assertions, failed_cases, failed_assertions)
 							 .utf8()
 							 .get_data()
 				  << std::endl;

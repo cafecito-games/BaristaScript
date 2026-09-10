@@ -22,19 +22,65 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 from corpus_registry import ROOT, local_path, read_json, run_git, tree_entries
 from corpus_stages import validate_stages
 from corpus_expectations import decode_expectation
 from corpus_ledger import validate_triage_ledger
+from build_config import require_equal
+from build_metadata import inspect_artifact_bytes
+from query_build_info import checkout_info, parse_record
+from run_native_suites import staged_project
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def select_library(explicit, candidates):
+    hosts = {'darwin': ('macos', '.dylib'), 'win32': ('windows', '.dll'), 'linux': ('linux', '.so')}
+    platform, suffix = hosts.get(sys.platform, (None, None))
+    if platform is None:
+        raise ValueError(f'unsupported corpus triage host: {sys.platform}')
+    if explicit is None:
+        matching = [path for path in candidates if path.parent.name == platform and path.suffix == suffix]
+        if len(matching) != 1:
+            raise ValueError('select --library explicitly; an unambiguous current-host debug artifact is required')
+        explicit = matching[0]
+    library = Path(explicit).resolve()
+    content = library.read_bytes()
+    info = inspect_artifact_bytes(content)
+    if info['build']['native_tests'] or info['build']['target'] != 'template_debug':
+        raise ValueError('corpus triage requires an ordinary template_debug library with analyzer bindings')
+    require_equal('triage library platform', platform, info['build']['platform'])
+    return library, info, hashlib.sha256(content).hexdigest()
+
+
+def prepare_triage_project(project):
+    # The corpus harness reads this registry adjacent to its project. It needs no API fixture.
+    scripts = project.parent / 'scripts'
+    scripts.mkdir()
+    shutil.copy2(ROOT / 'scripts/corpus_sources.json', scripts / 'corpus_sources.json')
+
+
+def attach_build_info(record, nonce, expected):
+    # Corpus mismatch/crash/timeout status remains authoritative. Metadata emitted before
+    # evaluation can still identify that same process without pretending it exited zero.
+    record.update(build_info=None, godot_version=None, build_info_error=None)
+    try:
+        loaded = parse_record(record['output'], nonce, expected)
+        record.update(build_info=loaded['build_info'], godot_version=loaded['godot_version'])
+    except ValueError as error:
+        record['build_info_error'] = str(error)
+        record['passed'] = False
+        if record['terminal'] == 'passed':
+            record['terminal'] = 'build_info_error'
 
 
 def atomic_report(path, document):
@@ -61,6 +107,15 @@ def supervise(command: list[str], timeout: float):
         timed_out = True
         os.killpg(process.pid, signal.SIGKILL)
         output, _ = process.communicate()
+    except BaseException:
+        # A user interruption must not leave the isolated case process running after cleanup.
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.communicate()
+        raise
     return {'exit_code': process.returncode, 'timed_out': timed_out,
             'duration_seconds': round(time.monotonic() - started, 4),
             'output': output.decode('utf-8', errors='replace')}
@@ -148,11 +203,13 @@ def validate_staging(root, inventory):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--godot', type=Path, required=True)
+    parser.add_argument('--library', type=Path, help='explicit ordinary debug library; otherwise require one current-host candidate')
     parser.add_argument('--corpus', required=True)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--case', action='append', default=[])
     parser.add_argument('--timeout', type=float, default=30.0)
     args = parser.parse_args(argv)
+    report = None
     try:
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ValueError('timeout must be finite and positive')
@@ -175,13 +232,14 @@ def main(argv=None):
         version = subprocess.run([str(args.godot), '--version'], capture_output=True, text=True, check=True).stdout.strip()
         libraries = sorted((ROOT / 'project/bin').rglob('*template_debug*'))
         libraries = [path for path in libraries if path.is_file()]
-        if not libraries:
-            raise ValueError('debug extension build artifact is missing')
+        library, inspected_info, artifact_sha = select_library(args.library, libraries)
         report = {'schema_version': 1, 'checkpoint': 'discovery', 'corpus': args.corpus,
                   'source_revision': inventory['foundry_revision'], 'inventory_sha256': digest(root / 'inventory.json'),
                   'baristascript_revision': run_git(ROOT, 'rev-parse', 'HEAD'),
                   'baristascript_worktree_diff_sha256': hashlib.sha256(subprocess.run(['git', '-C', str(ROOT), 'diff', 'HEAD'], capture_output=True, check=True).stdout).hexdigest(),
                   'build_target': 'template_debug', 'build_artifacts': {str(p.relative_to(ROOT)): digest(p) for p in libraries},
+                  'selected_artifact': {'path': str(library), 'sha256': artifact_sha, 'build_info': inspected_info},
+                  'build_info': None, 'checkout_info': checkout_info(),
                   'execution_files': {str(path.relative_to(ROOT)): digest(path) for path in
                                       sorted([ROOT / 'scripts/run_corpus_triage.py', ROOT / 'project/tests/corpus_runner.gd',
                                               ROOT / 'project/tests/corpus_harness.gd', ROOT / 'src/bs_analyzer_probe.cpp',
@@ -191,20 +249,41 @@ def main(argv=None):
                   'deferred_cases': [r['identity'] for r in inventory['sources'] if r.get('disposition') == 'deferred'],
                   'completed': False, 'results': []}
         atomic_report(args.report, report)
-        for index, case in enumerate(selected):
-            command = [str(args.godot), '--headless', '--path', str(ROOT / 'project'), '--script',
-                       'res://tests/corpus_runner.gd', '--', '--corpus', args.corpus, '--case', case]
-            process = supervise(command, args.timeout)
-            record = result_record(process, case, args.corpus, records[case]['expected_block'])
-            record.update({'case': case, 'identity': records[case]['identity'], 'source_sha256': records[case]['sha256'],
-                           'staged_source_sha256': records[case]['imported_sha256'],
-                           'expectation_sha256': records[case]['expectation_sha256'],
-                           'semantic_owner': records[case]['semantic_owner'],
-                           'candidate_observations': records[case]['candidate_observations'], 'command': command})
-            report['results'].append(record)
-            # Each completed record is durable even if the supervisor is interrupted.
-            atomic_report(args.report, report)
-            print(f'{index + 1}/{len(selected)} {record["terminal"]} {case}', flush=True)
+        with staged_project({'library': str(library)}) as project:
+            prepare_triage_project(project)
+            copied = project / 'bin' / ('native' + library.suffix)
+            validate_staging(project / args.corpus.removeprefix('res://'), inventory)
+            for name in ('corpus_runner.gd', 'corpus_harness.gd'):
+                require_equal('staged execution script ' + name, report['execution_files']['project/tests/' + name],
+                              digest(project / 'tests' / name))
+            for index, case in enumerate(selected):
+                before = digest(copied)
+                require_equal('staged library before case', artifact_sha, before)
+                nonce = uuid.uuid4().hex
+                command = [str(args.godot), '--headless', '--path', str(project), '--script',
+                           'res://tests/corpus_runner.gd', '--', '--corpus', args.corpus, '--case', case,
+                           '--build-info-nonce', nonce]
+                process = supervise(command, args.timeout)
+                record = result_record(process, case, args.corpus, records[case]['expected_block'])
+                attach_build_info(record, nonce, inspected_info)
+                after = digest(copied) if copied.is_file() else None
+                record.update(library_sha256_before=before, library_sha256_after=after)
+                if after != artifact_sha:
+                    record['artifact_error'] = 'staged library changed during case execution'
+                    record['passed'] = False
+                    if record['terminal'] == 'passed':
+                        record['terminal'] = 'artifact_changed'
+                record.update({'case': case, 'identity': records[case]['identity'], 'source_sha256': records[case]['sha256'],
+                               'staged_source_sha256': records[case]['imported_sha256'],
+                               'expectation_sha256': records[case]['expectation_sha256'],
+                               'semantic_owner': records[case]['semantic_owner'],
+                               'candidate_observations': records[case]['candidate_observations'], 'command': command})
+                report['results'].append(record)
+                if record['build_info'] is not None:
+                    report['build_info'] = record['build_info']
+                # Each completed record is durable even if the supervisor is interrupted.
+                atomic_report(args.report, report)
+                print(f'{index + 1}/{len(selected)} {record["terminal"]} {case}', flush=True)
         report['completed'] = True
         report['summary'] = dict(sorted(Counter(r['terminal'] for r in report['results']).items()))
         report['unowned_failures'] = [r['case'] for r in report['results'] if not r['passed'] and not r['semantic_owner']]
@@ -212,6 +291,9 @@ def main(argv=None):
         print(json.dumps(report['summary'], sort_keys=True))
         return 0 if all(r['passed'] for r in report['results']) else 1
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        if report is not None:
+            report['infrastructure_error'] = str(error)
+            atomic_report(args.report, report)
         print(f'corpus triage: {error}', file=sys.stderr)
         return 2
 

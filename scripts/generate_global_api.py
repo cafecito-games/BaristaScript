@@ -11,6 +11,8 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Complete carrier names from pinned godot-cpp/gdextension/extension_api-4-7.json.
 # Producer: core/extension/extension_api_dump.cpp:624-643,911 @ Foundry c9d5e35.
@@ -58,13 +60,8 @@ def validate_header(header):
     for field in ("version_major", "version_minor", "version_patch"):
         require(type(header[field]) is int and 0 <= header[field] <= 2147483647,
                 "invalid exact integer API header field: " + field)
-    require((header["version_major"], header["version_minor"], header["version_patch"]) == (4, 7, 0),
-            "expected pinned Godot 4.7.0 API")
-    expected = {"version_status": "stable", "version_build": "official",
-                "version_full_name": "Godot Engine v4.7.stable.official", "precision": "single"}
-    for field, value in expected.items():
-        require(type(header[field]) is str and header[field] == value,
-                "invalid pinned API header field " + field + ": expected " + value)
+    from build_config import load_config, validate_api_header
+    validate_api_header(load_config(), header)
 
 
 def validate_builtin_carriers(builtins):

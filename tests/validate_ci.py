@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
+from build_config import load_config, api_path, validate_api_file, require_equal
 from corpus_registry import validate_registration  # noqa: E402
 
 SUITE_RUNNER = "tests/run_gdscript_suites.py"
@@ -273,6 +274,9 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
             {"shell": "bash", "run": "\n".join((
                 "python3 -m pip install -r tests/requirements.txt",
                 "python3 tests/validate_ci.py",
+                "python3 tests/test_build_config.py",
+                "python3 tests/test_build_consumers.py",
+                "python3 tests/test_query_build_info.py",
                 "python3 tests/test_run_gdscript_suites.py",
                 "python3 tests/test_corpus_baseline.py",
                 "python3 tests/test_corpus_expectations.py"))},
@@ -341,12 +345,97 @@ def check_static_checks_wiring(workflow: str) -> str | None:
     return None
 
 
+
+def check_build_version_wiring(ci, package, action):
+    """Pin actual matrix inputs, shared versions and the gate before the uploaded bytes."""
+    try:
+        config = load_config()
+        expected_ci = {("linux", "x86_64", "template_debug"), ("windows", "x86_64", "template_release"),
+                       ("macos", "universal", "template_debug"), ("android", "arm64", "template_debug"),
+                       ("web", "wasm32", "template_release")}
+        expected_package = {(platform, arch) for platform, arches in {
+            "linux": ("x86_64", "x86_32", "arm64", "arm32"), "windows": ("x86_64", "x86_32", "arm64"),
+            "macos": ("universal",), "android": ("x86_64", "x86_32", "arm64", "arm32"),
+            "ios": ("arm64",), "web": ("wasm32",)}.items() for arch in arches}
+        def active(step):
+            return ("if" not in step and step.get("continue-on-error", "false") in (False, "false")
+                    and not SUPPRESSED_STATUS.search(step.get("run", "")))
+        normalize = lambda value: " ".join(value.split())
+        resolver = 'python3 scripts/build_config.py --platform ${{ matrix.target.platform }} --format github >> "$GITHUB_OUTPUT"'
+        gate = ('python3 scripts/verify_build_artifacts.py --binary-dir bin --platform ${{ matrix.target.platform }} '
+                '--architecture ${{ matrix.target.arch }} --target ${{ matrix.target-type }} '
+                '--api ${{ steps.versions.outputs.godot_api }} --precision ${{ matrix.float-precision }}')
+        build_command = ('scons api_version=${{ steps.versions.outputs.godot_api }} target=${{ matrix.target-type }} '
+                         'platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }}')
+        for name, document in (("CI", ci), ("packaging", package)):
+            job = document["jobs"]["build"]
+            if not active(job):
+                raise ValueError(name + " build job must be unconditional and unsuppressed")
+            matrix = job["strategy"]["matrix"]
+            if name == "CI":
+                rows = matrix["include"]
+                actual = {(row["target"]["platform"], row["target"]["arch"], row["target-type"]) for row in rows}
+                if actual != expected_ci or len(rows) != len(expected_ci) or any(row["float-precision"] != config["precision"] for row in rows):
+                    raise ValueError("CI platform/architecture/target/precision matrix drift")
+            else:
+                rows = matrix["target"]
+                actual = {(row["platform"], row["arch"]) for row in rows}
+                if actual != expected_package or len(rows) != len(expected_package) or matrix["target-type"] != ["template_debug", "template_release"] or matrix["float-precision"] != [config["precision"]]:
+                    raise ValueError("manual packaging platform/architecture/target/precision matrix drift")
+            steps = job["steps"]
+            versions = [index for index, step in enumerate(steps) if step.get("id") == "versions" and normalize(step.get("run", "")) == resolver and active(step)]
+            builds = [index for index, step in enumerate(steps) if normalize(step.get("run", "")) == build_command and active(step)]
+            gates = [index for index, step in enumerate(steps) if normalize(step.get("run", "")) == gate and active(step)]
+            setups = [index for index, step in enumerate(steps) if step.get("uses") == "./.github/actions/setup-godot-cpp"]
+            if any(len(items) != 1 for items in (versions, builds, gates, setups)) or not versions[0] < setups[0] < builds[0] < gates[0]:
+                raise ValueError(name + " requires shared resolution, setup, build and actual bin artifact gate in order")
+            setup = steps[setups[0]]
+            for field, expected in (("platform", "${{ matrix.target.platform }}"), ("em-version", "${{ steps.versions.outputs.emscripten }}"), ("windows-compiler", "${{ steps.versions.outputs.windows_compiler }}")):
+                require_equal(name + " setup " + field, expected, setup["with"][field])
+            for step in steps:
+                if "GODOT_VERSION" in step.get("env", {}):
+                    require_equal("runtime version source", "${{ steps.versions.outputs.godot_runtime }}", step["env"]["GODOT_VERSION"])
+            if name == "packaging":
+                uploads = [index for index, step in enumerate(steps) if step.get("uses", "").startswith("actions/upload-artifact@")]
+                if len(uploads) != 1 or not gates[0] < uploads[0]:
+                    raise ValueError("actual artifact identity must gate upload")
+                require_equal("packaging upload tree", "${{ github.workspace }}/bin/**", steps[uploads[0]]["with"]["path"].strip())
+        for field in ("em-version", "mingw-version", "ndk-version", "scons-version", "windows-compiler"):
+            require_equal("setup default " + field, "", action["inputs"][field]["default"])
+        steps = action["runs"]["steps"]
+        resolver_steps = [step for step in steps if step.get("id") == "versions" and active(step)]
+        if len(resolver_steps) != 1 or not normalize(resolver_steps[0]["run"]).startswith("python3 scripts/build_config.py --setup --platform"):
+            raise ValueError("setup action must resolve shared defaults and explicit overrides")
+        for step in steps:
+            if step.get("id") != "versions":
+                for field in ("em-version", "mingw-version", "ndk-version", "scons-version", "windows-compiler"):
+                    if "inputs." + field in str(step):
+                        raise ValueError("setup action bypasses resolved tool versions")
+    except (KeyError, TypeError, ValueError) as error:
+        return str(error)
+    return None
+
+
 def main() -> int:
-    api_path = ROOT / "godot-cpp" / "gdextension" / "extension_api-4-7.json"
+    config = load_config()
+    selected_api_path = api_path(config)
+    validate_api_file(config, selected_api_path)
     workflow_path = ROOT / ".github" / "workflows" / "ci.yml"
 
-    api_precision = json.loads(api_path.read_text())["header"]["precision"]
+    api_precision = json.loads(selected_api_path.read_text())["header"]["precision"]
     workflow = workflow_path.read_text()
+    import yaml
+    complaint = check_build_version_wiring(yaml.load(workflow, Loader=yaml.BaseLoader),
+        yaml.load((ROOT / ".github/workflows/make_build.yml").read_text(), Loader=yaml.BaseLoader),
+        yaml.load((ROOT / ".github/actions/setup-godot-cpp/action.yml").read_text(), Loader=yaml.BaseLoader))
+    if complaint:
+        print(complaint)
+        return 1
+    descriptor = (ROOT / "project/bin/barista_script.gdextension").read_text()
+    match = re.search(r'compatibility_minimum\s*=\s*"([^"]+)"', descriptor)
+    if not match or match[1] != config["godot_api"]:
+        print("ordinary descriptor compatibility differs from shared Godot API")
+        return 1
     matrix_precisions = re.findall(r"^\s+float-precision:\s+(\w+)\s*$", workflow, re.MULTILINE)
 
     if not matrix_precisions:
@@ -356,7 +445,7 @@ def main() -> int:
     incompatible = sorted({precision for precision in matrix_precisions if precision != api_precision})
     if incompatible:
         print(
-            f"CI requests {', '.join(incompatible)} precision, but the Godot 4.7 API is {api_precision} precision"
+            f"CI requests {', '.join(incompatible)} precision, but the Godot {config['godot_api']} API is {api_precision} precision"
         )
         return 1
 
@@ -389,7 +478,7 @@ def main() -> int:
         print(baseline_complaint)
         return 1
 
-    print(f"CI configuration matches the Godot 4.7 API ({api_precision}) and avoids duplicate PR runs")
+    print(f"CI configuration matches the Godot {config['godot_api']} API ({api_precision}) and avoids duplicate PR runs")
     return 0
 
 

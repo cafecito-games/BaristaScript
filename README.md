@@ -1,12 +1,14 @@
 # BaristaScript
 
 BaristaScript is an experimental scripting language for Godot. This repository
-provides Godot 4.7 integration for `.barista` files as non-executable `Script`
+provides Godot integration for `.barista` files as non-executable `Script`
 resources, with parsing and static analysis.
 
 The project is based on the official
 [`godot-cpp-template`](https://github.com/godotengine/godot-cpp-template) and
-uses `godot-cpp` 10.0.0-rc2 with the Godot 4.7 extension API.
+uses a pinned `godot-cpp` submodule. [build_versions.json](build_versions.json)
+selects the extension, Godot API/runtime, precision, and toolchain versions;
+[build identity and diagnostics](docs/build-identity.md) explains how to inspect them.
 
 ## Current capabilities
 
@@ -14,6 +16,7 @@ uses `godot-cpp` 10.0.0-rc2 with the Godot 4.7 extension API.
 - Recognizes and loads `.barista` source files.
 - Preserves source text in a `BaristaScript` resource.
 - Parses and statically analyzes source, with editor diagnostics and global declaration metadata.
+- Reports the loaded extension library's build identity through `BaristaScript.get_build_info()`.
 
 Execution, script instances, completion, debugging, and profiling are not implemented.
 See the [API reference contributor guide](docs/api-reference.md) to build the
@@ -22,7 +25,7 @@ authored class XML.
 
 ## Prerequisites
 
-- Godot 4.7 or a compatible 4.7 patch release.
+- The stock Godot runtime selected by `python3 scripts/build_config.py --get godot_runtime`.
 - A C++17 compiler supported by `godot-cpp`.
 - Python 3 and SCons for the primary build.
 - CMake 3.17 or newer for the alternative build.
@@ -47,26 +50,25 @@ git submodule update --init --recursive
 Build and copy a debug library into the sample Godot project:
 
 ```sh
-scons api_version=4.7 target=template_debug
+scons target=template_debug
 ```
 
 For a release build:
 
 ```sh
-scons api_version=4.7 target=template_release
+scons target=template_release
 ```
 
 Generate a compilation database while building:
 
 ```sh
-scons api_version=4.7 target=template_debug compiledb=yes
+scons target=template_debug compiledb=yes
 ```
 
 ## Build with CMake
 
 ```sh
 cmake -S . -B build \
-  -DGODOTCPP_API_VERSION=4.7 \
   -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --parallel
 ```
@@ -74,9 +76,13 @@ cmake --build build --parallel
 Both build systems place the platform library under `project/bin/<platform>/`,
 where `project/bin/barista_script.gdextension` can load it.
 
+Both consume the shared API/precision defaults. Explicit matching overrides remain supported;
+conflicting selections fail. For the loaded library's identity, actual host version, artifact
+inspection, and current-checkout verification, see [build diagnostics](docs/build-identity.md).
+
 ## Verify editor recognition
 
-Replace `godot` below if your Godot 4.7 executable has a different name:
+Replace `godot` below with the selected runtime executable if it has a different name:
 
 ```sh
 godot --headless --path project --editor --quit
@@ -88,11 +94,11 @@ its source, and cannot instantiate.
 
 ## Run native C++ tests
 
-Tokenizer contracts run as doctest cases inside a test-enabled extension hosted by an
-unmodified Godot 4.7 runtime. Select the executable explicitly:
+Native contracts run as doctest cases inside a test-enabled extension hosted by the
+selected unmodified Godot runtime. Select the executable explicitly:
 
 ```sh
-scons api_version=4.7 target=template_debug barista_tests=yes
+scons target=template_debug barista_tests=yes
 python3 tests/test_run_native_suites.py --godot "$(command -v godot)"
 python3 tests/run_native_suites.py --godot "$(command -v godot)"
 ```
@@ -100,7 +106,7 @@ python3 tests/run_native_suites.py --godot "$(command -v godot)"
 For CMake, select its artifact directory:
 
 ```sh
-cmake -S . -B build/native-cmake -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
+cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
 cmake --build build/native-cmake --parallel
 python3 tests/run_native_suites.py --godot "$(command -v godot)" --build-dir build/native-cmake
 ```
@@ -115,7 +121,7 @@ one exact case. `--list` is informational and never counts as verification. See 
 All remaining GDScript suites still run against the ordinary debug artifact:
 
 ```sh
-scons api_version=4.7 target=template_debug barista_tests=no
+scons target=template_debug barista_tests=no
 godot --headless --path project --editor --quit
 python3 tests/run_gdscript_suites.py --godot "$(command -v godot)"
 python3 tests/verify_native_surface.py --binary-dir project/bin --target-type template_debug
@@ -128,8 +134,8 @@ whole manifest without filters.
 
 ## Check formatting and licenses
 
-Install the exact clang-format release from the shared pin (activate a virtual environment
-first if your Python installation is externally managed):
+Install the exact clang-format release from the checked projection of `build_versions.json`
+(activate a virtual environment first if your Python installation is externally managed):
 
 ```sh
 python3 -m pip install -r scripts/requirements-format.txt
@@ -138,7 +144,8 @@ python3 scripts/add_license_header.py --check
 ```
 
 `check_format.py` checks every tracked maintained C/C++ source/header, including staged new
-files and `tests/native/`, against the repository `.clang-format`. It uses the license script's
+files and `tests/native/`, against the repository `.clang-format`. It also rejects a formatter
+requirements file that disagrees with `build_versions.json`. It uses the license script's
 source suffixes and exclusions, so pinned `godot-cpp/`, `thirdparty/`, generated `gen/`,
 `build/`, and `bin/` files stay excluded. A missing or wrong formatter, empty discovery,
 missing tracked source, or formatting violation fails with a diagnostic. Add new sources
@@ -166,7 +173,7 @@ python3 tests/test_static_checks.py
 - `src/barista_script.*` implements the non-executable script resource.
 - `src/barista_script_resource_loader.*` loads `.barista` source files.
 - `src/register_types.*` owns GDExtension startup and shutdown.
-- `project/` is the Godot 4.7 recognition fixture and smoke test.
+- `project/` is the Godot recognition fixture and smoke test.
 - `godot-cpp/` is the pinned bindings submodule.
 
 ## Verify corpus reproducibility

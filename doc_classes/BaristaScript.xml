@@ -19,6 +19,20 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="get_build_info" qualifiers="const">
+			<return type="Dictionary" />
+			<description>
+				Returns a fresh dictionary describing the compiled extension library loaded by this process. This read-only instance method is available in ordinary debug and release builds. It does not inspect the current checkout, validate source, or enable script execution. Editing the returned dictionary does not change subsequent results.
+				Schema [code]1[/code] contains [code]schema[/code], [code]extension_version[/code], [code]config_sha256[/code], [code]godot_api[/code], and [code]godot_runtime[/code]. The latter is the runtime version selected by the build configuration, not the actual host Godot version; query [method Engine.get_version_info] separately for the running engine.
+				The nested [code]source[/code] dictionary contains [code]revision[/code] and [code]state[/code]. The nested [code]godot_cpp[/code] dictionary contains [code]selected_revision[/code] (the selected Git submodule revision), [code]revision[/code] (the bindings checkout used), and [code]state[/code]. States are [code]clean[/code], [code]dirty[/code], or [code]unknown[/code]; source archives without Git identity report [code]unknown[/code] instead of claiming a clean revision. These values describe the inputs when the library was built, even if the current checkout has since changed.
+				The nested [code]build[/code] dictionary contains [code]platform[/code], [code]architecture[/code], [code]target[/code], [code]precision[/code], and the boolean [code]native_tests[/code]. Use this metadata with the actual host version when reporting a bug:
+				[codeblock lang=gdscript]
+				var script := BaristaScript.new()
+				print(JSON.stringify(script.get_build_info()))
+				print(Engine.get_version_info())
+				[/codeblock]
+			</description>
+		</method>
 		<method name="is_valid" qualifiers="const">
 			<return type="bool" />
 			<description>

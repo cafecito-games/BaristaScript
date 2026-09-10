@@ -5,6 +5,7 @@
 		"DirAccess",
 		"Engine",
 		"FileAccess",
+		"JSON",
 		"MultiplayerAPI",
 		"MultiplayerPeer",
 		"OS",

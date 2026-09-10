@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,6 +20,34 @@ class ReferenceTest(unittest.TestCase):
     def invoke(self, *arguments):
         return subprocess.run([sys.executable, str(ROOT / "scripts/build_reference.py"),
                                *map(str, arguments)], text=True, capture_output=True, cwd=ROOT)
+
+    def test_build_info_is_documented_as_a_const_instance_method(self):
+        root = ET.parse(ROOT / "doc_classes/BaristaScript.xml").getroot()
+        method = root.find("methods/method[@name='get_build_info']")
+        self.assertIsNotNone(method, "the ordinary build identity API must be authored")
+        self.assertEqual(method.get("qualifiers"), "const")
+        self.assertEqual(method.find("return").attrib, {"type": "Dictionary"})
+        self.assertEqual(method.findall("param"), [])
+        self.assertEqual([m.get("name") for m in root.findall("methods/method")], ["get_build_info", "is_valid"])
+        builder = runpy.run_path(str(ROOT / "scripts/build_reference.py"))
+        self.assertEqual(len(builder["validate_sources"](ROOT / "doc_classes")), 3)
+
+    def test_build_info_signature_drift_is_rejected(self):
+        builder = runpy.run_path(str(ROOT / "scripts/build_reference.py"))
+        mutations = (
+            ('name="get_build_info" qualifiers="const"', 'name="get_build_info" qualifiers="static"'),
+            ('<return type="Dictionary" />', '<return type="String" />'),
+            ('<return type="Dictionary" />', '<return type="Dictionary" /><param index="0" name="path" type="String" />'),
+            ('name="get_build_info"', 'name="get_private_build_info"'),
+        )
+        for original, changed in mutations:
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                source = Path(temporary) / "doc_classes"
+                shutil.copytree(ROOT / "doc_classes", source)
+                path = source / "BaristaScript.xml"
+                path.write_text(path.read_text().replace(original, changed, 1))
+                with self.assertRaisesRegex(ValueError, "documented (signature|members)"):
+                    builder["validate_sources"](source)
 
     def test_reference_build_is_reproducible_and_check_preserves_xml(self):
         sources = sorted((ROOT / "doc_classes").glob("*.xml"))
@@ -34,6 +63,10 @@ class ReferenceTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 pages = sorted(output.glob("class_*.html"))
                 self.assertEqual([p.stem for p in pages], ["class_baristascript", "class_baristascriptlanguage", "class_baristascriptresourceloader"])
+                script_page = (output / "class_baristascript.html").read_text()
+                self.assertIn('id="class-baristascript-method-get-build-info"', script_page)
+                self.assertIn("godot_runtime", script_page)
+                self.assertIn("selected_revision", script_page)
                 digests.append({p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pages})
             self.assertEqual(*digests)
 

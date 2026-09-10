@@ -6,11 +6,15 @@ BaristaScript is a C++17 GDExtension that makes Godot 4.7 recognize `.barista` f
 
 ## Build, Test, and Development Commands
 
+Shared defaults come from `build_versions.json`; explicit matching API/precision options remain supported.
+`python3 scripts/query_build_info.py --godot /path/to/stock/godot --library /path/to/library` reports the actual loaded identity.
+Use `--require-current` when verification requires current source/configuration.
+
 - `git submodule update --init --recursive` initializes the required bindings.
-- `scons api_version=4.7 target=template_debug` builds the debug extension into `project/bin/<platform>/`.
-- `scons api_version=4.7 target=template_release` creates a release build.
-- `cmake -S . -B build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel` exercises the alternative CMake path.
-- `scons api_version=4.7 target=template_debug barista_tests=yes` builds isolated native C++ tests under `build/native-scons/`; run `python3 tests/run_native_suites.py --godot "$(command -v godot)"` and `python3 tests/test_run_native_suites.py --godot "$(command -v godot)"`.
+- `scons target=template_debug` builds the debug extension into `project/bin/<platform>/`.
+- `scons target=template_release` creates a release build.
+- `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel` exercises the alternative CMake path.
+- `scons target=template_debug barista_tests=yes` builds isolated native C++ tests under `build/native-scons/`; run `python3 tests/run_native_suites.py --godot "$(command -v godot)"` and `python3 tests/test_run_native_suites.py --godot "$(command -v godot)"`.
 - CMake exposes `-DBARISTA_TESTS=ON`; select its isolated artifact with `python3 tests/run_native_suites.py --godot "$(command -v godot)" --build-dir build/native-cmake`. Both test options default off.
 - `python3 tests/validate_ci.py` checks that the CI matrix matches the pinned API precision and event policy.
 - `godot --headless --path project --editor --quit` imports the fixture; then `python3 tests/run_gdscript_suites.py --godot $(which godot)` runs every GDScript suite in `project/tests/` and fails when one did not actually run.
