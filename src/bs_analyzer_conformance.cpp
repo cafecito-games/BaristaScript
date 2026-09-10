@@ -37,6 +37,7 @@
 #include "barista_script_language.h"
 #include "bs_cache.h"
 #include "bs_conformance_registry.h"
+#include "bs_core_constants.h"
 #include "bs_native_db.h"
 #include "bs_platform.h"
 #include "bs_trait_utils.h"
@@ -546,8 +547,13 @@ bool BSAnalyzer::find_trait_implementation(BSParser::ClassNode *p_class, const S
 		visited_classes.insert(current_class);
 
 		if (current_class->is_builtin_conformance_shim) {
-			// Builtin MethodInfo surface remains follow-up under #60 when godot-cpp exposes it.
-			return false;
+			const auto *method = BSCoreConstants::get_builtin_method(current_class->get_datatype().builtin_type, p_function_name);
+			if (!method)
+				return false;
+			r_implementation.method_info = method->info;
+			r_implementation.method_info_source = vformat(R"(Implementation comes from builtin type "%s".)", current_class->fqcn);
+			r_implementation.has_method_info = true;
+			return true;
 		}
 
 		if (current_class->has_member(p_function_name) && !current_class->has_function(p_function_name)) {

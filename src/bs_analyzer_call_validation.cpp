@@ -14,6 +14,7 @@
 /**************************************************************************/
 
 #include "bs_analyzer.h"
+#include "bs_core_constants.h"
 
 #include "barista_script.h"
 #include "bs_native_db.h"
@@ -825,6 +826,15 @@ bool BSAnalyzer::CallSiteValidationContext::callable_type_from_method(const BSPa
 		if (found_member) {
 			return false;
 		}
+	}
+
+	if (receiver_type.kind == BSParser::DataType::BUILTIN) {
+		const auto *method = BSCoreConstants::get_builtin_method(receiver_type.builtin_type, p_method_name);
+		if (method && (!receiver_type.is_meta_type || (method->info.flags & METHOD_FLAG_STATIC))) {
+			r_callable_type = explicit_callable_type_from_info(method->info);
+			return true;
+		}
+		return false;
 	}
 
 	StringName native_type;

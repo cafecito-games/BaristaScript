@@ -15,7 +15,8 @@
     "autoload_analyzer",
     "trait_surface_analyzer",
     "witness_scope_analyzer",
-    "variadic_callable_analyzer"
+    "variadic_callable_analyzer",
+    "builtin_metadata_analyzer"
   ],
   "editor_import": ["global_class"]
 }
