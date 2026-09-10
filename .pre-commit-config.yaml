@@ -1,6 +1,12 @@
 repos:
   - repo: local
     hooks:
+      - id: clang-format
+        name: Check maintained C++ formatting
+        entry: python3 scripts/check_format.py
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: license-header
         name: Add Cafecito Games license header
         entry: python3 scripts/add_license_header.py --fail-on-change
@@ -8,4 +14,4 @@ repos:
         pass_filenames: true
         types: [file]
         files: '\.(c|cc|cpp|h|hpp|inl|py|gd)$|^SConstruct$|SCsub$'
-        exclude: '^(godot-cpp|build|bin)/|^methods\.py$|(^|/)gen/'
+        exclude: '^(godot-cpp|thirdparty|build|bin)/|^methods\.py$|(^|/)gen/'

@@ -101,8 +101,8 @@ runs:
       if: inputs.buildtool == 'scons'
       shell: bash
       run: |
-        python -c "import sys; print(sys.version)"
-        python -m pip install scons==${{ inputs.scons-version }}
+        python3 -c "import sys; print(sys.version)"
+        python3 -m pip install scons==${{ inputs.scons-version }}
         scons --version
 
     - name: Install Ninja
