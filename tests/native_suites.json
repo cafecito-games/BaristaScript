@@ -12,7 +12,8 @@
     "preload_analyzer",
     "refresh_analyzer",
     "source_analyzer",
-    "autoload_analyzer"
+    "autoload_analyzer",
+    "trait_surface_analyzer"
   ],
   "editor_import": ["global_class"]
 }

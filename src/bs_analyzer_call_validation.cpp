@@ -807,7 +807,6 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::explicit_callable_type
 }
 
 bool BSAnalyzer::CallSiteValidationContext::callable_type_from_method(const BSParser::DataType &p_receiver_type, const StringName &p_method_name, BSParser::Node *p_source, BSParser::DataType &r_callable_type) {
-	(void)p_source;
 	BSParser::DataType receiver_type = p_receiver_type;
 	if (receiver_type.kind == BSParser::DataType::TYPE_PARAMETER &&
 			receiver_type.type_parameter_name == SNAME("@Self") &&
@@ -817,10 +816,14 @@ bool BSAnalyzer::CallSiteValidationContext::callable_type_from_method(const BSPa
 	}
 
 	if (receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr) {
-		BSParser::FunctionNode *function = analyzer->find_class_function(receiver_type.class_type, p_method_name);
+		bool found_member = false;
+		BSParser::FunctionNode *function = analyzer->find_class_function(receiver_type.class_type, p_method_name, &found_member, p_source);
 		if (function != nullptr) {
 			r_callable_type = callable_type_from_function(function);
 			return true;
+		}
+		if (found_member) {
+			return false;
 		}
 	}
 

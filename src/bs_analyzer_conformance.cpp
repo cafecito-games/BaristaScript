@@ -49,6 +49,54 @@ namespace {
 // Mirrors Variant::MAX_RECURSION_DEPTH (1024).
 static constexpr int TYPE_WALK_MAX_DEPTH = 1024;
 
+static bool _trait_member_is_state(const BSParser::ClassNode::Member &p_member) {
+	switch (p_member.type) {
+		case BSParser::ClassNode::Member::VARIABLE:
+		case BSParser::ClassNode::Member::CONSTANT:
+		case BSParser::ClassNode::Member::ENUM:
+		case BSParser::ClassNode::Member::ENUM_VALUE:
+		case BSParser::ClassNode::Member::SIGNAL:
+			return true;
+		default:
+			return false;
+	}
+}
+
+struct TraitMemberSource {
+	BSParser::ClassNode *trait = nullptr;
+	BSParser::ClassNode::Member member;
+};
+
+// Compares the declared types of a class member and a trait member it redeclares, ignoring
+// `type_source`. DataType::operator== treats INFERRED/UNDETECTED operands as equal for parsing
+// purposes, which would let an inferred-but-incompatible redeclaration (e.g. `var health = "x"`
+// against a trait's `var health: int`) slip through, so the structural identity is compared here.
+static bool _trait_state_type_is_compatible(const BSParser::DataType &p_trait_type, const BSParser::DataType &p_class_type) {
+	// A genuinely untyped redeclaration can hold the trait's value, so it is not a conflict.
+	if (p_trait_type.kind == BSParser::DataType::VARIANT || p_class_type.kind == BSParser::DataType::VARIANT) {
+		return true;
+	}
+	if (p_trait_type.kind != p_class_type.kind) {
+		return false;
+	}
+	switch (p_class_type.kind) {
+		case BSParser::DataType::BUILTIN:
+			return p_trait_type.builtin_type == p_class_type.builtin_type &&
+					p_trait_type.container_element_types == p_class_type.container_element_types;
+		case BSParser::DataType::NATIVE:
+		case BSParser::DataType::ENUM:
+			return p_trait_type.native_type == p_class_type.native_type;
+		case BSParser::DataType::SCRIPT:
+			return p_trait_type.script_type == p_class_type.script_type;
+		case BSParser::DataType::CLASS:
+			return p_trait_type.class_type == p_class_type.class_type ||
+					(p_trait_type.class_type != nullptr && p_class_type.class_type != nullptr &&
+							p_trait_type.class_type->fqcn == p_class_type.class_type->fqcn);
+		default:
+			return true;
+	}
+}
+
 const BSParser::Node *_trait_use_source(const BSParser::ClassNode::TraitUse &p_trait_use,
 		const BSParser::ClassNode *p_owner) {
 	if (!p_trait_use.name.is_empty()) {
@@ -493,6 +541,9 @@ bool BSAnalyzer::find_trait_implementation(BSParser::ClassNode *p_class, const S
 			return false;
 		}
 
+		if (current_class->has_member(p_function_name) && !current_class->has_function(p_function_name)) {
+			return false;
+		}
 		if (current_class->has_function(p_function_name)) {
 			BSParser::FunctionNode *function = current_class->get_member(p_function_name).function;
 			if (function != nullptr && !function->is_abstract) {
@@ -533,6 +584,166 @@ bool BSAnalyzer::find_trait_implementation(BSParser::ClassNode *p_class, const S
 	}
 
 	return false;
+}
+
+void BSAnalyzer::validate_trait_conflicts(BSParser::ClassNode *p_class) {
+	if (p_class == nullptr) {
+		return;
+	}
+	// The local flow phase visits the root once; retain per-class pin scheduling.
+	for (const auto &member : p_class->members) {
+		if (member.type == BSParser::ClassNode::Member::CLASS) {
+			validate_trait_conflicts(member.m_class);
+		}
+	}
+	if (p_class->resolved_traits.is_empty()) {
+		return;
+	}
+
+	// Traits and abstract classes are allowed to defer implementation and disambiguation to a
+	// concrete subclass, mirroring validate_trait_requirements, so they must not raise conflicts.
+	if (p_class->is_trait || p_class->is_abstract) {
+		return;
+	}
+
+	HashMap<StringName, TraitMemberSource> trait_methods;
+	HashMap<StringName, TraitMemberSource> trait_state;
+
+	for (BSParser::ClassNode *trait : p_class->resolved_traits) {
+		analyze_class_interface(trait, p_class);
+
+		for (const BSParser::ClassNode::Member &member : trait->members) {
+			if (member.type != BSParser::ClassNode::Member::FUNCTION && !_trait_member_is_state(member)) {
+				continue;
+			}
+
+			const StringName member_name = StringName(member.get_name());
+			if (member_name == StringName()) {
+				continue;
+			}
+
+			// A trait member that the class does not itself redeclare will be flattened
+			// in, so it must not collide with a member of the implementer's base classes
+			// or native base — the same diagnostic the class's own members would raise.
+			// (A method overriding a base method is allowed, as for normal classes.)
+			if (!p_class->has_member(member_name) &&
+					check_class_member_name_conflict(p_class, member_name, member.get_source_node()) != OK) {
+				continue;
+			}
+
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				if (member.function == nullptr) {
+					continue;
+				}
+
+				if (p_class->has_member(member_name)) {
+					const BSParser::ClassNode::Member class_member = p_class->get_member(member_name);
+					if (class_member.type != BSParser::ClassNode::Member::FUNCTION) {
+						push_error(vformat(R"*(Class "%s" redeclares trait method "%s()" from "%s" with a %s member.)*",
+										   bs_class_or_trait_diagnostic_name(p_class), member_name, bs_class_or_trait_diagnostic_name(trait),
+										   class_member.get_type_name()),
+								class_member.get_source_node());
+						continue;
+					}
+
+					if (!member.function->is_abstract) {
+						TraitMethodImplementation implementation;
+						implementation.function = class_member.function;
+						implementation.owner_class = p_class;
+						validate_trait_method_signature(trait, p_class, member.function, implementation,
+								HashMap<StringName, BSParser::DataType>());
+					}
+					continue;
+				}
+
+				if (member.function->is_abstract) {
+					continue;
+				}
+
+				bool inherited_method_shadows_trait = false;
+				HashSet<BSParser::ClassNode *> visited_bases;
+				for (BSParser::DataType *base_type = &p_class->base_type;
+						base_type != nullptr && base_type->kind == BSParser::DataType::CLASS;) {
+					BSParser::ClassNode *base_class = base_type->class_type;
+					if (base_class == nullptr || visited_bases.has(base_class)) {
+						break;
+					}
+
+					visited_bases.insert(base_class);
+
+					if (base_class->has_function(member_name)) {
+						BSParser::ClassNode::Member base_member = base_class->get_member(member_name);
+						if (base_member.function != nullptr && !base_member.function->is_abstract) {
+							TraitMethodImplementation implementation;
+							implementation.function = base_member.function;
+							implementation.owner_class = base_class;
+							validate_trait_method_signature(trait, p_class, member.function, implementation,
+									HashMap<StringName, BSParser::DataType>());
+							inherited_method_shadows_trait = true;
+							break;
+						}
+					}
+
+					resolve_class_inheritance(base_class);
+					base_type = &base_class->base_type;
+				}
+				if (inherited_method_shadows_trait) {
+					continue;
+				}
+
+				HashMap<StringName, TraitMemberSource>::Iterator previous = trait_methods.find(member_name);
+				if (previous) {
+					push_error(vformat(R"*(Trait method "%s()" from "%s" conflicts with trait method "%s()" from "%s"; override it in "%s" to disambiguate.)*",
+									   member_name, bs_class_or_trait_diagnostic_name(previous->value.trait), member_name,
+									   bs_class_or_trait_diagnostic_name(trait), bs_class_or_trait_diagnostic_name(p_class)),
+							_trait_requirement_source(p_class, trait));
+					continue;
+				}
+
+				TraitMemberSource source;
+				source.trait = trait;
+				source.member = member;
+				trait_methods.insert(member_name, source);
+				continue;
+			}
+
+			if (p_class->has_member(member_name)) {
+				const BSParser::ClassNode::Member class_member = p_class->get_member(member_name);
+				if (class_member.type == BSParser::ClassNode::Member::FUNCTION) {
+					push_error(vformat(R"(Class "%s" redeclares trait member "%s" from "%s" with a function.)",
+									   bs_class_or_trait_diagnostic_name(p_class), member_name, bs_class_or_trait_diagnostic_name(trait)),
+							class_member.get_source_node());
+					continue;
+				}
+
+				const BSParser::DataType trait_type = _substitute_type_parameters_and_self(
+						member.get_datatype(), HashMap<StringName, BSParser::DataType>(), _self_type_for_class(p_class));
+				const BSParser::DataType class_type = class_member.get_datatype();
+				if (!_trait_state_type_is_compatible(trait_type, class_type)) {
+					push_error(vformat(R"(Class "%s" redeclares trait member "%s" from "%s" with incompatible type. Expected "%s", got "%s".)",
+									   bs_class_or_trait_diagnostic_name(p_class), member_name, bs_class_or_trait_diagnostic_name(trait),
+									   trait_type.to_string(), class_type.to_string()),
+							class_member.get_source_node());
+				}
+				continue;
+			}
+
+			HashMap<StringName, TraitMemberSource>::Iterator previous = trait_state.find(member_name);
+			if (previous) {
+				push_error(vformat(R"(Trait member "%s" from "%s" conflicts with trait member "%s" from "%s"; redeclare it in "%s" with type "%s" to disambiguate.)",
+								   member_name, bs_class_or_trait_diagnostic_name(previous->value.trait), member_name,
+								   bs_class_or_trait_diagnostic_name(trait), bs_class_or_trait_diagnostic_name(p_class),
+								   previous->value.member.get_datatype().to_string()),
+						_trait_requirement_source(p_class, trait));
+				continue;
+			}
+
+			TraitMemberSource source;
+			source.trait = trait;
+			source.member = member;
+			trait_state.insert(member_name, source);
+		}
+	}
 }
 
 void BSAnalyzer::validate_trait_requirements(BSParser::ClassNode *p_class) {
@@ -1174,6 +1385,14 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 			BSParser::ClassNode::TraitUse &trait_use = conformance->traits.write[i];
 			BSParser::ClassNode *trait = resolve_conformance_trait_use(head, trait_use, conformance);
 			if (trait == nullptr) {
+				continue;
+			}
+
+			// Foundry conformance:1308: a trait base constrains the retroactive target.
+			if (!class_satisfies_trait_base(target, trait)) {
+				push_error(vformat(R"(Class "%s" cannot conform to trait "%s" because it does not inherit from "%s".)",
+								   bs_class_or_trait_diagnostic_name(target), bs_class_or_trait_diagnostic_name(trait), trait->base_type.to_string()),
+						conformance);
 				continue;
 			}
 

@@ -827,6 +827,8 @@ private:
 	void resolve_used_traits(BSParser::ClassNode *p_class);
 	/** Foundry validate_trait_requirements @ c9d5e35: abstract methods from used traits. */
 	void validate_trait_requirements(BSParser::ClassNode *p_class);
+	void validate_trait_conflicts(BSParser::ClassNode *p_class);
+	bool class_satisfies_trait_base(BSParser::ClassNode *p_class, BSParser::ClassNode *p_trait);
 	bool find_trait_implementation(BSParser::ClassNode *p_class, const StringName &p_function_name,
 			TraitMethodImplementation &r_implementation);
 	/**
@@ -877,7 +879,9 @@ private:
 	/** Foundry resolve_conformance_bodies: analyze witness methods against the target. */
 	void resolve_conformance_bodies(BSParser::ClassNode *p_class);
 	/** Own members then `base_type.class_type` chain (Foundry inherited method surface @ c9d5e35). */
-	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
+	BSParser::ClassNode *find_trait_member_in_inheritance_chain(BSParser::ClassNode *p_receiver, const StringName &p_name, const BSParser::Node *p_source);
+	BSParser::ClassNode *find_member_in_class_or_trait_chain(BSParser::ClassNode *p_receiver, const StringName &p_name, const BSParser::Node *p_source);
+	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name, bool *r_found_member = nullptr, const BSParser::Node *p_source = nullptr) const;
 	enum class NameLookupStatus { MISSING,
 		FOUND,
 		ERROR };
