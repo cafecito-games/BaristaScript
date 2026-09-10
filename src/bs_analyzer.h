@@ -441,6 +441,7 @@ public:
 #ifdef DEBUG_ENABLED
 	/** Source-independent step-3 strict/signature/Self-marker controls for the guarded suite. */
 	static Dictionary debug_self_identity_controls();
+	friend class BaristaScriptAnalyzerProbe;
 #endif
 
 	BSParser *get_parser() const { return parser; }
@@ -471,6 +472,7 @@ private:
 	bool strict_dynamic_checks = false;
 	bool strict_null_checks = false;
 	bool update_declaration_index = false;
+	bool reducing_match_pattern_expression = false;
 	BSParser::ClassNode *current_class = nullptr;
 	BSParser::FunctionNode *current_function = nullptr;
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
@@ -500,6 +502,7 @@ private:
 	Error run_phase_interface_and_member_surface();
 	Error run_phase_body_expression_callable_signal();
 	Error run_phase_flow_finality();
+	void check_final_assignments();
 	Error run_phase_conformance_witness_body();
 	Error run_phase_finalize();
 
@@ -546,6 +549,8 @@ private:
 	void analyze_class_body(BSParser::ClassNode *p_class, const BSParser::Node *p_source = nullptr);
 	/** `p_is_lambda`: Foundry resolve_function_body — skip clearing captured-source tracking. */
 	void analyze_function_body(BSParser::FunctionNode *p_function, bool p_is_lambda = false);
+	void analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner);
+	void analyze_enum_function_bodies(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner);
 	/** Foundry resolve_pending_lambda_bodies @ c9d5e35. */
 	void resolve_pending_lambda_bodies();
 	void analyze_suite(BSParser::SuiteNode *p_suite);
@@ -684,6 +689,7 @@ private:
 
 	static TaggedUnionPatternCoverage tagged_union_pattern_coverage(const BSParser::PatternNode *p_pattern, const BSParser::DataType &p_match_type, int64_t &r_covered_tag);
 	static bool match_branch_always_matches(const BSParser::MatchBranchNode *p_branch);
+	static bool type_test_exhausts_alternatives(const BSParser::DataType &p_operand_type, const BSParser::DataType &p_test_type, BSParser::DataType &r_alternative_set);
 	bool collect_uncovered_tagged_union_cases(const BSParser::MatchNode *p_match, const BSParser::DataType &p_match_type, Vector<String> &r_uncovered) const;
 	bool collect_uncovered_domain_values(const BSParser::MatchNode *p_match, const BSParser::DataType &p_match_type, const HashMap<StringName, int64_t> &p_domain_values, Vector<String> &r_uncovered) const;
 	/** Foundry resolve_match_case_pattern @ c9d5e35: `Message.Move(x, _)` / `.Move(x, _)` payload typing. */

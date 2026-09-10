@@ -93,6 +93,8 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("corpus_format_controls"), &BaristaScriptAnalyzerProbe::corpus_format_controls);
 	ClassDB::bind_method(D_METHOD("language_utility_metadata"), &BaristaScriptAnalyzerProbe::language_utility_metadata);
 	ClassDB::bind_method(D_METHOD("self_identity_controls"), &BaristaScriptAnalyzerProbe::self_identity_controls);
+	ClassDB::bind_method(D_METHOD("type_test_exhaustion_controls"), &BaristaScriptAnalyzerProbe::type_test_exhaustion_controls);
+	ClassDB::bind_method(D_METHOD("enum_carrier_compatibility_controls"), &BaristaScriptAnalyzerProbe::enum_carrier_compatibility_controls);
 	ClassDB::bind_method(D_METHOD("fold_expression", "expression_source"), &BaristaScriptAnalyzerProbe::fold_expression);
 	ClassDB::bind_method(D_METHOD("inspect_expression_source", "source", "path"), &BaristaScriptAnalyzerProbe::inspect_expression_source);
 	ClassDB::bind_method(D_METHOD("analyze_source", "source", "path"), &BaristaScriptAnalyzerProbe::analyze_source);
@@ -121,6 +123,152 @@ void BaristaScriptAnalyzerProbe::_bind_methods() {
 
 Dictionary BaristaScriptAnalyzerProbe::self_identity_controls() const {
 	return BSAnalyzer::debug_self_identity_controls();
+}
+
+Dictionary BaristaScriptAnalyzerProbe::enum_carrier_compatibility_controls() const {
+	using DataType = BSParser::DataType;
+	DataType integer;
+	integer.kind = DataType::BUILTIN;
+	integer.type_source = DataType::ANNOTATED_EXPLICIT;
+	integer.builtin_type = Variant::INT;
+	DataType enumeration = integer;
+	enumeration.kind = DataType::ENUM;
+	enumeration.enum_type = SNAME("E");
+	enumeration.native_type = SNAME("E");
+	Dictionary observations;
+	auto observe = [&](const String &p_name, DataType p_target, DataType p_source, bool p_conversion, bool p_strict_null) {
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = p_conversion;
+		options.strict_null = p_strict_null;
+		const auto result = BSTypeCompatibility::check(p_target, p_source, options);
+		Array flags;
+		flags.push_back(result.compatible);
+		flags.push_back(result.requires_runtime_check);
+		flags.push_back(result.uses_implicit_conversion);
+		observations[p_name] = flags;
+	};
+	observe("enum_to_int", integer, enumeration, false, false);
+	observe("enum_to_int_conversion", integer, enumeration, true, false);
+	observe("int_to_enum", enumeration, integer, false, false);
+	observe("int_to_enum_conversion", enumeration, integer, true, false);
+	DataType tagged = enumeration;
+	tagged.is_tagged_union = true;
+	tagged.builtin_type = Variant::ARRAY;
+	observe("tagged_to_int", integer, tagged, true, false);
+	observe("int_to_tagged", tagged, integer, true, false);
+	DataType meta = enumeration;
+	meta.is_meta_type = true;
+	meta.builtin_type = Variant::DICTIONARY;
+	observe("meta_to_int", integer, meta, true, false);
+	meta.is_type_handle_annotation = true;
+	observe("int_to_handle", meta, integer, true, false);
+	DataType nullable_enum = enumeration;
+	nullable_enum.is_nullable = true;
+	DataType nullable_int = integer;
+	nullable_int.is_nullable = true;
+	observe("nullable_enum_strict", integer, nullable_enum, false, true);
+	observe("nullable_enum_gradual", integer, nullable_enum, false, false);
+	observe("nullable_int_strict", enumeration, nullable_int, false, true);
+	observe("nullable_int_gradual", enumeration, nullable_int, false, false);
+	observe("nullable_enum_target", nullable_enum, nullable_int, false, true);
+	observe("nullable_int_target", nullable_int, nullable_enum, false, true);
+	DataType nil = integer;
+	nil.builtin_type = Variant::NIL;
+	observe("nil_to_nullable_int", nullable_int, nil, false, true);
+	observe("nil_to_nullable_enum", nullable_enum, nil, true, true);
+	DataType nullable_native = nullable_int;
+	nullable_native.kind = DataType::NATIVE;
+	nullable_native.builtin_type = Variant::OBJECT;
+	nullable_native.native_type = SNAME("Node");
+	observe("nil_to_nullable_native", nullable_native, nil, false, true);
+	DataType nullable_class = nullable_native;
+	nullable_class.kind = DataType::CLASS;
+	observe("nil_to_nullable_class", nullable_class, nil, false, true);
+	observe("nil_to_nonnullable_int", integer, nil, false, false);
+	nil.is_nullable = true;
+	observe("nullable_nil_to_nonnullable_int_strict", integer, nil, true, true);
+
+	return observations;
+}
+
+Dictionary BaristaScriptAnalyzerProbe::type_test_exhaustion_controls() const {
+	using DataType = BSParser::DataType;
+	DataType integer;
+	integer.kind = DataType::BUILTIN;
+	integer.type_source = DataType::ANNOTATED_EXPLICIT;
+	integer.builtin_type = Variant::INT;
+	DataType duplicate;
+	duplicate.kind = DataType::UNION;
+	duplicate.type_source = DataType::ANNOTATED_EXPLICIT;
+	duplicate.union_members.push_back(integer);
+	duplicate.union_members.push_back(integer);
+	DataType singleton = duplicate;
+	singleton.union_members.resize(1);
+	DataType nullable = duplicate;
+	nullable.is_nullable = true;
+	DataType empty = duplicate;
+	empty.union_members.clear();
+	Dictionary observations;
+	// These descriptors intentionally bypass make_union. They are internal integration controls,
+	// not retained user-source positives: canonical int | int is just int under D1.
+	auto observe = [&](const String &p_name, const DataType &p_operand_type, const DataType &p_test_type, bool p_pattern, bool p_previous_pattern_scope) {
+		BSParser parser;
+		parser.parse("", "res://tests/internal_exhaustion.barista", false);
+		BSAnalyzer analyzer(&parser);
+		DataType alternative_set;
+		Dictionary result;
+		result["helper"] = BSAnalyzer::type_test_exhausts_alternatives(p_operand_type, p_test_type, alternative_set);
+		result["alternative_set"] = alternative_set.is_set() ? alternative_set.to_string() : String();
+		BSParser::IdentifierNode operand;
+		operand.name = SNAME("value");
+		operand.reduced = true;
+		operand.set_datatype(p_operand_type);
+		operand.start_line = 3;
+		operand.start_column = 5;
+		BSParser::IdentifierNode type_name;
+		type_name.name = SNAME("int");
+		BSParser::TypeNode written_type;
+		written_type.type_chain.push_back(&type_name);
+		BSParser::TypeTestNode test;
+		test.operand = &operand;
+		test.test_type = &written_type;
+		// Distinct internal coordinates prove the diagnostic is owned by TypeTestNode,
+		// rather than the operand or written type. No parser-source reachability is claimed.
+		test.start_line = 11;
+		test.start_column = 7;
+		test.end_line = 11;
+		test.end_column = 19;
+		analyzer.reducing_match_pattern_expression = p_previous_pattern_scope;
+		if (p_pattern) {
+			BSParser::PatternNode pattern;
+			pattern.pattern_type = BSParser::PatternNode::PT_EXPRESSION;
+			pattern.expression = &test;
+			analyzer.resolve_match_pattern(&pattern, &operand, &p_operand_type);
+			result["subject_type_test"] = pattern.is_subject_type_test;
+		} else {
+			analyzer.reduce_type_test(&test);
+		}
+		result["scope_restored"] = analyzer.reducing_match_pattern_expression == p_previous_pattern_scope;
+		Array errors;
+		for (const BSParser::ParserError &error : parser.get_errors()) {
+			Dictionary diagnostic;
+			diagnostic["message"] = error.message;
+			diagnostic["line"] = error.line;
+			diagnostic["column"] = error.column;
+			errors.push_back(diagnostic);
+		}
+		result["errors"] = errors;
+		observations[p_name] = result;
+	};
+	observe("duplicate", duplicate, integer, false, false);
+	observe("singleton", singleton, integer, false, false);
+	observe("canonical_collapse", DataType::make_union(duplicate.union_members), integer, false, false);
+	observe("nullable", nullable, integer, false, false);
+	observe("empty", empty, integer, false, false);
+	observe("unset_test", integer, DataType(), false, false);
+	observe("match_scope", duplicate, integer, true, false);
+	observe("nested_match_scope", duplicate, integer, true, true);
+	return observations;
 }
 
 namespace {

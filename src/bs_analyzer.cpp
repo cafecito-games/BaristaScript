@@ -1593,10 +1593,18 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 		}
 		// Foundry resolve_class_interface @ c9d5e35: each member via resolve_class_member.
 		resolve_class_member(p_class, i);
+		if (member.type == BSParser::ClassNode::Member::ENUM) {
+			analyze_enum_function_signatures(member.m_enum, p_class);
+		}
 		if (owner_resolution_failures.has_member(p_class, i)) {
 			owner_resolution_failures.record_class(p_class, OwnerResolutionFailures::INTERFACE,
 					owner_resolution_failures.member_first_error_index(p_class, i));
 		}
+	}
+	if (p_class->is_enum_file && p_class->enum_file_decl != nullptr && p_class->enum_file_decl->identifier != nullptr) {
+		BSParser::EnumNode *declaration = p_class->enum_file_decl;
+		resolve_enum_values(declaration, make_class_enum_type(declaration->identifier->name, p_class, parser->script_path, true), p_class);
+		analyze_enum_function_signatures(declaration, p_class);
 	}
 	if (!p_class->type_parameters.is_empty()) {
 		push_error("Generic class specialization is not available until M5.", p_class);
@@ -3909,6 +3917,11 @@ void BSAnalyzer::reduce_type_test(BSParser::TypeTestNode *p_type_test) {
 			downgraded.type_source = BSParser::DataType::INFERRED;
 			p_type_test->operand->set_datatype(downgraded);
 		}
+	} else if (operand_type.is_hard_type() && !reducing_match_pattern_expression) {
+		BSParser::DataType exhausted_set;
+		if (type_test_exhausts_alternatives(operand_type, compatibility_type, exhausted_set)) {
+			push_error(vformat(R"(Every alternative of "%s" passes "is %s", so this test is always true and nothing reaches its false branch. Test the narrowest alternative first.)", exhausted_set.to_string(), test_type.to_string()), p_type_test);
+		}
 	}
 }
 
@@ -4019,6 +4032,38 @@ void BSAnalyzer::resolve_match_branch(BSParser::MatchBranchNode *p_match_branch,
 	flow_finality.get_flow_narrowed_types() = previous_flow_narrowed_types;
 }
 
+// Foundry c9d5e35: D1 has one full-width integer carrier.
+static bool _type_test_covers_integer_carrier(const BSParser::DataType &p_test_type, Variant::Type p_carrier) {
+	return p_carrier == Variant::INT && p_test_type.kind == BSParser::DataType::BUILTIN && p_test_type.builtin_type == p_carrier;
+}
+
+static bool _type_test_covers_subject_domain(const BSParser::DataType &p_test_type, const BSParser::DataType &p_subject_type) {
+	if (!p_test_type.is_set() || !p_subject_type.is_set()) {
+		return false;
+	}
+	if (p_test_type.is_variant()) {
+		return true;
+	}
+	if (p_subject_type.is_nullable || p_subject_type.is_meta_type || !p_subject_type.is_hard_type()) {
+		return false;
+	}
+	if (p_subject_type.kind == BSParser::DataType::ENUM) {
+		if (!p_subject_type.is_tagged_union) {
+			return _type_test_covers_integer_carrier(p_test_type, p_subject_type.builtin_type);
+		}
+		return p_test_type.kind == BSParser::DataType::ENUM &&
+				p_test_type.enum_case_name == StringName() &&
+				p_subject_type.enum_case_name == StringName() &&
+				p_test_type.is_tagged_union &&
+				p_test_type.native_type == p_subject_type.native_type &&
+				p_test_type.script_path == p_subject_type.script_path;
+	}
+	if (p_subject_type.kind == BSParser::DataType::BUILTIN && p_subject_type.builtin_type == Variant::BOOL) {
+		return p_test_type.kind == BSParser::DataType::BUILTIN && p_test_type.builtin_type == Variant::BOOL;
+	}
+	return false;
+}
+
 void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, BSParser::ExpressionNode *p_match_test, const BSParser::DataType *p_match_test_type, bool p_subject_errored) {
 	if (p_match_pattern == nullptr) {
 		return;
@@ -4051,7 +4096,10 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 					result = expr->get_datatype();
 					break;
 				}
+				const bool previous_reducing_match_pattern_expression = reducing_match_pattern_expression;
+				reducing_match_pattern_expression = true;
 				reduce_expression(expr);
+				reducing_match_pattern_expression = previous_reducing_match_pattern_expression;
 				result = expr->get_datatype();
 
 				// Bare native class names in match patterns are type patterns (`match v: Node:`).
@@ -4082,6 +4130,18 @@ void BSAnalyzer::resolve_match_pattern(BSParser::PatternNode *p_match_pattern, B
 						const BSParser::IdentifierNode *pattern_operand = static_cast<const BSParser::IdentifierNode *>(type_test->operand);
 						const BSParser::IdentifierNode *match_identifier = static_cast<const BSParser::IdentifierNode *>(p_match_test);
 						p_match_pattern->is_subject_type_test = pattern_operand->name == match_identifier->name;
+						if (p_match_pattern->is_subject_type_test && has_match_test_type) {
+							p_match_pattern->is_irrefutable = _type_test_covers_subject_domain(type_test->test_datatype, match_test_type);
+						}
+					}
+				}
+				if (!expr->is_constant && !p_match_pattern->is_subject_type_test) {
+					while (expr != nullptr && expr->type == BSParser::Node::SUBSCRIPT) {
+						BSParser::SubscriptNode *sub = static_cast<BSParser::SubscriptNode *>(expr);
+						expr = sub->is_attribute ? sub->base : nullptr;
+					}
+					if (expr == nullptr || (expr->type != BSParser::Node::IDENTIFIER && !result.is_meta_type)) {
+						push_error(R"(Expression in match pattern must be a constant expression, an identifier, or an attribute access ("A.B").)", expr);
 					}
 				}
 			}
@@ -4709,6 +4769,7 @@ void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array,
 			push_error(vformat(R"*(Cannot have an element of type "%s" in an array of type "%s".)*",
 							   element_type.to_string(), array_type.to_string()),
 					element_node);
+			return;
 		}
 	}
 }
@@ -4738,6 +4799,7 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 				push_error(vformat(R"*(Cannot have a key of type "%s" in a dictionary of type "%s".)*",
 								   key_type.to_string(), dictionary_type.to_string()),
 						key_element_node);
+				return;
 			}
 		}
 		BSParser::ExpressionNode *value_element_node = p_dictionary->elements[i].value;
@@ -4772,6 +4834,7 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 				push_error(vformat(R"*(Cannot have a value of type "%s" in a dictionary of type "%s".)*",
 								   value_type.to_string(), dictionary_type.to_string()),
 						value_element_node);
+				return;
 			}
 		}
 	}
@@ -7041,6 +7104,59 @@ void BSAnalyzer::analyze_suite(BSParser::SuiteNode *p_suite) {
 	}
 }
 
+void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {
+	if (p_enum == nullptr || p_owner == nullptr) {
+		return;
+	}
+	// Foundry resolve_enum_interface @ c9d5e35: signatures precede body analysis.
+	BSParser::ClassNode *previous_class = current_class;
+	BSParser::FunctionNode *previous_function = current_function;
+	BSParser::EnumNode *previous_enum = current_enum;
+	BSParser::ClassNode *previous_enum_owner = current_enum_owner;
+	current_class = p_owner;
+	current_function = nullptr;
+	current_enum = p_enum;
+	current_enum_owner = p_owner;
+	for (BSParser::FunctionNode *function : p_enum->functions) {
+		if (function == nullptr || function->resolved_signature) {
+			continue;
+		}
+		for (BSParser::AnnotationNode *annotation : function->annotations) {
+			if (annotation != nullptr) {
+				resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
+				annotation->apply(parser, function, p_owner);
+			}
+		}
+		resolve_function_signature_in_class(function, p_owner);
+	}
+	current_enum_owner = previous_enum_owner;
+	current_enum = previous_enum;
+	current_function = previous_function;
+	current_class = previous_class;
+}
+
+void BSAnalyzer::analyze_enum_function_bodies(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {
+	if (p_enum == nullptr || p_owner == nullptr) {
+		return;
+	}
+	// Foundry resolve_enum_bodies @ c9d5e35: parser-owned enum functions use their owner scope.
+	BSParser::ClassNode *previous_class = current_class;
+	BSParser::FunctionNode *previous_function = current_function;
+	BSParser::EnumNode *previous_enum = current_enum;
+	BSParser::ClassNode *previous_enum_owner = current_enum_owner;
+	current_class = p_owner;
+	current_function = nullptr;
+	current_enum = p_enum;
+	current_enum_owner = p_owner;
+	for (BSParser::FunctionNode *function : p_enum->functions) {
+		analyze_function_body(function);
+	}
+	current_enum_owner = previous_enum_owner;
+	current_enum = previous_enum;
+	current_function = previous_function;
+	current_class = previous_class;
+}
+
 void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool p_is_lambda) {
 	if (p_function == nullptr || p_function->resolved_body) {
 		return;
@@ -7301,6 +7417,9 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 			case BSParser::ClassNode::Member::FUNCTION:
 				analyze_function_body(member.function);
 				break;
+			case BSParser::ClassNode::Member::ENUM:
+				analyze_enum_function_bodies(member.m_enum, p_class);
+				break;
 			case BSParser::ClassNode::Member::VARIABLE:
 				if (member.variable != nullptr) {
 					// Foundry surface applies VARIABLE annotations before body/finality checks
@@ -7352,6 +7471,9 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 			default:
 				break;
 		}
+	}
+	if (p_class->is_enum_file) {
+		analyze_enum_function_bodies(p_class->enum_file_decl, p_class);
 	}
 	warn_unused_class_members(p_class);
 	if (!pending_lambda_bodies.is_empty()) {
@@ -8153,13 +8275,20 @@ Error BSAnalyzer::run_phase_body_expression_callable_signal() {
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
 }
 
-Error BSAnalyzer::run_phase_flow_finality() {
+void BSAnalyzer::check_final_assignments() {
 	BSParser::ClassNode *head = parser->get_tree();
 	if (head != nullptr) {
 		// Foundry order @ c9d5e35: member, static, then local finals.
 		flow_finality.check_final_member_assignments(head);
 		flow_finality.check_final_static_assignments(head);
 		flow_finality.check_final_local_assignments(head);
+	}
+}
+
+Error BSAnalyzer::run_phase_flow_finality() {
+	check_final_assignments();
+	BSParser::ClassNode *head = parser->get_tree();
+	if (head != nullptr) {
 		check_pending_function_flow_finality();
 		// Foundry FLOW_FINALITY_INVARIANTS: abstract trait requirements after body.
 		validate_trait_requirements(head);
@@ -8214,6 +8343,10 @@ Error BSAnalyzer::resolve_body() {
 	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
 	Error err = run_phase_body_expression_callable_signal();
 	if (err != OK) {
+		// Foundry resolves final assignments after visiting bodies even if a body reported
+		// an error (resolve_class_body @ c9d5e35). Keep recovery in phase 5: no exit-summary
+		// checks, witness bodies, warning finalization, or success publication follow it.
+		check_final_assignments();
 		commit_or_remove_declaration(false);
 		return err;
 	}
@@ -8254,6 +8387,7 @@ Error BSAnalyzer::analyze() {
 	run_phase_interface_and_member_surface();
 	err = run_phase_body_expression_callable_signal();
 	if (err != OK && !errors_are_only_m5_deferred()) {
+		check_final_assignments();
 		commit_or_remove_declaration(false);
 		return err;
 	}

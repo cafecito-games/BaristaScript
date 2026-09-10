@@ -829,6 +829,12 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 		return inner;
 	}
 
+	// Foundry FSTypeCompatibility::check @ c9d5e35: null satisfies every nullable
+	// destination before its underlying builtin, enum, or object kind is compared.
+	if (p_target.is_nullable && p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::NIL) {
+		return Result(true, false, false);
+	}
+
 	if (p_target.kind == BSParser::DataType::BUILTIN && p_source.kind == BSParser::DataType::BUILTIN) {
 		Result result(false, false, false);
 		if (p_target.builtin_type == p_source.builtin_type) {
@@ -897,6 +903,21 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 			}
 		}
 		return result;
+	}
+
+	// Foundry FSTypeCompatibility::check @ c9d5e35: a plain enum value has the D1 int
+	// carrier. Keep the builtin arm's conversion flag when conversions were requested;
+	// without conversions the enum/carrier identity is still compatible. A declaration
+	// handle or tagged union is not an integer value.
+	if (p_target.kind == BSParser::DataType::BUILTIN && p_target.builtin_type == Variant::INT &&
+			p_source.kind == BSParser::DataType::ENUM && !p_source.is_meta_type && !p_source.is_tagged_union) {
+		return Result(true, false, p_options.allow_implicit_conversion && Variant::can_convert_strict(p_source.builtin_type, p_target.builtin_type));
+	}
+	// The reverse boundary is enum membership, not an implicit carrier conversion.
+	// Foundry's earlier Type[...] arm rejects integer values before this enum branch.
+	if (p_target.kind == BSParser::DataType::ENUM && !p_target.is_tagged_union && !p_target.is_type_handle_annotation &&
+			p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::INT) {
+		return Result(true, false, false);
 	}
 
 	// Foundry FSTypeCompatibility::check @ c9d5e35 (~1331): Coroutine[T] is its own family — a
