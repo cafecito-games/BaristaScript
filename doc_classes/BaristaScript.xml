@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="BaristaScript" inherits="Script">
+	<brief_description>
+		A non-executable BaristaScript source resource with static validation.
+	</brief_description>
+	<description>
+		Godot loads [code].barista[/code] files as this [Script] resource through [BaristaScriptResourceLoader]. The source text is preserved and can be checked with [method is_valid]. A successful check means the current parser and semantic analyzer accept the source; it does not make the script executable.
+		Use Godot's resource API from a host language such as GDScript:
+		[codeblock lang=gdscript]
+		var script := ResourceLoader.load("res://example.barista") as BaristaScript
+		if script != null:
+		    print(script.source_code)
+		    print(script.is_valid())
+		    assert(not script.can_instantiate())
+		[/codeblock]
+		[method Script.can_instantiate] always returns [code]false[/code]. Runtime and placeholder instances, exported properties, script methods and signals, RPC behavior, and execution are not implemented. Reflection lists for script-defined members are empty even when static analysis succeeds. [method Script.reload] currently returns [constant OK] without compiling or refreshing the source from disk; changing [member Script.source_code] only replaces the stored text.
+		Global declaration metadata is available to the editor for supported named declarations. It is resolved separately from full semantic validity, so an editor-visible global name does not prove that [method is_valid] will succeed. Documentation for declarations inside [code].barista[/code] files is not generated; the help here describes the extension API itself.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="is_valid" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Parses and semantically analyzes the currently stored [member Script.source_code]. Returns [code]true[/code] only when both stages succeed. The resource path supplies the context for resolving dependencies; use [method ResourceLoader.load] to validate a file in its project context.
+				This method does not execute the script and does not return diagnostics. Godot's editor receives error locations and, in debug builds, warnings through [BaristaScriptLanguage]. Loading a file itself does not perform this validation.
+			</description>
+		</method>
+	</methods>
+</class>

@@ -1,8 +1,8 @@
 # BaristaScript
 
 BaristaScript is an experimental scripting language for Godot. This repository
-currently provides the first integration milestone: Godot 4.7 recognizes
-`.barista` files as non-executable `Script` resources.
+provides Godot 4.7 integration for `.barista` files as non-executable `Script`
+resources, with parsing and static analysis.
 
 The project is based on the official
 [`godot-cpp-template`](https://github.com/godotengine/godot-cpp-template) and
@@ -13,10 +13,12 @@ uses `godot-cpp` 10.0.0-rc2 with the Godot 4.7 extension API.
 - Registers `BaristaScript` with Godot's scripting-language registry.
 - Recognizes and loads `.barista` source files.
 - Preserves source text in a `BaristaScript` resource.
-- Opens a clean path for a parser, runtime, and editor tooling.
+- Parses and statically analyzes source, with editor diagnostics and global declaration metadata.
 
-Parsing, validation, execution, script instances, completion, debugging, and
-profiling are intentionally not implemented yet.
+Execution, script instances, completion, debugging, and profiling are not implemented.
+See the [API reference contributor guide](docs/api-reference.md) to build the
+reference, inspect editor help, and read the current API limitations from its
+authored class XML.
 
 ## Prerequisites
 
