@@ -41,6 +41,9 @@ func _init() -> void:
 	_test_callable_signal_constructor_and_typed_receiver_depth(failures)
 	_test_match_and_flow(failures)
 	_test_pinned_suite_exit_summary(failures)
+	_test_pinned_match_finality_domains(failures)
+	_test_internal_type_test_exhaustion(failures)
+	_test_pinned_match_domain_and_narrowing_audit(failures)
 	_test_warning_settings(failures)
 	_test_final_local_assignment(failures)
 	_test_final_member_and_static_assignment(failures)
@@ -5644,4 +5647,231 @@ func _test_pinned_suite_exit_summary(failures: PackedStringArray) -> void:
 	# phase -1/5 (and late witness body 7), versus finalization phase 8 after a flow error.
 	for i in range(keys.size()):
 		ProjectSettings.set_setting("debug/barista_script/warnings/" + keys[i], saved[i])
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_pinned_match_finality_domains(failures: PackedStringArray) -> void:
+	# Foundry c9d5e35: test_match_finality.h, original final_* analyzer fixtures,
+	# fs_analyzer.cpp:5903-5963/6305-6340 and fs_analyzer_flow_finality.cpp:622-1688.
+	# Final-assignment and return coverage deliberately answer different questions.
+	# Sources containing aborts or infinite loops are analyzed only.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var previous_enable: Variant = ProjectSettings.get_setting("debug/barista_script/warnings/enable")
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", false)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+	var cases: Array = [
+		["finite_bool_DA_no_match", "func test(flag: bool) -> int:\n\tfinal var value: int\n\tmatch flag:\n\t\ttrue:\n\t\t\tvalue = 1\n\t\tfalse:\n\t\t\tvalue = 2\n\treturn value\n", [["Final variable \"value\" may be used before assignment.", 8, 12]], [], 8],
+		["finite_bool_DA_type_cover", "func test(flag: bool) -> int:\n\tfinal var value: int\n\tmatch flag:\n\t\tflag is bool:\n\t\t\tvalue = 1\n\treturn value\n", [], [], 8],
+		["concrete_union_no_exhaustion", "func test(value: int | String) -> int:\n\tif value is int:\n\t\treturn value\n\treturn 0\n", [], [], 8],
+		["nullable_union_no_exhaustion", "func test(value: int? | String) -> int:\n\tif value is int:\n\t\treturn value\n\treturn 0\n", [], [], 8],
+		["subclasses_no_exhaustion", "class First extends RefCounted:\n\tpass\nclass Second extends RefCounted:\n\tpass\nfunc test(value: First | Second) -> bool:\n\treturn value is RefCounted\n", [], [], 8],
+		["enum_file_local_final", "enum_name Status:\n\tREADY = 1\n\n\tfunc invalid() -> int:\n\t\tfinal var value := 1\n\t\tvalue = 2\n\t\treturn value\n", [["Cannot assign to final variable \"value\"; it is already assigned.", 6, 9]], [], 8],
+		["original_enum_host_function_final_local", "enum Status:\n\tREADY = 1\n\n\tfunc invalid() -> int:\n\t\tfinal var value := 1\n\t\tvalue = 2\n\t\treturn value\n", [["Cannot assign to final variable \"value\"; it is already assigned.", 6, 9]], [], 8],
+		["original_final_local_var_lambda_assignment", "# A `final var` local captured by a nested lambda cannot be reassigned there; the\n# lambda is a separate scope outside the single-assignment slot.\nfunc test() -> void:\n\tfinal var x := 1\n\tvar reassign := func() -> void:\n\t\tx = 2\n\treassign.call()\n\tprint(x)\n", [["Final variable \"x\" cannot be assigned inside a lambda.", 6, 9]], [], 8],
+		["original_final_local_var_in_member_initializer_lambda", "# A `final var` local inside a lambda used as a member initializer is enforced\n# like any other lambda body.\nvar callback := func() -> void:\n\tfinal var x := 1\n\tx = 2\n\tprint(x)\n\nfunc test() -> void:\n\tpass\n", [["Cannot assign to final variable \"x\"; it is already assigned.", 5, 5]], [], 8],
+		["original_final_member_from_trait_read_before_assignment", "# A non-final trait variable initializer runs during construction, before the implementer's `_init()`\n# fills a trait-supplied blank final, so reading that final from such an initializer is a\n# use-before-assignment.\nextends RefCounted\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\tvar copy := id\n\nfunc _init() -> void:\n\tid = 1\n\nfunc test() -> void:\n\tpass\n", [["Final variable \"id\" may be used before assignment.", 9, 17]], [], 8],
+		["original_final_member_match_guard_use_before_assignment", "# A `match` guard is evaluated before its branch body, so reading a blank final\n# from the guard is a use-before-assignment.\nfinal var id: int\n\nfunc _init(value: int) -> void:\n\tmatch value:\n\t\t_ when id > 0:\n\t\t\tid = 1\n\t\t_:\n\t\t\tid = 2\n\nfunc test() -> void:\n\tpass\n", [["Final variable \"id\" may be used before assignment.", 7, 16]], [], 8],
+		["original_final_member_match_pattern_use_before_assignment", "# A `match` pattern expression can reference a final; reading a blank final from a\n# pattern is a use-before-assignment.\nfinal var id: int\n\nfunc _init(value: int) -> void:\n\tmatch value:\n\t\tself.id:\n\t\t\tid = 1\n\t\t_:\n\t\t\tid = 2\n\nfunc test() -> void:\n\tpass\n", [["Expression in match pattern must be a constant expression, an identifier, or an attribute access (\"A.B\").", 7, 9], ["Final variable \"id\" may be used before assignment.", 7, 9]], [], 5],
+		["original_final_member_non_wildcard_match", "# A `match` without a wildcard branch leaves a no-match path open, so the blank\n# final is not definitely assigned.\nfinal var id: int\n\nfunc _init(value: int) -> void:\n\tmatch value:\n\t\t0:\n\t\t\tid = 10\n\t\t1:\n\t\t\tid = 20\n\nfunc test() -> void:\n\tpass\n", [["Final variable \"id\" must be definitely assigned in its declaration or in \"_init()\".", 3, 7]], [], 8],
+		["original_final_member_init_default_arg_reads_blank", "# A `_init` parameter default is evaluated before the body assigns the blank\n# final, so reading it through an omitted default is use-before-assignment.\nfinal var id: int\n\nfunc _init(copy: int = id) -> void:\n\tid = copy\n\nfunc test() -> void:\n\tpass\n", [["Final variable \"id\" may be used before assignment.", 5, 24]], [], 8],
+		["original_final_static_var_partial_assignment", "# Assigning a blank static final on only one arm of an `if` leaves it not\n# definitely assigned after `_static_init()`.\nfinal static var VALUE: int\n\nstatic func _flag() -> bool:\n\treturn false\n\nstatic func _static_init() -> void:\n\tif _flag():\n\t\tVALUE = 1\n\nfunc test() -> void:\n\tpass\n", [["Final variable \"VALUE\" must be definitely assigned in its declaration or in \"_static_init()\".", 3, 14]], [], 8],
+		["original_final_static_var_early_return_unassigned", "# Returning early from `_static_init()` leaves a blank static final unassigned\n# for the lifetime of the class, so it must be assigned before every return.\nfinal static var MODE: int\n\nstatic func _flag() -> bool:\n\treturn false\n\nstatic func _static_init() -> void:\n\tif _flag():\n\t\tMODE = 1\n\telse:\n\t\treturn\n\nfunc test() -> void:\n\tpass\n", [["Final variable \"MODE\" must be definitely assigned before returning from \"_static_init()\".", 12, 9]], [], 8],
+		["original_final_local_var_assigned_both_branches", "# A blank `final var` local assigned on every arm of an `if`/`else` is definitely\n# assigned at the join.\nfunc _flag() -> bool:\n\treturn false\n\nfunc test() -> void:\n\tfinal var size: int\n\tif _flag():\n\t\tsize = 1\n\telse:\n\t\tsize = 2\n\tprint(size)\n", [], [], 8],
+		["original_final_member_match_is_type_cover", "# A `match` whose only branch tests the subject against its whole domain always runs that branch,\n# so the blank final it assigns is definitely assigned afterwards.\nclass Categorized:\n\tfinal var kind: String\n\n\tfunc _init(value: bool) -> void:\n\t\tmatch value:\n\t\t\tvalue is bool:\n\t\t\t\tkind = \"flag:\" + str(value)\n\nfunc test() -> void:\n\tprint(Categorized.new(true).kind)\n\tprint(Categorized.new(false).kind)\n", [], [], 8],
+		["original_final_member_wildcard_match", "# A `match` with a wildcard branch that assigns on every branch makes the blank\n# final definitely assigned.\nclass Categorized:\n\tfinal var kind: String\n\n\tfunc _init(value: int) -> void:\n\t\tmatch value:\n\t\t\t0:\n\t\t\t\tkind = \"zero\"\n\t\t\t1:\n\t\t\t\tkind = \"one\"\n\t\t\t_:\n\t\t\t\tkind = \"many\"\n\nfunc test() -> void:\n\tprint(Categorized.new(0).kind)\n\tprint(Categorized.new(5).kind)\n", [], [], 8],
+		["original_final_member_from_trait_assigned_in_trait_init", "# A trait can carry both a blank `final var` and the `_init` that fills it. When the implementing\n# class adds no `_init` of its own, the trait's flattened `_init` is the assignment slot, so the blank\n# final is definitely assigned and the class compiles.\nextends RefCounted\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\tfunc _init() -> void:\n\t\tid = 5\n\nfunc test() -> void:\n\tprint(id)\n", [], [], 8],
+		["original_final_static_var_from_trait_assigned_in_trait_static_init", "# The static analog: a trait carries a blank `final static var` and the `_static_init` that fills\n# it; the flattened `_static_init` is the static slot on each implementer.\nextends RefCounted\nuses HasRegistry\n\ntrait HasRegistry:\n\tfinal static var COUNT: int\n\tstatic func _static_init() -> void:\n\t\tCOUNT = 3\n\nfunc test() -> void:\n\tprint(COUNT)\n", [], [], 8],
+		["original_final_static_var_assigned_both_branches", "# A blank static final assigned on every branch of an `if`/`else` in `_static_init()`\n# is definitely assigned at the join.\nfinal static var MODE: int\n\nstatic func _flag() -> bool:\n\treturn false\n\nstatic func _static_init() -> void:\n\tif _flag():\n\t\tMODE = 1\n\telse:\n\t\tMODE = 2\n\nfunc test() -> void:\n\tprint(MODE)\n", [], [], 8],
+		["return_bool", "func f(value: bool) -> int:\n\tmatch value:\n\t\tvalue is bool:\n\t\t\treturn 1\n", [], [], 8],
+		["local_bool", "func f(value: bool) -> int:\n\tfinal var result: int\n\tmatch value:\n\t\tvalue is bool:\n\t\t\tresult = 1\n\treturn result\n", [], [], 8],
+		["return_variant_nullable", "func f(value: bool?) -> int:\n\tmatch value:\n\t\tvalue is Variant:\n\t\t\treturn 1\n", [], [], 8],
+		["local_variant_nullable", "func f(value: bool?) -> int:\n\tfinal var result: int\n\tmatch value:\n\t\tvalue is Variant:\n\t\t\tresult = 1\n\treturn result\n", [], [], 8],
+		["return_variant_open", "func f(value: String) -> int:\n\tmatch value:\n\t\tvalue is Variant:\n\t\t\treturn 1\n", [], [], 8],
+		["local_variant_open", "func f(value: String) -> int:\n\tfinal var result: int\n\tmatch value:\n\t\tvalue is Variant:\n\t\t\tresult = 1\n\treturn result\n", [], [], 8],
+		["return_tagged", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E) -> int:\n\tmatch value:\n\t\tvalue is E:\n\t\t\treturn 1\n", [], [], 8],
+		["local_tagged", "enum E:\n\tA\n\tB(value: int)\nfunc f(value: E) -> int:\n\tfinal var result: int\n\tmatch value:\n\t\tvalue is E:\n\t\t\tresult = 1\n\treturn result\n", [], [], 8],
+		["return_enum_carrier", "enum E:\n\tA = 1\n\tB = 2\nfunc f(value: E) -> int:\n\tmatch value:\n\t\tvalue is int:\n\t\t\treturn 1\n", [], [], 8],
+		["local_enum_carrier", "enum E:\n\tA = 1\n\tB = 2\nfunc f(value: E) -> int:\n\tfinal var result: int\n\tmatch value:\n\t\tvalue is int:\n\t\t\tresult = 1\n\treturn result\n", [], [], 8],
+		["enum_host_typed_positive", "enum Status:\n\tREADY = 1\n\tfunc f(value: int) -> int:\n\t\tfinal var result: int = value\n\t\treturn result\n", [], [], 8],
+		["enum_host_typed_negative", "enum Status:\n\tREADY = 1\n\tfunc f(value: int) -> String:\n\t\treturn value\n", [["Cannot return value of type \"int\" because the function return type is \"String\".", 4, 9]], [], 5],
+		["enum_host_missing_return", "enum Status:\n\tREADY = 1\n\tfunc f() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 3, 5]], [], 8],
+		["enum_host_noreturn_positive", "enum Status:\n\tREADY = 1\n\t@noreturn\n\tfunc f() -> void:\n\t\twhile true:\n\t\t\tpass\n", [], [], 8],
+		["enum_host_noreturn_negative", "enum Status:\n\tREADY = 1\n\t@noreturn\n\tfunc f() -> void:\n\t\tpass\n", [["A \"@noreturn\" function cannot complete normally.", 4, 5]], [], 8],
+		["enum_file_typed_positive", "enum_name Status:\n\tREADY = 1\n\tfunc f(value: int) -> int:\n\t\tfinal var result: int = value\n\t\treturn result\n", [], [], 8],
+		["enum_file_typed_negative", "enum_name Status:\n\tREADY = 1\n\tfunc f(value: int) -> String:\n\t\treturn value\n", [["Cannot return value of type \"int\" because the function return type is \"String\".", 4, 9]], [], 5],
+		["enum_file_missing_return", "enum_name Status:\n\tREADY = 1\n\tfunc f() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 3, 5]], [], 8],
+		["enum_file_noreturn_positive", "enum_name Status:\n\tREADY = 1\n\t@noreturn\n\tfunc f() -> void:\n\t\twhile true:\n\t\t\tpass\n", [], [], 8],
+		["enum_file_noreturn_negative", "enum_name Status:\n\tREADY = 1\n\t@noreturn\n\tfunc f() -> void:\n\t\tpass\n", [["A \"@noreturn\" function cannot complete normally.", 4, 5]], [], 8],
+		["canonical_alias_collapse", "type Same = int | int\nfunc f(value: Same) -> bool:\n\treturn value is int\n", [], [], 8],
+		["match_partial_then_ordinary", "func f(value: int | String) -> bool:\n\tmatch value:\n\t\tvalue is int:\n\t\t\tpass\n\treturn value is String\n", [], [], 8],
+		["expression_identifier", "func f(value: int, other: int) -> void:\n\tmatch value:\n\t\tother:\n\t\t\tpass\n", [], [], 8],
+		["expression_nonconstant", "func f(value: int, other: int) -> void:\n\tmatch value:\n\t\tother + 1:\n\t\t\tpass\n", [["Expression in match pattern must be a constant expression, an identifier, or an attribute access (\"A.B\").", 3, 9]], [], 5],
+		["static_bool_false", "final static var RESULT: int\nstatic func _flag() -> bool:\n\treturn true\nstatic func _static_init() -> void:\n\tvar value: bool = _flag()\n\tmatch value:\n\t\ttrue:\n\t\t\tRESULT = 1\n\t\tfalse:\n\t\t\tRESULT = 2\n", [["Final variable \"RESULT\" must be definitely assigned in its declaration or in \"_static_init()\".", 1, 14]], [], 8],
+		["static_bool_true", "final static var RESULT: int\nstatic func _flag() -> bool:\n\treturn true\nstatic func _static_init() -> void:\n\tvar value: bool = _flag()\n\tmatch value:\n\t\tvalue is bool:\n\t\t\tRESULT = 1\n", [], [], 8],
+		["plain_carrier_E_return", "enum E:\n\tA = 1\nfunc f(value: E) -> int:\n\treturn value\n", [], [], 8],
+		["plain_carrier_E_store", "enum E:\n\tA = 1\nfunc f(value: E) -> void:\n\tvar output: int = value\n\tprint(output)\n", [], [], 8],
+		["plain_carrier_E_call", "enum E:\n\tA = 1\nfunc accept(value: int) -> void:\n\tprint(value)\nfunc f(value: E) -> void:\n\taccept(value)\n", [], [], 8],
+		["plain_carrier_E_is", "enum E:\n\tA = 1\nfunc f(value: E) -> bool:\n\treturn value is int\n", [], [], 8],
+		["plain_carrier_int_return", "enum E:\n\tA = 1\nfunc f(value: int) -> E:\n\treturn value\n", [], [], 8],
+		["plain_carrier_int_store", "enum E:\n\tA = 1\nfunc f(value: int) -> void:\n\tvar output: E = value\n\tprint(output)\n", [], [], 8],
+		["plain_carrier_int_call", "enum E:\n\tA = 1\nfunc accept(value: E) -> void:\n\tprint(value)\nfunc f(value: int) -> void:\n\taccept(value)\n", [], [], 8],
+		["plain_carrier_int_is", "enum E:\n\tA = 1\nfunc f(value: int) -> bool:\n\treturn value is E\n", [], [], 8],
+	]
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before_records: Array = index.get_records().duplicate(true)
+	var token := index.claim_refresh("res://tests/match_finality_generation.barista")
+	for fixture in cases:
+		var path: String = "res://tests/match_finality_" + fixture[0] + ".barista"
+		var report: Dictionary = probe.validate_source(fixture[1], path, true)
+		var analysis: Dictionary = probe.analyze_source(fixture[1], path)
+		var expected_valid: bool = fixture[2].is_empty()
+		var expected_messages: PackedStringArray = []
+		for error in fixture[2]:
+			expected_messages.append(error[0])
+		_expect(failures, report.get("valid") == expected_valid and _errors_are_exact(report.get("errors", []), fixture[2]) and _warnings_are_exact(report.get("warnings", []), fixture[3]), fixture[0] + " exact match/finality diagnostics: " + str(report))
+		_expect(failures, analysis.get("valid") == expected_valid and analysis.get("phase") == fixture[4] and analysis.get("errors") == expected_messages, fixture[0] + " exact match/finality phase: " + str(analysis))
+		_expect(failures, probe.is_semantically_valid(fixture[1], path) == expected_valid, fixture[0] + " semantic validity agrees")
+		_expect(failures, probe.validate_source(fixture[1], path, true) == report and probe.analyze_source(fixture[1], path) == analysis, fixture[0] + " repeat preserves all observations")
+	_expect(failures, index.get_records() == before_records, "match/finality analysis preserves complete declaration records")
+	_expect(failures, index.claim_refresh("res://tests/match_finality_generation.barista") == token + 1, "match/finality analysis preserves declaration generation")
+	ProjectSettings.set_setting("debug/barista_script/warnings/enable", previous_enable)
+	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+
+
+func _test_internal_type_test_exhaustion(failures: PackedStringArray) -> void:
+	# Explicitly noncanonical UNION descriptors: D1 normalizes int | int to scalar int.
+	# These are real-helper and real-reducer integration controls, not source positives.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	_expect(failures, probe.has_method("type_test_exhaustion_controls"), "internal exhaustion controls are available in debug")
+	if not probe.has_method("type_test_exhaustion_controls"):
+		return
+	var observed: Dictionary = probe.call("type_test_exhaustion_controls")
+	for name in ["duplicate", "singleton", "canonical_collapse", "nullable", "empty", "unset_test", "match_scope", "nested_match_scope"]:
+		var expected_helper: bool = name in ["duplicate", "singleton", "match_scope", "nested_match_scope"]
+		var expected_set: String = ("int" if name == "singleton" else "int | int") if expected_helper else ""
+		var errors: Array = []
+		if name in ["duplicate", "singleton"]:
+			errors.append(["Every alternative of \"%s\" passes \"is int\", so this test is always true and nothing reaches its false branch. Test the narrowest alternative first." % expected_set, 11, 7])
+		var result: Dictionary = observed.get(name, {})
+		_expect(failures, result.get("helper") == expected_helper and result.get("alternative_set") == expected_set and _errors_are_exact(result.get("errors", []), errors) and result.get("scope_restored") == true, "internal descriptor exact helper/consumer/scope " + name + ": " + str(result))
+		if name in ["match_scope", "nested_match_scope"]:
+			_expect(failures, result.get("subject_type_test") == true, "internal descriptor traverses actual subject pattern consumer")
+	_expect(failures, probe.call("type_test_exhaustion_controls") == observed, "internal exhaustion observations repeat exactly")
+	# Pin fs_type.cpp:1229-1236/1298-1304, after nullable and Type-handle checks.
+	var expected_flags := {
+
+		"nil_to_nullable_int": [true, false, false], "nil_to_nullable_enum": [true, false, false],
+		"nil_to_nullable_native": [true, false, false], "nil_to_nullable_class": [true, false, false],
+		"nil_to_nonnullable_int": [false, false, false], "nullable_nil_to_nonnullable_int_strict": [false, false, false],
+		"enum_to_int": [true, false, false], "enum_to_int_conversion": [true, false, true],
+		"int_to_enum": [true, false, false], "int_to_enum_conversion": [true, false, false],
+		"tagged_to_int": [false, false, false], "int_to_tagged": [false, false, false],
+		"meta_to_int": [false, false, false], "int_to_handle": [false, false, false],
+		"nullable_enum_strict": [false, false, false], "nullable_enum_gradual": [true, true, false],
+		"nullable_int_strict": [false, false, false], "nullable_int_gradual": [true, true, false],
+		"nullable_enum_target": [true, false, false], "nullable_int_target": [true, false, false],
+	}
+	_expect(failures, probe.call("enum_carrier_compatibility_controls") == expected_flags, "shared carrier compatibility preserves options and complete Result flags")
+
+
+func _test_pinned_match_domain_and_narrowing_audit(failures: PackedStringArray) -> void:
+	# Complete retained source controls: Foundry c9d5e35 test_match_finality.h and
+	# test_foundry_script_type.h:2908-2984. Only flow warnings are enabled here.
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var warning_keys := ["enable", "unused_parameter", "unused_variable", "standalone_expression", "match_without_default", "non_exhaustive_match", "open_enum_match_without_default", "unreachable_pattern"]
+	var saved := {}
+	for key: String in warning_keys:
+		var setting := "debug/barista_script/warnings/" + key
+		saved[setting] = ProjectSettings.get_setting(setting)
+		ProjectSettings.set_setting(setting, true if key == "enable" else (1 if key in ["non_exhaustive_match", "open_enum_match_without_default", "unreachable_pattern"] else 0))
+	for key in ["strict_null_checks", "strict_dynamic_checks"]:
+		var setting: String = "debug/barista_script/analysis/" + key
+		saved[setting] = ProjectSettings.get_setting(setting)
+	var cases: Array = [
+		["match_95_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc describe(v: Plain) -> String:\n\tmatch v:\n\t\tPlain.Ok(value):\n\t\t\treturn value\n\t\tPlain.Err(error):\n\t\t\treturn str(error)\n", [], [], 8, false, false],
+		["match_149_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc describe(v: Plain) -> String:\n\tmatch v:\n\t\tPlain.Ok(value):\n\t\t\treturn value\n", [["Not all code paths return a value. The \"match\" over \"Plain\" does not cover: Err.", 6, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"Plain\". Unhandled: Err. Add the missing patterns or a \"_\" wildcard branch.", 7, 5, 9, 26]], 8, false, false],
+		["match_169_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc describe(v: Plain) -> String:\n\tmatch v:\n\t\tPlain.Ok(value) when value.is_empty():\n\t\t\treturn \"empty\"\n\t\tPlain.Err(error) when error > 0:\n\t\t\treturn \"positive\"\n", [["Not all code paths return a value. The \"match\" over \"Plain\" does not cover: Ok, Err.", 6, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"Plain\". Unhandled: Ok, Err. Add the missing patterns or a \"_\" wildcard branch.", 7, 5, 11, 31]], 8, false, false],
+		["match_197_source", "\nenum Plain:\n\tOk(value: int)\n\tErr(error: int)\n\nfunc describe(v: Plain) -> String:\n\tmatch v:\n\t\tPlain.Ok(0):\n\t\t\treturn \"zero\"\n\t\tPlain.Err(error):\n\t\t\treturn str(error)\n", [["Not all code paths return a value. The \"match\" over \"Plain\" does not cover: Ok.", 6, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"Plain\". Unhandled: Ok. Add the missing patterns or a \"_\" wildcard branch.", 7, 5, 11, 31]], 8, false, false],
+		["match_218_uncovered_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc describe(v: Plain?) -> String:\n\tmatch v:\n\t\tPlain.Ok(value):\n\t\t\treturn value\n\t\tPlain.Err(error):\n\t\t\treturn str(error)\n", [["Not all code paths return a value. The \"match\" over \"Plain\" does not cover: null.", 6, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"Plain\". Unhandled: null. Add the missing patterns or a \"_\" wildcard branch.", 7, 5, 11, 31]], 8, false, false],
+		["match_218_covered_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc describe(v: Plain?) -> String:\n\tmatch v:\n\t\tPlain.Ok(value):\n\t\t\treturn value\n\t\tPlain.Err(error):\n\t\t\treturn str(error)\n\t\tnull:\n\t\t\treturn \"none\"\n", [], [], 8, false, false],
+		["match_259_source", "\nfunc describe(flag: bool) -> String:\n\tmatch flag:\n\t\ttrue:\n\t\t\treturn \"yes\"\n\t\tfalse:\n\t\t\treturn \"no\"\n", [], [], 8, false, false],
+		["match_279_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level) -> String:\n\tmatch level:\n\t\tLevel.LOW:\n\t\t\treturn \"low\"\n\t\tLevel.HIGH:\n\t\t\treturn \"high\"\n", [["Not all code paths return a value. The \"match\" over \"Level\" leaves the undeclared values of its integer carrier unhandled; add an unguarded \"_\" or bind branch.", 6, 1]], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 7, 5, 11, 27]], 8, false, false],
+		["match_308_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level) -> String:\n\tmatch level:\n\t\tLevel.LOW:\n\t\t\treturn \"low\"\n\t\tLevel.HIGH:\n\t\t\treturn \"high\"\n\t\t99:\n\t\t\treturn \"ninety-nine\"\n", [["Not all code paths return a value. The \"match\" over \"Level\" leaves the undeclared values of its integer carrier unhandled; add an unguarded \"_\" or bind branch.", 6, 1]], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 7, 5, 13, 34]], 8, false, false],
+		["match_337_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level, allow: bool) -> String:\n\tmatch level:\n\t\tLevel.LOW:\n\t\t\treturn \"low\"\n\t\tLevel.HIGH:\n\t\t\treturn \"high\"\n\t\t_ when allow:\n\t\t\treturn \"other\"\n", [["Not all code paths return a value. The \"match\" over \"Level\" leaves the undeclared values of its integer carrier unhandled; add an unguarded \"_\" or bind branch.", 6, 1]], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 7, 5, 13, 28]], 8, false, false],
+		["match_366_wildcard_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level) -> String:\n\tmatch level:\n\t\tLevel.LOW:\n\t\t\treturn \"low\"\n\t\t_:\n\t\t\treturn \"other\"\n", [], [], 8, false, false],
+		["match_366_bind_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level) -> String:\n\tmatch level:\n\t\tLevel.LOW:\n\t\t\treturn \"low\"\n\t\tvar other:\n\t\t\treturn str(other)\n", [], [], 8, false, false],
+		["match_410_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level) -> String:\n\tmatch level:\n\t\tlevel is Variant:\n\t\t\treturn str(level)\n", [], [], 8, false, false],
+		["match_437_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfinal var label: String\n\nfunc _init(level: Level) -> void:\n\tmatch level:\n\t\tlevel is Level:\n\t\t\tlabel = \"declared\"\n", [["Final variable \"label\" must be definitely assigned in its declaration or in \"_init()\".", 6, 7]], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 9, 5, 11, 32]], 8, false, false],
+		["match_437_covered_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfinal var label: String\n\nfunc _init(level: Level) -> void:\n\tmatch level:\n\t\tlevel is Level:\n\t\t\tlabel = \"declared\"\n\t\t_:\n\t\t\tlabel = \"undeclared\"\n", [], [], 8, false, false],
+		["match_480_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level) -> String:\n\tmatch level:\n\t\tlevel is int:\n\t\t\treturn str(level)\n\nfunc record(level: Level) -> void:\n\tmatch level:\n\t\tlevel is int:\n\t\t\tprint(level)\n", [], [], 8, false, false],
+		["match_518_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc describe(level: Level) -> String:\n\tmatch level:\n\t\tlevel is Level:\n\t\t\treturn str(level)\n", [["Not all code paths return a value. The \"match\" over \"Level\" leaves the undeclared values of its integer carrier unhandled; add an unguarded \"_\" or bind branch.", 6, 1]], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 7, 5, 9, 31]], 8, false, false],
+		["match_571_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfinal var label: String\n\nfunc _init(level: Level) -> void:\n\tmatch level:\n\t\tlevel is int:\n\t\t\tlabel = str(level)\n", [], [], 8, false, false],
+		["match_611_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc describe(v: Plain) -> String:\n\tmatch v:\n\t\tPlain.Ok(value):\n\t\t\treturn value\n\t\t_:\n\t\t\treturn \"other\"\n", [], [], 8, false, false],
+		["match_633_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc describe(v: Plain) -> String:\n\tmatch v:\n\t\tPlain.Ok(value):\n\t\t\treturn value\n\t\tPlain.Err(error):\n\t\t\treturn str(error)\n", [], [], 8, false, false],
+		["match_676_source", "\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc from_bool(value: bool) -> String:\n\tmatch value:\n\t\tvalue is bool:\n\t\t\treturn str(value)\n\nfunc from_union(value: Plain) -> String:\n\tmatch value:\n\t\tvalue is Plain:\n\t\t\treturn \"plain\"\n\nfunc from_variant(value: int) -> String:\n\tmatch value:\n\t\tvalue is Variant:\n\t\t\treturn str(value)\n", [], [], 8, false, false],
+		["match_715_source", "\nenum Level:\n\tLOW = 1\n\tHIGH = 2\n\nfunc by_values(value: Level) -> String:\n\tmatch value:\n\t\tLevel.LOW:\n\t\t\treturn \"low\"\n\t\tLevel.HIGH:\n\t\t\treturn \"high\"\n\nfunc by_type(value: Level) -> String:\n\tmatch value:\n\t\tvalue is Level:\n\t\t\treturn \"type\"\n", [["Not all code paths return a value. The \"match\" over \"Level\" leaves the undeclared values of its integer carrier unhandled; add an unguarded \"_\" or bind branch.", 6, 1], ["Not all code paths return a value. The \"match\" over \"Level\" leaves the undeclared values of its integer carrier unhandled; add an unguarded \"_\" or bind branch.", 13, 1]], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 7, 5, 11, 27], ["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 14, 5, 16, 27]], 8, false, false],
+		["match_756_source", "\ntype IntOrString = int | String\n\nenum Plain:\n\tOk(value: String)\n\tErr(error: int)\n\nfunc from_union(value: IntOrString) -> String:\n\tmatch value:\n\t\tvalue is int:\n\t\t\treturn \"int\"\n\nfunc from_case(value: Plain) -> String:\n\tmatch value:\n\t\tvalue is Plain.Ok:\n\t\t\treturn \"ok\"\n\nfunc from_nullable(value: bool?) -> String:\n\tmatch value:\n\t\tvalue is bool:\n\t\t\treturn str(value)\n\nfunc from_guard(value: bool) -> String:\n\tmatch value:\n\t\tvalue is bool when value:\n\t\t\treturn \"true\"\n", [["Not all code paths return a value.", 8, 1], ["Not all code paths return a value.", 13, 1], ["Not all code paths return a value.", 18, 1], ["Not all code paths return a value. The \"match\" over \"bool\" does not cover: false, true.", 23, 1]], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"bool\". Unhandled: false, true. Add the missing patterns or a \"_\" wildcard branch.", 24, 5, 26, 27]], 8, false, false],
+		["match_835_source", "\nfunc describe(value: String) -> String:\n\tmatch value:\n\t\tvalue is String:\n\t\t\treturn value\n", [["Not all code paths return a value.", 2, 1]], [], 8, false, false],
+		["match_859_source", "\nfunc describe(value: bool) -> String:\n\tmatch value:\n\t\tvalue is bool:\n\t\t\treturn str(value)\n\t\t_:\n\t\t\treturn \"other\"\n", [], [], 8, false, false],
+		["match_859_unreachable_source", "\nfunc describe(value: bool) -> String:\n\tmatch value:\n\t\t_:\n\t\t\treturn \"other\"\n\t\ttrue:\n\t\t\treturn \"true\"\n", [], [["UNREACHABLE_PATTERN", "Unreachable pattern (pattern after wildcard or bind).", 6, 9, 6, 13]], 8, false, false],
+		["match_915_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc handle(level: Level) -> void:\n\tmatch level:\n\t\tLevel.LOW:\n\t\t\tprint(\"low\")\n\t\tLevel.HIGH:\n\t\t\tprint(\"high\")\n", [], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 7, 5, 11, 27]], 8, false, false],
+		["match_944_source", "\nenum Level:\n\tLOW = 0\n\tMEDIUM = 1\n\tHIGH = 2\n\nfunc handle(level: Level) -> void:\n\tmatch level:\n\t\tLevel.MEDIUM:\n\t\t\tprint(\"medium\")\n", [], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" does not handle: LOW, HIGH. \"Level\" is also carried by an integer that can hold values outside its declared members, so add an unguarded \"_\" or bind branch rather than the missing patterns alone.", 8, 5, 10, 29]], 8, false, false],
+		["match_969_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc handle(level: Level) -> void:\n\tmatch level:\n\t\tlevel is int:\n\t\t\tprint(\"carrier\")\n", [], [], 8, false, false],
+		["match_969_open_source", "\nenum Level:\n\tLOW = 0\n\tHIGH = 1\n\nfunc handle(level: Level) -> void:\n\tmatch level:\n\t\tLevel.LOW:\n\t\t\tprint(\"low\")\n\t\tLevel.HIGH:\n\t\t\tprint(\"high\")\n", [], [["OPEN_ENUM_MATCH_WITHOUT_DEFAULT", "The \"match\" over \"Level\" has no unguarded \"_\" or bind branch. \"Level\" is carried by an integer that can also hold values outside its declared members, so no set of value patterns closes it.", 7, 5, 11, 27]], 8, false, false],
+		["match_1014_source", "\nfunc handle(flag: bool) -> void:\n\tmatch flag:\n\t\ttrue:\n\t\t\tprint(\"t\")\n", [], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"bool\". Unhandled: false. Add the missing patterns or a \"_\" wildcard branch.", 3, 5, 5, 24]], 8, false, false],
+		["match_1033_source", "\nenum Message:\n\tMove(distance: int)\n\tStop\n\nfunc handle(message: Message) -> void:\n\tmatch message:\n\t\tMessage.Stop:\n\t\t\tprint(\"stop\")\n", [], [["NON_EXHAUSTIVE_MATCH", "The \"match\" statement does not cover all values of \"Message\". Unhandled: Move. Add the missing patterns or a \"_\" wildcard branch.", 7, 5, 9, 27]], 8, false, false],
+		["narrow_2908_if_not_null_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tif node != null:\n\t\taccept_node(node)\n", [], [], 8, true, false],
+		["narrow_2908_null_not_equal_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tif null != node:\n\t\taccept_node(node)\n", [], [], 8, true, false],
+		["narrow_2908_else_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tif node == null:\n\t\tpass\n\telse:\n\t\taccept_node(node)\n", [], [], 8, true, false],
+		["narrow_2908_outside_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tif node != null:\n\t\tpass\n\taccept_node(node)\n", [["Cannot pass nullable value of type \"Node?\" as argument 1 of \"accept_node()\"; expected non-nullable \"Node\".", 6, 17]], [], 5, true, false],
+		["narrow_2925_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc do_nothing() -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tif node != null:\n\t\tdo_nothing()\n\t\taccept_node(node)\n", [], [], 8, true, false],
+		["narrow_2931_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc do_nothing() -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tvar read_node := func() -> void:\n\t\tprint(node)\n\tif node != null:\n\t\tdo_nothing()\n\t\taccept_node(node)\n", [["Cannot pass nullable value of type \"Node?\" as argument 1 of \"accept_node()\"; expected non-nullable \"Node\".", 10, 21]], [], 5, true, false],
+		["narrow_2937_assert_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tassert(node != null)\n\taccept_node(node)\n", [], [], 8, true, false],
+		["narrow_2937_null_not_equal_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tassert(null != node)\n\taccept_node(node)\n", [], [], 8, true, false],
+		["narrow_2948_assignment_source", "func test(maybe: Node?) -> void:\n\tvar node: Node = maybe\n", [["Cannot assign a value of type \"Node?\" to a variable of type \"Node\".", 2, 22]], [], 5, true, false],
+		["narrow_2948_narrowed_assignment_source", "func test(maybe: Node?) -> void:\n\tif maybe != null:\n\t\tvar node: Node = maybe\n", [], [], 8, true, false],
+		["narrow_2948_return_source", "func get_node(maybe: Node?) -> Node:\n\treturn maybe\n", [["Cannot return value of type \"Node?\" because the function return type is \"Node\".", 2, 5]], [], 5, true, false],
+		["narrow_2948_narrowed_return_source", "func get_node(maybe: Node?) -> Node:\n\tassert(maybe != null)\n\treturn maybe\n", [], [], 8, true, false],
+		["narrow_2960_node_test_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc accept_button(button: Button) -> void:\n\tpass\nfunc test(value: Variant) -> void:\n\tif value is Node:\n\t\taccept_node(value)\n", [], [], 8, false, true],
+		["narrow_2960_button_test_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc accept_button(button: Button) -> void:\n\tpass\nfunc test(value: Variant) -> void:\n\tif value is Button:\n\t\taccept_button(value)\n", [], [], 8, false, true],
+		["narrow_2960_is_not_else_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc accept_button(button: Button) -> void:\n\tpass\nfunc test(value: Variant) -> void:\n\tif value is not Node:\n\t\tpass\n\telse:\n\t\taccept_node(value)\n", [], [], 8, false, true],
+		["narrow_2960_outside_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc accept_button(button: Button) -> void:\n\tpass\nfunc test(value: Variant) -> void:\n\tif value is Node:\n\t\tpass\n\taccept_node(value)\n", [["Cannot pass Variant value as argument 1 of \"accept_node()\" in strict dynamic mode; expected \"Node\".", 8, 17]], [], 5, false, true],
+		["narrow_2960_reassigned_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc accept_button(button: Button) -> void:\n\tpass\nfunc test(value: Variant) -> void:\n\tif value is Node:\n\t\tvalue = 1\n\t\taccept_node(value)\n", [["Cannot pass Variant value as argument 1 of \"accept_node()\" in strict dynamic mode; expected \"Node\".", 8, 21]], [], 5, false, true],
+		["narrow_2975_array_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(nodes: Array[Node]) -> void:\n\tmatch nodes:\n\t\t[var node]:\n\t\t\taccept_node(node)\n", [], [], 8, false, true],
+		["narrow_2975_dictionary_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(nodes: Dictionary[String, Node]) -> void:\n\tmatch nodes:\n\t\t{\"node\": var node}:\n\t\t\taccept_node(node)\n", [], [], 8, false, true],
+		["narrow_2975_nested_array_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(nodes: Array[Array[Node]]) -> void:\n\tmatch nodes:\n\t\t[[var node]]:\n\t\t\taccept_node(node)\n", [], [], 8, false, true],
+		["array_first_declaration", "func use() -> Array[String]:\n\tvar values: Array[String] = [1, 2, 3]\n\treturn values\n", [["Cannot include a value of type \"int\" as \"String\".", 2, 34], ["Cannot have an element of type \"int\" in an array of type \"Array[String]\".", 2, 34]], [], 5, false, false],
+		["array_first_return", "func use() -> Array[String]:\n\treturn [1, 2, 3]\n", [["Cannot include a value of type \"int\" as \"String\".", 2, 13], ["Cannot have an element of type \"int\" in an array of type \"Array[String]\".", 2, 13]], [], 5, false, false],
+		["array_first_call", "func accept(values: Array[String]) -> void:\n\tpass\nfunc use() -> void:\n\taccept([1, 2, 3])\n", [["Cannot include a value of type \"int\" as \"String\".", 4, 13], ["Cannot have an element of type \"int\" in an array of type \"Array[String]\".", 4, 13]], [], 5, false, false],
+		["dictionary_first_key", "func use() -> void:\n\tvar values: Dictionary[String, String] = {1: 2, 3: 4}\n", [["Cannot include a value of type \"int\" as \"String\".", 2, 47], ["Cannot have a key of type \"int\" in a dictionary of type \"Dictionary[String, String]\".", 2, 47]], [], 5, false, false],
+		["dictionary_first_value", "func use() -> void:\n\tvar values: Dictionary[String, String] = {\"a\": 1, \"b\": 2}\n", [["Cannot include a value of type \"int\" as \"String\".", 2, 52], ["Cannot have a value of type \"int\" in a dictionary of type \"Dictionary[String, String]\".", 2, 52]], [], 5, false, false],
+		["null_Node_false", "func use() -> Node?:\n\tvar value: Node? = null\n\tvalue = null\n\treturn value\n", [], [], 8, false, false],
+		["null_Node_true", "func use() -> Node?:\n\tvar value: Node? = null\n\tvalue = null\n\treturn value\n", [], [], 8, true, false],
+		["null_int_false", "func use() -> int?:\n\tvar value: int? = null\n\tvalue = null\n\treturn value\n", [], [], 8, false, false],
+		["null_int_true", "func use() -> int?:\n\tvar value: int? = null\n\tvalue = null\n\treturn value\n", [], [], 8, true, false],
+		["null_E_false", "enum E:\n\tA = 0\nfunc use() -> E?:\n\tvar value: E? = null\n\tvalue = null\n\treturn value\n", [], [], 8, false, false],
+		["null_E_true", "enum E:\n\tA = 0\nfunc use() -> E?:\n\tvar value: E? = null\n\tvalue = null\n\treturn value\n", [], [], 8, true, false],
+		["null_Local_false", "class Local:\n\tpass\nfunc use() -> Local?:\n\tvar value: Local? = null\n\tvalue = null\n\treturn value\n", [], [], 8, false, false],
+		["null_Local_true", "class Local:\n\tpass\nfunc use() -> Local?:\n\tvar value: Local? = null\n\tvalue = null\n\treturn value\n", [], [], 8, true, false],
+		["null_call_false", "func accept(value: Node?) -> void:\n\tpass\nfunc use() -> void:\n\taccept(null)\n", [], [], 8, false, false],
+		["null_call_true", "func accept(value: Node?) -> void:\n\tpass\nfunc use() -> void:\n\taccept(null)\n", [], [], 8, true, false],
+		["narrow_2908_local_variable_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test() -> void:\n\tvar node: Node? = null\n\tif node != null:\n\t\taccept_node(node)\n", [], [], 8, true, false],
+		["narrow_2908_reassigned_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tif node != null:\n\t\tnode = null\n\t\taccept_node(node)\n", [["Cannot pass nullable value of type \"Node?\" as argument 1 of \"accept_node()\"; expected non-nullable \"Node\".", 6, 21]], [], 5, true, false],
+		["narrow_2937_reassigned_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tassert(node != null)\n\tnode = null\n\taccept_node(node)\n", [["Cannot pass nullable value of type \"Node?\" as argument 1 of \"accept_node()\"; expected non-nullable \"Node\".", 6, 17]], [], 5, true, false],
+	]
+	for fixture in cases:
+		ProjectSettings.set_setting("debug/barista_script/analysis/strict_null_checks", fixture[5])
+		ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", fixture[6])
+		BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
+		var path: String = "res://139_step4_" + fixture[0] + ".barista"
+		var report: Dictionary = probe.validate_source(fixture[1], path, true)
+		var analysis: Dictionary = probe.analyze_source(fixture[1], path)
+		var messages: PackedStringArray = []
+		for error in fixture[2]:
+			messages.append(error[0])
+		_expect(failures, report.get("valid") == fixture[2].is_empty() and _errors_are_exact(report.get("errors", []), fixture[2]) and _warnings_are_exact(report.get("warnings", []), fixture[3]), fixture[0] + " full pinned audit diagnostics: " + str(report))
+		_expect(failures, analysis.get("errors") == messages and analysis.get("phase") == fixture[4] and probe.is_semantically_valid(fixture[1], path) == fixture[2].is_empty(), fixture[0] + " pinned audit phase and semantic validity")
+		_expect(failures, probe.validate_source(fixture[1], path, true) == report and probe.analyze_source(fixture[1], path) == analysis, fixture[0] + " pinned audit repeat")
+	for setting: String in saved:
+		ProjectSettings.set_setting(setting, saved[setting])
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()

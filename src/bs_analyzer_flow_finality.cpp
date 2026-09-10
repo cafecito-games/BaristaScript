@@ -551,6 +551,10 @@ void BSAnalyzer::FlowFinalityContext::check_final_local_assignments(BSParser::Cl
 		const BSParser::ClassNode::Member &member = p_class->members[i];
 		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
 			analyze_function_local_finals(member.function);
+		} else if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
+			for (BSParser::FunctionNode *function : member.m_enum->functions) {
+				analyze_function_local_finals(function);
+			}
 		} else if (member.type == BSParser::ClassNode::Member::CLASS) {
 			check_final_local_assignments(member.m_class);
 		} else if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr) {
@@ -563,6 +567,11 @@ void BSAnalyzer::FlowFinalityContext::check_final_local_assignments(BSParser::Cl
 				analyze_function_local_finals(member.variable->getter);
 				analyze_function_local_finals(member.variable->setter);
 			}
+		}
+	}
+	if (p_class->is_enum_file && p_class->enum_file_decl != nullptr) {
+		for (BSParser::FunctionNode *function : p_class->enum_file_decl->functions) {
+			analyze_function_local_finals(function);
 		}
 	}
 }
@@ -1390,6 +1399,25 @@ static const BSParser::DataType *_flow_narrowing_alternative_set(const BSParser:
 		return &p_type.type_parameter_bound[0];
 	}
 	return nullptr;
+}
+
+// Foundry c9d5e35: report the complete alternative set, including a parameter's bound.
+// D1 retains identity subsumption; common-base compatibility is not exhaustion.
+bool BSAnalyzer::type_test_exhausts_alternatives(const BSParser::DataType &p_operand_type, const BSParser::DataType &p_test_type, BSParser::DataType &r_alternative_set) {
+	if (!p_test_type.is_set() || p_operand_type.is_nullable) {
+		return false;
+	}
+	const BSParser::DataType *alternative_set = _flow_narrowing_alternative_set(p_operand_type);
+	if (alternative_set == nullptr || alternative_set->is_nullable || alternative_set->union_members.is_empty()) {
+		return false;
+	}
+	for (const BSParser::DataType &alternative : alternative_set->union_members) {
+		if (!_type_test_subsumes(p_test_type, alternative)) {
+			return false;
+		}
+	}
+	r_alternative_set = *alternative_set;
+	return true;
 }
 
 const BSParser::Node *BSAnalyzer::FlowFinalityContext::flow_narrowing_key_from_identifier(const BSParser::IdentifierNode *p_identifier) const {

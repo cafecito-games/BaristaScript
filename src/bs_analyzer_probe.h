@@ -42,6 +42,10 @@ public:
 	godot::Dictionary language_utility_metadata() const;
 	/** Source-independent concrete callable identity and Self-marker traversal controls. */
 	godot::Dictionary self_identity_controls() const;
+	/** Noncanonical UNION descriptors exercise the real exhaustion helper and reducer only. */
+	godot::Dictionary type_test_exhaustion_controls() const;
+	/** Shared plain-enum/int compatibility options and Result flags, without semantic copies. */
+	godot::Dictionary enum_carrier_compatibility_controls() const;
 
 	/** Run `_validate`-equivalent analysis; returns valid + first error message. */
 	godot::Dictionary analyze_source(const godot::String &p_source, const godot::String &p_path) const;
