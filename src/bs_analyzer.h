@@ -554,6 +554,9 @@ private:
 	/** Foundry resolve_pending_lambda_bodies @ c9d5e35. */
 	void resolve_pending_lambda_bodies();
 	void analyze_suite(BSParser::SuiteNode *p_suite);
+	void decide_suite_type(BSParser::Node *p_suite, BSParser::Node *p_statement);
+	void resolve_for(BSParser::ForNode *p_for);
+	void resolve_assert(BSParser::AssertNode *p_assert);
 	void analyze_statement(BSParser::Node *p_node);
 	void warn_unused_locals(BSParser::SuiteNode *p_suite);
 	void warn_unused_parameters(BSParser::FunctionNode *p_function);
