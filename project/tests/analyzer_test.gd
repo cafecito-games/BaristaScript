@@ -3871,6 +3871,8 @@ func _test_recorded_trait_arguments_query(failures: PackedStringArray) -> void:
 
 func _test_trait_target_assignability(failures: PackedStringArray) -> void:
 	# Foundry FSTypeCompatibility::check trait-target recorded/projected args @ c9d5e35 (#60).
+	var index := BaristaScriptDeclarationIndexProbe.new()
+	var before_records: Array = index.get_records()
 	var probe := BaristaScriptAnalyzerProbe.new()
 	var report: Dictionary = probe.trait_target_assignability()
 
@@ -3903,7 +3905,93 @@ func _test_trait_target_assignability(failures: PackedStringArray) -> void:
 	_expect(failures, report.get("trait_self_conflict_rejects", false) == true,
 		"Keeper[int]→Keeper[String] self-specialization rejects")
 
-	var index := BaristaScriptDeclarationIndexProbe.new()
+	var structured: Dictionary = report.get("structured_arguments", {})
+	var expected := {
+		"nested_match": "MATCH",
+		"nested_conflict": "CONFLICT",
+		"dictionary_key_conflict": "CONFLICT",
+		"tuple_match": "MATCH",
+		"tuple_conflict": "CONFLICT",
+		"tuple_arity": "CONFLICT",
+		"named_tuple_match": "MATCH",
+		"tuple_owner": "CONFLICT",
+		"tuple_path": "CONFLICT",
+		"union_canonical": "MATCH",
+		"union_conflict": "CONFLICT",
+		"union_scalar": "CONFLICT",
+		"open_union_conflict": "CONFLICT",
+		"open_union_unknown": "UNKNOWN",
+		"open_union_reordered": "UNKNOWN",
+		"open_union_arity": "UNKNOWN",
+		"closed_union_arity": "CONFLICT",
+		"open_array": "UNKNOWN",
+		"destination_open_array": "CONFLICT",
+		"closed_array_arity": "CONFLICT",
+		"destination_closed_array_arity": "CONFLICT",
+		"parameter": "UNKNOWN",
+		"bounded_parameter": "UNKNOWN",
+		"destination_parameter": "CONFLICT",
+		"unset": "UNKNOWN",
+		"expected_unset": "UNKNOWN",
+		"callable_match": "MATCH",
+		"callable_fixed": "CONFLICT",
+		"union_callable": "CONFLICT",
+		"callable_return": "CONFLICT",
+		"callable_rest": "CONFLICT",
+		"callable_async": "CONFLICT",
+		"signature_presence": "CONFLICT",
+		"fixed_arity": "CONFLICT",
+		"return_arity": "CONFLICT",
+		"rest_arity": "CONFLICT",
+		"gradual_vararg": "CONFLICT",
+		"signal_match": "MATCH",
+		"signal_fixed": "CONFLICT",
+		"unknown_sibling": "UNKNOWN",
+		"conflict_before_unknown": "CONFLICT",
+		"conflict_after_unknown": "CONFLICT",
+		"type_argument_arity": "CONFLICT",
+		"bound_arity": "CONFLICT",
+		"bound_conflict": "CONFLICT",
+		"bound_match": "MATCH",
+		"nullable": "CONFLICT",
+		"meta": "CONFLICT",
+		"handle": "CONFLICT",
+		"handle_match": "MATCH",
+		"open_payload": "UNKNOWN",
+		"open_payload_conflict": "CONFLICT",
+		"depth_unknown": "UNKNOWN",
+		"depth_sibling_conflict": "CONFLICT",
+		"unset_sibling_conflict": "CONFLICT",
+		"native_match": "MATCH",
+		"native_conflict": "CONFLICT",
+		"coroutine_match": "MATCH",
+		"coroutine_result": "CONFLICT",
+		"variant_match": "MATCH",
+		"variant_concrete": "CONFLICT",
+		"class_fqcn_match": "MATCH",
+		"class_fqcn_conflict": "CONFLICT",
+		"missing_class_conflict": "CONFLICT",
+		"script_match": "MATCH",
+		"script_conflict": "CONFLICT",
+		"enum_identity": "CONFLICT",
+		"tuple_display_names": "MATCH",
+		"open_signature": "UNKNOWN",
+		"open_signature_conflict": "CONFLICT",
+	}
+	_expect(failures, structured.size() == expected.size(), "all live projected argument controls ran")
+	for case_name in expected:
+		var actual: Dictionary = structured.get(case_name, {})
+		_expect(failures, actual.get("evidence") == expected[case_name], "live projected tri-state: " + case_name)
+		_expect(failures, actual.get("projected", false), "live projection exists: " + case_name)
+		_expect(failures, actual.get("compatible") == (expected[case_name] != "CONFLICT"), "live projected compatibility: " + case_name)
+	_expect(failures, report.get("structured_nominal_projects", false), "matching live projection exists without nominal membership")
+	_expect(failures, report.get("unknown_nominal_projects", false), "unknown live projection exists without nominal membership")
+	_expect(failures, report.get("structured_nominal_rejects", false), "structured equality cannot create nominal membership")
+	_expect(failures, report.get("unknown_nominal_rejects", false), "missing evidence cannot create nominal membership")
+	_expect(failures, report.get("live_arity_no_evidence_accepts", false), "unequal live projection arity retains nominal compatibility")
+	_expect(failures, probe.trait_target_assignability() == report, "live projected observations remain stable on repeat")
+
+	_expect(failures, index.get_records() == before_records, "projection probes preserve declaration records")
 	var before := index.get_record_count()
 	var _ignored: Dictionary = probe.analyze_source(
 		_src_class("TtaIndexGuard extends Node\n"), "res://tests/tta_index_guard.barista")

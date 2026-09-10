@@ -167,6 +167,251 @@ namespace {
 // constant is private and godot-cpp's Variant does not expose the enumerator.
 static constexpr int TYPE_WALK_MAX_DEPTH = 1024;
 
+static bool _datatype_names_any_type_parameter(const BSParser::DataType &p_type, int p_depth = 0) {
+	if (unlikely(p_depth > TYPE_WALK_MAX_DEPTH)) {
+		return false;
+	}
+	if (p_type.kind == BSParser::DataType::TYPE_PARAMETER) {
+		return true;
+	}
+	const Vector<BSParser::DataType> *slots[] = {
+		&p_type.type_parameter_bound,
+		&p_type.container_element_types,
+		&p_type.type_arguments,
+		&p_type.union_members,
+		&p_type.method_parameter_types,
+		&p_type.method_return_type,
+		&p_type.method_rest_parameter_type,
+	};
+	for (const Vector<BSParser::DataType> *slot : slots) {
+		for (const BSParser::DataType &nested : *slot) {
+			if (_datatype_names_any_type_parameter(nested, p_depth + 1)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// A tagged union's case payloads are never read by this comparison, so a type parameter inside one is
+// not evidence. Unlike a union member it is not part of the node's identity either, so it only keeps
+// the node from reporting a full match -- the enum's own name and its type arguments are still
+// compared, which is what lets `Result[int, U]` contradict `Result[String, float]`.
+static bool _evidence_enum_payloads_are_open(const BSParser::DataType &p_type) {
+	for (const KeyValue<StringName, BSParser::DataType::EnumCasePayload> &payload : p_type.enum_case_payloads) {
+		for (const BSParser::DataType &field_type : payload.value.field_types) {
+			if (_datatype_names_any_type_parameter(field_type)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static bool _slot_names_any_type_parameter(const Vector<BSParser::DataType> &p_slot) {
+	for (const BSParser::DataType &type : p_slot) {
+		if (_datatype_names_any_type_parameter(type)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static BSTypeCompatibility::ArgumentEvidence _combine_evidence(BSTypeCompatibility::ArgumentEvidence p_current,
+		BSTypeCompatibility::ArgumentEvidence p_next) {
+	if (p_current == BSTypeCompatibility::ArgumentEvidence::CONFLICT ||
+			p_next == BSTypeCompatibility::ArgumentEvidence::CONFLICT) {
+		return BSTypeCompatibility::ArgumentEvidence::CONFLICT;
+	}
+	if (p_current == BSTypeCompatibility::ArgumentEvidence::UNKNOWN ||
+			p_next == BSTypeCompatibility::ArgumentEvidence::UNKNOWN) {
+		return BSTypeCompatibility::ArgumentEvidence::UNKNOWN;
+	}
+	return BSTypeCompatibility::ArgumentEvidence::MATCH;
+}
+
+static BSTypeCompatibility::ArgumentEvidence _compare_datatype_evidence(const BSParser::DataType &p_a,
+		const BSParser::DataType &p_b, int p_depth);
+
+// Union members are canonically ordered by `make_union()`, so identity is positional -- but only once
+// every member is reified. A member left on an unreified type parameter sorts by its parameter's
+// spelling, and substituting it can move it anywhere in the vector, so pairing by index would invent
+// a contradiction between members that substitution could still reconcile: `Array[U] | Array[int]`
+// sorts independently of its eventual concrete substitution. An open projected member requires
+// compared as sets instead: only a member that contradicts every member on the other side rules out
+// all pairings, and anything short of that leaves the node open rather than rejected.
+static BSTypeCompatibility::ArgumentEvidence _compare_union_members_evidence(
+		const Vector<BSParser::DataType> &p_a_members, const Vector<BSParser::DataType> &p_b_members,
+		int p_depth) {
+	using ArgumentEvidence = BSTypeCompatibility::ArgumentEvidence;
+	const bool a_is_open = _slot_names_any_type_parameter(p_a_members);
+
+	if (p_a_members.size() != p_b_members.size()) {
+		// An open member can be substituted with a sibling's type and dedup away, so the member counts
+		// only contradict each other when the projected vector is closed.
+		return a_is_open ? ArgumentEvidence::UNKNOWN : ArgumentEvidence::CONFLICT;
+	}
+
+	if (!a_is_open) {
+		ArgumentEvidence evidence = ArgumentEvidence::MATCH;
+		for (int i = 0; i < p_a_members.size(); i++) {
+			evidence = _combine_evidence(evidence,
+					_compare_datatype_evidence(p_a_members[i], p_b_members[i], p_depth + 1));
+			if (evidence == ArgumentEvidence::CONFLICT) {
+				return evidence;
+			}
+		}
+		return evidence;
+	}
+
+	for (int i = 0; i < p_a_members.size(); i++) {
+		bool conflicts_with_every_member = true;
+		for (int j = 0; j < p_b_members.size() && conflicts_with_every_member; j++) {
+			conflicts_with_every_member =
+					_compare_datatype_evidence(p_a_members[i], p_b_members[j], p_depth + 1) ==
+					ArgumentEvidence::CONFLICT;
+		}
+		if (conflicts_with_every_member) {
+			return ArgumentEvidence::CONFLICT;
+		}
+	}
+	for (int j = 0; j < p_b_members.size(); j++) {
+		bool conflicts_with_every_member = true;
+		for (int i = 0; i < p_a_members.size() && conflicts_with_every_member; i++) {
+			conflicts_with_every_member =
+					_compare_datatype_evidence(p_a_members[i], p_b_members[j], p_depth + 1) ==
+					ArgumentEvidence::CONFLICT;
+		}
+		if (conflicts_with_every_member) {
+			return ArgumentEvidence::CONFLICT;
+		}
+	}
+	return ArgumentEvidence::UNKNOWN;
+}
+
+// Foundry _compare_datatype_evidence @ c9d5e35: projected parameters are open, while
+// destination arguments are authored literals. A missing subtree cannot erase a known sibling
+// contradiction. D1 compares builtin carriers; M5 symmetric open comparison remains deferred.
+static BSTypeCompatibility::ArgumentEvidence _compare_datatype_evidence(const BSParser::DataType &p_a,
+		const BSParser::DataType &p_b, int p_depth) {
+	using ArgumentEvidence = BSTypeCompatibility::ArgumentEvidence;
+	if (unlikely(p_depth > TYPE_WALK_MAX_DEPTH)) {
+		return ArgumentEvidence::UNKNOWN;
+	}
+	if (!p_a.is_set() || !p_b.is_set()) {
+		return ArgumentEvidence::UNKNOWN;
+	}
+
+	const bool a_is_parameter = p_a.kind == BSParser::DataType::TYPE_PARAMETER;
+	// A bounded parameter still admits every subtype of its bound, so the bound is not evidence about
+	// the type actually reified there and the whole subtree stays open.
+	if (a_is_parameter) {
+		return ArgumentEvidence::UNKNOWN;
+	}
+
+	if (p_a.kind != p_b.kind ||
+			p_a.is_nullable != p_b.is_nullable ||
+			p_a.is_meta_type != p_b.is_meta_type ||
+			p_a.is_type_handle_annotation != p_b.is_type_handle_annotation ||
+			p_a.has_method_signature != p_b.has_method_signature ||
+			p_a.signature_is_async != p_b.signature_is_async ||
+			(p_a.method_info.flags & METHOD_FLAG_VARARG) != (p_b.method_info.flags & METHOD_FLAG_VARARG)) {
+		return ArgumentEvidence::CONFLICT;
+	}
+
+	bool identical = false;
+	switch (p_a.kind) {
+		case BSParser::DataType::VARIANT:
+			identical = true;
+			break;
+		case BSParser::DataType::BUILTIN:
+			identical = p_a.builtin_type == p_b.builtin_type;
+			break;
+		case BSParser::DataType::NATIVE:
+		case BSParser::DataType::ENUM:
+			identical = p_a.native_type == p_b.native_type;
+			break;
+		case BSParser::DataType::SCRIPT:
+			identical = p_a.script_type == p_b.script_type;
+			break;
+		case BSParser::DataType::CLASS:
+			identical = p_a.class_type == p_b.class_type ||
+					(p_a.class_type != nullptr && p_b.class_type != nullptr &&
+							p_a.class_type->fqcn == p_b.class_type->fqcn);
+			break;
+		case BSParser::DataType::TYPE_PARAMETER:
+			identical = p_a.type_parameter_name == p_b.type_parameter_name &&
+					p_a.type_parameter_scope == p_b.type_parameter_scope &&
+					p_a.type_parameter_index == p_b.type_parameter_index;
+			break;
+		case BSParser::DataType::TUPLE:
+			identical = p_a.native_type == p_b.native_type && p_a.script_path == p_b.script_path;
+			break;
+		case BSParser::DataType::UNION:
+			// Members are traversed by `_compare_union_members_evidence()` below rather than compared in
+			// one step, so a member left on an unreified parameter is open on its own, like a type
+			// parameter anywhere else, and a concrete contradiction in a sibling member still decides
+			// the node instead of being erased along with it.
+			identical = true;
+			break;
+		case BSParser::DataType::RESOLVING:
+		case BSParser::DataType::UNRESOLVED:
+			break;
+	}
+	if (!identical) {
+		return ArgumentEvidence::CONFLICT;
+	}
+
+	ArgumentEvidence evidence = ArgumentEvidence::MATCH;
+	if (_evidence_enum_payloads_are_open(p_a)) {
+		evidence = ArgumentEvidence::UNKNOWN;
+	}
+	if (p_a.kind == BSParser::DataType::UNION) {
+		evidence = _combine_evidence(evidence,
+				_compare_union_members_evidence(p_a.union_members, p_b.union_members, p_depth));
+		if (evidence == ArgumentEvidence::CONFLICT) {
+			return evidence;
+		}
+	}
+	const Vector<BSParser::DataType> *a_slots[] = {
+		&p_a.type_parameter_bound,
+		&p_a.container_element_types,
+		&p_a.type_arguments,
+		&p_a.method_parameter_types,
+		&p_a.method_return_type,
+		&p_a.method_rest_parameter_type,
+	};
+	const Vector<BSParser::DataType> *b_slots[] = {
+		&p_b.type_parameter_bound,
+		&p_b.container_element_types,
+		&p_b.type_arguments,
+		&p_b.method_parameter_types,
+		&p_b.method_return_type,
+		&p_b.method_rest_parameter_type,
+	};
+	for (int slot = 0; slot < 6; slot++) {
+		if (a_slots[slot]->size() != b_slots[slot]->size()) {
+			// A side that declares no components in this slot says nothing about components the other
+			// side leaves on an unreified parameter: the two then differ only where neither carries
+			// evidence, and rejecting there would be stricter than the erasure this replaced. Two sides
+			// that both state their components concretely still contradict each other by arity.
+			if (_slot_names_any_type_parameter(*a_slots[slot])) {
+				evidence = ArgumentEvidence::UNKNOWN;
+				continue;
+			}
+			return ArgumentEvidence::CONFLICT;
+		}
+		for (int i = 0; i < a_slots[slot]->size(); i++) {
+			evidence = _combine_evidence(evidence,
+					_compare_datatype_evidence((*a_slots[slot])[i], (*b_slots[slot])[i], p_depth + 1));
+			if (evidence == ArgumentEvidence::CONFLICT) {
+				return evidence;
+			}
+		}
+	}
+	return evidence;
+}
+
 // Foundry _destination_has_erased_type_parameter @ c9d5e35: a method-scope parameter is chosen per
 // call and erased before the callee runs, so no frame has anything to check against. Nested under
 // unions / signatures the bound is never checked either. Free method-`T` cases stay M5 residual
@@ -281,6 +526,11 @@ bool _nullable_is_expressible_at_root(const BSParser::DataType &p_type) {
 }
 
 } // namespace
+
+BSTypeCompatibility::ArgumentEvidence BSTypeCompatibility::compare_projected_argument(
+		const BSParser::DataType &p_projected, const BSParser::DataType &p_expected) {
+	return _compare_datatype_evidence(p_projected, p_expected, 0);
+}
 
 bool BSTypeCompatibility::destination_is_undecidable_type_parameter(const BSParser::DataType &p_type, const Options &p_options) {
 	// Foundry destination_is_undecidable_type_parameter @ c9d5e35.
@@ -728,13 +978,9 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 							if (!projected[i].is_set()) {
 								continue;
 							}
-							// Concrete projected vs destination: reduce both and reject only confident
-							// disagreements. Unset / TYPE_PARAMETER reductions stay UNKNOWN (gradual).
-							// Full ArgumentEvidence / compare_projected_argument remains #60 residual
-							// for open-parameter destination literalism (Keeper[X] slots).
-							if (_recorded_arguments_disagree(
-										BSConformanceRegistry::reduce_type_argument(projected[i]),
-										BSConformanceRegistry::reduce_type_argument(p_target.type_arguments[i]))) {
+							// Live structure is richer than recorded persistence evidence. UNKNOWN
+							// preserves only the nominal membership already established above.
+							if (compare_projected_argument(projected[i], p_target.type_arguments[i]) == ArgumentEvidence::CONFLICT) {
 								result.compatible = false;
 								break;
 							}

@@ -12,6 +12,8 @@
 
 #include "bs_analyzer_probe.h"
 
+#include "barista_script.h"
+
 #include "barista_script_language.h"
 #include "bs_analyzer.h"
 #include "bs_cache.h"
@@ -2004,6 +2006,283 @@ godot::Dictionary BaristaScriptAnalyzerProbe::trait_target_assignability() const
 				projected[0].kind == BSParser::DataType::BUILTIN &&
 				projected[0].builtin_type == Variant::INT;
 		result["uses_projection_conflict_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	// Live structured arguments must reach the real trait consumer without persistence erasure.
+	// These already-represented datatypes need no source-level generic declaration (#138 step 8).
+	{
+		using DataType = BSParser::DataType;
+		BSParser::ClassNode implementer;
+		implementer.fqcn = "res://tests/tta_structured.barista";
+		BSParser::ClassNode::TraitUse use;
+		use.resolved_trait = &trait;
+		use.resolved_type_arguments.push_back(DataType());
+		implementer.used_traits.push_back(use);
+		implementer.resolved_traits.push_back(&trait);
+		DataType source = target;
+		source.class_type = &implementer;
+		source.type_arguments.clear();
+		godot::Dictionary observations;
+		auto observe = [&](const String &p_name, const DataType &p_projected, const DataType &p_expected) {
+			implementer.used_traits.write[0].resolved_type_arguments.write[0] = p_projected;
+			target.type_arguments.write[0] = p_expected;
+			Vector<DataType> projected;
+			godot::Dictionary observation;
+			observation["projected"] = BSTypeCompatibility::project_class_trait_arguments(source, &trait, projected) && projected.size() == 1;
+			observation["compatible"] = BSTypeCompatibility::check(target, source).compatible;
+			if (projected.size() == 1) {
+				const auto evidence = BSTypeCompatibility::compare_projected_argument(projected[0], p_expected);
+				observation["evidence"] = evidence == BSTypeCompatibility::ArgumentEvidence::MATCH ? "MATCH" : evidence == BSTypeCompatibility::ArgumentEvidence::CONFLICT ? "CONFLICT"
+																																										   : "UNKNOWN";
+			}
+			observations[p_name] = observation;
+		};
+		const DataType integer = make_builtin(Variant::INT);
+		const DataType string = make_builtin(Variant::STRING);
+		const DataType boolean = make_builtin(Variant::BOOL);
+		DataType parameter;
+		parameter.kind = DataType::TYPE_PARAMETER;
+		parameter.type_source = DataType::ANNOTATED_EXPLICIT;
+		parameter.type_parameter_name = SNAME("U");
+		parameter.type_parameter_scope = DataType::TYPE_PARAMETER_CLASS;
+		auto array_of = [&](const DataType &p_element) {
+			DataType array = make_builtin(Variant::ARRAY);
+			array.container_element_types.push_back(p_element);
+			return array;
+		};
+		auto union_of = [](const DataType &p_first, const DataType &p_second) {
+			Vector<DataType> members;
+			members.push_back(p_first);
+			members.push_back(p_second);
+			return DataType::make_union(members);
+		};
+		DataType dictionary = make_builtin(Variant::DICTIONARY);
+		dictionary.container_element_types.push_back(string);
+		dictionary.container_element_types.push_back(array_of(integer));
+		observe("nested_match", dictionary, dictionary);
+		DataType changed = dictionary;
+		changed.container_element_types.write[1] = array_of(string);
+		observe("nested_conflict", dictionary, changed);
+		changed = dictionary;
+		changed.container_element_types.write[0] = integer;
+		observe("dictionary_key_conflict", dictionary, changed);
+		DataType tuple = integer;
+		tuple.kind = DataType::TUPLE;
+		tuple.builtin_type = Variant::ARRAY;
+		tuple.container_element_types.push_back(integer);
+		tuple.container_element_types.push_back(string);
+		observe("tuple_match", tuple, tuple);
+		changed = tuple;
+		changed.container_element_types.write[1] = boolean;
+		observe("tuple_conflict", tuple, changed);
+		changed = tuple;
+		changed.container_element_types.remove_at(1);
+		observe("tuple_arity", tuple, changed);
+		tuple.native_type = SNAME("Owner.Point");
+		tuple.script_path = "res://tests/tta_owner.barista";
+		observe("named_tuple_match", tuple, tuple);
+		changed = tuple;
+		changed.native_type = SNAME("Other.Point");
+		observe("tuple_owner", tuple, changed);
+		changed = tuple;
+		changed.script_path = "res://tests/tta_other.barista";
+		observe("tuple_path", tuple, changed);
+		observe("union_canonical", union_of(integer, string), union_of(string, integer));
+		observe("union_conflict", union_of(integer, string), union_of(integer, boolean));
+		observe("union_scalar", union_of(integer, string), integer);
+		observe("open_union_conflict", union_of(integer, parameter), union_of(string, boolean));
+		observe("open_union_unknown", union_of(integer, parameter), union_of(integer, boolean));
+		observe("open_union_reordered", union_of(array_of(parameter), array_of(integer)), union_of(array_of(integer), array_of(string)));
+		observe("open_union_arity", union_of(integer, parameter), union_of(union_of(integer, string), boolean));
+		observe("closed_union_arity", union_of(integer, string), union_of(union_of(integer, string), boolean));
+		observe("open_array", array_of(parameter), make_builtin(Variant::ARRAY));
+		observe("destination_open_array", make_builtin(Variant::ARRAY), array_of(parameter));
+		observe("closed_array_arity", array_of(integer), make_builtin(Variant::ARRAY));
+		observe("destination_closed_array_arity", make_builtin(Variant::ARRAY), array_of(integer));
+		observe("parameter", parameter, integer);
+		changed = parameter;
+		changed.type_parameter_bound.push_back(string);
+		observe("bounded_parameter", changed, integer);
+		observe("destination_parameter", integer, parameter);
+		observe("unset", DataType(), integer);
+		observe("expected_unset", integer, DataType());
+		DataType callable = make_builtin(Variant::CALLABLE);
+		callable.has_method_signature = true;
+		callable.method_parameter_types.push_back(integer);
+		callable.method_return_type.push_back(string);
+		callable.method_rest_parameter_type.push_back(array_of(integer));
+		callable.method_info.flags = METHOD_FLAG_VARARG;
+		observe("callable_match", callable, callable);
+		changed = callable;
+		changed.method_parameter_types.write[0] = string;
+		observe("callable_fixed", callable, changed);
+		observe("union_callable", union_of(callable, integer), union_of(changed, integer));
+		changed = callable;
+		changed.method_return_type.write[0] = integer;
+		observe("callable_return", callable, changed);
+		changed = callable;
+		changed.method_rest_parameter_type.write[0] = array_of(string);
+		observe("callable_rest", callable, changed);
+		changed = callable;
+		changed.signature_is_async = true;
+		observe("callable_async", callable, changed);
+		changed = callable;
+		changed.has_method_signature = false;
+		observe("signature_presence", callable, changed);
+		changed = callable;
+		changed.method_parameter_types.clear();
+		observe("fixed_arity", callable, changed);
+		changed = callable;
+		changed.method_return_type.clear();
+		observe("return_arity", callable, changed);
+		changed = callable;
+		changed.method_rest_parameter_type.clear();
+		observe("rest_arity", callable, changed);
+		callable.method_rest_parameter_type.clear();
+		changed = callable;
+		changed.method_info.flags = METHOD_FLAG_NORMAL;
+		observe("gradual_vararg", callable, changed);
+		callable.builtin_type = Variant::SIGNAL;
+		observe("signal_match", callable, callable);
+		changed = callable;
+		changed.method_parameter_types.write[0] = string;
+		observe("signal_fixed", callable, changed);
+		DataType pair = source;
+		pair.type_arguments.push_back(integer);
+		pair.type_arguments.push_back(parameter);
+		changed = pair;
+		changed.type_arguments.write[1] = string;
+		observe("unknown_sibling", pair, changed);
+		changed.type_arguments.write[0] = string;
+		observe("conflict_before_unknown", pair, changed);
+		pair.type_arguments.reverse();
+		changed.type_arguments.reverse();
+		observe("conflict_after_unknown", pair, changed);
+		changed = source;
+		changed.type_arguments.push_back(integer);
+		observe("type_argument_arity", source, changed);
+		changed = source;
+		changed.type_parameter_bound.push_back(integer);
+		observe("bound_arity", source, changed);
+		DataType bounded = changed;
+		changed.type_parameter_bound.write[0] = string;
+		observe("bound_conflict", bounded, changed);
+		observe("bound_match", bounded, bounded);
+		changed = integer;
+		changed.is_nullable = true;
+		observe("nullable", integer, changed);
+		changed = source;
+		changed.is_meta_type = true;
+		observe("meta", source, changed);
+		DataType handle = changed;
+		handle.is_type_handle_annotation = true;
+		observe("handle", changed, handle);
+		observe("handle_match", handle, handle);
+		DataType enumeration = integer;
+		enumeration.kind = DataType::ENUM;
+		enumeration.is_tagged_union = true;
+		enumeration.native_type = SNAME("TtaResult");
+		enumeration.type_arguments.push_back(integer);
+		DataType::EnumCasePayload payload;
+		payload.field_types.push_back(parameter);
+		enumeration.enum_case_payloads.insert(SNAME("Value"), payload);
+		observe("open_payload", enumeration, enumeration);
+		changed = enumeration;
+		changed.type_arguments.write[0] = string;
+		observe("open_payload_conflict", enumeration, changed);
+		DataType deep = integer;
+		// Same bound as BSParser::MAX_NESTING_DEPTH and compatibility's TYPE_WALK_MAX_DEPTH.
+		for (int i = 0; i < 1026; i++) {
+			deep = array_of(deep);
+		}
+		observe("depth_unknown", deep, deep);
+		DataType deep_pair = source;
+		deep_pair.type_arguments.push_back(deep);
+		deep_pair.type_arguments.push_back(integer);
+		changed = deep_pair;
+		changed.type_arguments.write[1] = string;
+		observe("depth_sibling_conflict", deep_pair, changed);
+		DataType unset_pair = source;
+		unset_pair.type_arguments.push_back(DataType());
+		unset_pair.type_arguments.push_back(integer);
+		changed = unset_pair;
+		changed.type_arguments.write[1] = string;
+		observe("unset_sibling_conflict", unset_pair, changed);
+		DataType native = integer;
+		native.kind = DataType::NATIVE;
+		native.native_type = SNAME("Node");
+		observe("native_match", native, native);
+		changed = native;
+		changed.native_type = SNAME("Object");
+		observe("native_conflict", native, changed);
+		native.native_type = SNAME("BSFunctionState");
+		native.is_coroutine = true;
+		native.container_element_types.push_back(integer);
+		observe("coroutine_match", native, native);
+		changed = native;
+		changed.container_element_types.write[0] = string;
+		observe("coroutine_result", native, changed);
+		DataType variant;
+		variant.kind = DataType::VARIANT;
+		variant.type_source = DataType::ANNOTATED_EXPLICIT;
+		observe("variant_match", variant, variant);
+		observe("variant_concrete", variant, integer);
+		BSParser::ClassNode same_class;
+		same_class.fqcn = implementer.fqcn;
+		changed = source;
+		changed.class_type = &same_class;
+		observe("class_fqcn_match", source, changed);
+		same_class.fqcn = "res://tests/tta_other.barista";
+		observe("class_fqcn_conflict", source, changed);
+		changed.class_type = nullptr;
+		observe("missing_class_conflict", source, changed);
+		DataType script = integer;
+		script.kind = DataType::SCRIPT;
+		Ref<BaristaScript> first_script;
+		first_script.instantiate();
+		script.script_type = first_script;
+		observe("script_match", script, script);
+		changed = script;
+		Ref<BaristaScript> other_script;
+		other_script.instantiate();
+		changed.script_type = other_script;
+		observe("script_conflict", script, changed);
+		changed = enumeration;
+		changed.native_type = SNAME("OtherResult");
+		observe("enum_identity", enumeration, changed);
+		changed = tuple;
+		changed.tuple_field_names.push_back(SNAME("display_only"));
+		observe("tuple_display_names", tuple, changed);
+		DataType open_callable = callable;
+		open_callable.method_parameter_types.write[0] = parameter;
+		observe("open_signature", open_callable, callable);
+		changed = callable;
+		changed.method_return_type.write[0] = integer;
+		observe("open_signature_conflict", open_callable, changed);
+		// A live projection is not nominal proof, even when its argument matches or stays UNKNOWN.
+		implementer.resolved_traits.clear();
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = parameter;
+		target.type_arguments.write[0] = integer;
+		Vector<DataType> without_membership;
+		result["unknown_nominal_projects"] = BSTypeCompatibility::project_class_trait_arguments(source, &trait, without_membership) &&
+				without_membership.size() == 1 &&
+				BSTypeCompatibility::compare_projected_argument(without_membership[0], integer) == BSTypeCompatibility::ArgumentEvidence::UNKNOWN;
+		result["unknown_nominal_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+		target.type_arguments.write[0] = tuple;
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = tuple;
+		result["structured_nominal_projects"] = BSTypeCompatibility::project_class_trait_arguments(source, &trait, without_membership) &&
+				without_membership.size() == 1 &&
+				BSTypeCompatibility::compare_projected_argument(without_membership[0], tuple) == BSTypeCompatibility::ArgumentEvidence::MATCH;
+		result["structured_nominal_rejects"] = !BSTypeCompatibility::check(target, source).compatible;
+		implementer.resolved_traits.push_back(&trait);
+		// A live one-argument projection with a two-argument target supplies no arity evidence.
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = string;
+		target.type_arguments.write[0] = integer;
+		target.type_arguments.push_back(integer);
+		result["live_arity_no_evidence_accepts"] = BSTypeCompatibility::check(target, source).compatible;
+		target.type_arguments.remove_at(1);
+		result["structured_arguments"] = observations;
+		target.type_arguments.write[0] = string;
 	}
 
 	// Trait typed as itself with matching args (source is the trait specialization).
