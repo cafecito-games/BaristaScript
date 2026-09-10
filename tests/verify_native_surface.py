@@ -5,13 +5,14 @@
 # This file is part of BaristaScript, a Godot GDExtension.
 # SPDX-License-Identifier: MIT
 
-"""Fail if native test code leaks into an ordinary debug or release artifact."""
+"""Fail if native tests or retired adapters occur in an ordinary artifact."""
 import argparse
 from pathlib import Path
 from verify_parse_cache_surface import find_artifacts
 
 NATIVE_MARKERS = (b"BaristaNativeTestRunner", b"BS_NATIVE_RESULT", b"[doctest]", b"token_vocabulary_is_closed",
                   b"native-storage-", b"storage assertion failure restores state")
+RETIRED_ADAPTER_MARKERS = (b"BaristaScriptGlobalClassProbe",)
 
 
 def verify_surface(binary_dir, target_type):
@@ -21,9 +22,9 @@ def verify_surface(binary_dir, target_type):
     failures = []
     for artifact in artifacts:
         data = artifact.read_bytes()
-        for marker in NATIVE_MARKERS:
+        for marker in NATIVE_MARKERS + RETIRED_ADAPTER_MARKERS:
             if marker in data:
-                failures.append(f"native test marker {marker!r} leaked into {artifact}")
+                failures.append(f"test-only or retired marker {marker!r} leaked into {artifact}")
     return failures
 
 
@@ -36,5 +37,5 @@ if __name__ == "__main__":
     for failure in failures:
         print("FAIL:", failure)
     if not failures:
-        print(f"native runner/framework/cases absent from ordinary {args.target_type} artifacts")
+        print(f"native tests and retired adapters absent from ordinary {args.target_type} artifacts")
     raise SystemExit(bool(failures))

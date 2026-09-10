@@ -15,7 +15,6 @@
 #include "bs_cache.h"
 #include "bs_corpus_sentinels.h"
 #include "bs_declaration_index_probe.h"
-#include "bs_global_class_probe.h"
 #include "bs_parser_probe.h"
 
 #ifdef BARISTA_TESTS
@@ -67,7 +66,6 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	// inject persistence faults.
 	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
 	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
-	GDREGISTER_CLASS(barista_script::BaristaScriptGlobalClassProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptDeclarationIndexProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptAnalyzerProbe);
 #endif // DEBUG_ENABLED

@@ -1,13 +1,16 @@
 # Parse-cache fixtures
 
 `script_a.barista` and `script_b.barista` are the real sources the cache keys on;
-`cache_test.gd` digests their bytes and stores a parse payload derived from them.
+`tests/native/cache_test.cpp` digests their bytes and stores a parse payload derived from them.
 
-Every `*.bin` in this directory is produced by this build's own cache writer
-(`BSParseCache::flush`), not typed by hand. Regenerate them with:
+The binary fixtures were produced from `BSParseCache::flush` output by the legacy generator
+in `project/tests/cache_test.gd` at immutable commit
+`1fe5964cd78150651a9d9a4890586ee6a5245aa2`. The native migration preserves those bytes and
+compares newly written disposable stores to the golden. Validate without rewriting fixtures:
 
 ```
-godot --headless --path project --script res://tests/cache_test.gd -- --regenerate
+scons api_version=4.7 target=template_debug barista_tests=yes
+python3 tests/run_native_suites.py --godot /path/to/stock-godot --suite cache
 ```
 
 | File | How it is produced |

@@ -1,8 +1,10 @@
 # Cache, declaration-index and global-class parity
 
 Immutable legacy source/fixture baseline: `1fe5964cd78150651a9d9a4890586ee6a5245aa2` (#154). The native case bodies use
-production typed APIs; existing goldens and source fixtures remain read-only. Legacy suites
-are retained until independent per-scenario review approves parity at a shared source revision.
+production typed APIs; existing goldens and source fixtures remain read-only. Old and new suites
+passed concurrently at `d5381831c62000d22fcb38e4fe8276982c65c4f4`; independent per-scenario
+review approved all 41 groups before the three GDScript suites/UIDs and unused global-class
+probe were retired. The immutable baseline above retains the old suites and probe sources.
 
 Each original group maps to one named native case; `repeated_and_reversed_cases_restore_ambient_state`
 in each suite also executes those exact bodies twice forward and twice backward in one process.
@@ -104,6 +106,8 @@ no-exceptions configuration, failed REQUIRE continues; explicit guards protect l
 registration remain because the analyzer suite still consumes cache/parser/dependency lifecycle,
 source overrides, declaration synchronization/records/annotation and conformance views, bootstrap
 policy, qualified-name lookup and ScriptServer bridge methods. The parse-cache surface verifier
-therefore still requires its adapter in ordinary debug and excludes it in release. Global-class
-probe retirement waits for the reviewed legacy-suite removal checkpoint. Native helpers and
-fault-test markers remain excluded from ordinary debug/release artifacts.
+therefore still requires its adapter in ordinary debug and excludes it in release. The ordinary
+artifact audit rejects the retired global-class probe in both targets. Native helpers and
+fault-test markers remain excluded from ordinary debug/release artifacts. Fixture README updates
+describe the native checks; all 12 binary and 27 Barista source fixture files remain byte-identical
+to the independent baseline.
