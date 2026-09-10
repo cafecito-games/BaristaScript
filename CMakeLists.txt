@@ -96,6 +96,9 @@ else()
     set(BARISTA_ACTUAL_API "${GODOTCPP_GDEXTENSION_DIR}/extension_api-${BARISTA_API_SUFFIX}.json")
 endif()
 get_filename_component(BARISTA_ACTUAL_API "${BARISTA_ACTUAL_API}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp")
+# godot-cpp trims this input at configure time. Watch the original selected file,
+# including external overrides, so incremental builds cannot reuse a stale trim.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BARISTA_ACTUAL_API}")
 execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_config.py"
     --expect-api-file "${BARISTA_ACTUAL_API}" RESULT_VARIABLE BARISTA_API_CHECK OUTPUT_QUIET)
 if(NOT BARISTA_API_CHECK EQUAL 0)

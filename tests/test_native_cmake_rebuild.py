@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 import run_native_suites as runner
+from test_cmake_api_inputs import verify_external_api_inputs
 
 
 def verify(args):
@@ -78,6 +79,7 @@ def main():
     if failure is not None:
         raise failure
     print("PASS native CMake incremental XML, build-script, profile and version changes; sources restored")
+    verify_external_api_inputs(args.jobs)
 
 
 if __name__ == "__main__":
