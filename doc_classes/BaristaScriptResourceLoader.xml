@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="BaristaScriptResourceLoader" inherits="ResourceFormatLoader">
+	<brief_description>
+		Loads BaristaScript source text through Godot's resource system.
+	</brief_description>
+	<description>
+		The extension installs this format loader at startup. Use [method ResourceLoader.load] to obtain a [BaristaScript]; consumers do not need to create or register a loader themselves.
+		[codeblock lang=gdscript]
+		var extensions := ResourceLoader.get_recognized_extensions_for_type("BaristaScript")
+		assert(extensions.has("barista"))
+		var script := ResourceLoader.load("res://example.barista", "BaristaScript") as BaristaScript
+		if script != null:
+		    print(script.source_code)
+		[/codeblock]
+		Recognition accepts a case-insensitive [code].barista[/code] extension and an empty type hint, [code skip-lint]Script[/code], or [code skip-lint]BaristaScript[/code]. The loader reads text through [FileAccess], preserves it in [member Script.source_code], and uses the original resource path when one is supplied by Godot. File-open and read errors propagate to Godot's resource system.
+		Loading does not parse, validate, compile, or execute source. Call [method BaristaScript.is_valid] separately when static validation is needed. Godot controls resource caching; the loader does not implement its own reload policy based on the cache-mode argument.
+		This class adds no script-callable methods or properties of its own. Dependency enumeration, dependency rewriting, resource UIDs, and reporting classes used by a file are not implemented. Do not rely on these hooks for export dependency discovery or source rewriting.
+	</description>
+	<tutorials>
+	</tutorials>
+</class>
