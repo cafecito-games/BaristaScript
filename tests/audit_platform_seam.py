@@ -24,6 +24,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import posixpath
 import re
 import sys
 from pathlib import Path, PurePosixPath
@@ -246,6 +247,11 @@ def manifest_path(value):
     return path if path.is_absolute() else ROOT / path
 
 
+def normalize_include(include):
+    """Normalize compiler include spelling without resolving system search paths."""
+    return posixpath.normpath(include.replace("\\", "/"))
+
+
 def seam_contents(manifest, seam_override=None):
     """Read exactly the declared seam allowlist; never recurse into arbitrary local includes."""
     declared = list(manifest["seam_files"])
@@ -266,10 +272,12 @@ def seam_contents(manifest, seam_override=None):
         text = strip_cpp_comments(path.read_text(encoding="utf-8"))
         combined_text += "\n" + text
         for delimiter, include in INCLUDE_PATTERN.findall(text):
-            if include.startswith("godot_cpp/"):
-                godot_headers.add(include)
-            elif delimiter == '"':
-                local_edges.append((path, include, (path.parent / include).resolve()))
+            normalized = normalize_include(include)
+            destination = (path.parent / normalized).resolve()
+            if normalized.startswith("godot_cpp/"):
+                godot_headers.add(normalized)
+            elif delimiter == '"' or destination.is_file():
+                local_edges.append((path, include, destination))
     return paths, godot_headers, combined_text, local_edges
 
 
@@ -296,7 +304,21 @@ def check_seam_include_allowlist(paths, umbrella, local_edges, failures):
         failures.append("declared seam file {} is not reachable from {}".format(path, umbrella))
 
 
-def check_frontend_boundary(source_root, seam_paths, umbrella, failures):
+def mapped_headers_by_ported_file(manifest):
+    """The godot-cpp mappings owned by each renamed file in the upstream port set."""
+    mapped = {}
+    for entry in manifest["entries"]:
+        if not isinstance(entry, dict):
+            continue
+        headers = set(as_string_list(entry.get("godot_cpp_headers")))
+        for site in as_string_list(entry.get("sites")):
+            upstream_name = PurePosixPath(site.rsplit(":", 1)[0]).name
+            local_name = "bs_" + upstream_name[3:] if upstream_name.startswith("fs_") else upstream_name
+            mapped.setdefault(local_name, set()).update(headers)
+    return mapped
+
+
+def check_frontend_boundary(source_root, seam_paths, umbrella, mapped_headers, failures):
     """Reject direct engine includes and private seam includes outside the owned seam."""
     if not source_root.is_dir():
         failures.append("no frontend source root at {}".format(source_root))
@@ -309,9 +331,10 @@ def check_frontend_boundary(source_root, seam_paths, umbrella, failures):
             continue
         text = strip_cpp_comments(path.read_text(encoding="utf-8"))
         for _delimiter, include in INCLUDE_PATTERN.findall(text):
-            if include.startswith(engine_prefixes):
+            normalized = normalize_include(include)
+            if normalized.startswith(engine_prefixes) or normalized in mapped_headers.get(path.name, set()):
                 failures.append("{} includes {}, which bypasses the platform seam".format(path, include))
-            if include in private_names:
+            if PurePosixPath(normalized).name in private_names:
                 failures.append(
                     "{} includes private seam file {} instead of {}".format(path, include, umbrella.name)
                 )
@@ -638,7 +661,13 @@ def main(argv=None):
     failures = []
     check_seam_include_allowlist(seam_paths, umbrella, local_edges, failures)
     original_seam_paths = [manifest_path(value).resolve() for value in manifest["seam_files"]]
-    check_frontend_boundary(arguments.source_root, seam_paths + original_seam_paths, umbrella, failures)
+    check_frontend_boundary(
+        arguments.source_root,
+        seam_paths + original_seam_paths,
+        umbrella,
+        mapped_headers_by_ported_file(manifest),
+        failures,
+    )
     for header in sorted(drift):
         failures.append("godot-cpp generator drift: {} is predicted but not generated".format(header))
 

@@ -320,6 +320,54 @@ class FailClosedTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unlisted_private_seam.h", result.stdout + result.stderr)
 
+    def test_an_angle_bracket_local_include_from_a_seam_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            seam_files = []
+            for name in (
+                "bs_platform.h",
+                "bs_platform_names.h",
+                "bs_platform_serialization.h",
+                "bs_platform_variant.h",
+            ):
+                source = ROOT / "src" / name
+                destination = Path(scratch) / name
+                text = source.read_text(encoding="utf-8")
+                if name == "bs_platform.h":
+                    text += "\n#include <bs_platform_extra.h>\n"
+                destination.write_text(text, encoding="utf-8")
+                seam_files.append(str(destination))
+            (Path(scratch) / "bs_platform_extra.h").write_text("#pragma once\n", encoding="utf-8")
+            document = real_manifest()
+            document["seam_header"] = seam_files[0]
+            document["seam_files"] = seam_files
+            with TemporaryManifest(document) as path:
+                result = run_audit("--manifest", str(path), "--source-root", scratch)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bs_platform_extra.h", result.stdout + result.stderr)
+
+    def test_an_angle_bracket_system_include_is_not_a_local_seam_edge(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            seam_files = []
+            for name in (
+                "bs_platform.h",
+                "bs_platform_names.h",
+                "bs_platform_serialization.h",
+                "bs_platform_variant.h",
+            ):
+                source = ROOT / "src" / name
+                destination = Path(scratch) / name
+                text = source.read_text(encoding="utf-8")
+                if name == "bs_platform.h":
+                    text += "\n#include <cstdint>\n"
+                destination.write_text(text, encoding="utf-8")
+                seam_files.append(str(destination))
+            document = real_manifest()
+            document["seam_header"] = seam_files[0]
+            document["seam_files"] = seam_files
+            with TemporaryManifest(document) as path:
+                result = run_audit("--manifest", str(path), "--source-root", scratch)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_an_unreachable_declared_seam_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as scratch:
             unreachable = Path(scratch) / "unreachable_private_seam.h"
@@ -369,6 +417,32 @@ class FailClosedTest(unittest.TestCase):
             result = run_audit("--source-root", str(source_root))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("bypasses the platform seam", result.stdout + result.stderr)
+
+    def test_a_direct_godot_cpp_include_bypasses_the_seam(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source_root = Path(scratch) / "src"
+            source_root.mkdir()
+            (source_root / "bs_tokenizer.h").write_text(
+                '#include "bs_platform.h"\n#include <godot_cpp/variant/variant.hpp>\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--source-root", str(source_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("godot_cpp/variant/variant.hpp", result.stdout + result.stderr)
+        self.assertIn("bypasses the platform seam", result.stdout + result.stderr)
+
+    def test_a_relative_private_seam_include_bypasses_the_umbrella(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source_root = Path(scratch) / "src"
+            source_root.mkdir()
+            (source_root / "ported.cpp").write_text(
+                '#include "bs_platform.h"\n#include "./bs_platform_names.h"\n',
+                encoding="utf-8",
+            )
+            result = run_audit("--source-root", str(source_root))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("./bs_platform_names.h", result.stdout + result.stderr)
+        self.assertIn("instead of bs_platform.h", result.stdout + result.stderr)
 
     def test_a_shim_absent_from_the_proof_sources_is_rejected(self):
         document = real_manifest()
