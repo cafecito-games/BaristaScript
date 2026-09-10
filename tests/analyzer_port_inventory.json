@@ -11790,12 +11790,28 @@
         "fs_trait_utils.h:fs_trait_argument_references_self:8",
         "fs_trait_utils.h:fs_trait_implementer_reifies_self:9",
         "fs_trait_utils.h:fs_reify_self_in_trait_argument:10",
-        "fs_trait_utils.h:fs_project_conformance_trait_arguments:11"
+        "fs_trait_utils.h:fs_project_conformance_trait_arguments:11",
+        "fs_type.cpp:_combine_evidence:30",
+        "fs_type.cpp:_compare_datatype_evidence:31",
+        "fs_type.cpp:_compare_datatype_evidence:32",
+        "fs_type.cpp:_compare_union_members_evidence:33"
       ],
       "symbols": [
         {
           "path": "src/bs_type.cpp",
           "symbol": "BSTypeCompatibility::compare_projected_argument"
+        },
+        {
+          "path": "src/bs_type.cpp",
+          "symbol": "_combine_evidence"
+        },
+        {
+          "path": "src/bs_type.cpp",
+          "symbol": "_compare_datatype_evidence"
+        },
+        {
+          "path": "src/bs_type.cpp",
+          "symbol": "_compare_union_members_evidence"
         }
       ],
       "tests": [
@@ -11810,7 +11826,8 @@
         "commit": "71d7883a02d5be5c314c761fbe4e8cfc5f8ffb2f"
       },
       "branch_keys": [
-        "closed structural argument evidence/nominal source identity"
+        "closed structural argument evidence/nominal source identity",
+        "closed evidence aggregation/union member pairing reached by compare_projected_argument"
       ]
     },
     {
@@ -12275,12 +12292,17 @@
       "rationale": "Concrete nested container/Callable/Signal final-class-bound traversal preserves existing Self admission.",
       "upstream": [
         "fs_type.cpp:resolve_final_class_bound:7",
-        "fs_type.cpp:destination_is_undecidable_type_parameter:6"
+        "fs_type.cpp:destination_is_undecidable_type_parameter:6",
+        "fs_type.h:resolve_final_class_bound:6"
       ],
       "symbols": [
         {
           "path": "src/bs_type.cpp",
           "symbol": "BSTypeCompatibility::resolve_final_class_bound"
+        },
+        {
+          "path": "src/bs_type.h",
+          "symbol": "resolve_final_class_bound"
         }
       ],
       "tests": [
@@ -13625,7 +13647,7 @@
           },
           {
             "path": "tests/native/get_node_analyzer_tests.cpp",
-            "sha256": "d1764576e0d63b63c98addf03f38eef1f6d83bc4bf9d8cae1ed8dffd2ae94d48"
+            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
           }
         ],
         "results": [
@@ -13639,8 +13661,8 @@
               "get_node_analyzer"
             ],
             "exit": 0,
-            "log_sha256": "c1190517fd637efe045dd2ea32dc943f5e3a33cb7daa10194853a16dc5e863fe",
-            "result": "Native get_node_analyzer: 12 cases / 388 assertions passed; original retained enum sources included"
+            "log_sha256": "033a55e356443dba1eb5517f9eb3f498bdaba8de6b452190f3c0c8ea9dced794",
+            "result": "Native get_node_analyzer: 14 cases / 550 assertions passed; declaring defaults/lazy restoration and original retained enum sources included"
           }
         ]
       },
@@ -15151,11 +15173,11 @@
         "blobs": [
           {
             "path": "project/tests/analyzer_test.gd",
-            "sha256": "5eb1c21900bb1110e94232e88299e1899c6157f8c8881137a07e785ebd58496b"
+            "sha256": "14ee5a7ccaaeb14d7feb12e4244fcc0c99b64f9027333dcc57470cac195e3809"
           },
           {
             "path": "src/bs_analyzer.cpp",
-            "sha256": "a6c818beaab0e90f6d2e92b4c6d1759767dfe031b2e016aa034b36449dfef8a6"
+            "sha256": "178172b1df4e9960dd1502e94f389418bc4401f384e06f75edbf75c2949ce997"
           },
           {
             "path": "src/bs_analyzer_flow_finality.cpp",
@@ -15163,7 +15185,7 @@
           },
           {
             "path": "tests/native/get_node_analyzer_tests.cpp",
-            "sha256": "d1764576e0d63b63c98addf03f38eef1f6d83bc4bf9d8cae1ed8dffd2ae94d48"
+            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
           }
         ],
         "results": [
@@ -15177,8 +15199,8 @@
               "get_node_analyzer"
             ],
             "exit": 0,
-            "log_sha256": "c1190517fd637efe045dd2ea32dc943f5e3a33cb7daa10194853a16dc5e863fe",
-            "result": "Native get_node_analyzer: 12 cases / 388 assertions passed; original retained enum sources included"
+            "log_sha256": "033a55e356443dba1eb5517f9eb3f498bdaba8de6b452190f3c0c8ea9dced794",
+            "result": "Native get_node_analyzer: 14 cases / 550 assertions passed; declaring defaults/lazy restoration and original retained enum sources included"
           }
         ]
       },
@@ -15408,12 +15430,24 @@
         {
           "path": "src/bs_analyzer.cpp",
           "symbol": "BSAnalyzer::reduce_get_node"
+        },
+        {
+          "path": "src/bs_analyzer_conformance.cpp",
+          "symbol": "BSAnalyzer::resolve_function_signature_in_class"
         }
       ],
       "tests": [
         {
           "path": "tests/native/get_node_analyzer_tests.cpp",
           "symbol": "TEST_CASE(\"static_member_initializer_and_lambda_preserve_and_restore_context\")"
+        },
+        {
+          "path": "tests/native/get_node_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"parameter_defaults_use_the_declaring_static_context\")"
+        },
+        {
+          "path": "tests/native/get_node_analyzer_tests.cpp",
+          "symbol": "TEST_CASE(\"default_lambda_and_lazy_signature_restore_declaration_context\")"
         }
       ],
       "evidence": {
@@ -15427,23 +15461,27 @@
         "blobs": [
           {
             "path": "src/bs_analyzer.cpp",
-            "sha256": "a6c818beaab0e90f6d2e92b4c6d1759767dfe031b2e016aa034b36449dfef8a6"
+            "sha256": "178172b1df4e9960dd1502e94f389418bc4401f384e06f75edbf75c2949ce997"
           },
           {
             "path": "src/bs_analyzer.h",
-            "sha256": "9cf66823a3f7bfd05d5190426f638d3d48bef09716c4f52dd71ca3ba5f6f4ae4"
+            "sha256": "9b7fbb3717f38d6d4fec7189bb1caed557958bc829f50404d616101bb88c1a0e"
           },
           {
             "path": "src/bs_analyzer_surface.cpp",
-            "sha256": "d5f5a2669322aac5d8201b21cb0959b0d3f0a05768d9d1acf9ef03d83b94e56e"
+            "sha256": "07280ebd576cefea472628a2f3f02f42f956362ce5fc4e53462b4d6aa790e75a"
           },
           {
             "path": "tests/native/get_node_analyzer_tests.cpp",
-            "sha256": "d1764576e0d63b63c98addf03f38eef1f6d83bc4bf9d8cae1ed8dffd2ae94d48"
+            "sha256": "52487a481a6e6fa0638ad03cb2376ea21dba341c9e291ed62538a65b47c29e48"
           },
           {
             "path": "tests/native_suites.json",
             "sha256": "2a6619cc92b5ebffb420ae21ab544b12e632f1a928d51438fa4be45fd7c7c2d5"
+          },
+          {
+            "path": "src/bs_analyzer_conformance.cpp",
+            "sha256": "99ff3917bd387bafb8276ec217165738f235dba97add844cf819107464043a88"
           }
         ],
         "results": [
@@ -15457,8 +15495,8 @@
               "get_node_analyzer"
             ],
             "exit": 0,
-            "log_sha256": "c1190517fd637efe045dd2ea32dc943f5e3a33cb7daa10194853a16dc5e863fe",
-            "result": "Native get_node_analyzer: 12 cases / 388 assertions passed; original retained enum sources included"
+            "log_sha256": "033a55e356443dba1eb5517f9eb3f498bdaba8de6b452190f3c0c8ea9dced794",
+            "result": "Native get_node_analyzer: 14 cases / 550 assertions passed; declaring defaults/lazy restoration and original retained enum sources included"
           }
         ]
       },
@@ -15569,7 +15607,7 @@
               "/Users/christian/.codex/baristascript-m3/foundry-pinned"
             ],
             "exit": 0,
-            "log_sha256": "aca96bd79b37272a18ab7e854fa485eb8782da696a08136cec1ec22937af234c",
+            "log_sha256": "9c8c0dd5c1317ba0a978fad6dd69df61e2131b6872ff16c1a15627f0f4580827",
             "result": "Twelve inventory tests passed, including immutable pin, malformed evidence, shallow history, detached and integrated checkout controls"
           }
         ]

@@ -79,6 +79,70 @@ TEST_SUITE("get_node_analyzer") {
 		scenario("Node", true, "$");
 		scenario("Node", true, "%");
 	}
+	TEST_CASE("parameter_defaults_use_the_declaring_static_context") {
+		for (bool is_static : { false, true }) {
+			for (const char *spelling : { "$", "%" }) {
+				StorageFixture fixture;
+				BSParser parser;
+				const String source = String("extends Node\n") + (is_static ? "static " : "") + "func f(_arg = " + spelling + "Child):\n\tpass\n";
+				BS_TEST_REQUIRE(parser.parse(source, fixture.path("default.barista"), false) == OK);
+				auto *expression = parser.get_tree()->get_member("f").function->parameters[0]->initializer;
+				BS_TEST_REQUIRE(expression && expression->type == BSParser::Node::GET_NODE);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() == OK) == !is_static);
+				if (is_static) {
+					BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+					const auto &e = parser.get_errors().front()->get();
+					CHECK(e.message == String("Cannot use shorthand \"get_node()\" notation (\"") + spelling + "\") in a static function.");
+					CHECK(e.line == 2);
+					CHECK(e.column == 22);
+					CHECK(e.end_line == 2);
+					CHECK(e.end_column == 28);
+				} else {
+					CHECK(parser.get_errors().is_empty());
+					node_type(expression);
+				}
+				CHECK(parser.get_warnings().is_empty());
+			}
+		}
+	}
+	TEST_CASE("default_lambda_and_lazy_signature_restore_declaration_context") {
+		for (bool lambda : { false, true }) {
+			for (bool is_static : { false, true }) {
+				StorageFixture fixture;
+				BSParser parser;
+				const String source = String("extends Node\nvar value = f()\n") + (is_static ? "static " : "") + "func f(_arg = " + (lambda ? "func(): return " : "") + "$Child):\n\treturn 1\nfunc after():\n\treturn %Child\n";
+				BS_TEST_REQUIRE(parser.parse(source, fixture.path("lazy_default.barista"), false) == OK);
+				auto *expression = parser.get_tree()->get_member("f").function->parameters[0]->initializer;
+				BS_TEST_REQUIRE(expression != nullptr);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() == OK) == !is_static);
+				if (is_static) {
+					BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+					const auto &e = parser.get_errors().front()->get();
+					CHECK(e.message == "Cannot use shorthand \"get_node()\" notation (\"$\") in a static function.");
+					CHECK(e.line == 3);
+					CHECK(e.column == (lambda ? 37 : 22));
+					CHECK(e.end_line == 3);
+					CHECK(e.end_column == (lambda ? 43 : 28));
+				} else {
+					CHECK(parser.get_errors().is_empty());
+				}
+				if (lambda) {
+					BS_TEST_REQUIRE(expression->type == BSParser::Node::LAMBDA);
+					auto *node = static_cast<BSParser::LambdaNode *>(expression);
+					CHECK(node->function->is_static == is_static);
+					CHECK(node->use_self == !is_static);
+					if (!is_static)
+						node_type(returned(node->function));
+				} else if (!is_static) {
+					node_type(expression);
+				}
+				node_type(returned(parser.get_tree()->get_member("after").function));
+				CHECK(parser.get_warnings().is_empty());
+			}
+		}
+	}
 	TEST_CASE("nested_lambdas_capture_every_parent_and_restore_context") {
 		StorageFixture fixture;
 		BSParser parser;

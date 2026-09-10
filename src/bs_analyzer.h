@@ -521,8 +521,8 @@ private:
 		}
 	};
 	BSParser::FunctionNode *current_function = nullptr;
-	// GET_NODE uses the declaration initializer context even during lazy member resolution.
-	const BSParser::VariableNode *get_node_initializer = nullptr;
+	// GET_NODE follows the innermost member initializer or parameter-default declaration.
+	const BSParser::Node *get_node_declaration = nullptr;
 	bool get_node_is_static_context() const;
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
 	BSParser::EnumNode *current_enum = nullptr;

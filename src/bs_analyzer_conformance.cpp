@@ -511,7 +511,11 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 		const StringName parameter_name = parameter->identifier != nullptr ? parameter->identifier->name : StringName();
 		method_info.arguments.push_back(parameter->get_datatype().to_property_info(parameter_name));
 		if (parameter->initializer != nullptr) {
+			// Foundry fs_analyzer.cpp:4677-4730: defaults use their declaring function's static context.
+			const BSParser::Node *previous_declaration = get_node_declaration;
+			get_node_declaration = p_function;
 			reduce_expression(parameter->initializer);
+			get_node_declaration = previous_declaration;
 			// Foundry assignable path: parameter defaults qualify contextual `.Case` against the
 			// parameter's declared type (during signature resolve, before the body sweep).
 			qualify_contextual_enum_case_consumer(parameter->initializer, parameter->get_datatype());

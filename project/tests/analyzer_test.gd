@@ -5602,8 +5602,8 @@ func _test_pinned_suite_exit_summary(failures: PackedStringArray) -> void:
 		["original_noreturn_function_return", "@noreturn\nfunc invalid_return() -> void:\n\treturn\n", [["A \"@noreturn\" function cannot return.", 2, 1]], [], 8],
 		["original_noreturn_function_fallthrough", "@noreturn\nfunc invalid_fallthrough() -> void:\n\tprint(\"fallthrough\")\n", [["A \"@noreturn\" function cannot complete normally.", 2, 1]], [], 8],
 		["original_noreturn_unreachable_norun", "@noreturn\nfunc abort_user() -> void:\n\tpush_fatal(\"abort\")\n\nfunc unreachable_after_noreturn() -> void:\n\tabort_user()\n\tprint(\"unreachable\")\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"unreachable_after_noreturn()\".", 7, 5, 7, 25]], 8],
-		["body_unknown_call", "func f() -> int:\n\tunknown_abort()\n", [["Identifier \"unknown_abort\" not declared in the current scope.", 2, 5]], [], 5],
-		["body_failure_before_flow", "func f() -> int:\n\tmissing_name\n", [["Identifier \"missing_name\" not declared in the current scope.", 2, 5]], [], 5],
+		["body_unknown_call", "func f() -> int:\n\tunknown_abort()\n", [["Not all code paths return a value.", 1, 1], ["Identifier \"unknown_abort\" not declared in the current scope.", 2, 5]], [], 5, ["Identifier \"unknown_abort\" not declared in the current scope.", "Not all code paths return a value."]],
+		["body_failure_before_flow", "func f() -> int:\n\tmissing_name\n", [["Not all code paths return a value.", 1, 1], ["Identifier \"missing_name\" not declared in the current scope.", 2, 5]], [], 5, ["Identifier \"missing_name\" not declared in the current scope.", "Not all code paths return a value."]],
 		["parse_failure_before_flow", "func f(\n", [["Expected closing \")\" after function parameters.", 1, 7]], [], -1],
 		["lambda_missing_return", "func f() -> void:\n\tvar _callback := func() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 2, 22]], [], 8],
 		["nested_class_missing_return", "class C:\n\tfunc f() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 2, 5]], [], 8],
@@ -5631,8 +5631,11 @@ func _test_pinned_suite_exit_summary(failures: PackedStringArray) -> void:
 		_expect(failures, report.get("valid") == expected_valid and _errors_are_exact(report.get("errors", []), fixture[2]), fixture[0] + " exact flow errors: " + str(report))
 		_expect(failures, _warnings_are_exact(report.get("warnings", []), fixture[3]), fixture[0] + " exact flow warnings: " + str(report))
 		var expected_messages: PackedStringArray = []
-		for error in fixture[2]:
-			expected_messages.append(error[0])
+		if fixture.size() > 5:
+			expected_messages = PackedStringArray(fixture[5])
+		else:
+			for error in fixture[2]:
+				expected_messages.append(error[0])
 		_expect(failures, analysis.get("valid") == expected_valid and analysis.get("phase") == fixture[4] and analysis.get("errors") == expected_messages and not analysis.has("warnings"), fixture[0] + " exact phase/error boundary: " + str(analysis))
 		_expect(failures, probe.is_semantically_valid(fixture[1], path) == expected_valid, fixture[0] + " semantic validity agrees")
 		_expect(failures, probe.validate_source(fixture[1], path, true) == report and probe.analyze_source(fixture[1], path) == analysis, fixture[0] + " repeated analysis is stable")

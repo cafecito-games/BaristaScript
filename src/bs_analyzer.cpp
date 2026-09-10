@@ -3819,8 +3819,13 @@ void BSAnalyzer::reduce_await(BSParser::AwaitNode *p_await) {
 }
 
 bool BSAnalyzer::get_node_is_static_context() const {
-	if (get_node_initializer != nullptr) {
-		return get_node_initializer->is_static;
+	if (get_node_declaration != nullptr) {
+		if (get_node_declaration->type == BSParser::Node::VARIABLE) {
+			return static_cast<const BSParser::VariableNode *>(get_node_declaration)->is_static;
+		}
+		if (get_node_declaration->type == BSParser::Node::FUNCTION) {
+			return static_cast<const BSParser::FunctionNode *>(get_node_declaration)->is_static;
+		}
 	}
 	return current_function != nullptr && current_function->is_static;
 }
