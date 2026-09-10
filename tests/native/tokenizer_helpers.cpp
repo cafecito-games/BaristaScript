@@ -1,23 +1,21 @@
 /**************************************************************************/
-/*  bs_tokenizer_probe.cpp                                                */
+/*  tokenizer_helpers.cpp                                                */
 /*                                                                        */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
-#include "bs_tokenizer_probe.h"
-
-#ifdef DEBUG_ENABLED
+#include "tokenizer_helpers.h"
 
 #include "bs_tokenizer.h"
 #include "bs_tokenizer_buffer.h"
 
-#include <godot_cpp/core/class_db.hpp>
+#include "doctest.h"
 
 using namespace godot;
 
-namespace barista_script {
+namespace barista_script::test {
 
 namespace {
 
@@ -58,17 +56,7 @@ String render_significant_token(const BSTokenizer::Token &p_token) {
 
 } // namespace
 
-void BaristaScriptTokenizerProbe::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("first_diagnostic", "source_utf8"), &BaristaScriptTokenizerProbe::first_diagnostic);
-	ClassDB::bind_method(D_METHOD("dump_tokens", "source_utf8"), &BaristaScriptTokenizerProbe::dump_tokens);
-	ClassDB::bind_method(D_METHOD("dump_significant_tokens", "source_utf8"), &BaristaScriptTokenizerProbe::dump_significant_tokens);
-	ClassDB::bind_method(D_METHOD("dump_buffer_significant_tokens", "source_utf8", "compress"), &BaristaScriptTokenizerProbe::dump_buffer_significant_tokens);
-	ClassDB::bind_method(D_METHOD("token_type_names"), &BaristaScriptTokenizerProbe::token_type_names);
-	ClassDB::bind_method(D_METHOD("keyword_spellings"), &BaristaScriptTokenizerProbe::keyword_spellings);
-	ClassDB::bind_method(D_METHOD("reserved_spellings"), &BaristaScriptTokenizerProbe::reserved_spellings);
-}
-
-String BaristaScriptTokenizerProbe::first_diagnostic(const PackedByteArray &p_source_utf8) const {
+String first_diagnostic(const PackedByteArray &p_source_utf8) {
 	String source;
 	String decode_error;
 	if (!BSTokenizer::decode_source(p_source_utf8, &source, &decode_error)) {
@@ -89,7 +77,7 @@ String BaristaScriptTokenizerProbe::first_diagnostic(const PackedByteArray &p_so
 	return "Tokenizer did not reach end of file.";
 }
 
-PackedStringArray BaristaScriptTokenizerProbe::dump_tokens(const PackedByteArray &p_source_utf8) const {
+PackedStringArray dump_tokens(const PackedByteArray &p_source_utf8) {
 	PackedStringArray lines;
 	String source;
 	String decode_error;
@@ -107,13 +95,14 @@ PackedStringArray BaristaScriptTokenizerProbe::dump_tokens(const PackedByteArray
 				token.start_line, token.start_column, token.end_line, token.end_column,
 				FIELD_SEPARATOR, render_literal(token.literal)));
 		if (token.type == BSTokenizer::Token::TK_EOF) {
-			break;
+			return lines;
 		}
 	}
+	FAIL("Tokenizer did not reach end of file.");
 	return lines;
 }
 
-PackedStringArray BaristaScriptTokenizerProbe::dump_significant_tokens(const PackedByteArray &p_source_utf8) const {
+PackedStringArray dump_significant_tokens(const PackedByteArray &p_source_utf8) {
 	PackedStringArray lines;
 	String source;
 	String decode_error;
@@ -127,17 +116,18 @@ PackedStringArray BaristaScriptTokenizerProbe::dump_significant_tokens(const Pac
 	for (int scanned = 0; scanned < MAX_SCANNED_TOKENS; scanned++) {
 		const BSTokenizer::Token token = tokenizer.scan();
 		if (token.type == BSTokenizer::Token::TK_EOF) {
-			break;
+			return lines;
 		}
 		if (is_layout_token(token.type)) {
 			continue;
 		}
 		lines.push_back(render_significant_token(token));
 	}
+	FAIL("Tokenizer did not reach end of file.");
 	return lines;
 }
 
-PackedStringArray BaristaScriptTokenizerProbe::dump_buffer_significant_tokens(const PackedByteArray &p_source_utf8, bool p_compress) const {
+PackedStringArray dump_buffer_significant_tokens(const PackedByteArray &p_source_utf8, bool p_compress) {
 	PackedStringArray lines;
 	String source;
 	String decode_error;
@@ -159,17 +149,18 @@ PackedStringArray BaristaScriptTokenizerProbe::dump_buffer_significant_tokens(co
 	for (int scanned = 0; scanned < MAX_SCANNED_TOKENS; scanned++) {
 		const BSTokenizer::Token token = tokenizer.scan();
 		if (token.type == BSTokenizer::Token::TK_EOF) {
-			break;
+			return lines;
 		}
 		if (is_layout_token(token.type)) {
 			continue;
 		}
 		lines.push_back(render_significant_token(token));
 	}
+	FAIL("Tokenizer did not reach end of file.");
 	return lines;
 }
 
-PackedStringArray BaristaScriptTokenizerProbe::token_type_names() const {
+PackedStringArray token_type_names() {
 	PackedStringArray names;
 	for (int type = 0; type < BSTokenizer::Token::TK_MAX; type++) {
 		names.push_back(BSTokenizer::get_token_name((BSTokenizer::Token::Type)type));
@@ -177,7 +168,7 @@ PackedStringArray BaristaScriptTokenizerProbe::token_type_names() const {
 	return names;
 }
 
-PackedStringArray BaristaScriptTokenizerProbe::keyword_spellings() const {
+PackedStringArray keyword_spellings() {
 	PackedStringArray spellings;
 	for (const String &spelling : BSTokenizer::get_keyword_spellings()) {
 		spellings.push_back(spelling);
@@ -185,7 +176,7 @@ PackedStringArray BaristaScriptTokenizerProbe::keyword_spellings() const {
 	return spellings;
 }
 
-PackedStringArray BaristaScriptTokenizerProbe::reserved_spellings() const {
+PackedStringArray reserved_spellings() {
 	PackedStringArray spellings;
 	for (const String &spelling : BSTokenizer::get_reserved_spellings()) {
 		spellings.push_back(spelling);
@@ -193,6 +184,4 @@ PackedStringArray BaristaScriptTokenizerProbe::reserved_spellings() const {
 	return spellings;
 }
 
-} // namespace barista_script
-
-#endif // DEBUG_ENABLED
+} //namespace barista_script::test

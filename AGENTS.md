@@ -10,6 +10,8 @@ BaristaScript is a C++17 GDExtension that makes Godot 4.7 recognize `.barista` f
 - `scons api_version=4.7 target=template_debug` builds the debug extension into `project/bin/<platform>/`.
 - `scons api_version=4.7 target=template_release` creates a release build.
 - `cmake -S . -B build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug && cmake --build build --parallel` exercises the alternative CMake path.
+- `scons api_version=4.7 target=template_debug barista_tests=yes` builds isolated native C++ tests under `build/native-scons/`; run `python3 tests/run_native_suites.py --godot "$(command -v godot)"` and `python3 tests/test_run_native_suites.py --godot "$(command -v godot)"`.
+- CMake exposes `-DBARISTA_TESTS=ON`; select its isolated artifact with `python3 tests/run_native_suites.py --godot "$(command -v godot)" --build-dir build/native-cmake`. Both test options default off.
 - `python3 tests/validate_ci.py` checks that the CI matrix matches the pinned API precision and event policy.
 - `godot --headless --path project --editor --quit` imports the fixture; then `python3 tests/run_gdscript_suites.py --godot $(which godot)` runs every GDScript suite in `project/tests/` and fails when one did not actually run.
 
@@ -22,6 +24,18 @@ Follow `.clang-format`: tabs with width 4, attached braces, and Godot-style C++.
 
 ## Testing Guidelines
 
+Tokenizer contracts are native doctest cases in `tests/native/`, hosted by stock Godot through
+`--main-loop` with no GDScript bootstrap. Follow `tests/native/README.md`: C++ registrations own
+case names and `tests/native_suites.json` owns required suites. Never construct Godot-backed
+objects in static initializers. Use the supervisor for verification; list/query mode and exit
+0 alone are not execution evidence. Verify both build systems and on/off/on transitions when
+changing native build infrastructure; `tests/verify_native_surface.py` checks ordinary debug
+and release artifacts. Native runs must leave ordinary fixtures, descriptors and libraries intact.
+After a native CMake build, `python3 tests/test_native_cmake_rebuild.py --godot "$(command -v godot)"`
+checks incremental XML/build-script/profile changes using only `cmake --build`. It temporarily
+edits those inputs and restores their exact bytes and rebuilds even if a check fails; run it
+without concurrent builds or source edits.
+
 Add focused assertions to `project/tests/smoke_test.gd` for runtime-facing behavior. Name new GDScript tests `*_test.gd` and repository checks `test_*.py` or `validate_*.py`. A `*_test.gd` file under `project/tests/` is discovered and run by `tests/run_gdscript_suites.py` with no further wiring, and it must end with `quit(SuiteGuard.report("<suite stem>", failures))` using `project/tests/suite_guard.gd`: SceneTree quits 0 on a parse error, so the shared `BS_SUITE_OK <stem>` sentinel is the only evidence the suite ran, and the runner fails the job without it. Declare a suite that needs arguments, or a script not named `*_test.gd`, in `tests/gdscript_suites.json`. Run CI validation, an affected build path, editor import, and the suite runner before opening a PR. No numeric coverage threshold is enforced; behavioral changes should include regression coverage.
 
 ## Commit & Pull Request Guidelines
@@ -30,7 +44,7 @@ History uses short, imperative Conventional Commit subjects such as `feat:`, `fi
 
 ## Licensing Headers
 
-The project is MIT licensed to Cafecito Games LLC. Every C++, Python, and GDScript source file carries the header produced by `scripts/add_license_header.py`; run `python3 scripts/add_license_header.py` to fill in any missing headers, or `python3 scripts/add_license_header.py --check` to report them without editing. `prek install` wires the `.pre-commit-config.yaml` hook that adds the header at commit time, failing the commit when it had to modify a file so the change can be re-staged. Third-party and generated trees (`godot-cpp/`, `build/`, `bin/`, `src/gen/`) and the upstream-derived `methods.py` are excluded.
+The project is MIT licensed to Cafecito Games LLC. Every C++, Python, and GDScript source file carries the header produced by `scripts/add_license_header.py`; run `python3 scripts/add_license_header.py` to fill in any missing headers, or `python3 scripts/add_license_header.py --check` to report them without editing. `prek install` wires the `.pre-commit-config.yaml` hook that adds the header at commit time, failing the commit when it had to modify a file so the change can be re-staged. Third-party and generated trees (`godot-cpp/`, `thirdparty/`, `build/`, `bin/`, `src/gen/`) and the upstream-derived `methods.py` are excluded.
 
 ## Generated Files
 

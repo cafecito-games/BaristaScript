@@ -157,6 +157,13 @@ jobs:
           --binary-dir project/bin/${{ matrix.target.platform }}
           --target-type ${{ matrix.target-type }}
 
+      - name: Verify native tests are absent from distribution artifacts
+        shell: bash
+        run: >-
+          python3 tests/verify_native_surface.py
+          --binary-dir project/bin/${{ matrix.target.platform }}
+          --target-type ${{ matrix.target-type }}
+
       - name: Probe the removed-warning-code compile error
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash
@@ -180,7 +187,29 @@ jobs:
           # A GDScript parse error makes SceneTree quit 0, so no suite may be invoked directly
           # here: the runner discovers every project/tests/*_test.gd and fails the job unless the
           # run printed the guard sentinel that only executed code can produce.
-          python tests/run_gdscript_suites.py --godot "$godot_binary"
+          python3 tests/run_gdscript_suites.py --godot "$godot_binary"
+
+          scons api_version=4.7 target=template_debug barista_tests=yes
+          python3 tests/test_run_native_suites.py --godot "$godot_binary"
+          python3 tests/run_native_suites.py --godot "$godot_binary"
+          scons api_version=4.7 target=template_debug barista_tests=no
+          python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
+          scons api_version=4.7 target=template_release barista_tests=no
+          python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_release
+          scons api_version=4.7 target=template_debug barista_tests=yes
+          python3 tests/run_native_suites.py --godot "$godot_binary"
+
+          cmake -S . -B build/native-cmake -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
+          cmake --build build/native-cmake --parallel 2
+          python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+          python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+          python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake
+          cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF
+          cmake --build build/native-cmake --parallel 2
+          python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
+          cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON
+          cmake --build build/native-cmake --parallel 2
+          python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save

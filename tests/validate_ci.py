@@ -155,6 +155,23 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
     return None
 
 
+def check_native_suite_wiring(workflow: str) -> str | None:
+    """Reuse the guarded shell audit and require the entire native manifest, never a subset."""
+    native_runner = "tests/run_native_suites.py"
+    translated = workflow.replace(SUITE_RUNNER, "legacy-suite-runner")
+    translated = translated.replace(native_runner, SUITE_RUNNER)
+    complaint = check_gdscript_suite_wiring(translated)
+    if complaint:
+        return complaint.replace(SUITE_RUNNER, native_runner).replace("GDScript", "native")
+    effective = [arguments for arguments, step in runner_invocations(executable_lines(translated))
+                 if "--godot" in arguments and "--list" not in arguments
+                 and not re.search(r"--(?:suite|case)\b", arguments)
+                 and not SUPPRESSED_STATUS.search(arguments) and not CONTINUE_ON_ERROR.search(step)]
+    if not effective:
+        return "CI must execute the complete native suite manifest without --suite/--case filters"
+    return None
+
+
 def check_corpus_baseline() -> str | None:
     """Return a complaint when the corpus baseline, the tree and the CI pin disagree.
 
@@ -312,6 +329,11 @@ def main() -> int:
     suite_wiring_complaint = check_gdscript_suite_wiring(workflow)
     if suite_wiring_complaint is not None:
         print(suite_wiring_complaint)
+        return 1
+
+    native_complaint = check_native_suite_wiring(workflow)
+    if native_complaint is not None:
+        print(native_complaint)
         return 1
 
     baseline_complaint = check_corpus_baseline()

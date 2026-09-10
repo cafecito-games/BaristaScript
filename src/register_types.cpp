@@ -18,8 +18,11 @@
 #include "bs_global_class_probe.h"
 #include "bs_parser_probe.h"
 #include "bs_platform_probe.h"
-#include "bs_tokenizer_probe.h"
 #include "bs_warning.h"
+
+#ifdef BARISTA_TESTS
+#include "native_test_runner.h"
+#endif
 
 #ifdef DEBUG_ENABLED
 #include "barista_script_parse_cache.h"
@@ -44,6 +47,9 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 		return;
 	}
 
+#ifdef BARISTA_TESTS
+	GDREGISTER_CLASS(BaristaNativeTestRunner);
+#endif
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);
 	GDREGISTER_CLASS(barista_script::BaristaScriptResourceLoader);
@@ -62,7 +68,6 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	// reaches BSCache directly; only the GDScript suites use this adapter to mutate cache state and
 	// inject persistence faults.
 	GDREGISTER_CLASS(barista_script::BaristaScriptParseCache);
-	GDREGISTER_CLASS(barista_script::BaristaScriptTokenizerProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptGlobalClassProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptPlatformProbe);
