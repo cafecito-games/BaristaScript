@@ -275,6 +275,9 @@ class BSCache {
 	std::mutex mutex;
 
 	friend class BSParserRef;
+#ifdef BARISTA_TESTS
+	friend struct ProviderCacheTestAccess;
+#endif
 
 	/**
 	 * Drops every dependency edge naming p_path, in both directions. Ported from

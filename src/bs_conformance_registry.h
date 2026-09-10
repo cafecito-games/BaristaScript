@@ -317,7 +317,7 @@ public:
 	 * conformance_index only — never a borrowed FunctionNode.
 	 */
 	bool find_witness_location(const String &p_target_fqcn, const StringName &p_method,
-			String &r_source_file, int &r_conformance_index) const;
+			String &r_source_file, int &r_conformance_index, StringName *r_trait_name = nullptr) const;
 
 	/**
 	 * The declaring file and trait of a witness for `(p_target_fqcn, p_method)` that

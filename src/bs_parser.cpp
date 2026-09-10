@@ -1524,6 +1524,9 @@ BSParser::ClassNode *BSParser::find_class(const String &p_qualified_name) const 
 }
 
 bool BSParser::has_class(const BSParser::ClassNode *p_class) const {
+	if (head == nullptr || p_class == nullptr) {
+		return false;
+	}
 	if (head->fqcn.is_empty() && p_class->fqcn.get_slice("::", 0).is_empty()) {
 		return p_class == head;
 	} else if (p_class->fqcn.begins_with(head->fqcn)) {

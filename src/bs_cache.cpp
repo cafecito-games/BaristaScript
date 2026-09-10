@@ -12,6 +12,8 @@
 
 #include "bs_cache.h"
 
+#include <vector>
+
 #include "bs_analyzer.h"
 #include "bs_builtin_sources.h"
 #include "bs_parser.h"
@@ -746,26 +748,6 @@ void BSCache::remove_script(const String &p_path) {
 		return;
 	}
 
-	{
-		std::lock_guard<std::mutex> lock(cache->mutex);
-		if (cache->cleared) {
-			return;
-		}
-		if (HashMap<String, Vector<uint64_t>>::Iterator abandoned = cache->abandoned_parser_map.find(p_path)) {
-			for (uint64_t parser_ref_id : abandoned->value) {
-				Object *object = ObjectDB::get_instance(parser_ref_id);
-				BSParserRef *parser_ref = object != nullptr ? Object::cast_to<BSParserRef>(object) : nullptr;
-				if (parser_ref != nullptr) {
-					parser_ref->clear();
-				}
-			}
-		}
-		cache->abandoned_parser_map.erase(p_path);
-		if (cache->parser_map.has(p_path) && cache->parser_map[p_path].is_valid()) {
-			cache->parser_map[p_path]->clear();
-		}
-	}
-
 	remove_parser(p_path);
 
 	std::lock_guard<std::mutex> lock(cache->mutex);
@@ -791,22 +773,102 @@ void BSCache::clear() {
 	if (cache == nullptr) {
 		return;
 	}
-	std::lock_guard<std::mutex> lock(cache->mutex);
-	cache->cleared = true;
-	for (KeyValue<String, Ref<BSParserRef>> &entry : cache->parser_map) {
-		if (entry.value.is_valid()) {
-			entry.value->abandoned = true;
-			entry.value->clear();
+	Vector<Ref<BSParserRef>> detached;
+	{
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		cache->cleared = true;
+		for (KeyValue<String, Ref<BSParserRef>> &entry : cache->parser_map) {
+			if (entry.value.is_valid()) {
+				entry.value->abandoned = true;
+				cache->abandoned_parser_map[entry.key].push_back(entry.value->get_instance_id());
+			}
+		}
+		// The existing abandoned IDs include generations detached by remove_parser.
+		// Hold each ref once while detaching; no AST or last ref is destroyed under this lock.
+		HashSet<uint64_t> seen;
+		for (const KeyValue<String, Vector<uint64_t>> &entry : cache->abandoned_parser_map) {
+			for (const uint64_t id : entry.value) {
+				Object *object = ObjectDB::get_instance(id);
+				BSParserRef *ref = object != nullptr ? Object::cast_to<BSParserRef>(object) : nullptr;
+				if (ref != nullptr && !seen.has(id)) {
+					seen.insert(id);
+					detached.push_back(Ref<BSParserRef>(ref));
+				}
+			}
+		}
+		cache->parser_map.clear();
+		cache->parser_dependencies.clear();
+		cache->parser_inverse_dependencies.clear();
+		cache->source_overrides.clear();
+		cache->dependencies.clear();
+		cache->inverse_dependencies.clear();
+		cache->cleared = false;
+	}
+
+	// Legal mutually typed declarations retain cycles. Count references held by the
+	// existing parser load maps and analyzer owner caches, plus this one snapshot ref.
+	// Anything else is an external root; preserve it and every provider it reaches.
+	// A busy analysis makes ownership ambiguous: skip collection rather than waiting
+	// with another provider lock held or inspecting a concurrently changing AST.
+	std::vector<std::unique_lock<std::recursive_mutex>> phase_locks;
+	for (const Ref<BSParserRef> &ref : detached) {
+		phase_locks.emplace_back(ref->raise_mutex, std::try_to_lock);
+		if (!phase_locks.back().owns_lock()) {
+			return;
 		}
 	}
-	cache->parser_map.clear();
-	cache->parser_dependencies.clear();
-	cache->parser_inverse_dependencies.clear();
-	cache->abandoned_parser_map.clear();
-	cache->source_overrides.clear();
-	cache->dependencies.clear();
-	cache->inverse_dependencies.clear();
-	cache->cleared = false;
+	HashMap<BSParserRef *, int> internal;
+	for (const Ref<BSParserRef> &ref : detached) {
+		internal[ref.ptr()] = 1;
+	}
+	auto visit_edges = [&](BSParserRef *ref, const auto &visit) {
+		if (ref->parser != nullptr) {
+			for (const auto &edge : ref->parser->get_depended_parsers()) {
+				if (edge.value.is_valid()) {
+					visit(edge.value.ptr());
+				}
+			}
+		}
+		if (ref->analyzer != nullptr) {
+			for (const auto &edge : ref->analyzer->external_class_parser_cache) {
+				if (edge.value.is_valid()) {
+					visit(edge.value.ptr());
+				}
+			}
+		}
+	};
+	for (const Ref<BSParserRef> &ref : detached) {
+		visit_edges(ref.ptr(), [&](BSParserRef *dependency) {
+			if (int *count = internal.getptr(dependency)) {
+				++*count;
+			}
+		});
+	}
+	List<BSParserRef *> pending;
+	HashSet<BSParserRef *> reachable;
+	for (const Ref<BSParserRef> &ref : detached) {
+		if (ref->get_reference_count() != internal[ref.ptr()]) {
+			pending.push_back(ref.ptr());
+		}
+	}
+	while (!pending.is_empty()) {
+		BSParserRef *ref = pending.front()->get();
+		pending.pop_front();
+		if (reachable.has(ref)) {
+			continue;
+		}
+		reachable.insert(ref);
+		visit_edges(ref, [&](BSParserRef *dependency) {
+			if (internal.has(dependency)) {
+				pending.push_back(dependency);
+			}
+		});
+	}
+	for (const Ref<BSParserRef> &ref : detached) {
+		if (!reachable.has(ref.ptr())) {
+			ref->clear();
+		}
+	}
 }
 
 void BSCache::clear_parser_dependency_edges(BSCache *p_cache, const String &p_path) {
@@ -933,10 +995,17 @@ void BSParserRef::clear() {
 BSParserRef::~BSParserRef() {
 	clear();
 
-	if (!abandoned) {
-		BSCache *cache = BSCache::get_singleton();
-		if (cache != nullptr) {
-			std::lock_guard<std::mutex> lock(cache->mutex);
+	BSCache *cache = BSCache::get_singleton();
+	if (cache != nullptr) {
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		if (abandoned) {
+			if (auto entry = cache->abandoned_parser_map.find(path)) {
+				entry->value.erase(get_instance_id());
+				if (entry->value.is_empty()) {
+					cache->abandoned_parser_map.erase(path);
+				}
+			}
+		} else {
 			cache->parser_map.erase(path);
 		}
 	}
@@ -985,7 +1054,7 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 		// Record edges only after the path is admitted so missing files cannot leave ghost
 		// inverse dependencies that would later invalidate owners (#56 / #27 AC).
 		if (!owner.is_empty() && path != owner) {
-			cache->dependencies[owner].insert(path);
+			cache->parser_dependencies[owner].insert(path);
 			cache->parser_inverse_dependencies[path].insert(owner);
 		}
 	}
@@ -1059,11 +1128,12 @@ void BSCache::remove_parser(const String &p_path) {
 	}
 	const String path = p_path.simplify_path();
 	HashSet<String> ideps;
+	Ref<BSParserRef> parser_ref;
 	{
 		std::lock_guard<std::mutex> lock(cache->mutex);
 		clear_parser_dependency_edges(cache, path);
 		if (cache->parser_map.has(path)) {
-			Ref<BSParserRef> parser_ref = cache->parser_map[path];
+			parser_ref = cache->parser_map[path];
 			if (parser_ref.is_valid()) {
 				parser_ref->abandoned = true;
 				cache->abandoned_parser_map[path].push_back(parser_ref->get_instance_id());

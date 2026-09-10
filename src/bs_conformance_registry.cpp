@@ -727,9 +727,12 @@ Vector<BSConformanceRegistry::ClassTraitBinding> BSConformanceRegistry::get_file
 }
 
 bool BSConformanceRegistry::find_witness_location(const String &p_target_fqcn, const StringName &p_method,
-		String &r_source_file, int &r_conformance_index) const {
+		String &r_source_file, int &r_conformance_index, StringName *r_trait_name) const {
 	r_source_file = String();
 	r_conformance_index = -1;
+	if (r_trait_name != nullptr) {
+		*r_trait_name = StringName();
+	}
 	if (p_target_fqcn.is_empty() || p_method == StringName()) {
 		return false;
 	}
@@ -745,6 +748,9 @@ bool BSConformanceRegistry::find_witness_location(const String &p_target_fqcn, c
 			}
 			r_source_file = conformance.source_file;
 			r_conformance_index = conformance.conformance_index;
+			if (r_trait_name != nullptr) {
+				*r_trait_name = conformance.trait_name;
+			}
 			return true;
 		}
 	}
