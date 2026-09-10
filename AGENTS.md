@@ -20,7 +20,7 @@ machine, and `.pre-commit-config.yaml` already uses `python3`.
 
 ## Coding Style & Naming Conventions
 
-Follow `.clang-format`: tabs with width 4, attached braces, and Godot-style C++. Use PascalCase for classes (`BaristaScriptLanguage`), snake_case for methods and files, and leading underscores for Godot extension overrides. Format C++ with `clang-format -i src/*.cpp src/*.h`; check without edits using `clang-format --dry-run --Werror src/*.cpp src/*.h`. GDScript also uses tabs and typed declarations where practical.
+Follow `.clang-format`: tabs with width 4, attached braces, and Godot-style C++. Use PascalCase for classes (`BaristaScriptLanguage`), snake_case for methods and files, and leading underscores for Godot extension overrides. Install the pinned formatter with `python3 -m pip install -r scripts/requirements-format.txt` (use a virtual environment when Python is externally managed). Check all maintained tracked C/C++ files, including native tests, with `python3 scripts/check_format.py`; explicitly repair them with `python3 scripts/check_format.py --fix`. The same selector runs in the local hook and the dedicated CI static job. GDScript also uses tabs and typed declarations where practical.
 
 ## Testing Guidelines
 

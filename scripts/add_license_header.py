@@ -17,6 +17,7 @@ With no paths, every tracked source file in the repository is processed.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -122,13 +123,12 @@ def apply_header(path: Path) -> bool:
 
 def tracked_source_files() -> list[Path]:
     listing = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "-z"],
         cwd=REPOSITORY_ROOT,
         capture_output=True,
-        text=True,
         check=True,
-    ).stdout.split()
-    candidates = (REPOSITORY_ROOT / name for name in listing)
+    ).stdout.split(b"\0")
+    candidates = (REPOSITORY_ROOT / os.fsdecode(name) for name in listing if name)
     return [path for path in candidates if header_for(path) and not is_excluded(path)]
 
 
