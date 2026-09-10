@@ -1358,7 +1358,9 @@ void BSParser::parse_program() {
 
 // D-deferred comments removed: get_depended_parser_for / get_depended_parsers restored by #27.
 
-Ref<BSParserRef> BSParser::get_depended_parser_for(const String &p_path) {
+Ref<BSParserRef> BSParser::get_depended_parser_for(const String &p_path, Error *r_error) {
+	if (r_error != nullptr)
+		*r_error = OK;
 	String path = p_path.strip_edges();
 	if (path.is_empty()) {
 		return Ref<BSParserRef>();
@@ -1374,6 +1376,8 @@ Ref<BSParserRef> BSParser::get_depended_parser_for(const String &p_path) {
 	} else {
 		Error err = OK;
 		ref = BSCache::get_parser(path, BSParserRef::EMPTY, err, script_path);
+		if (r_error != nullptr)
+			*r_error = err;
 		if (ref.is_valid()) {
 			depended_parsers[path] = ref;
 		}

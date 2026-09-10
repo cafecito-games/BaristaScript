@@ -651,6 +651,10 @@ BSCache *BSCache::get_singleton() {
 
 BSCache::BSCache() {}
 
+#ifdef BARISTA_TESTS
+std::function<Error(const String &, PackedByteArray *)> BSCache::source_read_hook;
+#endif
+
 BSCache::SourceRead BSCache::read_source_code(const String &p_path) {
 	{
 		BSCache *cache = get_singleton();
@@ -661,15 +665,27 @@ BSCache::SourceRead BSCache::read_source_code(const String &p_path) {
 	String builtin;
 	if (barista_script::BSBuiltinSources::get_source(p_path, builtin))
 		return { builtin, OK, 0, String() };
+#ifdef BARISTA_TESTS
+	if (source_read_hook) {
+		const Error error = source_read_hook(p_path, nullptr);
+		if (error != OK)
+			return { String(), error, 0, "Script '" + p_path + "' could not be opened (error " + String::num((int64_t)error) + ")." };
+	}
+#endif
 	const Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
 	if (file.is_null())
 		return { String(), FileAccess::get_open_error(), 0, "Script '" + p_path + "' could not be opened (error " + String::num((int64_t)FileAccess::get_open_error()) + ")." };
 	const int64_t length = file->get_length();
-	const PackedByteArray raw = file->get_buffer(length);
+	PackedByteArray raw = file->get_buffer(length);
+#ifdef BARISTA_TESTS
+	if (source_read_hook)
+		source_read_hook(p_path, &raw);
+#endif
 	if (raw.size() != length)
 		return { String(), ERR_FILE_CORRUPT, 0, "Script '" + p_path + "' was truncated while being read." };
-	const String source = raw.get_string_from_utf8();
-	if (length > 0 && source.is_empty())
+	String source;
+	String decode_error;
+	if (!barista_script::BSTokenizer::decode_source(raw, &source, &decode_error))
 		return { String(), ERR_INVALID_DATA, 0, "Script '" + p_path + "' contains invalid unicode (UTF-8), so it was not loaded. Please ensure that scripts are saved in valid UTF-8 unicode." };
 	return { source, OK, 0, String() };
 }
@@ -1056,9 +1072,11 @@ Error BSParserRef::raise_status(Status p_new_status) {
 				// Allocate the parser while status is still EMPTY (get_parser() only constructs then).
 				barista_script::BSParser *p = get_parser();
 				status = PARSED;
-				const String source = BSCache::get_source_code(path);
-				source_hash = (uint32_t)source.hash();
-				result = p->parse(source, path, false);
+				const BSCache::SourceRead read = BSCache::read_source_code(path);
+				source_hash = (uint32_t)read.source.hash();
+				result = read.error;
+				if (result == OK)
+					result = p->parse(read.source, path, false);
 				if (result == OK) {
 					BSCache::update_parser_dependencies(path, p);
 				}
@@ -1186,17 +1204,26 @@ Ref<BSParserRef> BSCache::get_parser(const String &p_path, BSParserRef::Status p
 			source_checked = true;
 			lock.lock();
 		}
-
-		// Record edges only after the path is admitted so missing files cannot leave ghost
-		// inverse dependencies that would later invalidate owners (#56 / #27 AC).
-		if (!owner.is_empty() && path != owner) {
-			cache->parser_dependencies[owner].insert(path);
-			cache->parser_inverse_dependencies[path].insert(owner);
-		}
 	}
 
-	// Parse/analyze outside the cache mutex so a dependency cycle cannot deadlock.
-	r_error = ref->raise_status(p_status);
+	// A fresh acquisition cannot certify an old AST using replacement bytes. Existing
+	// parser-owned references intentionally bypass this check and keep their generation.
+	{
+		std::lock_guard<std::recursive_mutex> phase_lock(ref->raise_mutex);
+		if (ref->status >= BSParserRef::PARSED && ref->parser != nullptr) {
+			const SourceRead read = read_source_code(path);
+			if (read.error != OK || ref->parser->analyzed_source != read.source) {
+				r_error = read.error != OK ? read.error : ERR_INVALID_DATA;
+				return Ref<BSParserRef>();
+			}
+		}
+		r_error = ref->raise_status(p_status);
+	}
+	if (!owner.is_empty() && path != owner) {
+		std::lock_guard<std::mutex> lock(cache->mutex);
+		cache->parser_dependencies[owner].insert(path);
+		cache->parser_inverse_dependencies[path].insert(owner);
+	}
 	return ref;
 }
 

@@ -15,6 +15,8 @@
 
 #include "barista_script_language.h"
 #include "bs_builtin_sources.h"
+#include "bs_cache.h"
+#include "bs_global_class.h"
 #include "bs_platform.h"
 
 namespace barista_script {
@@ -67,44 +69,60 @@ public:
 		return false;
 	}
 
-	static bool is_global_class(const StringName &p_name) {
-		const String name = String(p_name);
-		if (name.is_empty()) {
+	/** Resolve the selected provider without repairing metadata or falling through a rejected hint. */
+	static bool resolve_global_class(const String &p_name, BSDeclarationRecord &r_record) {
+		if (p_name.is_empty())
 			return false;
-		}
-		if (BSBuiltinSources::has_global_name(name)) {
-			return true;
-		}
 		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-		if (language != nullptr) {
-			BSDeclarationRecord rec;
-			if (language->try_resolve_declaration(name, rec)) {
-				return true;
-			}
+		if (language != nullptr && language->get_declaration_index().try_get_by_qualified_name(p_name, r_record)) {
+			return language->is_declaration_current(r_record);
 		}
-		const TypedArray<Dictionary> classes = _engine_global_class_list();
-		for (int i = 0; i < classes.size(); i++) {
-			const Dictionary entry = classes[i];
-			if (String(entry.get("class", String())) == name) {
-				return true;
+		String builtin_path;
+		if (BSBuiltinSources::path_for_global_name(p_name, builtin_path)) {
+			r_record.path = builtin_path;
+			const auto read = BSCache::read_source_code(builtin_path);
+			if (read.error != OK)
+				return false;
+			r_record = BSDeclarationIndex::record_from_global_class(builtin_path, read.source, bs_resolve_global_class_from_source(read.source, builtin_path));
+			return r_record.qualified_name == p_name;
+		}
+		for (const Dictionary &entry : _engine_global_class_list()) {
+			if (String(entry.get("class", String())) != p_name)
+				continue;
+			const String path = entry.get("path", String());
+			r_record.path = path;
+			if (path.get_extension() == "barista") {
+				// Private metadata for this path also shadows obsolete engine identities.
+				if (language != nullptr && language->get_declaration_index().try_get_by_path(path, r_record)) {
+					return r_record.qualified_name == p_name && language->is_declaration_current(r_record);
+				}
+				const auto read = BSCache::read_source_code(path);
+				if (read.error != OK)
+					return false;
+				const auto head = bs_resolve_global_class_from_source(read.source, path);
+				if (!head.declarations_parsed || head.name != p_name || head.kind != BSDeclarationKind::CLASS)
+					return false;
+				r_record = BSDeclarationIndex::record_from_global_class(path, read.source, head);
+			} else {
+				r_record = BSDeclarationRecord();
+				r_record.qualified_name = p_name;
+				r_record.path = path;
+				r_record.base_type = entry.get("base", String());
+				r_record.kind = BSDeclarationKind::CLASS;
 			}
+			return true;
 		}
 		return false;
 	}
 
+	static bool is_global_class(const StringName &p_name) {
+		BSDeclarationRecord record;
+		return resolve_global_class(String(p_name), record);
+	}
+
 	static bool is_global_class_enum(const StringName &p_name) {
-		const String name = String(p_name);
-		if (BSBuiltinSources::has_enum_name(name)) {
-			return true;
-		}
-		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-		if (language != nullptr) {
-			BSDeclarationRecord rec;
-			if (language->try_resolve_declaration(name, rec)) {
-				return rec.kind == BSDeclarationKind::ENUM;
-			}
-		}
-		return false;
+		BSDeclarationRecord record;
+		return resolve_global_class(String(p_name), record) && record.kind == BSDeclarationKind::ENUM;
 	}
 
 	static bool is_builtin_global_class(const StringName &p_name) {
@@ -112,83 +130,32 @@ public:
 	}
 
 	static String get_global_class_path(const StringName &p_name) {
-		const String name = String(p_name);
-		String builtin_path;
-		if (BSBuiltinSources::path_for_global_name(name, builtin_path)) {
-			return builtin_path;
-		}
-		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-		if (language != nullptr) {
-			BSDeclarationRecord rec;
-			if (language->try_resolve_declaration(name, rec)) {
-				return rec.path;
-			}
-		}
-		const TypedArray<Dictionary> classes = _engine_global_class_list();
-		for (int i = 0; i < classes.size(); i++) {
-			const Dictionary entry = classes[i];
-			if (String(entry.get("class", String())) == name) {
-				return String(entry.get("path", String()));
-			}
-		}
-		return String();
+		BSDeclarationRecord record;
+		return resolve_global_class(String(p_name), record) ? record.path : String();
 	}
 
 	static StringName get_global_class_native_base(const StringName &p_name) {
-		const String path = get_global_class_path(p_name);
-		if (path.is_empty()) {
-			return StringName();
-		}
-		const TypedArray<Dictionary> classes = _engine_global_class_list();
-		for (int i = 0; i < classes.size(); i++) {
-			const Dictionary entry = classes[i];
-			if (String(entry.get("path", String())) == path) {
-				return StringName(entry.get("base", String()));
-			}
-		}
-		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
-		if (language != nullptr) {
-			BSDeclarationRecord rec;
-			if (language->try_resolve_declaration(String(p_name), rec)) {
-				return StringName(rec.base_type);
-			}
-		}
-		return StringName();
+		BSDeclarationRecord record;
+		return resolve_global_class(String(p_name), record) ? StringName(record.base_type) : StringName();
 	}
 
 	static void get_global_class_list(List<StringName> *r_classes) {
 		ERR_FAIL_NULL(r_classes);
 		HashSet<StringName> seen;
-		const TypedArray<Dictionary> classes = _engine_global_class_list();
-		for (int i = 0; i < classes.size(); i++) {
-			const Dictionary entry = classes[i];
-			const StringName name = StringName(entry.get("class", String()));
-			if (name == StringName() || seen.has(name)) {
-				continue;
-			}
-			seen.insert(name);
-			r_classes->push_back(name);
-		}
+		const auto add = [&](const StringName &p_name) {
+			if (p_name == StringName() || seen.has(p_name))
+				return;
+			seen.insert(p_name);
+			if (is_global_class(p_name))
+				r_classes->push_back(p_name);
+		};
 		BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
 		if (language != nullptr) {
-			const Vector<BSDeclarationRecord> records = language->get_declaration_index().get_records();
-			for (int i = 0; i < records.size(); i++) {
-				const String qualified = records[i].qualified_name;
-				if (qualified.is_empty()) {
-					continue;
-				}
-				const StringName name = StringName(qualified);
-				if (seen.has(name)) {
-					continue;
-				}
-				BSDeclarationRecord validated;
-				if (!language->try_resolve_declaration(qualified, validated)) {
-					continue;
-				}
-				seen.insert(name);
-				r_classes->push_back(name);
-			}
+			for (const BSDeclarationRecord &record : language->get_declaration_index().get_records())
+				add(record.qualified_name);
 		}
+		for (const Dictionary &entry : _engine_global_class_list())
+			add(StringName(entry.get("class", String())));
 		BSBuiltinSources::append_global_names(*r_classes, seen);
 	}
 

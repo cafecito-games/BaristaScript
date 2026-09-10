@@ -131,14 +131,11 @@ bool BaristaScript::_is_valid() const {
 	// Declaration-only resolution (`_get_global_class_name`) stays looser so mid-edit bodies do not
 	// drop the global name. Issue #43.
 	const String path = canonicalize_path(get_path());
-	if (!path.is_empty()) {
-		BSCache::set_source_override(path, source_code);
-	}
-	const bool ok = bs_source_analyzes(source_code, path);
-	if (!path.is_empty()) {
-		BSCache::clear_source_override(path);
-	}
-	return ok;
+	HashMap<String, String> input;
+	if (!path.is_empty())
+		input[path] = source_code;
+	BSCacheSourceOverrideGuard source_scope(input, true);
+	return bs_source_analyzes(source_code, path);
 }
 
 bool BaristaScript::_is_abstract() const {

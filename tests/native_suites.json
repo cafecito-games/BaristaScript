@@ -1,4 +1,17 @@
 {
-  "suites": ["tokenizer", "parser", "warnings", "platform", "cache", "declaration_index", "global_class", "cross_file_analyzer", "provider_analyzer", "preload_analyzer", "refresh_analyzer"],
+  "suites": [
+    "tokenizer",
+    "parser",
+    "warnings",
+    "platform",
+    "cache",
+    "declaration_index",
+    "global_class",
+    "cross_file_analyzer",
+    "provider_analyzer",
+    "preload_analyzer",
+    "refresh_analyzer",
+    "source_analyzer"
+  ],
   "editor_import": ["global_class"]
 }

@@ -153,6 +153,7 @@ public:
 	 * Name lookup with digest validation (#44 leftover / #58). When source is available and the
 	 * stored digest mismatches, discards the stale entry, schedules reanalysis, and retries.
 	 */
+	bool is_declaration_current(const BSDeclarationRecord &p_record) const;
 	bool try_resolve_declaration(const String &p_qualified_name, BSDeclarationRecord &r_record);
 	Error flush_declaration_index(const String &p_store_path = String());
 	BSDeclarationIndexLoadStatus load_declaration_index(const String &p_store_path = String());

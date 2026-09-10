@@ -288,6 +288,8 @@ private:
 	friend class BSParserRef;
 #ifdef BARISTA_TESTS
 	friend struct ProviderCacheTestAccess;
+	friend struct SourceReadTestAccess;
+	static std::function<Error(const String &, PackedByteArray *)> source_read_hook;
 #endif
 
 	/**

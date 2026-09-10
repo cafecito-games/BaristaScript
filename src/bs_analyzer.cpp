@@ -2001,6 +2001,14 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 		resolve_class_inheritance(p_class);
 	}
 
+	// Foundry surface 2094: trait-use rejection belongs to this class interface's
+	// failure memoization, including subsequent foreign consumers of the same owner.
+	resolve_used_traits(p_class);
+	if (p_class->failed_trait_uses) {
+		current_class = previous_class;
+		return;
+	}
+
 	// Foundry: resolve base CLASS interface before members; propagate INTERFACE failures.
 	if (p_class->base_type.kind == BSParser::DataType::CLASS && p_class->base_type.class_type != nullptr) {
 		BSParser::ClassNode *base_class = p_class->base_type.class_type;
@@ -3156,6 +3164,13 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						}
 					}
 				}
+				if (!p_call->is_super && base_type.is_hard_type() && base_type.is_meta_type) {
+					push_error(vformat(R"*(Static function "%s()" not found in base "%s".)*", p_call->function_name, base_type.to_string()), p_call);
+					BSParser::DataType call_type;
+					call_type.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(call_type);
+					return;
+				}
 			}
 		}
 	}
@@ -3422,9 +3437,20 @@ void BSAnalyzer::reduce_preload(BSParser::PreloadNode *p_preload) {
 			push_error(vformat(R"(Build task bootstrap cannot preload script "%s"; it is outside the provider bootstrap root "%s".)", bs_diagnostic_file_reference(path), bootstrap_root_storage()), p_preload->path);
 			return;
 		}
-		Ref<BSParserRef> ref = parser->get_depended_parser_for(path);
+		if (path == parser->script_path.simplify_path()) {
+			// Supplied self input already owns its class tree. A cached parser at this
+			// path may belong to a different editor buffer or retained generation.
+			BSParser::DataType type = parser->get_tree()->get_datatype();
+			type.is_meta_type = true;
+			type.is_constant = true;
+			p_preload->set_datatype(type);
+			p_preload->is_unmaterialized_constant = true;
+			return;
+		}
+		Error acquisition_error = OK;
+		Ref<BSParserRef> ref = parser->get_depended_parser_for(path, &acquisition_error);
 		if (ref.is_null()) {
-			push_error(vformat(R"(Preload file "%s" does not exist.)", bs_diagnostic_file_reference(path)), p_preload->path);
+			push_error(vformat(acquisition_error == ERR_FILE_NOT_FOUND ? R"(Preload file "%s" does not exist.)" : R"(Could not preload resource script "%s".)", bs_diagnostic_file_reference(path)), p_preload->path);
 			return;
 		}
 		ref->raise_status(BSParserRef::INHERITANCE_SOLVED);
@@ -9172,21 +9198,16 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 	}
 	result.status = NameLookupStatus::FOUND;
 	result.indexed = language != nullptr && language->get_declaration_index().try_get_by_qualified_name(result.qualified, result.record);
-	if (!result.indexed) {
-		return result;
-	}
-	// A selected index hint is never a miss. Reject it here without invoking the
-	// intentional refresh seam, which can remove/replace the candidate and hide it
-	// behind a lower priority or engine global. General refresh remains #140 X5.
-	const String source = BSCache::get_source_code(result.record.path);
-	const BSGlobalClass head = bs_resolve_global_class_from_source(source, result.record.path);
-	if (source.is_empty() || BSDeclarationIndex::compute_source_digest(source) != result.record.source_digest ||
-			!head.declarations_parsed || head.name != result.record.qualified_name || head.kind != result.record.kind) {
+	// Selection is read-only: an invalid hint still blocks every lower-priority candidate.
+	const bool current = result.indexed ? language->is_declaration_current(result.record) : ScriptServer::resolve_global_class(result.qualified, result.record);
+	if (!current) {
 		push_error(vformat(R"(Could not resolve %s "%s": declaration "%s" from "%s" is stale or invalid.)", p_symbol_kind, p_name, result.qualified, result.record.path), p_source);
 		failed_name_lookups.insert(p_source);
 		result.status = NameLookupStatus::ERROR;
 		return result;
 	}
+	if (!result.indexed)
+		return result;
 	Error error = OK;
 	Ref<BSParserRef> provider = get_depended_parser(result.record.path, BSParserRef::PARSED, error);
 	if (provider.is_null() || error != OK || provider->get_parser() == nullptr || !provider->get_parser()->get_errors().is_empty()) {
@@ -9248,7 +9269,7 @@ BSParser::DataType BSAnalyzer::named_type_from_lookup(const NameLookup &p_lookup
 	if (p_lookup.status != NameLookupStatus::FOUND) {
 		return result;
 	}
-	const String path = p_lookup.indexed ? p_lookup.record.path : ScriptServer::get_global_class_path(StringName(p_lookup.qualified));
+	const String path = p_lookup.record.path;
 	if (!is_bootstrap_path_allowed(path)) {
 		push_error(vformat(R"(Cannot depend on "%s": path is outside the bootstrap allowed dependency root.)", path), p_source);
 		return result;

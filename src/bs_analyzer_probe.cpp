@@ -874,7 +874,9 @@ godot::Dictionary BaristaScriptAnalyzerProbe::analyze_source(const godot::String
 	Error err = ERR_BUG;
 	int phase = -1;
 	{
-		BSCache::set_source_override(path, p_source);
+		HashMap<String, String> input;
+		input[BaristaScript::canonicalize_path(path)] = p_source;
+		BSCacheSourceOverrideGuard source_scope(input, true);
 		BSParser parser;
 		BSAnalyzer analyzer(&parser);
 		err = parser.parse(p_source, path, false);
@@ -891,7 +893,6 @@ godot::Dictionary BaristaScriptAnalyzerProbe::analyze_source(const godot::String
 		}
 		phase = (int)analyzer.get_highest_completed_phase();
 	}
-	BSCache::clear_source_override(path);
 	result["valid"] = err == OK && errors.is_empty();
 	result["errors"] = errors;
 	result["phase"] = phase;
@@ -903,10 +904,11 @@ bool BaristaScriptAnalyzerProbe::is_semantically_valid(const godot::String &p_so
 	const String path = p_path.is_empty() ? String("res://tests/analyzer_probe.barista") : p_path;
 	bool ok = false;
 	{
-		BSCache::set_source_override(path, p_source);
+		HashMap<String, String> input;
+		input[BaristaScript::canonicalize_path(path)] = p_source;
+		BSCacheSourceOverrideGuard source_scope(input, true);
 		ok = bs_source_analyzes(p_source, path);
 	}
-	BSCache::clear_source_override(path);
 	return ok;
 }
 
