@@ -667,6 +667,91 @@ TEST_SUITE("builtin_metadata_analyzer") {
 			CHECK(parser.get_warnings().is_empty());
 		}
 	}
+	TEST_CASE("typed_signal_void_results_and_known_enum_calls_keep_responsible_nodes") {
+		for (int mode = 0; mode < 3; ++mode) {
+			const String source = mode == 0 ? "signal changed(value: int)\nfunc test():\n\tprint(changed.emit(1))\n" : mode == 1 ? "signal changed(value: int)\nfunc handler(value: int) -> void:\n\tprint(value)\nfunc test():\n\tprint(changed.disconnect(handler))\n"
+																																 : "func test():\n\tvar value = Vector3.Axis()\n\tprint(value)\n";
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://metadata_review_calls.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+			if (mode == 2) {
+				const auto *value = local(parser, "value");
+				BS_TEST_REQUIRE(value && value->initializer && value->initializer->type == BSParser::Node::CALL);
+				const auto *call = static_cast<const BSParser::CallNode *>(value->initializer);
+				BS_TEST_REQUIRE(call->callee);
+				error_tuple(parser, 0, "Name \"Axis\" called as a function but is a \"Vector3.Axis\".", call->callee->start_line, call->callee->start_column, call->callee->end_line, call->callee->end_column);
+			} else {
+				const auto member = parser.get_tree()->get_member("test");
+				BS_TEST_REQUIRE(member.function && member.function->body && !member.function->body->statements.is_empty());
+				const auto *statement = member.function->body->statements[0];
+				BS_TEST_REQUIRE(statement && statement->type == BSParser::Node::CALL);
+				const auto *outer = static_cast<const BSParser::CallNode *>(statement);
+				BS_TEST_REQUIRE(outer->arguments.size() == 1 && outer->arguments[0]->type == BSParser::Node::CALL);
+				const auto *inner = outer->arguments[0];
+				error_tuple(parser, 0, mode == 0 ? "Cannot get return value of call to \"emit()\" because it returns \"void\"." : "Cannot get return value of call to \"disconnect()\" because it returns \"void\".", inner->start_line, inner->start_column, inner->end_line, inner->end_column);
+			}
+			CHECK(parser.get_warnings().is_empty());
+		}
+	}
+	TEST_CASE("concrete_self_cannot_enter_callable_or_signal_copy_overloads") {
+		for (const char *name : { "Callable", "Signal" }) {
+			const String source = String("extends Node\nfunc test():\n\tvar value = ") + name + "(self)\n\tprint(value)\n";
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://metadata_self_copy.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			const auto *value = local(parser, "value");
+			BS_TEST_REQUIRE(value && value->initializer);
+			BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+			const String message = String("No constructor of \"") + name + "\" matches the signature \"" + name + "(Self)\".";
+			error_tuple(parser, 0, message, value->initializer->start_line, value->initializer->start_column, value->initializer->end_line, value->initializer->end_column);
+			CHECK(parser.get_warnings().is_empty());
+		}
+	}
+	TEST_CASE("generated_object_parameters_accept_retained_class_instances_and_keep_signatures") {
+		const String source = "class Receiver extends Node:\n\tsignal changed(value: int)\n\tfunc choose(value: int) -> int:\n\t\treturn value\nfunc test(value: Receiver):\n\tvar callback = Callable(value, \"choose\")\n\tvar event = Signal(value, \"changed\")\n\tvar result = callback.call(1)\n\tevent.emit(1)\n\tprint(result)\n";
+		StorageFixture fixture;
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(source, "res://metadata_class_carrier.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() == OK);
+		diagnostics(parser);
+		const auto *callback = local(parser, "callback"), *event = local(parser, "event"), *result = local(parser, "result");
+		BS_TEST_REQUIRE(callback && event && result);
+		CHECK(callback->get_datatype().has_explicit_method_signature);
+		CHECK(event->get_datatype().has_explicit_method_signature);
+		BS_TEST_REQUIRE(callback->get_datatype().method_parameter_types.size() == 1 && event->get_datatype().method_parameter_types.size() == 1);
+		CHECK(callback->get_datatype().method_parameter_types[0].builtin_type == Variant::INT);
+		CHECK(event->get_datatype().method_parameter_types[0].builtin_type == Variant::INT);
+		CHECK(result->initializer->get_datatype().builtin_type == Variant::INT);
+		CHECK(parser.get_errors().is_empty());
+		BS_TEST_REQUIRE(parser.get_warnings().size() == 1);
+		warning_tuple(parser, 0, "UNUSED_SIGNAL", "The signal \"changed\" is declared but never explicitly used in the class.", 2, 12, 2, 19);
+		const auto receiver = parser.get_tree()->get_member("Receiver");
+		BS_TEST_REQUIRE(receiver.m_class);
+		auto instance = receiver.m_class->get_datatype();
+		instance.is_meta_type = false;
+		BSParser::DataType native;
+		native.kind = BSParser::DataType::NATIVE;
+		native.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		native.builtin_type = Variant::OBJECT;
+		native.native_type = "Object";
+		CHECK(native.can_reference(instance));
+		native.native_type = "Node2D";
+		CHECK_FALSE(native.can_reference(instance));
+		native.native_type = "Object";
+		instance.is_meta_type = true;
+		CHECK_FALSE(native.can_reference(instance));
+		instance.is_meta_type = false;
+		instance.is_nullable = true;
+		BSTypeCompatibility::Options options;
+		options.strict_null = true;
+		CHECK_FALSE(BSTypeCompatibility::check(native, instance, options).compatible);
+	}
 	TEST_CASE("ordinary_name_resolution_prevents_shadowed_constructor_folding") {
 		for (const char *source : { "func Array():\n\treturn [1]\nfunc test():\n\tvar value = Array()\n\tprint(value)\n", "class Factory:\n\tstatic func Array():\n\t\treturn [1]\nfunc test():\n\tvar value = Factory.Array()\n\tprint(value)\n", "func test(Array: Callable):\n\tvar value = Array()\n\tprint(value)\n" }) {
 			BSParser parser;

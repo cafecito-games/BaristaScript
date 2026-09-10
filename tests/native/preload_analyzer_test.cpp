@@ -268,6 +268,18 @@ TEST_SUITE("preload_analyzer") {
 			CHECK(consumer.get_depended_parsers()[path]->get_status() >= BSParserRef::INTERFACE_SOLVED);
 			CHECK(consumer.get_tree()->imports.is_empty());
 			CHECK(fixture.index().get_record_count() == 1);
+			const auto result = consumer.get_tree()->get_member("result");
+			BS_TEST_REQUIRE(result.variable && result.variable->initializer);
+			CHECK(result.variable->initializer->get_datatype().kind == BSParser::DataType::BUILTIN);
+			CHECK(result.variable->initializer->get_datatype().builtin_type == Variant::INT);
+			CHECK(result.variable->initializer->get_datatype().is_hard_type());
+			String declaring_file;
+			int conformance_index = -1;
+			StringName trait_identity;
+			BS_TEST_REQUIRE(BSConformanceRegistry::get_singleton()->find_witness_location("int", "marker", declaring_file, conformance_index, &trait_identity));
+			CHECK(declaring_file == path);
+			CHECK(conformance_index == 0);
+			CHECK(trait_identity == SNAME("x3_hidden.Witnesses::Marker"));
 		}
 	}
 	TEST_CASE("legal_recursive_preloads_retain_and_release_the_static_graph") {
@@ -317,8 +329,11 @@ TEST_SUITE("preload_analyzer") {
 		BSParser consumer;
 		BS_TEST_REQUIRE(consumer.parse("var value: int\nvar result = value.marker()\n", "res://tests/x3/consumer.barista", false) == OK);
 		BSAnalyzer analyzer(&consumer);
-		CHECK(analyzer.analyze() == OK);
-		no_errors(consumer);
+		CHECK(analyzer.analyze() != OK);
+		const auto result = consumer.get_tree()->get_member("result");
+		BS_TEST_REQUIRE(result.variable && result.variable->initializer && result.variable->initializer->type == BSParser::Node::CALL);
+		const auto *call = static_cast<const BSParser::CallNode *>(result.variable->initializer);
+		diagnostic(consumer, "Function \"marker()\" not found in base int.", call->callee);
 		CHECK(analyzer.has_probed_indexed_conformances());
 		CHECK(consumer.get_depended_parsers().is_empty());
 		CHECK(consumer.get_dependencies().is_empty());
@@ -340,7 +355,11 @@ TEST_SUITE("preload_analyzer") {
 		BSCache::set_source_override(consumer_path, source);
 		Error error = OK;
 		auto old = BSCache::get_parser(consumer_path, BSParserRef::FULLY_SOLVED, error);
-		BS_TEST_REQUIRE(old.is_valid() && error == OK);
+		BS_TEST_REQUIRE(old.is_valid() && error != OK);
+		const auto old_result = old->get_parser()->get_tree()->get_member("result");
+		BS_TEST_REQUIRE(old_result.variable && old_result.variable->initializer && old_result.variable->initializer->type == BSParser::Node::CALL);
+		const auto *old_call = static_cast<const BSParser::CallNode *>(old_result.variable->initializer);
+		diagnostic(*old->get_parser(), "Function \"marker()\" not found in base int.", old_call->callee);
 		CHECK(old->get_analyzer()->has_probed_indexed_conformances());
 		CHECK(old->get_parser()->get_depended_parsers().is_empty());
 		CHECK(old->get_parser()->get_dependencies().is_empty());
@@ -360,7 +379,7 @@ TEST_SUITE("preload_analyzer") {
 		CHECK(fresh->get_parser()->get_depended_parsers().is_empty());
 		auto *call = static_cast<BSParser::CallNode *>(fresh->get_parser()->get_tree()->get_member("result").variable->initializer);
 		diagnostic(*fresh->get_parser(), "Cannot call \"marker()\" on \"int\": it is supplied by the retroactive conformance to trait \"Added::Marker\" declared in \"res://tests/x3/added.barista\", which this file does not load. Import that file's namespace, or preload it.", call->callee);
-		no_errors(*old->get_parser());
+		diagnostic(*old->get_parser(), "Function \"marker()\" not found in base int.", old_call->callee);
 	}
 	TEST_CASE("file_handle_payload_constructor_is_rejected_at_attribute") {
 		StorageFixture fixture;

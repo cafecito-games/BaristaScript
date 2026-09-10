@@ -1041,6 +1041,12 @@ bool BSParser::DataType::can_reference(const BSParser::DataType &p_other) const 
 		return false;
 	}
 
+	// A native destination constrains only the native ancestry checked above. A
+	// retained CLASS instance does not need a runtime Script carrier to satisfy it.
+	if (kind == BSParser::DataType::NATIVE && p_other.kind == BSParser::DataType::CLASS) {
+		return true;
+	}
+
 	Ref<Script> script = script_type;
 	if (kind == BSParser::DataType::CLASS && script.is_null()) {
 		// #52: resolve CLASS handles through the staged parser/analyzer cache (Foundry

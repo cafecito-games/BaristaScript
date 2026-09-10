@@ -2145,6 +2145,9 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 }
 
 Error BSAnalyzer::run_phase_interface_and_member_surface() {
+	// Literal preload/extends declarations license witnesses for the whole file,
+	// including member initializers preceding the preload's textual position.
+	raise_declared_conformance_dependencies();
 	analyze_class_interface(parser->get_tree());
 	resolve_used_traits(parser->get_tree());
 	mark_phase(AnalyzerPhase::INTERFACE_AND_MEMBER_SURFACE);
@@ -3138,6 +3141,12 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 
+			auto reject_void_result_use = [&]() {
+				const auto result = p_call->get_datatype();
+				if (!p_is_root && !p_is_await && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
+					push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
+				}
+			};
 			if (subscript->base != nullptr && p_call->function_name == SNAME("emit")) {
 				const BSParser::DataType base_type = subscript->base->get_datatype();
 				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
@@ -3148,6 +3157,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					void_type.kind = BSParser::DataType::BUILTIN;
 					void_type.builtin_type = Variant::NIL;
 					p_call->set_datatype(void_type);
+					reject_void_result_use();
 					return;
 				}
 			}
@@ -3166,6 +3176,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						p_call->set_datatype(type_from_property(method->info.return_val));
 					}
 					call_site_validation.validate_signal_connect_arg(base_type, p_call, 0);
+					reject_void_result_use();
 					return;
 				}
 			}
@@ -3189,8 +3200,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						call_site_validation.validate_call_arg(method->info, p_call);
 						const auto result = type_from_property(method->info.return_val);
 						p_call->set_datatype(result);
-						if (!p_is_root && !p_is_await && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL)
-							push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
+						reject_void_result_use();
 						return;
 					}
 				}
@@ -3324,8 +3334,10 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					const auto *constant = BSCoreConstants::get_builtin_constant(base_type.builtin_type, p_call->function_name);
 					int64_t enum_value = 0;
 					const auto *enumeration = BSCoreConstants::get_builtin_enum_value(base_type.builtin_type, p_call->function_name, enum_value);
-					if (member || constant || enumeration) {
-						const auto claimed = member ? type_from_property(*member) : type_from_variant(constant ? constant->get_value() : Variant(enum_value));
+					const auto *enum_name = BSCoreConstants::get_builtin_enum(base_type.builtin_type, p_call->function_name);
+					if (member || constant || enumeration || enum_name) {
+						const auto claimed = enum_name ? _engine_enum_type(String(Variant::get_type_name(base_type.builtin_type)) + "." + String(enum_name->name)) : member ? type_from_property(*member)
+																																											: type_from_variant(constant ? constant->get_value() : Variant(enum_value));
 						push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, claimed.to_string()), p_call->callee);
 					} else
 						push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, base_type.to_string()), p_call->callee);
@@ -3426,7 +3438,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						options.strict_null = strict_null_checks;
 						if (has_materialized_constant_value(argument))
 							options.constant_source_value = &argument->reduced_value;
-						if (!BSTypeCompatibility::check(type_from_property(property, true), argument->get_datatype(), options).compatible) {
+						const auto actual = _substitute_self_type_parameter_with_bounds(argument->get_datatype(), false);
+						if (!BSTypeCompatibility::check(type_from_property(property, true), actual, options).compatible) {
 							matches = false;
 							break;
 						}
@@ -3460,7 +3473,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						break;
 					auto *argument = p_call->arguments[i];
 					const auto expected = type_from_property(property, true);
-					const auto actual = argument->get_datatype();
+					const auto actual = _substitute_self_type_parameter_with_bounds(argument->get_datatype(), false);
 					update_constant_expression_type(argument, expected, "pass", true);
 #ifdef DEBUG_ENABLED
 					if (expected.builtin_type == Variant::INT && actual.builtin_type == Variant::FLOAT && meta.builtin_type != Variant::INT) {
