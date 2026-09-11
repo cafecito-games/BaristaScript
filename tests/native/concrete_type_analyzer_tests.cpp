@@ -633,4 +633,227 @@ var bad_type: Type[Type[User]]
 		CHECK(analyzer.analyze() == OK);
 		CHECK(parser.get_warnings().size() == warnings);
 	}
+	TEST_CASE("repair1_call_strict_variant") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(false);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", enabled);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func take(_value: Type[Node]):\n\tpass\nfunc test(value: Variant):\n\ttake(value)\n", "res://tests/concrete_types/repair1_call_strict_variant.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot pass Variant value as argument 1 of \"take()\" in strict dynamic mode; expected \"Type[Node]\".");
+				CHECK(error.line == 4);
+				CHECK(error.column == 10);
+			}
+		}
+	}
+	TEST_CASE("repair1_call_strict_nullable") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(enabled);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", false);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func take(_value: Type[Node]):\n\tpass\nfunc test(value: Type[Node]?):\n\ttake(value)\n", "res://tests/concrete_types/repair1_call_strict_nullable.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot pass nullable value of type \"Type[Node]?\" as argument 1 of \"take()\"; expected non-nullable \"Type[Node]\".");
+				CHECK(error.line == 4);
+				CHECK(error.column == 10);
+			}
+		}
+	}
+	TEST_CASE("repair1_store_strict_nullable") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(enabled);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", false);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func test(value: Type[Node]?):\n\tvar target: Type[Node] = Node\n\ttarget = value\n", "res://tests/concrete_types/repair1_store_strict_nullable.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot assign nullable value of type \"Type[Node]?\" to variable \"target\"; expected non-nullable \"Type[Node]\".");
+				CHECK(error.line == 3);
+				CHECK(error.column == 14);
+			}
+		}
+	}
+	TEST_CASE("repair1_local_nullable_Node") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(enabled);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", false);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func test(value: Node?):\n\tvar target: Node = value\n", "res://tests/concrete_types/repair1_local_nullable_Node.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot assign nullable value of type \"Node?\" to variable \"target\"; expected non-nullable \"Node\".");
+				CHECK(error.line == 2);
+				CHECK(error.column == 24);
+			}
+		}
+	}
+	TEST_CASE("repair1_local_nullable_Type_Node") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(enabled);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", false);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func test(value: Type[Node]?):\n\tvar target: Type[Node] = value\n", "res://tests/concrete_types/repair1_local_nullable_Type_Node.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot assign nullable value of type \"Type[Node]?\" to variable \"target\"; expected non-nullable \"Type[Node]\".");
+				CHECK(error.line == 2);
+				CHECK(error.column == 30);
+			}
+		}
+	}
+	TEST_CASE("repair1_local_strict_variant") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(false);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", enabled);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func test(value: Variant):\n\tvar target: Type[Node] = value\n", "res://tests/concrete_types/repair1_local_strict_variant.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot assign Variant value to variable \"target\" in strict dynamic mode; expected \"Type[Node]\".");
+				CHECK(error.line == 2);
+				CHECK(error.column == 30);
+			}
+		}
+	}
+	TEST_CASE("repair1_member_strict_variant") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(false);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", enabled);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("var target: Type[Node] = source()\nfunc source() -> Variant:\n\treturn null\n", "res://tests/concrete_types/repair1_member_strict_variant.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot assign Variant value to variable \"target\" in strict dynamic mode; expected \"Type[Node]\".");
+				CHECK(error.line == 1);
+				CHECK(error.column == 26);
+			}
+		}
+	}
+	TEST_CASE("repair1_member_strict_nullable") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(enabled);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", false);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("var target: Type[Node] = source()\nfunc source() -> Type[Node]?:\n\treturn null\n", "res://tests/concrete_types/repair1_member_strict_nullable.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot assign nullable value of type \"Type[Node]?\" to variable \"target\"; expected non-nullable \"Type[Node]\".");
+				CHECK(error.line == 1);
+				CHECK(error.column == 26);
+			}
+		}
+	}
+	TEST_CASE("repair1_profile_off_and_nullable_destination") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile(enabled);
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", false);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func take(_value: Type[Node]?):\n\tpass\nfunc test(value: Type[Node]?):\n\tvar target: Type[Node]? = value\n\ttarget = value\n\ttake(target)\n", "res://tests/concrete_types/repair1_profile_off_and_nullable_destination.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			CHECK(parser.get_warnings().is_empty());
+		}
+	}
+	TEST_CASE("repair1_store_strict_variant") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		for (bool enabled : { false, true }) {
+			TypeProfile profile;
+			profile.set("debug/barista_script/analysis/strict_dynamic_checks", enabled);
+			BSParser::update_project_settings();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("func test(value: Variant):\n\tvar target: Type[Node] = Node\n\ttarget = value\n", "res://tests/concrete_types/repair1_store_strict_variant.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool rejected = enabled;
+			CHECK((analyzer.analyze() != OK) == rejected);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (rejected ? 1 : 0));
+			CHECK(parser.get_warnings().is_empty());
+			if (rejected) {
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot assign Variant value to variable \"target\" in strict dynamic mode; expected \"Type[Node]\".");
+				CHECK(error.line == 3);
+				CHECK(error.column == 14);
+			}
+		}
+	}
 }

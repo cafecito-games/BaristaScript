@@ -114,9 +114,6 @@ String BSAnalyzer::CallSiteValidationContext::make_invalid_argument_error(
 		bool p_strict_dynamic_mismatch,
 		bool p_strict_nullable_mismatch,
 		const BSParser::Node *p_actual_node) const {
-	const String handle_error = analyzer->make_type_handle_argument_error(p_function, p_argument_number, p_expected_type, p_actual_type);
-	if (!handle_error.is_empty())
-		return handle_error;
 	(void)p_actual_node;
 	if (p_strict_dynamic_mismatch) {
 		return vformat(R"*(Cannot pass Variant value as argument %d of "%s()" in strict dynamic mode; expected "%s".)*",
@@ -131,6 +128,9 @@ String BSAnalyzer::CallSiteValidationContext::make_invalid_argument_error(
 				p_function,
 				p_expected_type.to_string_diagnostic());
 	}
+	const String handle_error = analyzer->make_type_handle_argument_error(p_function, p_argument_number, p_expected_type, p_actual_type);
+	if (!handle_error.is_empty())
+		return handle_error;
 	return vformat(R"*(Invalid argument for "%s()" function: argument %d should be "%s" but is "%s".)*",
 				   p_function,
 				   p_argument_number,

@@ -8214,8 +8214,23 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 							if (subscript->is_attribute && subscript->attribute)
 								target_name = subscript->attribute->name;
 						}
-						const String handle_error = make_type_handle_assignment_error(assignee_type, assigned_value_type, "variable", target_name, false);
-						push_error(handle_error.is_empty() ? vformat(R"(Value of type "%s" cannot be assigned to a variable of type "%s".)", assigned_value_type.to_string(), assignee_type.to_string()) + BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type") : handle_error, assignment->assigned_value);
+						// Pin7900-7968: strict-profile failures take precedence over handle identity.
+						String error;
+						if (strict_dynamic_checks && op_type.is_variant()) {
+							error = target_name != StringName()
+									? vformat(R"(Cannot assign Variant value to variable "%s" in strict dynamic mode; expected "%s".)", target_name, assignee_type.to_string())
+									: vformat(R"(Cannot assign Variant value to target in strict dynamic mode; expected "%s".)", assignee_type.to_string());
+						} else if (strict_null_checks && op_type.is_nullable && !assignee_type.is_nullable && !assignee_type.is_variant()) {
+							error = target_name != StringName()
+									? vformat(R"(Cannot assign nullable value of type "%s" to variable "%s"; expected non-nullable "%s".)", assigned_value_type.to_string(), target_name, assignee_type.to_string())
+									: vformat(R"(Cannot assign nullable value of type "%s" to target; expected non-nullable "%s".)", assigned_value_type.to_string(), assignee_type.to_string());
+						} else {
+							error = make_type_handle_assignment_error(assignee_type, assigned_value_type, "variable", target_name, false);
+							if (error.is_empty()) {
+								error = vformat(R"(Value of type "%s" cannot be assigned to a variable of type "%s".)", assigned_value_type.to_string(), assignee_type.to_string()) + BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type");
+							}
+						}
+						push_error(error, assignment->assigned_value);
 					} else if (op_type.is_variant() || !op_type.is_hard_type()) {
 						mark_node_unsafe(assignment);
 						assignment->use_conversion_assign = true;
@@ -8263,6 +8278,13 @@ String BSAnalyzer::make_type_handle_argument_error(const StringName &p_function,
 	return vformat(R"*(Cannot pass instance value of type "%s" as argument %d of "%s()"; expected a class handle whose represented instance type is "%s" for "%s".)*", p_source.to_string(), p_argument, p_function, represented_target, p_target.to_string());
 }
 String BSAnalyzer::make_declaration_type_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name) {
+	// Foundry resolve_assignable @ c9d5e35:5477-5524: profile errors precede class-handle explanations.
+	if (strict_dynamic_checks && p_source.is_variant()) {
+		return vformat(R"(Cannot assign Variant value to %s "%s" in strict dynamic mode; expected "%s".)", p_kind, p_name, p_target.to_string());
+	}
+	if (strict_null_checks && p_source.is_nullable && !p_target.is_nullable && !p_target.is_variant()) {
+		return vformat(R"(Cannot assign nullable value of type "%s" to %s "%s"; expected non-nullable "%s".)", p_source.to_string(), p_kind, p_name, p_target.to_string());
+	}
 	const String handle_error = make_type_handle_assignment_error(p_target, p_source, p_kind, p_name, true);
 	if (!handle_error.is_empty())
 		return handle_error;
