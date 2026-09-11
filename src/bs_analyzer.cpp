@@ -1616,6 +1616,32 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 		}
 	}
+	// Foundry c9d5e35:2757,2817-2870: compiler-provided roots own their
+	// compound tails before class or namespace discovery.
+	if (p_type_node->type_chain.size() > 1) {
+		const bool is_self = name == SNAME("Self") && current_class != nullptr;
+		const bool is_number = name == BSParser::get_number_type_name();
+		const bool is_variant = name == SNAME("Variant");
+		const bool is_builtin = BSParser::is_builtin_data_type(name) || name == SNAME("AsyncCallable");
+		if (is_self || is_number || is_variant || is_builtin) {
+			BSParser::IdentifierNode *tail = p_type_node->type_chain[1];
+			if (is_self || is_number) {
+				push_error(vformat(R"(Type "%s" does not contain nested types.)", name), tail);
+			} else if (p_type_node->type_chain.size() > 2) {
+				push_error(is_variant ? "Variant only contains enum types, which do not have nested types." : "Built-in types only contain enum types, which do not have nested types.", p_type_node->type_chain[2]);
+			} else {
+				const auto enum_type = _engine_enum_type(String(name) + String(".") + String(tail->name));
+				if (enum_type.kind == BSParser::DataType::ENUM) {
+					result = type_from_metatype(enum_type);
+					result.is_nullable = p_type_node->is_nullable;
+					return result;
+				}
+				push_error(vformat(R"(Name "%s" is not a nested type of "%s".)", tail->name, name), tail);
+			}
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+	}
 	if (p_type_node->type_chain.size() == 1) {
 		if (name == BSParser::get_number_type_name()) {
 			// Foundry @ c9d5e35: `Number` is the closed int|float union at builtin precedence.
@@ -1873,6 +1899,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 	if (current_class != nullptr) {
 		get_class_node_current_scope_classes(current_class, &lexical_scopes, p_type_node);
 	}
+	bool found_out_of_scope_alias = false;
 	for (BSParser::ClassNode *scope : lexical_scopes) {
 		if (scope->identifier != nullptr && scope->identifier->name == lexical_name) {
 			return resolve_nested(type_from_metatype(scope->get_datatype()), 1);
@@ -1883,9 +1910,9 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		const auto member = scope->get_member(lexical_name);
 		if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS &&
 				find_type_alias_in_scope(lexical_name) != member.type_alias) {
-			push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", lexical_name), p_type_node);
-			result.kind = BSParser::DataType::VARIANT;
-			return result;
+			// An invisible inherited alias cannot hide a legal enclosing root.
+			found_out_of_scope_alias = true;
+			continue;
 		}
 		const int errors = parser->get_errors().size();
 		resolve_class_member(scope, lexical_name, p_type_node);
@@ -1907,6 +1934,11 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			return resolve_nested(type_from_metatype(member.get_datatype()), 1);
 		}
 		push_error(vformat(R"("%s" is a %s but does not contain a type.)", lexical_name, member.get_type_name()), p_type_node);
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+	if (found_out_of_scope_alias) {
+		push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", lexical_name), p_type_node);
 		result.kind = BSParser::DataType::VARIANT;
 		return result;
 	}

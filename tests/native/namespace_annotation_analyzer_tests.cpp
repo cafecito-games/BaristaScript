@@ -756,3 +756,89 @@ TEST_SUITE("namespace_annotation_analyzer") {
 		CHECK(verify_case_isolation(scenario));
 	}
 }
+TEST_SUITE("namespace_annotation_analyzer") {
+	TEST_CASE("repair2_intrinsic_compound_roots_claim_missing_tail") {
+		for (const String root : { String("Vector2"), String("Variant"), String("Number"), String("AsyncCallable"), String("Self") }) {
+			StorageFixture storage;
+			install(storage, "res://tests/f1_intrinsic/missing.barista", "namespace a." + root + "\nclass_name Missing\n");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("import a\nvar x: " + root + ".Missing\n", "res://tests/f1_intrinsic/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			const String message = root == "Number" || root == "Self" ? "Type \"" + root + "\" does not contain nested types." : "Name \"Missing\" is not a nested type of \"" + root + "\".";
+			one_error(parser, message, parser.get_tree()->get_member("x").variable->datatype_specifier->type_chain[1]);
+		}
+	}
+	TEST_CASE("repair2_intrinsic_enum_tails_remain_terminal") {
+		for (const String root : { String("Vector2.Axis"), String("Variant.Type") }) {
+			StorageFixture storage;
+			install(storage, "res://tests/f1_intrinsic/deep.barista", "namespace a." + root + "\nclass_name Missing\n");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("import a\nvar x: " + root + ".Missing\n", "res://tests/f1_intrinsic/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			one_error(parser, root == "Variant.Type" ? "Variant only contains enum types, which do not have nested types." : "Built-in types only contain enum types, which do not have nested types.", parser.get_tree()->get_member("x").variable->datatype_specifier->type_chain[2]);
+		}
+	}
+	TEST_CASE("repair2_intrinsic_enums_and_qualified_namespace_opposites") {
+		StorageFixture storage;
+		install(storage, "res://tests/f1_intrinsic/missing.barista", "namespace a.Vector2\nclass_name Missing\n");
+		install(storage, "res://tests/f1_intrinsic/item.barista", "namespace a.child\nclass_name Item\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("import a\nvar vector: Vector2.Axis\nvar variant: Variant.Type\nvar native: Node.ProcessMode\nvar qualified: a.Vector2.Missing\nvar relative: child.Item\n", "res://tests/f1_intrinsic/consumer.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		BS_TEST_REQUIRE(analyzer.analyze() == OK);
+		for (const String name : { String("vector"), String("variant"), String("native") }) {
+			const auto type = parser.get_tree()->get_member(name).get_datatype();
+			CHECK(type.kind == BSParser::DataType::ENUM);
+			CHECK(type.enum_type == StringName(name == "vector" ? "Vector2.Axis" : name == "variant" ? "Variant.Type"
+																									 : "Node.ProcessMode"));
+		}
+		CHECK(parser.get_tree()->get_member("qualified").get_datatype().script_path == "res://tests/f1_intrinsic/missing.barista");
+		CHECK(parser.get_tree()->get_member("relative").get_datatype().script_path == "res://tests/f1_intrinsic/item.barista");
+	}
+	TEST_CASE("repair2_invisible_inherited_alias_continues_to_visible_enclosing_root") {
+		for (bool alias : { false, true }) {
+			StorageFixture storage;
+			install(storage, "res://tests/f1_alias/base.barista", "class HiddenOwner:\n\tclass Item:\n\t\tpass\ntype child = HiddenOwner\n");
+			install(storage, "res://tests/f1_alias/competitor.barista", "namespace a.child\nclass_name Item\n");
+			BSParser parser;
+			const String declaration = alias ? "class VisibleOwner:\n\tclass Item:\n\t\tpass\ntype child = VisibleOwner\n" : "class child:\n\tclass Item:\n\t\tpass\n";
+			BS_TEST_REQUIRE(parser.parse(String("import a\n") + declaration + "class Derived extends \"res://tests/f1_alias/base.barista\":\n\tvar x: child.Item\n", "res://tests/f1_alias/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const Error status = analyzer.analyze();
+			CHECK(status == OK);
+			if (status != OK) {
+				continue;
+			}
+			auto *owner = parser.get_tree()->get_member(alias ? "VisibleOwner" : "child").m_class;
+			auto *derived = parser.get_tree()->get_member("Derived").m_class;
+			const auto type = derived->get_member("x").get_datatype();
+			CHECK(type.kind == BSParser::DataType::CLASS);
+			CHECK(type.class_type == owner->get_member("Item").m_class);
+			CHECK(type.script_path == "res://tests/f1_alias/consumer.barista");
+		}
+	}
+	TEST_CASE("repair2_private_only_alias_does_not_leak_to_imported_namespace") {
+		StorageFixture storage;
+		install(storage, "res://tests/f1_alias/base.barista", "class HiddenOwner:\n\tclass Item:\n\t\tpass\ntype child = HiddenOwner\n");
+		install(storage, "res://tests/f1_alias/competitor.barista", "namespace a.child\nclass_name Item\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("import a\nclass Derived extends \"res://tests/f1_alias/base.barista\":\n\tvar x: child.Item\n", "res://tests/f1_alias/consumer.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		one_error(parser, "Type alias \"child\" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.", parser.get_tree()->get_member("Derived").m_class->get_member("x").variable->datatype_specifier);
+	}
+}
+TEST_SUITE("namespace_annotation_analyzer") {
+	TEST_CASE("repair2_selected_visible_alias_failure_is_terminal") {
+		StorageFixture storage;
+		install(storage, "res://tests/f1_alias/competitor.barista", "namespace a.child\nclass_name Item\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("import a\ntype child = child\nvar x: child.Item\n", "res://tests/f1_alias/consumer.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		one_error(parser, "Type alias \"child\" -> \"child\" expands to itself, so it names no type.", parser.get_tree()->get_member("child").type_alias);
+		CHECK(parser.get_tree()->get_member("x").get_datatype().is_variant());
+	}
+}
