@@ -1382,7 +1382,7 @@ BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_
 			return nullptr;
 		}
 		if (lookup.status == NameLookupStatus::MISSING) {
-			push_error(vformat(R"(Could not find trait "%s".)", name), source);
+			push_error(vformat(R"(Could not resolve trait "%s".)", name), source);
 			return nullptr;
 		}
 		const BSDeclarationRecord &record = lookup.record;

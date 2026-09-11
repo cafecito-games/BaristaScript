@@ -173,7 +173,9 @@ BSParser::AnnotationDeclarationNode *BSAnalyzer::load_external_annotation_declar
 		return nullptr;
 	}
 	const Error err = ref->raise_status(BSParserRef::INTERFACE_SOLVED);
-	if (err != OK || ref->get_status() < BSParserRef::INTERFACE_SOLVED) {
+	// A later body failure does not invalidate an already successful signature phase.
+	if ((err != OK && ref->get_result_for_status(BSParserRef::INTERFACE_SOLVED) != OK) ||
+			ref->get_status() < BSParserRef::INTERFACE_SOLVED) {
 		return nullptr;
 	}
 	BSParser *external_parser = ref->get_parser();

@@ -548,7 +548,7 @@ private:
 	HashSet<const BSParser::TypeAliasNode *> failed_type_aliases;
 	Vector<BSParser::TypeAliasNode *> type_alias_resolution_stack;
 
-	Error run_phase_preflight();
+	Error run_phase_preflight(bool p_validate_annotations = true);
 	Error run_phase_inheritance_resolution();
 	Error run_phase_interface_and_member_surface();
 	Error run_phase_body_expression_callable_signal();

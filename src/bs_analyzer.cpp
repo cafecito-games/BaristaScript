@@ -993,13 +993,15 @@ bool BSAnalyzer::validate_bootstrap_namespace_import(const String &p_import) {
 	return true;
 }
 
-Error BSAnalyzer::run_phase_preflight() {
+Error BSAnalyzer::run_phase_preflight(bool p_validate_annotations) {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
 	if (!parser->get_errors().is_empty()) {
 		return ERR_PARSE_ERROR;
 	}
 	validate_bootstrap_namespace_imports();
-	validate_annotation_declarations();
+	if (p_validate_annotations) {
+		validate_annotation_declarations();
+	}
 	mark_phase(AnalyzerPhase::PREFLIGHT);
 	mark_phase(AnalyzerPhase::DEPENDENCY_PARSE_AVAILABILITY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
@@ -1748,8 +1750,12 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
-		// Same-file class/trait declarations are valid value types in annotations.
-		for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+		// Inherited nested heads retain their declaring parser, even across multiple bases.
+		List<BSParser::ClassNode *> type_scopes;
+		if (current_class != nullptr) {
+			get_class_node_current_scope_classes(current_class, &type_scopes, p_type_node);
+		}
+		for (BSParser::ClassNode *scope : type_scopes) {
 			if (!scope->has_member(name)) {
 				continue;
 			}
@@ -1838,20 +1844,21 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
-		bool lookup_error = false;
-		BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
-		if (lookup_error || !indexed.is_variant()) {
-			if (!indexed.is_variant()) {
-				indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
-			}
-			return indexed;
-		}
+		// Foundry c9d5e35:2944: flat native types precede namespace candidates.
 		if (ClassDB::class_exists(name)) {
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = name;
 			result.builtin_type = Variant::OBJECT;
 		} else {
-			push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
+			bool lookup_error = false;
+			BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
+			if (lookup_error || !indexed.is_variant()) {
+				if (!indexed.is_variant()) {
+					indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
+				}
+				return indexed;
+			}
+			push_error(vformat(R"(Could not find type "%s" in the current scope.)", name), p_type_node->type_chain[0]);
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
@@ -2862,6 +2869,19 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	}
 	if (reduce_identifier_from_witness_declaration_scope(p_identifier))
 		return;
+	// Foundry c9d5e35:12737: native handles follow lexical values and precede namespaces.
+	if (ClassDB::class_exists(p_identifier->name)) {
+		BSParser::DataType native_meta;
+		native_meta.kind = BSParser::DataType::NATIVE;
+		native_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		native_meta.builtin_type = Variant::OBJECT;
+		native_meta.native_type = p_identifier->name;
+		native_meta.is_meta_type = true;
+		native_meta.is_constant = true;
+		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
+		p_identifier->set_datatype(native_meta);
+		return;
+	}
 	bool lookup_error = false;
 	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier, lookup_error);
 	if (lookup_error) {
@@ -2884,20 +2904,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		builtin_meta.is_meta_type = true;
 		builtin_meta.is_constant = true;
 		p_identifier->set_datatype(builtin_meta);
-		return;
-	}
-	// Native classes are expression-position class handles after locals and members have missed.
-	// This also lets match patterns distinguish an unshadowed native type from a value pattern.
-	if (ClassDB::class_exists(p_identifier->name)) {
-		BSParser::DataType native_meta;
-		native_meta.kind = BSParser::DataType::NATIVE;
-		native_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		native_meta.builtin_type = Variant::OBJECT;
-		native_meta.native_type = p_identifier->name;
-		native_meta.is_meta_type = true;
-		native_meta.is_constant = true;
-		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
-		p_identifier->set_datatype(native_meta);
 		return;
 	}
 	{
@@ -10331,7 +10337,7 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 	auto exists = [&](const String &p_candidate) {
 		return ScriptServer::has_global_class_candidate(StringName(p_candidate));
 	};
-	if (p_name.contains(".") || p_scope == nullptr) {
+	if ((p_name.contains(".") && exists(p_name)) || p_scope == nullptr) {
 		if (exists(p_name)) {
 			result.qualified = p_name;
 		}
@@ -10361,9 +10367,9 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 					if (i > 0) {
 						choices += i == candidates.size() - 1 ? " and " : ", ";
 					}
-					choices += String("\"") + candidates[i] + String("\"");
+					choices += String("\"") + candidates[i].trim_suffix(String(".") + p_name) + String("\"");
 				}
-				push_error(vformat(R"(Could not resolve %s "%s": imported declarations %s are ambiguous.)", p_symbol_kind, p_name, choices), p_source);
+				push_error(vformat(R"(Could not resolve %s "%s": imported namespaces %s are ambiguous.)", p_symbol_kind, p_name, choices), p_source);
 				failed_name_lookups.insert(p_source);
 				result.status = NameLookupStatus::ERROR;
 				return result;
@@ -10414,7 +10420,7 @@ BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_n
 }
 
 BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error) {
-	const NameLookup lookup = lookup_declaration(p_qualified, nullptr, p_source, "type");
+	const NameLookup lookup = lookup_declaration(p_qualified, current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
 	r_error = lookup.status == NameLookupStatus::ERROR;
 	return named_type_from_lookup(lookup, p_source);
 }
@@ -10536,7 +10542,10 @@ Error BSAnalyzer::run_phase_conformance_witness_body() {
 Error BSAnalyzer::resolve_inheritance() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
 	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
-	Error err = run_phase_preflight();
+	// Foundry c9d5e35:4387: dependency interfaces expose duplicate annotation
+	// signatures so usage can diagnose their canonical identity. Full analyze
+	// still validates the provider declarations in its own preflight.
+	Error err = run_phase_preflight(false);
 	if (err != OK) {
 		commit_or_remove_declaration(false);
 		return err;
