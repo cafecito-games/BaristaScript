@@ -799,6 +799,199 @@ bool _project_registry_trait_arguments(const BSParser::DataType &p_source,
 	return false;
 }
 
+static bool _is_signature_builtin_type(Variant::Type p_type) {
+	return p_type == Variant::CALLABLE || p_type == Variant::SIGNAL;
+}
+
+static bool _property_signature_equal(const PropertyInfo &p_left, const PropertyInfo &p_right) {
+	// Only the type-identifying fields matter for signature compatibility. Storage/editor usage flags do
+	// not: a synthesized slot (DataType::to_property_info, usage NONE) must still match an equivalent
+	// natural MethodInfo slot (e.g. a utility function like `sin`, usage DEFAULT). The one usage bit that
+	// is type-relevant is NIL_IS_VARIANT, which distinguishes a `Variant` slot from a concrete/`void` NIL.
+	return p_left.type == p_right.type &&
+			p_left.class_name == p_right.class_name &&
+			p_left.hint == p_right.hint &&
+			p_left.hint_string == p_right.hint_string &&
+			(p_left.usage & PROPERTY_USAGE_NIL_IS_VARIANT) == (p_right.usage & PROPERTY_USAGE_NIL_IS_VARIANT);
+}
+
+static bool _method_signature_equal(const MethodInfo &p_left, const MethodInfo &p_right) {
+	if (!_property_signature_equal(p_left.return_val, p_right.return_val)) {
+		return false;
+	}
+	if (p_left.arguments.size() != p_right.arguments.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_left.arguments.size(); i++) {
+		if (!_property_signature_equal(p_left.arguments[i], p_right.arguments[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool _datatype_method_signature_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
+		bool p_contravariant_rest = false, bool p_strict_null = false);
+
+// Strict signature-slot comparison for the explicit `Callable[[...], ...]` / `Signal[[...]]` path.
+// `operator==` establishes matching outer structure (including is_nullable, generic type arguments, and
+// container element kinds) and then the composite slots it only compared shallowly are recursed into so a
+// nested Callable/Signal mismatch is still detected. This is the long-standing explicit-signature
+// behavior and is intentionally left untouched: only the non-explicit source path is broadened below.
+static bool _datatype_signature_slot_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right) {
+	if (p_left != p_right) {
+		return false;
+	}
+	// `operator==` above already established matching outer structure; recurse into the composite
+	// slots it only compared shallowly. The size guards keep the lenient outcome it returns for
+	// UNDETECTED/INFERRED operands (where the slot vectors may legitimately differ in length).
+	if (p_left.container_element_types.size() == p_right.container_element_types.size()) {
+		for (int i = 0; i < p_left.container_element_types.size(); i++) {
+			if (!_datatype_signature_slot_equal(p_left.container_element_types[i], p_right.container_element_types[i])) {
+				return false;
+			}
+		}
+	}
+	if (p_left.type_arguments.size() == p_right.type_arguments.size()) {
+		for (int i = 0; i < p_left.type_arguments.size(); i++) {
+			if (!_datatype_signature_slot_equal(p_left.type_arguments[i], p_right.type_arguments[i])) {
+				return false;
+			}
+		}
+	}
+	if (p_left.kind == BSParser::DataType::BUILTIN && _is_signature_builtin_type(p_left.builtin_type) &&
+			p_left.has_method_signature && p_right.has_method_signature) {
+		return _datatype_method_signature_equal(p_left, p_right);
+	}
+	return true;
+}
+
+// Lenient signature-slot comparison for the non-explicit source path (a lambda, function reference, or
+// declared signal where at least one side has no explicit annotation). The historical `MethodInfo`
+// fallback compared such slots through `DataType::to_property_info`; reusing that serialization keeps
+// every slot byte-for-byte identical to the prior behavior, so type parameters, non-hard
+// (inferred/undetected) types, generic type arguments, nullability, and deep container nesting all
+// collapse exactly as they did before and nothing the old path accepted is newly tightened. The one
+// thing the property form cannot express is a Callable/Signal's nested method signature, so recurse to
+// recover exactly that — and because the recursion re-enters `_datatype_method_signature_equal`, a nested
+// slot that is itself an explicit Callable/Signal is dispatched to the strict comparison above.
+static bool _nonexplicit_signature_slot_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right) {
+	if (!_property_signature_equal(p_left.to_property_info(""), p_right.to_property_info(""))) {
+		return false;
+	}
+	if (p_left.kind == BSParser::DataType::BUILTIN && _is_signature_builtin_type(p_left.builtin_type) &&
+			p_left.has_method_signature && p_right.has_method_signature) {
+		return _datatype_method_signature_equal(p_left, p_right);
+	}
+	return true;
+}
+
+// Whether a Callable/Signal type carries the rich `method_parameter_types`/`method_return_type`
+// recursion data rather than only a `MethodInfo`. Explicit `Callable[[...], ...]` annotations set
+// `has_explicit_method_signature`, but lambdas and function references populate the rich vectors from
+// their FunctionNode without that flag (see `make_callable_type(MethodInfo, FunctionNode)` in the
+// analyzer). A native, MethodInfo-only callable records neither parameter nor return DataTypes, so it
+// is distinguished by both rich vectors being empty. A Callable always records its return type (even
+// `void`), and a zero-argument callable legitimately has an empty parameter vector, so the presence of
+// either rich vector signals that the structural recursion is available.
+static bool _has_rich_method_signature(const BSParser::DataType &p_type) {
+	if (!p_type.has_method_signature) {
+		return false;
+	}
+	return p_type.has_explicit_method_signature ||
+			!p_type.method_parameter_types.is_empty() ||
+			!p_type.method_return_type.is_empty() ||
+			!p_type.method_rest_parameter_type.is_empty();
+}
+
+// Compares the rest tails of two Callable/Signal signatures. In an assignment position `p_left` is the
+// target (what callers are promised) and `p_right` the assigned source, so the shared contravariant rest
+// rule applies. In an invariant position (a nested container element, for instance) neither side is a
+// target and the slots must match exactly.
+static bool _callable_signature_rest_parameter_type(const BSParser::DataType &p_type, BSParser::DataType &r_rest) {
+	if (!(p_type.method_info.flags & METHOD_FLAG_VARARG))
+		return false;
+	if (p_type.has_method_rest_parameter_type())
+		r_rest = p_type.get_method_rest_parameter_type();
+	else {
+		r_rest.kind = BSParser::DataType::BUILTIN;
+		r_rest.builtin_type = Variant::ARRAY;
+		r_rest.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	}
+	return true;
+}
+
+static bool _method_signature_rest_slots_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
+		bool (*p_slot_equal)(const BSParser::DataType &, const BSParser::DataType &), bool p_contravariant_rest,
+		bool p_strict_null) {
+	if (p_contravariant_rest) {
+		BSParser::DataType target_rest;
+		BSParser::DataType source_rest;
+		const bool target_is_variadic = _callable_signature_rest_parameter_type(p_left, target_rest);
+		const bool source_is_variadic = _callable_signature_rest_parameter_type(p_right, source_rest);
+		return BSTypeCompatibility::rest_parameter_accepts_required_arguments(
+				source_is_variadic ? &source_rest : nullptr,
+				target_is_variadic ? &target_rest : nullptr, p_strict_null);
+	}
+	if (p_left.method_rest_parameter_type.size() != p_right.method_rest_parameter_type.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_left.method_rest_parameter_type.size(); i++) {
+		if (!p_slot_equal(p_left.method_rest_parameter_type[i], p_right.method_rest_parameter_type[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool _method_signature_slots_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
+		bool (*p_slot_equal)(const BSParser::DataType &, const BSParser::DataType &), bool p_contravariant_rest,
+		bool p_strict_null) {
+	if (p_left.method_parameter_types.size() != p_right.method_parameter_types.size()) {
+		return false;
+	}
+	for (int i = 0; i < p_left.method_parameter_types.size(); i++) {
+		if (!p_slot_equal(p_left.method_parameter_types[i], p_right.method_parameter_types[i])) {
+			return false;
+		}
+	}
+	if (!_method_signature_rest_slots_equal(p_left, p_right, p_slot_equal, p_contravariant_rest, p_strict_null)) {
+		return false;
+	}
+	if (p_left.builtin_type == Variant::CALLABLE) {
+		if (p_left.method_return_type.size() != p_right.method_return_type.size()) {
+			return false;
+		}
+		for (int i = 0; i < p_left.method_return_type.size(); i++) {
+			if (!p_slot_equal(p_left.method_return_type[i], p_right.method_return_type[i])) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+static bool _datatype_method_signature_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
+		bool p_contravariant_rest, bool p_strict_null) {
+	// AsyncCallable and plain Callable are not interchangeable: a callable whose signature is async
+	// carries a coroutine result that a synchronous Callable does not, so their signatures differ.
+	if (p_left.signature_is_async != p_right.signature_is_async) {
+		return false;
+	}
+	// Both sides written as explicit annotations: compare the rich slots strictly, exactly as the
+	// explicit Callable/Signal path always has.
+	if (p_left.has_explicit_method_signature && p_right.has_explicit_method_signature) {
+		return _method_signature_slots_equal(p_left, p_right, _datatype_signature_slot_equal, p_contravariant_rest, p_strict_null);
+	}
+	// A lambda/function-reference Callable or a declared Signal carries rich slots without the explicit
+	// flag. Compare those slots the way the `MethodInfo` fallback did, but recurse to catch the nested
+	// Callable/Signal mismatches the fallback erased — the #382 fix for the non-explicit source path.
+	if (_has_rich_method_signature(p_left) && _has_rich_method_signature(p_right)) {
+		return _method_signature_slots_equal(p_left, p_right, _nonexplicit_signature_slot_equal, p_contravariant_rest, p_strict_null);
+	}
+	return _method_signature_equal(p_left.method_info, p_right.method_info);
+}
+
 } // namespace
 
 BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const Options &p_options) {
@@ -835,6 +1028,31 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 		return Result(true, false, false);
 	}
 
+	// Pin fs_type.cpp:1076-1087: a Type slot stores a handle, never an instance.
+	// NIL has its own legacy handle rule, after the shared dynamic/nullability gates.
+	if (p_target.is_type_handle_annotation) {
+		if (p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::NIL)
+			return Result(true, false, false);
+		if (!p_source.is_meta_type && !p_source.is_type_handle_annotation)
+			return Result(false, false, false);
+		auto represented = [](BSParser::DataType type) {
+			type.is_type_handle_annotation = false;
+			type.is_meta_type = false;
+			type.is_pseudo_type = false;
+			type.is_constant = false;
+			type.is_nullable = false;
+			return type;
+		};
+		const BSParser::DataType target_instance = represented(p_target);
+		const BSParser::DataType source_instance = represented(p_source);
+		// A known native class handle denotes exactly that class. The ordinary instance
+		// runtime-narrowing allowance cannot turn a Node class object into Control.
+		if (target_instance.kind == BSParser::DataType::NATIVE && source_instance.kind == BSParser::DataType::NATIVE &&
+				!ClassDB::is_parent_class(source_instance.native_type, target_instance.native_type))
+			return Result(false, false, false);
+		return check(target_instance, source_instance, p_options);
+	}
+
 	if (p_target.kind == BSParser::DataType::BUILTIN && p_source.kind == BSParser::DataType::BUILTIN) {
 		Result result(false, false, false);
 		if (p_target.builtin_type == p_source.builtin_type) {
@@ -863,6 +1081,27 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 				result.uses_implicit_conversion = false;
 			} else if (conversion != BSNumericConversion::Conversion::IDENTITY) {
 				result.uses_implicit_conversion = true;
+			}
+		}
+
+		if (result.compatible && p_source.kind == BSParser::DataType::BUILTIN && p_target.builtin_type == p_source.builtin_type && _is_signature_builtin_type(p_target.builtin_type)) {
+			if (p_target.has_method_signature && p_source.has_method_signature) {
+				// Assignment position: the target states what callers may pass, so its rest tail is
+				// contravariant while every other slot stays invariant.
+				result.compatible = _datatype_method_signature_equal(p_target, p_source, true, p_options.strict_null);
+			} else if (p_target.has_method_signature && !p_source.has_method_signature) {
+				result.requires_runtime_check = true;
+			}
+			// Enforce the async marker even when only one side carries a method signature, so a bare
+			// `AsyncCallable` is still distinct from a bare `Callable`. An async target requires an
+			// async source, and a synchronous target that carries a signature rejects an async source.
+			// A bare, signatureless synchronous `Callable` target still accepts any callable (e.g. the
+			// `Callable` parameter of `Signal.connect`), so async-ness is only enforced when the target
+			// is itself async or carries an explicit signature.
+			if (result.compatible && p_target.builtin_type == Variant::CALLABLE &&
+					p_target.signature_is_async != p_source.signature_is_async &&
+					(p_target.signature_is_async || p_target.has_method_signature)) {
+				result.compatible = false;
 			}
 		}
 
@@ -918,6 +1157,13 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 	if (p_target.kind == BSParser::DataType::ENUM && !p_target.is_tagged_union && !p_target.is_type_handle_annotation &&
 			p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::INT) {
 		return Result(true, false, false);
+	}
+
+	// Pin fs_type.cpp:1325-1329: legacy NIL admission applies to object families,
+	// after builtin/enum decisions; tuple and other value shapes are not object slots.
+	if (p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::NIL &&
+			(p_target.kind == BSParser::DataType::NATIVE || p_target.kind == BSParser::DataType::CLASS || p_target.kind == BSParser::DataType::SCRIPT)) {
+		return Result(!p_options.strict_null || p_target.is_nullable, false, false);
 	}
 
 	// Foundry FSTypeCompatibility::check @ c9d5e35 (~1331): Coroutine[T] is its own family — a

@@ -622,6 +622,10 @@ private:
 	void decide_suite_type(BSParser::Node *p_suite, BSParser::Node *p_statement);
 	void resolve_for(BSParser::ForNode *p_for);
 	void resolve_assert(BSParser::AssertNode *p_assert);
+	static String make_type_handle_assignment_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name, bool p_specified);
+	static String make_type_handle_argument_error(const StringName &p_function, int p_argument, const BSParser::DataType &p_target, const BSParser::DataType &p_source);
+	static String make_declaration_type_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name);
+	void resolve_variable_destructure(BSParser::VariableDestructureNode *p_destructure);
 	void analyze_statement(BSParser::Node *p_node);
 	void warn_shadowed_local(BSParser::IdentifierNode *p_identifier, const String &p_context);
 	void warn_unused_locals(BSParser::SuiteNode *p_suite);

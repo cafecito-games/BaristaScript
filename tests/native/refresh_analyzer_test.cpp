@@ -124,7 +124,7 @@ TEST_SUITE("refresh_analyzer") {
 		BS_TEST_REQUIRE(error != OK && latest.is_valid());
 		BS_TEST_REQUIRE(latest->get_parser()->get_errors().size() == 1);
 		const auto &diagnostic = latest->get_parser()->get_errors().front()->get();
-		CHECK(diagnostic.message == "Cannot assign a value of type \"String\" to a variable of type \"int\".");
+		CHECK(diagnostic.message == "Cannot assign a value of type String to variable \"value\" with specified type int.");
 		const auto *initializer = latest->get_parser()->get_tree()->get_member("value").variable->initializer;
 		CHECK(diagnostic.line == initializer->start_line);
 		CHECK(diagnostic.column == initializer->start_column);
@@ -362,7 +362,7 @@ TEST_SUITE("refresh_analyzer") {
 				const auto &errors = consumer->get_parser()->get_errors();
 				BS_TEST_REQUIRE(errors.size() == 1);
 				const auto &diagnostic = errors.front()->get();
-				CHECK(diagnostic.message == "Cannot assign a value of type \"String\" to a variable of type \"int\".");
+				CHECK(diagnostic.message == "Cannot assign a value of type String to variable \"result\" with specified type int.");
 				// The second-line call is the pinned assignment initializer source node.
 				CHECK(diagnostic.line == 2);
 				CHECK(diagnostic.column == 19);
