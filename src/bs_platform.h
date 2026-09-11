@@ -131,10 +131,11 @@ Error bs_validate_parse_cache_store_path(const String &p_store_path);
  * immediately. Virtual prefixes are resolved through ProjectSettings::globalize_path before the
  * native call; ordinary relative paths keep their working-directory meaning. On POSIX hosts the
  * resolver also normalizes `\\` to `/` so FileAccess write/readback and `::rename` agree. Windows
- * conversion always prepares absolute UTF-16 with the `\\?\` / `\\?\UNC\` extended prefix for
- * MoveFileExW (both short and long destinations). Length decisions use WCHAR/UTF-16 code-unit
- * counts, never Godot `String.length()` (UTF-32 codepoints) against MAX_PATH, and extended-prefix
- * preparation does not require the LongPathsEnabled registry opt-in.
+ * conversion canonicalizes with GetFullPathNameW on an unprefixed path, then always applies the
+ * `\\?\` / `\\?\UNC\` extended prefix for MoveFileExW (short and long destinations). Prefixing
+ * before GetFullPathNameW is wrong: Win32 can parse `\\?\C:\...` as UNC with server name `?`.
+ * Length decisions use WCHAR/UTF-16 code-unit counts, never Godot `String.length()` (UTF-32
+ * codepoints) against MAX_PATH, and MoveFileExW does not require the LongPathsEnabled opt-in.
  *
  * This removes the application-side delete window. It is not a universal filesystem transaction:
  * EIO, device/OS/power failure, and unusual remote/VFS semantics remain outside the ordinary

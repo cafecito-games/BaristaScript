@@ -138,47 +138,8 @@ static bool bs_windows_is_drive_absolute(const String &p_path) {
 			((p_path[0] >= 'A' && p_path[0] <= 'Z') || (p_path[0] >= 'a' && p_path[0] <= 'z'));
 }
 
-Error bs_windows_absolute_utf16(const String &p_path, std::vector<wchar_t> &r_wide, int64_t *r_native_error) {
-	// Always prepare absolute UTF-16 with the extended local/UNC prefix for MoveFileExW, for both
-	// short and long destinations. Do this without first requiring LongPathsEnabled: unprefixed
-	// GetFullPathNameW / MoveFileExW stay subject to the legacy WCHAR MAX_PATH ceiling unless the
-	// path is already extended. Length policy uses UTF-16 code units (Char16String::length /
-	// wcslen), never String::length() (UTF-32 codepoints) compared against MAX_PATH.
-
-	String path = p_path.replace("/", "\\");
-	String extended_input;
-	if (path.begins_with("\\\\?\\")) {
-		extended_input = path;
-	} else if (path.begins_with("\\\\")) {
-		extended_input = String("\\\\?\\UNC\\") + path.substr(2);
-	} else if (bs_windows_is_drive_absolute(path)) {
-		extended_input = String("\\\\?\\") + path;
-	} else {
-		DWORD dir_needed = GetCurrentDirectoryW(0, nullptr);
-		if (dir_needed == 0) {
-			if (r_native_error != nullptr) {
-				*r_native_error = (int64_t)GetLastError();
-			}
-			return Error::ERR_FILE_CANT_WRITE;
-		}
-		std::vector<wchar_t> dir_buf(dir_needed);
-		DWORD dir_written = GetCurrentDirectoryW(dir_needed, dir_buf.data());
-		if (dir_written == 0 || dir_written >= dir_needed) {
-			if (r_native_error != nullptr) {
-				*r_native_error = (int64_t)GetLastError();
-			}
-			return Error::ERR_FILE_CANT_WRITE;
-		}
-		String cwd = String::utf16(reinterpret_cast<const char16_t *>(dir_buf.data()), (int64_t)dir_written);
-		String extended_cwd = bs_windows_ensure_extended_prefix(cwd);
-		if (extended_cwd.ends_with("\\")) {
-			extended_input = extended_cwd + path;
-		} else {
-			extended_input = extended_cwd + String("\\") + path;
-		}
-	}
-
-	const Char16String utf16 = extended_input.utf16();
+static Error bs_windows_get_full_path_unprefixed(const String &p_path, String &r_full, int64_t *r_native_error) {
+	const Char16String utf16 = p_path.utf16();
 	DWORD needed = GetFullPathNameW(reinterpret_cast<LPCWSTR>(utf16.get_data()), 0, nullptr, nullptr);
 	if (needed == 0) {
 		if (r_native_error != nullptr) {
@@ -186,7 +147,6 @@ Error bs_windows_absolute_utf16(const String &p_path, std::vector<wchar_t> &r_wi
 		}
 		return Error::ERR_FILE_CANT_WRITE;
 	}
-
 	std::vector<wchar_t> absolute(needed);
 	DWORD written = GetFullPathNameW(reinterpret_cast<LPCWSTR>(utf16.get_data()), needed, absolute.data(), nullptr);
 	if (written == 0 || written >= needed) {
@@ -195,11 +155,43 @@ Error bs_windows_absolute_utf16(const String &p_path, std::vector<wchar_t> &r_wi
 		}
 		return Error::ERR_FILE_CANT_WRITE;
 	}
+	r_full = String::utf16(reinterpret_cast<const char16_t *>(absolute.data()), (int64_t)written);
+	return Error::OK;
+}
 
-	// GetFullPathNameW may drop the extended prefix; restore it so MoveFileExW always receives one.
-	String full = String::utf16(reinterpret_cast<const char16_t *>(absolute.data()), (int64_t)written);
-	String prefixed = bs_windows_ensure_extended_prefix(full);
+Error bs_windows_absolute_utf16(const String &p_path, std::vector<wchar_t> &r_wide, int64_t *r_native_error) {
+	// Prepare absolute UTF-16 with the extended local/UNC prefix for MoveFileExW (short and long).
+	// Order matters: canonicalize with GetFullPathNameW on an *unprefixed* path first, then add
+	// \\?\ / \\?\UNC\. Prefixing before GetFullPathNameW lets Win32 parse \\?\C:\... as UNC with
+	// server name "?", which makes MoveFileExW fail with ERROR_FILE_NOT_FOUND on ordinary stores
+	// (Windows CI native error 2) and can stall on long destinations.
+	// LongPathsEnabled is not required for MoveFileExW: the call always receives an extended path.
+	// For already-absolute paths whose UTF-16 length is >= MAX_PATH, skip unprefixed
+	// GetFullPathNameW (still MAX_PATH-limited without the opt-in) and prefix the absolute path.
+	// Length policy uses UTF-16 code units, never String::length() (UTF-32) against MAX_PATH.
 
+	String path = p_path.replace("/", "\\");
+	if (path.begins_with("\\\\?\\")) {
+		if (path.begins_with("\\\\?\\UNC\\")) {
+			path = String("\\\\") + path.substr(8);
+		} else {
+			path = path.substr(4);
+		}
+	}
+
+	String absolute_unprefixed;
+	const bool already_absolute = bs_windows_is_drive_absolute(path) || path.begins_with("\\\\");
+	const int64_t utf16_units = path.utf16().length();
+	if (already_absolute && utf16_units >= MAX_PATH) {
+		absolute_unprefixed = path;
+	} else {
+		const Error canon_error = bs_windows_get_full_path_unprefixed(path, absolute_unprefixed, r_native_error);
+		if (canon_error != Error::OK) {
+			return canon_error;
+		}
+	}
+
+	String prefixed = bs_windows_ensure_extended_prefix(absolute_unprefixed);
 	const Char16String out = prefixed.utf16();
 	r_wide.assign(reinterpret_cast<const wchar_t *>(out.get_data()),
 			reinterpret_cast<const wchar_t *>(out.get_data()) + out.length() + 1);
