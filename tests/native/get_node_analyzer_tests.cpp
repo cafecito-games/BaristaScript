@@ -360,7 +360,7 @@ func describe() -> String:
 			auto *function = parser.get_tree()->get_member("value").function;
 			BS_TEST_REQUIRE(function != nullptr);
 			CHECK(function->resolved_body == !inherited_error);
-			BS_TEST_REQUIRE(parser.get_errors().size() == (inherited_error ? 3 : 2));
+			BS_TEST_REQUIRE(parser.get_errors().size() == (inherited_error ? 1 : 2));
 			int index = 0;
 			for (const auto &e : parser.get_errors()) {
 				if (inherited_error) {

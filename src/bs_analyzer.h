@@ -450,6 +450,7 @@ public:
 
 #ifdef BARISTA_TESTS
 	friend struct ProviderTestAccess;
+	friend struct ProviderPhaseTestAccess;
 	friend struct WitnessScopeTestAccess;
 #endif
 

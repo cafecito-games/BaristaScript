@@ -1020,6 +1020,14 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 		return;
 	}
 
+	// This void adaptation must preserve Foundry's failed inheritance return across
+	// later interface/body requests, even when a failed exit leaves base_type unset.
+	Finally record_inheritance_failure([&]() {
+		if (!p_class->base_type.is_set()) {
+			failed_name_lookups.insert(p_class);
+		}
+	});
+
 	// Foundry resolves the class itself before nested members (`resolve_class_inheritance(..., true)`),
 	// so an outer is already set when a nested `extends Sibling` walks scope via `outer`.
 	if (p_class->base_type.is_resolving()) {
@@ -1182,7 +1190,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			if (lookup.status == NameLookupStatus::FOUND) {
 				qualified = lookup.qualified;
 				if (lookup.indexed && (lookup.record.kind == BSDeclarationKind::ENUM || lookup.record.kind == BSDeclarationKind::TUPLE)) {
-					push_error(vformat(R"(Cannot use %s "%s" in extends chain.)", bs_declaration_kind_name(lookup.record.kind), qualified), first_id);
+					push_error(vformat(R"(Cannot extend %s file "%s".)", bs_declaration_kind_name(lookup.record.kind), qualified), first_id);
 					p_class->base_type = BSParser::DataType();
 					return;
 				}
@@ -9453,6 +9461,32 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 				owner_resolution_failures.first_error_index(p_class, OwnerResolutionFailures::INTERFACE));
 	}
 
+	// Foundry c9d5e35:3641-3670: prepare directly applied external bodies before
+	// implementer finality consumes their declaration identities. Transitive traits
+	// are prepared by their own applying parser; inline traits are local members.
+	for (const BSParser::ClassNode::TraitUse &use : p_class->used_traits) {
+		BSParser::ClassNode *trait = use.resolved_trait;
+		if (trait == nullptr) {
+			continue;
+		}
+		Ref<BSParserRef> trait_ref = ensure_external_parser(trait, "While resolving trait body for flattening", p_source);
+		if (trait_ref.is_valid()) {
+			ForeignAnalyzerVisibilityScope visibility(trait_ref->get_analyzer());
+			if (trait_ref->raise_status(BSParserRef::FULLY_SOLVED) != OK) {
+				String trait_path = trait_ref->get_path();
+				if (trait_path.is_empty()) {
+					trait_path = trait->get_datatype().script_path;
+				}
+				String message = vformat(R"(Could not resolve body of trait "%s" applied by "%s".)", bs_class_or_trait_diagnostic_name(trait), bs_class_or_trait_diagnostic_name(p_class));
+				const String suffix = _dependency_error_suffix("trait", trait_path, trait_ref->get_parser(), 0);
+				if (!suffix.is_empty()) {
+					message += " " + suffix;
+				}
+				push_error(message, p_source);
+			}
+		}
+	}
+
 	if (p_class->base_type.kind == BSParser::DataType::CLASS && p_class->base_type.class_type != nullptr) {
 		BSParser::ClassNode *base_class = p_class->base_type.class_type;
 		analyze_class_body(base_class, p_class);
@@ -10358,7 +10392,14 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 		return result;
 	Error error = OK;
 	Ref<BSParserRef> provider = get_depended_parser(result.record.path, BSParserRef::PARSED, error);
-	if (provider.is_null() || error != OK || provider->get_parser() == nullptr || !provider->get_parser()->get_errors().is_empty()) {
+	// A directly applied trait consumes its body at the applying class, not at this
+	// name. A cached BODY failure must not masquerade as a failed parse for the
+	// next consumer; successful earlier phases remain usable for that replay.
+	const bool trait_body_pending = p_symbol_kind == "trait" && result.record.kind == BSDeclarationKind::TRAIT &&
+			provider.is_valid() && provider->get_status() == BSParserRef::FULLY_SOLVED &&
+			provider->get_result_for_status(BSParserRef::INTERFACE_SOLVED) == OK;
+	if (provider.is_null() || provider->get_parser() == nullptr ||
+			(!trait_body_pending && (error != OK || !provider->get_parser()->get_errors().is_empty()))) {
 		push_error(vformat(R"(Could not resolve %s "%s": provider "%s" could not be parsed.)", p_symbol_kind, p_name, result.record.path), p_source);
 		failed_name_lookups.insert(p_source);
 		result.status = NameLookupStatus::ERROR;
