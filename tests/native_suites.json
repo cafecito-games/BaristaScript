@@ -22,7 +22,8 @@
     "warning_producer_analyzer",
     "concrete_type_analyzer",
     "value_consumer_analyzer",
-    "expression_consumer_analyzer"
+    "expression_consumer_analyzer",
+    "abstract_contract_analyzer"
   ],
   "editor_import": [
     "global_class"
