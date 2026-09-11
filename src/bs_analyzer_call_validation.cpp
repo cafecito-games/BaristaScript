@@ -87,11 +87,45 @@ BSAnalyzer::CallSiteValidationContext::CallSiteValidationContext(BSAnalyzer *p_a
 		analyzer(p_analyzer) {
 }
 
-void BSAnalyzer::CallSiteValidationContext::validate_call_arg(const MethodInfo &p_method, const BSParser::CallNode *p_call) {
+void BSAnalyzer::CallSiteValidationContext::validate_call_arg(const MethodInfo &p_method, const BSParser::CallNode *p_call, const BSParser::DataType *p_receiver) {
 	List<BSParser::DataType> arg_types;
 
 	for (const PropertyInfo &E : p_method.arguments) {
 		arg_types.push_back(analyzer->type_from_property(E, true));
+	}
+
+	// The real MethodInfo above owns arity/defaults/flags. Only mutation slots specialize.
+	if (p_receiver && p_receiver->kind == BSParser::DataType::BUILTIN) {
+		const StringName name = p_call->function_name;
+		if (p_receiver->builtin_type == Variant::ARRAY && p_receiver->has_container_element_type(0)) {
+			if (name == SNAME("append") || name == SNAME("push_back") || name == SNAME("push_front") || name == SNAME("fill")) {
+				arg_types.clear();
+				arg_types.push_back(p_receiver->get_container_element_type(0));
+			} else if (name == SNAME("insert") || name == SNAME("set")) {
+				arg_types.clear();
+				arg_types.push_back(analyzer->type_from_property(PropertyInfo(Variant::INT, "index"), true));
+				arg_types.push_back(p_receiver->get_container_element_type(0));
+			} else if (name == SNAME("assign") || name == SNAME("append_array")) {
+				auto type = analyzer->type_from_property(PropertyInfo(Variant::ARRAY, "array"), true);
+				type.set_container_element_type(0, p_receiver->get_container_element_type(0));
+				arg_types.clear();
+				arg_types.push_back(type);
+			}
+		} else if (p_receiver->builtin_type == Variant::DICTIONARY && p_receiver->has_container_element_types()) {
+			if (name == SNAME("set")) {
+				arg_types.clear();
+				arg_types.push_back(p_receiver->get_container_element_type_or_variant(0));
+				arg_types.push_back(p_receiver->get_container_element_type_or_variant(1));
+			} else if (name == SNAME("assign") || name == SNAME("merge")) {
+				auto type = analyzer->type_from_property(PropertyInfo(Variant::DICTIONARY, "dictionary"), true);
+				type.set_container_element_type(0, p_receiver->get_container_element_type_or_variant(0));
+				type.set_container_element_type(1, p_receiver->get_container_element_type_or_variant(1));
+				arg_types.clear();
+				arg_types.push_back(type);
+				if (name == SNAME("merge"))
+					arg_types.push_back(analyzer->type_from_property(PropertyInfo(Variant::BOOL, "overwrite"), true));
+			}
+		}
 	}
 
 	// Cache the resolved parameter types for editor refactors (e.g. insert-explicit-cast),
@@ -195,9 +229,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_argument_against_type(const
 	}
 
 	const bool nullable_mismatch = analyzer->strict_null_checks && arg_type.is_nullable && !par_type.is_nullable && !par_type.is_variant();
-	const bool tuple_identity_mismatch = (par_type.kind == BSParser::DataType::TUPLE || arg_type.kind == BSParser::DataType::TUPLE) &&
-			!analyzer->datatype_strict_identity_equal(par_type, arg_type);
-	if (nullable_mismatch || tuple_identity_mismatch || !BSTypeCompatibility::check(par_type, arg_type, options).compatible) {
+	if (nullable_mismatch || !BSTypeCompatibility::check(par_type, arg_type, options).compatible) {
 		analyzer->push_error(make_invalid_argument_error(p_function, p_argument_number, par_type, arg_type, false, nullable_mismatch, p_argument), p_argument);
 	}
 }
@@ -242,7 +274,7 @@ void BSAnalyzer::CallSiteValidationContext::validate_call_arg(const List<BSParse
 			continue;
 		}
 		// A contextual case shorthand in argument position takes its union from the parameter type.
-		analyzer->qualify_contextual_enum_case_consumer(p_call->arguments[i], *expected_type);
+		analyzer->qualify_contextual_enum_case_consumer(p_call->arguments[i], *expected_type, true);
 		validate_argument_against_type(*expected_type, p_call->arguments[i], i + 1, p_call->function_name, p_call);
 	}
 }

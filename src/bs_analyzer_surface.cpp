@@ -1328,6 +1328,8 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				type.kind = BSParser::DataType::VARIANT;
 				type.type_source = BSParser::DataType::UNDETECTED;
 			}
+			type.is_constant = false;
+			type.is_read_only = false;
 			member.variable->set_datatype(type);
 			// The existing export callback consumes the completed datatype (parser export_annotations).
 			for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
@@ -1381,10 +1383,14 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 						options.constant_source_value = &member.constant->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), type.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
-								member.constant->initializer);
+						if (type.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(type, initializer_type, "constant", member.constant->identifier != nullptr ? member.constant->identifier->name : StringName("<unknown>")), member.constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), type.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
+									member.constant->initializer);
+						}
 					}
 				}
 			}
@@ -1650,7 +1656,7 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 		for (int i = 0; i < properties.size(); i++) {
 			const Dictionary property = properties[i];
 			if (StringName(property.get("name", String())) == p_identifier->name) {
-				p_identifier->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+				p_identifier->set_datatype(type_from_native_property(native, PropertyInfo::from_dict(property)));
 				p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
 				return true;
 			}

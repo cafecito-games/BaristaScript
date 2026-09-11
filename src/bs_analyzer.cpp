@@ -3259,7 +3259,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						if (receiver.is_meta_type && !(method->info.flags & METHOD_FLAG_STATIC))
 							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(receiver).to_string()), p_call);
 						record_static_instance(method->info.flags & METHOD_FLAG_STATIC, receiver);
-						call_site_validation.validate_call_arg(method->info, p_call);
+						call_site_validation.validate_call_arg(method->info, p_call, &receiver);
 						const auto result = type_from_property(method->info.return_val);
 						p_call->set_datatype(result);
 						reject_void_result_use();
@@ -4031,7 +4031,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				for (int i = 0; i < properties.size(); ++i) {
 					const Dictionary property = properties[i];
 					if (StringName(property.get("name", String())) == name) {
-						p_subscript->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+						p_subscript->set_datatype(type_from_native_property(receiver.native_type, PropertyInfo::from_dict(property)));
 						return;
 					}
 				}
@@ -4410,7 +4410,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 					for (int i = 0; i < properties.size(); i++) {
 						const Dictionary property = properties[i];
 						if (StringName(property.get("name", String())) == name) {
-							p_subscript->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+							p_subscript->set_datatype(type_from_native_property(receiver.native_type, PropertyInfo::from_dict(property)));
 							return;
 						}
 					}
@@ -4768,7 +4768,22 @@ void BSAnalyzer::publish_constant_subscript(BSParser::SubscriptNode *p_subscript
 	p_subscript->set_datatype(type);
 }
 
+// Foundry native property publication: prefer real getter return metadata, retain fallback.
+BSParser::DataType BSAnalyzer::type_from_native_property(const StringName &p_native, const PropertyInfo &p_property) {
+	const bool read_only = BSNativeDB::get_property_setter(p_native, p_property.name) == StringName();
+	const StringName getter = BSNativeDB::get_property_getter(p_native, p_property.name);
+	MethodInfo info;
+	if (getter != StringName() && BSNativeDB::get_method_info(p_native, getter, &info)) {
+		return type_from_property(info.return_val, false, read_only);
+	}
+	return type_from_property(p_property, false, read_only);
+}
+
 void BSAnalyzer::materialize_constant_initializer(BSParser::ConstantNode *p_constant) {
+	// A pure literal already rejected by its typed element checker has no materialized
+	// value. Keep that failure, without adding a derivative nonconstant diagnostic.
+	if (diagnosed_constant_literal_failures.has(p_constant->initializer))
+		return;
 	if (p_constant->initializer == nullptr || (p_constant->initializer->is_constant && !has_materialized_constant_value(p_constant->initializer))) {
 		return;
 	}
@@ -5714,10 +5729,10 @@ void BSAnalyzer::report_unqualified_contextual_enum_cases() {
 	reduced_contextual_enum_cases.clear();
 }
 
-void BSAnalyzer::qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
+void BSAnalyzer::qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract) {
 	// Foundry consumer sites call resolve_contextual_enum_case then update_container_literal_element_types.
 	resolve_contextual_enum_case(p_expression, p_expected_type);
-	update_container_literal_element_types(p_expression, p_expected_type);
+	update_container_literal_element_types(p_expression, p_expected_type, p_self_parameter_contract);
 }
 
 void BSAnalyzer::warn_plain_enum_conversion(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const BSParser::Node *p_origin) {
@@ -5890,7 +5905,10 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	return true;
 }
 
-bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
+bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract) {
+	if (diagnosed_constant_literal_failures.has(p_expression)) {
+		return true;
+	}
 	if (p_expression == nullptr || !p_expected_type.is_set() || !p_expected_type.is_hard_type()) {
 		return false;
 	}
@@ -6015,10 +6033,13 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 		case BSParser::Node::ARRAY: {
 			if (target_type.kind == BSParser::DataType::BUILTIN && target_type.builtin_type == Variant::ARRAY &&
 					target_type.has_container_element_type(0)) {
+				const bool was_constant_literal = p_expression->is_constant;
 				const int error_count = parser != nullptr ? parser->get_errors().size() : 0;
 				update_array_literal_element_type(static_cast<BSParser::ArrayNode *>(p_expression),
-						target_type.get_container_element_type(0));
+						target_type.get_container_element_type(0), p_self_parameter_contract);
 				if (parser != nullptr && parser->get_errors().size() > error_count) {
+					if (was_constant_literal)
+						diagnosed_constant_literal_failures.insert(p_expression);
 					reject_constant_materialization(p_expression);
 					return true;
 				}
@@ -6038,11 +6059,14 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 		case BSParser::Node::DICTIONARY: {
 			if (target_type.kind == BSParser::DataType::BUILTIN && target_type.builtin_type == Variant::DICTIONARY &&
 					target_type.has_container_element_types()) {
+				const bool was_constant_literal = p_expression->is_constant;
 				const int error_count = parser != nullptr ? parser->get_errors().size() : 0;
 				update_dictionary_literal_element_type(static_cast<BSParser::DictionaryNode *>(p_expression),
 						target_type.get_container_element_type_or_variant(0),
-						target_type.get_container_element_type_or_variant(1));
+						target_type.get_container_element_type_or_variant(1), p_self_parameter_contract);
 				if (parser != nullptr && parser->get_errors().size() > error_count) {
+					if (was_constant_literal)
+						diagnosed_constant_literal_failures.insert(p_expression);
 					reject_constant_materialization(p_expression);
 					return true;
 				}
@@ -6067,19 +6091,22 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 			if (literal->elements.size() != target_type.container_element_types.size()) {
 				return false;
 			}
+			const bool was_constant_literal = p_expression->is_constant;
 			const int error_count = parser != nullptr ? parser->get_errors().size() : 0;
 			Vector<BSParser::DataType> element_types;
 			for (int i = 0; i < literal->elements.size(); i++) {
 				BSParser::ExpressionNode *element = literal->elements[i];
 				const BSParser::DataType expected_element = target_type.get_container_element_type(i);
 				resolve_contextual_enum_case(element, expected_element);
-				update_container_literal_element_types(element, expected_element);
+				update_container_literal_element_types(element, expected_element, p_self_parameter_contract);
 				update_constant_expression_type(element, expected_element, "include");
 				element_types.push_back(element->get_datatype());
 			}
 			BSParser::DataType published = make_tuple_type(StringName(), String(), String(), element_types, Vector<StringName>(), false);
 			p_expression->set_datatype(published);
 			if (parser != nullptr && parser->get_errors().size() > error_count) {
+				if (was_constant_literal)
+					diagnosed_constant_literal_failures.insert(p_expression);
 				reject_constant_materialization(p_expression);
 				return true;
 			}
@@ -6097,7 +6124,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 	return false;
 }
 
-void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type) {
+void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type, bool p_self_parameter_contract) {
 	if (p_array == nullptr) {
 		return;
 	}
@@ -6108,18 +6135,18 @@ void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array,
 		}
 		// An element stands where the container's element type says it stands.
 		resolve_contextual_enum_case(element_node, p_element_type);
-		update_container_literal_element_types(element_node, p_element_type);
+		update_container_literal_element_types(element_node, p_element_type, p_self_parameter_contract);
 		mark_coroutine_handle_capture(element_node, p_element_type);
 		const bool constant_type_ok = update_constant_expression_type(element_node, p_element_type, "include");
-		if (datatype_contains_self_type_parameter(p_element_type) && element_node->type == BSParser::Node::SELF) {
+		if (!p_self_parameter_contract && datatype_contains_self_type_parameter(p_element_type) && element_node->type == BSParser::Node::SELF) {
 			element_node->set_datatype(_substitute_self_type_parameter_with_bounds(p_element_type, true));
 		}
 		const BSParser::DataType element_type = element_node->get_datatype();
 		bool compatible = constant_type_ok;
 		if (compatible && datatype_contains_self_type_parameter(p_element_type)) {
-			compatible = element_node->type == BSParser::Node::SELF ||
+			compatible = (!p_self_parameter_contract && element_node->type == BSParser::Node::SELF) ||
 					_datatype_matches_analyzer_substituted_self(p_element_type, element_type) ||
-					_self_contract_admits_value_type(p_element_type, element_type, SelfContractKind::RETURN, element_node, nullptr,
+					_self_contract_admits_value_type(p_element_type, element_type, p_self_parameter_contract ? SelfContractKind::PARAMETER : SelfContractKind::RETURN, element_node, nullptr,
 							_self_contract_options(strict_dynamic_checks, strict_null_checks));
 		} else if (compatible) {
 			BSTypeCompatibility::Options options;
@@ -6141,7 +6168,7 @@ void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array,
 	}
 }
 
-void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type) {
+void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type, bool p_self_parameter_contract) {
 	if (p_dictionary == nullptr) {
 		return;
 	}
@@ -6149,7 +6176,7 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 		BSParser::ExpressionNode *key_element_node = p_dictionary->elements[i].key;
 		if (key_element_node != nullptr) {
 			resolve_contextual_enum_case(key_element_node, p_key_type);
-			update_container_literal_element_types(key_element_node, p_key_type);
+			update_container_literal_element_types(key_element_node, p_key_type, p_self_parameter_contract);
 			mark_coroutine_handle_capture(key_element_node, p_key_type);
 			const bool constant_type_ok = update_constant_expression_type(key_element_node, p_key_type, "include");
 			BSTypeCompatibility::Options options;
@@ -6172,18 +6199,18 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 		BSParser::ExpressionNode *value_element_node = p_dictionary->elements[i].value;
 		if (value_element_node != nullptr) {
 			resolve_contextual_enum_case(value_element_node, p_value_type);
-			update_container_literal_element_types(value_element_node, p_value_type);
+			update_container_literal_element_types(value_element_node, p_value_type, p_self_parameter_contract);
 			mark_coroutine_handle_capture(value_element_node, p_value_type);
 			const bool constant_type_ok = update_constant_expression_type(value_element_node, p_value_type, "include");
-			if (datatype_contains_self_type_parameter(p_value_type) && value_element_node->type == BSParser::Node::SELF) {
+			if (!p_self_parameter_contract && datatype_contains_self_type_parameter(p_value_type) && value_element_node->type == BSParser::Node::SELF) {
 				value_element_node->set_datatype(_substitute_self_type_parameter_with_bounds(p_value_type, true));
 			}
 			const BSParser::DataType value_type = value_element_node->get_datatype();
 			bool compatible = constant_type_ok;
 			if (compatible && datatype_contains_self_type_parameter(p_value_type)) {
-				compatible = value_element_node->type == BSParser::Node::SELF ||
+				compatible = (!p_self_parameter_contract && value_element_node->type == BSParser::Node::SELF) ||
 						_datatype_matches_analyzer_substituted_self(p_value_type, value_type) ||
-						_self_contract_admits_value_type(p_value_type, value_type, SelfContractKind::RETURN, value_element_node, nullptr,
+						_self_contract_admits_value_type(p_value_type, value_type, p_self_parameter_contract ? SelfContractKind::PARAMETER : SelfContractKind::RETURN, value_element_node, nullptr,
 								_self_contract_options(strict_dynamic_checks, strict_null_checks));
 			} else if (compatible) {
 				BSTypeCompatibility::Options options;
@@ -7622,12 +7649,15 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 	p_call->is_tuple_construction = true;
 	BSParser::DataType tuple_type = type_from_metatype(p_tuple_meta_type);
 	tuple_type.is_read_only = true;
+	BSParser::DataType value_type = !p_call->receiver_is_current_self && _datatype_contains_self_type_parameter(tuple_type)
+			? _substitute_self_type_parameter_with_bounds(tuple_type)
+			: tuple_type;
 	const int expected_count = tuple_type.container_element_types.size();
 	if (p_call->arguments.size() != expected_count) {
 		push_error(vformat(R"*(Tuple "%s" expects %d argument(s), but %d were given.)*",
 						   tuple_type.to_string(), expected_count, p_call->arguments.size()),
 				p_call);
-		p_call->set_datatype(tuple_type);
+		p_call->set_datatype(value_type);
 		return;
 	}
 
@@ -7636,7 +7666,7 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 	for (int i = 0; i < expected_count; i++) {
 		const BSParser::DataType field_type = tuple_type.get_container_element_type(i);
 		BSParser::ExpressionNode *argument = p_call->arguments[i];
-		qualify_contextual_enum_case_consumer(argument, field_type);
+		qualify_contextual_enum_case_consumer(argument, field_type, true);
 		const BSParser::DataType argument_type = argument->get_datatype();
 		bool compatible = true;
 		if (_datatype_contains_self_type_parameter(field_type)) {
@@ -7658,7 +7688,8 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 		if (!compatible) {
 			push_error(vformat(R"*(Invalid argument %d for tuple "%s": should be "%s" but is "%s".)*",
 							   i + 1, tuple_type.to_string(), field_type.to_string(), argument_type.to_string()) +
-							BSParser::DataType::same_rendered_name_clause(field_type, "tuple field's type", argument_type, "argument"),
+							BSParser::DataType::same_rendered_name_clause(field_type, "tuple field's type", argument_type, "argument") +
+							self_parameter_receiver_identity_clause(field_type, argument_type, p_call, "tuple field", "argument"),
 					argument);
 		}
 		if (!has_materialized_constant_value(argument)) {
@@ -7671,11 +7702,11 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 		values.make_read_only();
 		p_call->is_constant = true;
 		p_call->reduced_value = values;
-		tuple_type.is_constant = true;
+		value_type.is_constant = true;
 	}
 	_preserve_unmaterialized_constant(p_call, p_call->arguments);
-	tuple_type.is_constant = p_call->is_constant;
-	p_call->set_datatype(tuple_type);
+	value_type.is_constant = p_call->is_constant;
+	p_call->set_datatype(value_type);
 }
 
 bool BSAnalyzer::datatype_contains_self_type_parameter(const BSParser::DataType &p_type) const {
@@ -7798,7 +7829,7 @@ bool _self_parameter_receiver_identity_slot(const BSParser::DataType &p_expected
 }
 
 String BSAnalyzer::self_parameter_receiver_identity_clause(const BSParser::DataType &p_expected_type,
-		const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call) const {
+		const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const String &p_expected_role, const String &p_actual_role) const {
 	const BSTypeCompatibility::Options options = _self_contract_options(
 			strict_dynamic_checks, strict_null_checks,
 			current_function == nullptr || !current_function->is_static);
@@ -7809,7 +7840,7 @@ String BSAnalyzer::self_parameter_receiver_identity_clause(const BSParser::DataT
 			}
 			BSParser::DataType alternative = member;
 			alternative.is_nullable = p_expected_type.is_nullable;
-			const String clause = self_parameter_receiver_identity_clause(alternative, p_argument_type, p_call);
+			const String clause = self_parameter_receiver_identity_clause(alternative, p_argument_type, p_call, p_expected_role, p_actual_role);
 			if (!clause.is_empty()) {
 				return clause;
 			}
@@ -7828,8 +7859,8 @@ String BSAnalyzer::self_parameter_receiver_identity_clause(const BSParser::DataT
 	if (p_call == nullptr || _call_receiver_is_current_self(p_call)) {
 		return String();
 	}
-	return vformat(R"*( The parameter's "Self"%s is resolved against the receiver expression; the argument is relative to the calling frame's receiver.)*",
-			slot.is_empty() ? String() : " at " + slot);
+	return vformat(R"*( The %s's "Self"%s is resolved against the receiver expression; the %s is relative to the calling frame's receiver.)*",
+			p_expected_role, slot.is_empty() ? String() : " at " + slot, p_actual_role);
 }
 
 bool BSAnalyzer::resolve_contextual_enum_case(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
@@ -8088,39 +8119,46 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			}
 
 			flow_finality.clear_flow_narrowing(assignment->assignee);
-			// Foundry reduce_assignment @ c9d5e35: reject immutable destinations before
-			// ordinary value compatibility so a tuple/constant write emits one focused error.
+			if (assignment->assignee != nullptr && assignment->assigned_value != nullptr) {
+				resolve_contextual_enum_case(assignment->assigned_value, assignment->assignee->get_datatype());
+				mark_coroutine_handle_capture(assignment->assigned_value, assignment->assignee->get_datatype());
+			}
 			if (assignment->assignee != nullptr) {
-				if (assignment->assignee->type == BSParser::Node::IDENTIFIER) {
-					const BSParser::IdentifierNode *identifier = static_cast<const BSParser::IdentifierNode *>(assignment->assignee);
-					if (identifier->source == BSParser::IdentifierNode::LOCAL_CONSTANT ||
-							identifier->source == BSParser::IdentifierNode::MEMBER_CONSTANT ||
-							identifier->source == BSParser::IdentifierNode::LOCAL_BIND) {
-						push_error("Cannot assign a new value to a constant.", assignment->assignee);
-						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
-						break;
-					}
-				} else if (assignment->assignee->type == BSParser::Node::SUBSCRIPT) {
-					const BSParser::SubscriptNode *subscript = static_cast<const BSParser::SubscriptNode *>(assignment->assignee);
-					const BSParser::DataType base_type = subscript->base != nullptr ? subscript->base->get_datatype() : BSParser::DataType();
-					if (base_type.kind == BSParser::DataType::TUPLE) {
-						push_error(vformat(R"*(Cannot assign to an element of tuple "%s"; tuples are immutable.)*", base_type.to_string()), assignment->assignee);
-						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
-						break;
-					}
-					const bool resolved_constant_destination = subscript->get_datatype().is_constant ||
-							(subscript->attribute != nullptr && subscript->attribute->source == BSParser::IdentifierNode::MEMBER_CONSTANT);
-					if (resolved_constant_destination || (subscript->base != nullptr && subscript->base->is_constant) || base_type.is_constant) {
-						push_error("Cannot assign a new value to a constant.", assignment->assignee);
-						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
-						break;
+				const auto assignee_type = assignment->assignee->get_datatype();
+				const auto *sub = assignment->assignee->type == BSParser::Node::SUBSCRIPT
+						? static_cast<const BSParser::SubscriptNode *>(assignment->assignee)
+						: nullptr;
+				String error;
+				if (sub && sub->base && sub->base->get_datatype().kind == BSParser::DataType::TUPLE && !sub->base->get_datatype().is_meta_type) {
+					error = vformat(R"(Cannot assign to an element of tuple "%s"; tuples are immutable.)", sub->base->get_datatype().to_string());
+				} else if (assignee_type.is_constant) {
+					error = "Cannot assign a new value to a constant.";
+				} else if (sub && sub->base && sub->base->is_constant) {
+					const auto base_type = sub->base->get_datatype();
+					if (base_type.kind != BSParser::DataType::SCRIPT && base_type.kind != BSParser::DataType::CLASS)
+						error = "Cannot assign a new value to a constant.";
+				} else if (assignee_type.is_read_only) {
+					error = "Cannot assign a new value to a read-only property.";
+				} else {
+					// Pin Variant::is_type_shared: only Object, Array and Dictionary share storage.
+					while (sub && sub->base) {
+						const auto base_type = sub->base->get_datatype();
+						if (!base_type.is_hard_type() || !base_type.is_read_only)
+							break;
+						const bool shared = base_type.builtin_type == Variant::OBJECT || base_type.builtin_type == Variant::ARRAY || base_type.builtin_type == Variant::DICTIONARY;
+						if (base_type.kind == BSParser::DataType::BUILTIN && !shared) {
+							error = "Cannot assign a new value to a read-only property.";
+							break;
+						}
+						sub = sub->base->type == BSParser::Node::SUBSCRIPT ? static_cast<const BSParser::SubscriptNode *>(sub->base) : nullptr;
 					}
 				}
-			}
-			if (assignment->assignee != nullptr && assignment->assigned_value != nullptr) {
-				// Contextual `.Case` on the RHS takes its union from the assignee (@ c9d5e35).
-				qualify_contextual_enum_case_consumer(assignment->assigned_value, assignment->assignee->get_datatype());
-				mark_coroutine_handle_capture(assignment->assigned_value, assignment->assignee->get_datatype());
+				if (!error.is_empty()) {
+					push_error(error, assignment->assignee);
+					assignment->set_datatype(assignment->assigned_value ? assignment->assigned_value->get_datatype() : BSParser::DataType());
+					break;
+				}
+				update_container_literal_element_types(assignment->assigned_value, assignee_type);
 			}
 			if (assignment->assigned_value != nullptr) {
 				BSParser::DataType assignee_type;
@@ -8388,9 +8426,14 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					}
 					declared.type_source = variable->infer_datatype ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
 					declared.is_constant = false;
+					declared.is_read_only = false;
 					variable->set_datatype(declared);
 				}
 			}
+			// Mutable slots never inherit the declaration type's or initializer's storage flags.
+			declared.is_constant = false;
+			declared.is_read_only = false;
+			variable->set_datatype(declared);
 			if (variable->datatype_specifier != nullptr && declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
 				const bool constant_type_ok = update_constant_expression_type(variable->initializer, declared, "assign");
 				const BSParser::DataType initializer_type = variable->initializer->get_datatype();
@@ -8406,8 +8449,8 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, variable->initializer, nullptr,
 												  _self_contract_options(strict_dynamic_checks, strict_null_checks,
 														  current_function == nullptr || !current_function->is_static)))) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
+						push_error(vformat(R"(Cannot assign a value of type %s to variable "%s" with specified type %s.)",
+										   initializer_type.to_string(), variable->identifier ? variable->identifier->name : StringName("<unknown>"), declared.to_string()) +
 										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
 								variable->initializer);
 					} else if (value_is_gradual || initializer_type.is_variant()) {
@@ -8423,10 +8466,6 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						options.constant_source_value = &variable->initializer->reduced_value;
 					}
 					bool compatible = BSTypeCompatibility::check(declared, initializer_type, options).compatible;
-					if ((declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) &&
-							!_datatype_strict_identity_equal(declared, initializer_type)) {
-						compatible = false;
-					}
 					if (!compatible) {
 						if (initializer_type.is_tagged_union_type() && declared.kind == BSParser::DataType::BUILTIN && declared.builtin_type == Variant::INT) {
 							push_error(vformat(R"(Cannot assign a value of type %s to variable "%s" with specified type %s.)",
@@ -8485,10 +8524,14 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, constant->initializer, nullptr,
 												  _self_contract_options(strict_dynamic_checks, strict_null_checks,
 														  current_function == nullptr || !current_function->is_static)))) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-								constant->initializer);
+						if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(declared, initializer_type, "constant", constant->identifier != nullptr ? constant->identifier->name : StringName("<unknown>")), constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), declared.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+									constant->initializer);
+						}
 					}
 				} else {
 					BSTypeCompatibility::Options options;
@@ -8499,10 +8542,14 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						options.constant_source_value = &constant->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(declared, initializer_type, options).compatible) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-								constant->initializer);
+						if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(declared, initializer_type, "constant", constant->identifier != nullptr ? constant->identifier->name : StringName("<unknown>")), constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), declared.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+									constant->initializer);
+						}
 					}
 				}
 			}

@@ -25,15 +25,7 @@ public:
 	}
 
 	static StringName get_property_setter(const StringName &p_class, const StringName &p_property) {
-		// godot-cpp exposes getter; setter is recovered from the property list when needed.
-		const TypedArray<Dictionary> props = ClassDB::class_get_property_list(p_class, false);
-		for (int i = 0; i < props.size(); i++) {
-			const Dictionary entry = props[i];
-			if (StringName(entry.get("name", String())) == p_property) {
-				return StringName(entry.get("setter", String()));
-			}
-		}
-		return StringName();
+		return ClassDB::class_get_property_setter(p_class, p_property);
 	}
 
 	/** Engine MethodBinds are not exposed; always nullptr (callers tolerate null). */
