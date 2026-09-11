@@ -14,6 +14,11 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <string>
+
+#if defined(WINDOWS_ENABLED)
+#include <windows.h>
+#endif
 
 namespace barista_script::native_tests {
 
@@ -95,9 +100,11 @@ StorageFixture::StorageFixture() :
 }
 
 #if defined(WINDOWS_ENABLED)
-static std::filesystem::path windows_extended_filesystem_path(const String &absolute_path) {
-	// LongPathsEnabled may be off (G1 negative profile). Extended \\?\ / \\?\UNC\ paths keep
-	// remove_all working for supplementary-Unicode and ASCII long fixtures without the opt-in.
+static std::wstring windows_extended_wide_path(const String &absolute_path) {
+	// LongPathsEnabled may be off (G1 negative profile). Win32 delete APIs still accept
+	// \\?\ / \\?\UNC\ for supplementary-Unicode and ASCII long fixtures without the opt-in.
+	// Do not route those through std::filesystem::remove_all: libstdc++/MSVC path handling of
+	// extended prefixes has hung the Windows cache suite under the forced-disabled profile.
 	String normalized = absolute_path.replace("/", "\\");
 	String extended;
 	if (normalized.begins_with("\\\\?\\")) {
@@ -108,20 +115,81 @@ static std::filesystem::path windows_extended_filesystem_path(const String &abso
 		extended = String("\\\\?\\") + normalized;
 	}
 	const Char16String utf16 = extended.utf16();
-	return std::filesystem::path(reinterpret_cast<const wchar_t *>(utf16.get_data()));
+	return std::wstring(reinterpret_cast<const wchar_t *>(utf16.get_data()), utf16.length());
+}
+
+static bool windows_remove_tree(const std::wstring &root, DWORD *r_error) {
+	const std::wstring pattern = root + L"\\*";
+	WIN32_FIND_DATAW entry = {};
+	HANDLE find = FindFirstFileW(pattern.c_str(), &entry);
+	if (find == INVALID_HANDLE_VALUE) {
+		const DWORD find_error = GetLastError();
+		if (find_error == ERROR_FILE_NOT_FOUND || find_error == ERROR_PATH_NOT_FOUND) {
+			if (r_error != nullptr) {
+				*r_error = 0;
+			}
+			return true;
+		}
+		if (RemoveDirectoryW(root.c_str()) || DeleteFileW(root.c_str())) {
+			if (r_error != nullptr) {
+				*r_error = 0;
+			}
+			return true;
+		}
+		if (r_error != nullptr) {
+			*r_error = GetLastError();
+		}
+		return false;
+	}
+
+	bool ok = true;
+	DWORD last_error = 0;
+	do {
+		if (wcscmp(entry.cFileName, L".") == 0 || wcscmp(entry.cFileName, L"..") == 0) {
+			continue;
+		}
+		const std::wstring child = root + L"\\" + entry.cFileName;
+		if ((entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+			if (!windows_remove_tree(child, &last_error)) {
+				ok = false;
+				break;
+			}
+		} else {
+			if ((entry.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0) {
+				SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
+			}
+			if (!DeleteFileW(child.c_str())) {
+				last_error = GetLastError();
+				ok = false;
+				break;
+			}
+		}
+	} while (FindNextFileW(find, &entry));
+	FindClose(find);
+
+	if (ok && !RemoveDirectoryW(root.c_str())) {
+		last_error = GetLastError();
+		ok = false;
+	}
+	if (r_error != nullptr) {
+		*r_error = ok ? 0 : last_error;
+	}
+	return ok;
 }
 #endif
 
 StorageFixture::~StorageFixture() {
 	BSAnalyzer::set_bootstrap_allowed_dependency_root(previous_bootstrap_root);
-	std::error_code error;
 	const String absolute = ProjectSettings::get_singleton()->globalize_path(root);
 #if defined(WINDOWS_ENABLED)
-	std::filesystem::remove_all(windows_extended_filesystem_path(absolute), error);
+	DWORD native_error = 0;
+	const bool removed = windows_remove_tree(windows_extended_wide_path(absolute), &native_error);
+	CHECK_MESSAGE(removed, "could not remove native scratch directory (Win32 error ", String::num_uint64(native_error), ")");
 #else
+	std::error_code error;
 	std::filesystem::remove_all(std::filesystem::u8path(absolute.utf8().get_data()), error);
-#endif
 	CHECK_MESSAGE(!error, "could not remove native scratch directory: ", error.message());
+#endif
 }
 
 bool verify_case_isolation(void (*scenario)()) {
