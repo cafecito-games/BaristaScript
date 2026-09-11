@@ -473,6 +473,9 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	}
 	p_function->resolved_signature = true;
 
+	BSParser::FunctionNode *previous_function = current_function;
+	current_function = p_function;
+	Finally restore_function([&]() { current_function = previous_function; });
 	BSParser::ClassNode *previous_class = current_class;
 	current_class = p_class;
 
@@ -509,11 +512,11 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			parameter->set_datatype(datatype_from_type_node(parameter->datatype_specifier));
 		}
 		const StringName parameter_name = parameter->identifier != nullptr ? parameter->identifier->name : StringName();
-		method_info.arguments.push_back(parameter->get_datatype().to_property_info(parameter_name));
 		if (parameter->initializer != nullptr) {
 			// Foundry fs_analyzer.cpp:4677-4730: defaults use their declaring function's static context.
 			const BSParser::Node *previous_declaration = get_node_declaration;
-			get_node_declaration = p_function;
+			if (p_function->source_lambda == nullptr)
+				get_node_declaration = p_function;
 			const int previous_errors = parser->get_errors().size();
 			reduce_expression(parameter->initializer);
 			get_node_declaration = previous_declaration;
@@ -522,10 +525,18 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			qualify_contextual_enum_case_consumer(parameter->initializer, parameter->get_datatype());
 			mark_coroutine_handle_capture(parameter->initializer, parameter->get_datatype());
 			const bool constant_type_ok = update_constant_expression_type(parameter->initializer, parameter->get_datatype(), "assign");
+			check_assignable_inference(parameter, "parameter");
 			// Foundry resolve_parameter -> resolve_assignable: the shared converter leaves
 			// concrete refusals to the named declaration reporter at the initializer.
 			const auto target_type = parameter->get_datatype();
 			const auto source_type = parameter->initializer->get_datatype();
+			if (parameter->datatype_specifier == nullptr) {
+				auto inferred = source_type;
+				if (!inferred.is_set() || (inferred.kind == BSParser::DataType::BUILTIN && inferred.builtin_type == Variant::NIL))
+					inferred = BSParser::DataType::get_variant_type();
+				inferred.type_source = parameter->infer_datatype ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
+				parameter->set_datatype(inferred);
+			}
 			if (constant_type_ok && parameter->datatype_specifier != nullptr && target_type.is_set() && !target_type.is_variant() && source_type.is_set()) {
 				BSTypeCompatibility::Options options;
 				options.allow_implicit_conversion = true;
@@ -545,6 +556,7 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 				p_function->default_arg_values.push_back(Variant());
 			}
 		}
+		method_info.arguments.push_back(parameter->get_datatype().to_property_info(parameter_name));
 	}
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->datatype_specifier != nullptr) {
 		p_function->rest_parameter->set_datatype(datatype_from_type_node(p_function->rest_parameter->datatype_specifier));

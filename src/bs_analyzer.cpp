@@ -2756,6 +2756,26 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (p_identifier == nullptr) {
 		return;
 	}
+	// Foundry c9d5e35:12640-12685: inspect the selected source after every lookup exit.
+	Finally check_receiver_access([&]() {
+		const bool variable = p_identifier->source == BSParser::IdentifierNode::MEMBER_VARIABLE || p_identifier->source == BSParser::IdentifierNode::INHERITED_VARIABLE;
+		const bool function = p_identifier->source == BSParser::IdentifierNode::MEMBER_FUNCTION && !p_identifier->function_source_is_static;
+		const bool signal = p_identifier->source == BSParser::IdentifierNode::MEMBER_SIGNAL;
+		if (!variable && !function && !signal)
+			return;
+		if (get_node_is_static_context()) {
+			const String kind = variable ? "non-static variable" : function ? "non-static function"
+																			: "signal";
+			const BSParser::FunctionNode *owner = get_enclosing_context_function();
+			if (owner) {
+				push_error(vformat(R"*(Cannot access %s "%s" from the static function "%s()".)*", kind, p_identifier->name, owner->identifier->name), p_identifier);
+			} else {
+				push_error(vformat(R"*(Cannot access %s "%s" from a static variable initializer.)*", kind, p_identifier->name), p_identifier);
+			}
+		}
+		for (auto *lambda = current_lambda; lambda; lambda = lambda->parent_lambda)
+			lambda->use_self = true;
+	});
 	// Foundry reduce_identifier @ c9d5e35: a plain-enum value initializer may name an
 	// earlier member without qualifying it through the enum. Unresolved members include
 	// forward references and cycles and retain the established declaration-order error.
@@ -3269,28 +3289,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
 				call_site_validation.validate_local_object_emit_signal_args(p_call, true);
 			}
-			if (!p_call->is_static) {
-				if (get_node_is_static_context()) {
-					const BSParser::FunctionNode *parent_function = current_function;
-					// Signature defaults/member initializers may be reduced while another
-					// function is active. Use their existing declaration context first.
-					if (get_node_declaration != nullptr) {
-						parent_function = get_node_declaration->type == BSParser::Node::FUNCTION ? static_cast<const BSParser::FunctionNode *>(get_node_declaration) : nullptr;
-					}
-					while (parent_function != nullptr && parent_function->source_lambda != nullptr) {
-						parent_function = parent_function->source_lambda->parent_function;
-					}
-					if (parent_function != nullptr) {
-						push_error(vformat(R"*(Cannot call non-static function "%s()" from the static function "%s()".)*", p_call->function_name, parent_function->identifier->name), p_call);
-					} else {
-						push_error(vformat(R"*(Cannot call non-static function "%s()" from a static variable initializer.)*", p_call->function_name), p_call);
-					}
-				} else {
-					for (BSParser::LambdaNode *lambda = current_lambda; lambda != nullptr; lambda = lambda->parent_lambda) {
-						lambda->use_self = true;
-					}
-				}
-			}
+			check_self_call(p_call);
 			check_void_result();
 			// Foundry c9d5e35:9040-9051: literal-name signal APIs count as uses on self.
 			mark_implicit_signal_usage(p_call, true);
@@ -3903,6 +3902,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				void_type.kind = BSParser::DataType::BUILTIN;
 				void_type.builtin_type = Variant::NIL;
 				p_call->set_datatype(void_type);
+				p_call->is_static = false;
+				check_self_call(p_call);
 				return;
 			}
 			bool member_claimed = false;
@@ -3910,6 +3911,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			if (callee != nullptr) {
 				validate_local_call(p_call, callee);
 				p_call->is_noreturn = callee->is_noreturn;
+				p_call->is_static = callee->is_static;
+				check_self_call(p_call);
 				return;
 			}
 			// Preserve ordinary name claims through both native and witness fallback.
@@ -3924,6 +3927,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						// Foundry treats bare identifier callees as self for unused-signal accounting.
 						mark_implicit_signal_usage(p_call, true);
 						p_call->set_datatype(type_from_property(method_info.return_val));
+						p_call->is_static = method_info.flags & METHOD_FLAG_STATIC;
+						check_self_call(p_call);
 						return;
 					}
 				}
@@ -3934,6 +3939,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					if (witness != nullptr && (witness->is_static || !self_type.is_meta_type)) {
 						validate_local_call(p_call, witness);
 						p_call->is_noreturn = witness->is_noreturn;
+						p_call->is_static = witness->is_static;
+						check_self_call(p_call);
 						return;
 					}
 					if (!p_call->is_super) {
@@ -4178,6 +4185,33 @@ bool BSAnalyzer::get_node_is_static_context() const {
 	return current_function != nullptr && current_function->is_static;
 }
 
+const BSParser::FunctionNode *BSAnalyzer::get_enclosing_context_function() const {
+	const BSParser::FunctionNode *function = current_function;
+	if (get_node_declaration != nullptr) {
+		function = get_node_declaration->type == BSParser::Node::FUNCTION ? static_cast<const BSParser::FunctionNode *>(get_node_declaration) : nullptr;
+	}
+	while (function && function->source_lambda)
+		function = function->source_lambda->parent_function;
+	return function;
+}
+
+void BSAnalyzer::check_self_call(BSParser::CallNode *p_call) {
+	// Foundry c9d5e35:8998-9022: bare and super calls share receiver context/capture.
+	if (p_call->is_static)
+		return;
+	if (get_node_is_static_context()) {
+		const BSParser::FunctionNode *owner = get_enclosing_context_function();
+		if (owner) {
+			push_error(vformat(R"*(Cannot call non-static function "%s()" from the static function "%s()".)*", p_call->function_name, owner->identifier->name), p_call);
+		} else {
+			push_error(vformat(R"*(Cannot call non-static function "%s()" from a static variable initializer.)*", p_call->function_name), p_call);
+		}
+	} else {
+		for (auto *lambda = current_lambda; lambda; lambda = lambda->parent_lambda)
+			lambda->use_self = true;
+	}
+}
+
 void BSAnalyzer::reduce_get_node(BSParser::GetNodeNode *p_get_node) {
 	// S6: Foundry fs_analyzer.cpp:9352-9375 / mark_lambda_use_self:18557 at c9d5e35.
 	BSParser::DataType result;
@@ -4226,7 +4260,7 @@ void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
 	lambda_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
 	lambda_type.is_constant = false;
 	p_lambda->set_datatype(lambda_type);
-	pending_lambda_bodies.push_back(p_lambda);
+	pending_lambda_bodies.push_back({ p_lambda, get_node_declaration != nullptr ? get_node_declaration : current_function });
 }
 
 void BSAnalyzer::resolve_pending_lambda_bodies() {
@@ -4235,19 +4269,22 @@ void BSAnalyzer::resolve_pending_lambda_bodies() {
 	}
 
 	BSParser::LambdaNode *previous_lambda = current_lambda;
-	Vector<BSParser::LambdaNode *> lambdas = pending_lambda_bodies;
+	Vector<PendingLambdaBody> lambdas = pending_lambda_bodies;
+	const BSParser::Node *previous_declaration = get_node_declaration;
 	pending_lambda_bodies.clear();
 
 	for (int i = 0; i < lambdas.size(); i++) {
-		BSParser::LambdaNode *lambda = lambdas[i];
+		BSParser::LambdaNode *lambda = lambdas[i].lambda;
 		if (lambda == nullptr || lambda->function == nullptr) {
 			continue;
 		}
 		current_lambda = lambda;
+		get_node_declaration = lambdas[i].declaration;
 		analyze_function_body(lambda->function, true);
 	}
 
 	current_lambda = previous_lambda;
+	get_node_declaration = previous_declaration;
 }
 
 void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
@@ -9273,6 +9310,10 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 	p_function->resolved_body = true;
 	BSParser::FunctionNode *previous = current_function;
 	current_function = p_function;
+	const BSParser::Node *previous_declaration = get_node_declaration;
+	if (!p_is_lambda)
+		get_node_declaration = p_function;
+	Finally restore_declaration([&]() { get_node_declaration = previous_declaration; });
 	// Foundry applies function annotations before body analysis (resolve_class_body @ c9d5e35).
 	for (BSParser::AnnotationNode *annotation : p_function->annotations) {
 		if (annotation != nullptr) {
@@ -9300,6 +9341,10 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 		// function's captured-source map (marks from reduce_identifier must survive).
 		FlowFinalityContext::FlowNarrowingScope flow_scope(flow_finality, !p_is_lambda);
 		analyze_suite(p_function->body);
+	}
+	// Foundry c9d5e35:5063-5066: publish the completed suite result before named accessor checks.
+	if (!p_function->get_datatype().is_hard_type() && p_function->body->get_datatype().is_set()) {
+		p_function->set_datatype(p_function->body->get_datatype());
 	}
 	// Foundry resolve_function_body checks every resolved body, including lambdas and witnesses.
 	// Drain them in the flow phase or diagnostic recovery after a visited body fails.
@@ -9416,6 +9461,65 @@ void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
 #else
 	(void)p_suite;
 #endif
+}
+
+void BSAnalyzer::check_named_property_accessors(BSParser::VariableNode *p_variable, BSParser::ClassNode *p_class) {
+	// Foundry c9d5e35:3735-3813. Check after all bodies so inferred getter results exist.
+	if (p_variable->property != BSParser::VariableNode::PROP_SETGET)
+		return;
+	BSTypeCompatibility::Options options;
+	options.allow_implicit_conversion = true;
+	options.strict_dynamic = strict_dynamic_checks;
+	options.strict_null = strict_null_checks;
+	const auto property_type = p_variable->get_datatype();
+	BSParser::FunctionNode *getter = nullptr;
+	BSParser::FunctionNode *setter = nullptr;
+	bool valid_getter = false, valid_setter = false;
+	if (p_variable->getter_pointer) {
+		const StringName name = p_variable->getter_pointer->name;
+		if (p_class->has_function(name))
+			getter = p_class->get_member(name).function;
+		if (!getter) {
+			push_error(vformat(R"(Getter "%s" not found.)", name), p_variable);
+		} else {
+			const auto result = getter->get_datatype();
+			if (!getter->parameters.is_empty() || result.has_no_type() || (result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL)) {
+				push_error(vformat(R"(Function "%s" cannot be used as getter because of its signature.)", name), p_variable);
+			} else if (!BSTypeCompatibility::check(property_type, result, options).compatible) {
+				push_error(vformat(R"(Function with return type "%s" cannot be used as getter for a property of type "%s".)", result.to_string(), property_type.to_string()), p_variable);
+			} else {
+				valid_getter = true;
+#ifdef DEBUG_ENABLED
+				if (property_type.builtin_type == Variant::INT && result.builtin_type == Variant::FLOAT)
+					push_warning(p_variable, BSWarning::NARROWING_CONVERSION);
+#endif
+			}
+		}
+	}
+	if (p_variable->setter_pointer) {
+		const StringName name = p_variable->setter_pointer->name;
+		if (p_class->has_function(name))
+			setter = p_class->get_member(name).function;
+		if (!setter) {
+			push_error(vformat(R"(Setter "%s" not found.)", name), p_variable);
+		} else if (setter->parameters.size() != 1) {
+			push_error(vformat(R"(Function "%s" cannot be used as setter because of its signature.)", name), p_variable);
+		} else {
+			const auto parameter = setter->parameters[0]->get_datatype();
+			if (!BSTypeCompatibility::check(property_type, parameter, options).compatible) {
+				push_error(vformat(R"(Function with argument type "%s" cannot be used as setter for a property of type "%s".)", parameter.to_string(), property_type.to_string()), p_variable);
+			} else {
+				valid_setter = true;
+#ifdef DEBUG_ENABLED
+				if (property_type.builtin_type == Variant::FLOAT && parameter.builtin_type == Variant::INT)
+					push_warning(p_variable, BSWarning::NARROWING_CONVERSION);
+#endif
+			}
+		}
+	}
+	if (property_type.is_variant() && valid_getter && valid_setter && !BSTypeCompatibility::check(getter->get_datatype(), setter->parameters[0]->get_datatype(), options).compatible) {
+		push_error(vformat(R"(Getter with type "%s" cannot be used along with setter of type "%s".)", getter->get_datatype().to_string(), setter->parameters[0]->get_datatype().to_string()), p_variable);
+	}
 }
 
 void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser::Node *p_source) {
@@ -9588,17 +9692,27 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 				break;
 			case BSParser::ClassNode::Member::VARIABLE:
 				if (member.variable != nullptr) {
-					// Foundry surface applies VARIABLE annotations before body/finality checks
-					// (resolve_class_body @ c9d5e35) so `@onready` is visible to final-member rules.
+					// Preserve body-phase warning suppression and non-export annotations. Builtin
+					// exports already consumed the final datatype/guard in the member surface.
 					for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
-						if (annotation != nullptr) {
+						if (annotation != nullptr && !(annotation->info && !annotation->is_custom && String(annotation->name).begins_with("@export"))) {
 							resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_VARIABLE);
 							annotation->apply(parser, member.variable, current_class);
 						}
 					}
-					if (member.variable->initializer != nullptr) {
-						reduce_expression(member.variable->initializer);
-						qualify_contextual_enum_case_consumer(member.variable->initializer, member.variable->get_datatype());
+				}
+				if (member.variable != nullptr && member.variable->property == BSParser::VariableNode::PROP_INLINE) {
+					// Foundry c9d5e35:3713-3726: accessors consume the completed property type
+					// and enter the ordinary body lifecycle exactly once.
+					if (member.variable->getter != nullptr) {
+						member.variable->getter->return_type = member.variable->datatype_specifier;
+						member.variable->getter->set_datatype(member.variable->get_datatype());
+						analyze_function_body(member.variable->getter);
+					}
+					if (member.variable->setter != nullptr && !member.variable->setter->parameters.is_empty()) {
+						member.variable->setter->parameters[0]->datatype_specifier = member.variable->datatype_specifier;
+						member.variable->setter->parameters[0]->set_datatype(member.variable->get_datatype());
+						analyze_function_body(member.variable->setter);
 					}
 				}
 				break;
@@ -9640,6 +9754,10 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 	}
 	if (p_class->is_enum_file) {
 		analyze_enum_function_bodies(p_class->enum_file_decl, p_class);
+	}
+	for (const auto &member : p_class->members) {
+		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr)
+			check_named_property_accessors(member.variable, p_class);
 	}
 	warn_unused_class_members(p_class);
 	if (!pending_lambda_bodies.is_empty()) {

@@ -26,7 +26,8 @@
     "abstract_contract_analyzer",
     "parent_contract_analyzer",
     "provider_phase_analyzer",
-    "namespace_annotation_analyzer"
+    "namespace_annotation_analyzer",
+    "declaration_context_analyzer"
   ],
   "editor_import": [
     "global_class"
