@@ -732,3 +732,213 @@ TEST_SUITE("expression_consumer_analyzer") {
 		}
 	}
 }
+
+TEST_SUITE("expression_consumer_analyzer") {
+	TEST_CASE("parameter_default_refusal_keeps_named_origin_and_recovery_slots") {
+		for (bool numeric : { false, true }) {
+			StorageFixture storage;
+			TypeProfile profile;
+			BSParser parser;
+			const String source = String("func take(value: ") + (numeric ? "int = 1.5" : "String = Color.RED") + ", good: Color = 'red') -> void:\n\tpass\nfunc test():\n\ttake()\n";
+			const String path = storage.path("default_refusal.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			auto *take = parser.get_tree()->get_member("take").function;
+			BS_TEST_REQUIRE(take && take->parameters.size() == 2);
+			auto *initializer = take->parameters[0]->initializer;
+			BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+			error_at(parser, 0, numeric ? "Cannot assign a value of type float to parameter \"value\" with specified type int." : "Cannot assign a value of type Color to parameter \"value\" with specified type String.", initializer);
+			CHECK(initializer->is_constant);
+			CHECK(initializer->reduced_value.get_type() == (numeric ? Variant::FLOAT : Variant::COLOR));
+			BS_TEST_REQUIRE(take->default_arg_values.size() == 2 && take->info.default_arguments.size() == 2);
+			CHECK(take->default_arg_values[0].get_type() == Variant::NIL);
+			CHECK(take->info.default_arguments[0].get_type() == Variant::NIL);
+			CHECK(take->default_arg_values[1].get_type() == Variant::COLOR);
+			CHECK(take->info.default_arguments[1].get_type() == Variant::COLOR);
+			CHECK(Color(take->default_arg_values[1]) == Color(1, 0, 0));
+			CHECK(Color(take->info.default_arguments[1]) == Color(1, 0, 0));
+			color_value(take->parameters[1]->initializer, Color(1, 0, 0));
+			CHECK(parser.get_warnings().is_empty());
+			public_agrees(source, path, parser);
+		}
+	}
+	TEST_CASE("utility_void_error_precedes_arity_while_method_order_is_preserved") {
+		for (int kind = 0; kind < 3; ++kind) {
+			StorageFixture storage;
+			TypeProfile profile;
+			BSParser parser;
+			const String source = kind == 0 ? "func test():\n\tprint(seed())\n" : kind == 1 ? "func seed(value: int) -> void:\n\tpass\nfunc test():\n\tprint(seed())\n"
+																							: "func test():\n\tprint(self.free(1))\n";
+			const String path = storage.path("void_order.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			auto *outer = static_cast<BSParser::CallNode *>(parser.get_tree()->get_member("test").function->body->statements[0]);
+			BS_TEST_REQUIRE(outer->arguments.size() == 1);
+			auto *inner = outer->arguments[0];
+			const String void_error = kind == 2 ? "Cannot get return value of call to \"free()\" because it returns \"void\"." : "Cannot get return value of call to \"seed()\" because it returns \"void\".";
+			const String arity_error = kind == 2 ? "Too many arguments for \"free()\" call. Expected at most 0 but received 1." : "Too few arguments for \"seed()\" call. Expected at least 1 but received 0.";
+			BS_TEST_REQUIRE(parser.get_errors().size() == 2);
+			const BSParser::Node *arity_origin = kind == 2 ? static_cast<BSParser::CallNode *>(inner)->arguments[0] : inner;
+			error_at(parser, 0, kind == 0 ? void_error : arity_error, kind == 0 ? inner : arity_origin);
+			error_at(parser, 1, kind == 0 ? arity_error : void_error, inner);
+			public_agrees(source, path, parser);
+			Ref<BaristaScriptAnalyzerProbe> probe;
+			probe.instantiate();
+			const Dictionary validated = probe->validate_source(source, path, true);
+			const Array errors = validated.get("errors", Array());
+			BS_TEST_REQUIRE(errors.size() == 2);
+			CHECK(String(Dictionary(errors[0]).get("message", "")) == (kind != 1 ? void_error : arity_error));
+			CHECK(String(Dictionary(errors[1]).get("message", "")) == (kind != 1 ? arity_error : void_error));
+			CHECK(parser.get_warnings().is_empty());
+		}
+	}
+	TEST_CASE("true_nil_enum_cast_requires_nullable_destination_in_both_profiles") {
+		for (bool strict : { false, true }) {
+			for (bool nullable : { false, true }) {
+				StorageFixture storage;
+				TypeProfile profile(strict);
+				profile.set(BSWarning::get_setting_path_from_code(BSWarning::INT_AS_ENUM_WITHOUT_MATCH), BSWarning::WARN);
+				BSParser::update_project_settings();
+				BSParser parser;
+				const String source = String("enum E:\n\tZERO = 0\nconst BOX: int? = null\nfunc test():\n\tvar value = BOX as E") + (nullable ? "?" : "") + "\n";
+				const String path = storage.path("enum_nil_opposite.barista");
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() == OK) == nullable);
+				diagnostics(parser);
+				auto *value = local(parser, "value");
+				BS_TEST_REQUIRE(value && value->initializer);
+				auto *cast = static_cast<BSParser::CastNode *>(value->initializer);
+				CHECK(cast->operand->reduced_value.get_type() == Variant::NIL);
+				CHECK(cast->is_constant == nullable);
+				CHECK(parser.get_warnings().is_empty());
+				if (nullable) {
+					CHECK(parser.get_errors().is_empty());
+					CHECK(cast->reduced_value.get_type() == Variant::NIL);
+					CHECK(cast->get_datatype().is_nullable);
+				} else {
+					BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+					error_at(parser, 0, vformat("Failed to convert a value of type \"null\" to \"%s\".", cast->get_datatype().to_string()), cast->operand);
+					CHECK(cast->operand->get_datatype().kind == BSParser::DataType::BUILTIN);
+					CHECK(cast->operand->get_datatype().is_nullable);
+				}
+				public_agrees(source, path, parser);
+			}
+		}
+	}
+}
+
+TEST_SUITE("expression_consumer_analyzer") {
+	TEST_CASE("unavailable_and_nonconstant_defaults_keep_untrusted_slots_without_new_policy") {
+		for (int kind = 0; kind < 3; ++kind) {
+			StorageFixture storage;
+			TypeProfile profile;
+			BSParser parser;
+			const String source = String("enum E:\n\tZERO = 0\nfunc produce() -> int:\n\treturn 1\nfunc take(value: Variant = ") + (kind == 0 ? "produce()" : kind == 1 ? "E"
+																																										: "1 / 0") +
+					", good: int = 2) -> void:\n\tpass\nfunc test():\n\ttake()\n";
+			const String path = storage.path("default_recovery.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK((analyzer.analyze() == OK) == (kind != 2));
+			diagnostics(parser);
+			auto *take = parser.get_tree()->get_member("take").function;
+			BS_TEST_REQUIRE(take && take->parameters.size() == 2);
+			auto *initializer = take->parameters[0]->initializer;
+			if (kind != 2)
+				CHECK_FALSE(BSAnalyzer::has_materialized_constant_value(initializer));
+			BS_TEST_REQUIRE(take->default_arg_values.size() == 2 && take->info.default_arguments.size() == 2);
+			CHECK(take->default_arg_values[0].get_type() == Variant::NIL);
+			CHECK(take->info.default_arguments[0].get_type() == Variant::NIL);
+			CHECK(take->default_arg_values[1].get_type() == Variant::INT);
+			CHECK(int64_t(take->default_arg_values[1]) == 2);
+			CHECK(take->info.default_arguments[1].get_type() == Variant::INT);
+			CHECK(int64_t(take->info.default_arguments[1]) == 2);
+			if (kind == 2) {
+				BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+				error_at(parser, 0, "Invalid operands to operator /, int and int.", initializer);
+			} else
+				CHECK(parser.get_errors().is_empty());
+			CHECK(parser.get_warnings().is_empty());
+			public_agrees(source, path, parser);
+		}
+	}
+	TEST_CASE("implicit_enum_nil_conversion_preserves_profile_reporter_and_nullable_payload") {
+		for (bool strict : { false, true }) {
+			for (bool nullable : { false, true }) {
+				StorageFixture storage;
+				TypeProfile profile(strict);
+				profile.set(BSWarning::get_setting_path_from_code(BSWarning::INT_AS_ENUM_WITHOUT_MATCH), BSWarning::WARN);
+				profile.set(BSWarning::get_setting_path_from_code(BSWarning::INT_AS_ENUM_WITHOUT_CAST), BSWarning::WARN);
+				BSParser::update_project_settings();
+				BSParser parser;
+				const String source = String("enum E:\n\tZERO = 0\nconst BOX: int? = null\nfunc test():\n\tvar value: E") + (nullable ? "?" : "") + " = BOX\n";
+				const String path = storage.path("enum_nil_implicit.barista");
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() == OK) == nullable);
+				diagnostics(parser);
+				auto *value = local(parser, "value");
+				BS_TEST_REQUIRE(value && value->initializer);
+				auto *initializer = value->initializer;
+				CHECK(initializer->reduced_value.get_type() == Variant::NIL);
+				CHECK(parser.get_warnings().is_empty());
+				if (nullable) {
+					CHECK(parser.get_errors().is_empty());
+					CHECK(initializer->get_datatype().kind == BSParser::DataType::ENUM);
+					CHECK(initializer->get_datatype().is_nullable);
+				} else {
+					BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+					error_at(parser, 0, strict ? vformat("Cannot assign nullable value of type \"int?\" to variable \"value\"; expected non-nullable \"%s\".", value->get_datatype().to_string()) : vformat("Failed to convert a value of type \"null\" to \"%s\".", value->get_datatype().to_string()), initializer);
+					CHECK(initializer->get_datatype().kind == BSParser::DataType::BUILTIN);
+				}
+				public_agrees(source, path, parser);
+			}
+		}
+	}
+	TEST_CASE("utility_invalid_arity_root_and_await_do_not_add_void_value_error") {
+		for (const char *expression : { "seed()", "await seed()" }) {
+			original("utility_exempt.barista", (String("func test():\n\t") + expression + "\n").utf8().get_data(), ">> ERROR at line 2: Too few arguments for \"seed()\" call. Expected at least 1 but received 0.");
+		}
+	}
+}
+
+TEST_SUITE("expression_consumer_analyzer") {
+	TEST_CASE("parameter_defaults_preserve_strict_profile_diagnostic_precedence") {
+		for (bool dynamic : { false, true }) {
+			for (bool strict : { false, true }) {
+				StorageFixture storage;
+				TypeProfile profile(!dynamic && strict);
+				profile.set("debug/barista_script/analysis/strict_dynamic_checks", dynamic && strict);
+				BSParser::update_project_settings();
+				BSParser parser;
+				const String source = String("const BOX: ") + (dynamic ? "Variant" : "String?") + " = 'red'\nfunc take(value: String = BOX) -> void:\n\tpass\nfunc test():\n\ttake()\n";
+				const String path = storage.path("default_profile.barista");
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() == OK) == !strict);
+				diagnostics(parser);
+				auto *take = parser.get_tree()->get_member("take").function;
+				BS_TEST_REQUIRE(take && take->parameters.size() == 1 && take->default_arg_values.size() == 1 && take->info.default_arguments.size() == 1);
+				if (strict) {
+					BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+					error_at(parser, 0, dynamic ? "Cannot assign Variant value to parameter \"value\" in strict dynamic mode; expected \"String\"." : "Cannot assign nullable value of type \"String?\" to parameter \"value\"; expected non-nullable \"String\".", take->parameters[0]->initializer);
+					CHECK(take->default_arg_values[0].get_type() == Variant::NIL);
+					CHECK(take->info.default_arguments[0].get_type() == Variant::NIL);
+				} else {
+					CHECK(parser.get_errors().is_empty());
+					CHECK(take->default_arg_values[0].get_type() == Variant::STRING);
+					CHECK(String(take->default_arg_values[0]) == "red");
+					CHECK(take->info.default_arguments[0].get_type() == Variant::STRING);
+					CHECK(String(take->info.default_arguments[0]) == "red");
+				}
+				CHECK(parser.get_warnings().is_empty());
+				public_agrees(source, path, parser);
+			}
+		}
+	}
+}

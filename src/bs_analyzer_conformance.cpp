@@ -514,6 +514,7 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			// Foundry fs_analyzer.cpp:4677-4730: defaults use their declaring function's static context.
 			const BSParser::Node *previous_declaration = get_node_declaration;
 			get_node_declaration = p_function;
+			const int previous_errors = parser->get_errors().size();
 			reduce_expression(parameter->initializer);
 			get_node_declaration = previous_declaration;
 			// Foundry assignable path: parameter defaults qualify contextual `.Case` against the
@@ -521,7 +522,24 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			qualify_contextual_enum_case_consumer(parameter->initializer, parameter->get_datatype());
 			mark_coroutine_handle_capture(parameter->initializer, parameter->get_datatype());
 			const bool constant_type_ok = update_constant_expression_type(parameter->initializer, parameter->get_datatype(), "assign");
-			if (constant_type_ok && parameter->initializer->is_constant) {
+			// Foundry resolve_parameter -> resolve_assignable: the shared converter leaves
+			// concrete refusals to the named declaration reporter at the initializer.
+			const auto target_type = parameter->get_datatype();
+			const auto source_type = parameter->initializer->get_datatype();
+			if (constant_type_ok && parameter->datatype_specifier != nullptr && target_type.is_set() && !target_type.is_variant() && source_type.is_set()) {
+				BSTypeCompatibility::Options options;
+				options.allow_implicit_conversion = true;
+				options.strict_dynamic = strict_dynamic_checks;
+				options.strict_null = strict_null_checks;
+				if (has_materialized_constant_value(parameter->initializer)) {
+					options.constant_source_value = &parameter->initializer->reduced_value;
+				}
+				if (!BSTypeCompatibility::check(target_type, source_type, options).compatible) {
+					push_error(make_declaration_type_error(target_type, source_type, "parameter", parameter_name), parameter->initializer);
+				}
+			}
+			// Recovery keeps each default's slot without trusting an unavailable or failed value.
+			if (constant_type_ok && parser->get_errors().size() == previous_errors && has_materialized_constant_value(parameter->initializer)) {
 				p_function->default_arg_values.push_back(parameter->initializer->reduced_value);
 			} else {
 				p_function->default_arg_values.push_back(Variant());

@@ -3104,6 +3104,20 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		reduce_expression(p_call->arguments[i]);
 	}
 
+	// Most dispatch paths report consumed void after validating arguments. Utilities own
+	// the earlier boundary (Foundry 8544-8548,8589-8593); both use this once-only gate.
+	bool void_result_checked = false;
+	auto check_void_result = [&]() {
+		if (void_result_checked)
+			return;
+		void_result_checked = true;
+		const auto result = p_call->get_datatype();
+		if (!p_is_root && !p_is_await && result.is_hard_type() && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
+			push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
+		}
+	};
+	Finally check_call_result(check_void_result);
+
 	// Foundry @ c9d5e35: any call may observe / mutate captured locals, so drop narrowing
 	// that was only proven before a lambda captured those locals.
 	Finally clear_captured_flow_narrowing_after_call([&]() {
@@ -3749,9 +3763,14 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		if (callee_type.kind == BSParser::DataType::BUILTIN && callee_type.builtin_type == Variant::CALLABLE) {
 			if (callee_type.has_method_signature) {
 				const int previous_errors = parser->get_errors().size();
+				p_call->set_datatype(type_from_property(callee_type.method_info.return_val));
+				MethodInfo utility_info;
+				if (static_cast<BSParser::IdentifierNode *>(p_call->callee)->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+						(BSUtilityFunctions::get_function_info(constructor_name, utility_info) || CoreConstants::get_utility_function(constructor_name, utility_info))) {
+					check_void_result();
+				}
 				call_site_validation.reject_named_call_arguments(p_call);
 				call_site_validation.validate_call_arg(callee_type.method_info, p_call);
-				p_call->set_datatype(type_from_property(callee_type.method_info.return_val));
 				// The existing name pipeline owns precedence. Only a genuine unshadowed language
 				// utility reaches this branch with no local/member source (Foundry 8489-8542).
 				MethodInfo language_info;
@@ -5089,8 +5108,19 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 	if (has_materialized_constant_value(p_cast->operand)) {
 		BSParser::DataType operand_type = p_cast->operand->get_datatype();
 		if (int_backed_enum_cast) {
+			// Declared int? admits the explicit cast, but only a nullable destination
+			// may retain actual NIL. Otherwise the integer carrier must really construct.
+			const bool nullable_nil = cast_type.is_nullable && p_cast->operand->reduced_value.get_type() == Variant::NIL;
+			if (!nullable_nil && p_cast->operand->reduced_value.get_type() != Variant::INT) {
+				Variant converted;
+				if (!_construct_builtin_variant(Variant::INT, p_cast->operand->reduced_value, converted)) {
+					push_error(vformat(R"(Failed to convert a value of type "%s" to "%s".)", type_from_variant(p_cast->operand->reduced_value).to_string(), cast_type.to_string()), p_cast->operand);
+					return;
+				}
+				p_cast->operand->reduced_value = converted;
+			}
 #ifdef DEBUG_ENABLED
-			if (!_enum_has_value(cast_type, p_cast->operand->reduced_value)) {
+			if (!nullable_nil && !_enum_has_value(cast_type, p_cast->operand->reduced_value)) {
 				Vector<String> symbols;
 				symbols.push_back("cast");
 				symbols.push_back(p_cast->operand->reduced_value.stringify());
@@ -5867,7 +5897,16 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 		if (!BSTypeCompatibility::check(p_expected_type, declared_type, options).compatible) {
 			return true;
 		}
-		if (String(p_usage) != "cast")
+		const bool nullable_nil = p_expected_type.is_nullable && p_expression->reduced_value.get_type() == Variant::NIL;
+		if (!nullable_nil && p_expression->reduced_value.get_type() != Variant::INT) {
+			Variant converted;
+			if (!_construct_builtin_variant(Variant::INT, p_expression->reduced_value, converted)) {
+				push_error(vformat(R"(Failed to convert a value of type "%s" to "%s".)", type_from_variant(p_expression->reduced_value).to_string(), p_expected_type.to_string()), p_expression);
+				return false;
+			}
+			p_expression->reduced_value = converted;
+		}
+		if (!nullable_nil && String(p_usage) != "cast")
 			warn_plain_enum_conversion(p_expected_type, declared_type, p_expression);
 		BSParser::DataType published = p_expected_type;
 		published.is_constant = true;
@@ -8056,11 +8095,6 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::CALL: {
 			auto *call = static_cast<BSParser::CallNode *>(p_expression);
 			reduce_call(call, false, p_is_root);
-			const auto result = call->get_datatype();
-			// Await reduces its call directly; statement and void-return calls pass root here.
-			if (!p_is_root && result.is_hard_type() && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
-				push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", call->function_name), call);
-			}
 		} break;
 		case BSParser::Node::LAMBDA:
 			reduce_lambda(static_cast<BSParser::LambdaNode *>(p_expression));
