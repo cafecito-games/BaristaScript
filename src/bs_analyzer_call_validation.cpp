@@ -1161,14 +1161,18 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		return false;
 	}
 
-	// Rich function-reference and lambda signatures survive without an authored
-	// annotation flag. Preserve their existing call/transform contract; only a
-	// truly signatureless Callable takes the gradual path.
-	if (!p_base_type.has_explicit_method_signature &&
-			(!p_base_type.has_method_signature || (p_base_type.method_parameter_types.is_empty() && p_base_type.method_return_type.is_empty()))) {
+	// Rich bare references retain compatibility metadata, but only an explicit signature
+	// participates in typed Callable invocation/transforms (Foundry get_function_signature).
+	if (!p_base_type.has_explicit_method_signature) {
 		// Foundry bare AsyncCallable @ c9d5e35 (~16658): signatureless `var cb: AsyncCallable` still
 		// yields a coroutine from call/callv (untyped Variant result wrapped). Deferred/RPC stay NIL.
 		if (p_base_type.signature_is_async && (is_callable_call || is_callable_callv)) {
+			// Generic async calls retain the real Callable method's argument shape before
+			// wrapping its Variant result; callv still requires one Array.
+			const auto *method = BSCoreConstants::get_builtin_method(Variant::CALLABLE, function_name);
+			if (method != nullptr) {
+				validate_call_arg(method->info, p_call, &p_base_type);
+			}
 			BSParser::DataType variant_return;
 			variant_return.kind = BSParser::DataType::VARIANT;
 			p_call->set_datatype(make_coroutine_type(variant_return));

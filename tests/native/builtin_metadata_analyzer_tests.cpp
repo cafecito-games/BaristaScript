@@ -513,11 +513,8 @@ TEST_SUITE("builtin_metadata_analyzer") {
 				for (const auto *argument : call->arguments)
 					CHECK(argument->reduced_value.get_type() == (mode == 0 ? Variant::FLOAT : Variant::INT));
 			}
-			BS_TEST_REQUIRE(parser.get_warnings().size() == (mode == 0 ? 0 : mode == 1 ? 2
-																					   : 1));
-			if (mode == 1)
-				for (int i = 0; i < 2; ++i)
-					warning_tuple(parser, i, "NARROWING_CONVERSION", "Narrowing conversion (float is converted to int and loses precision).", 2, 18, 2, 36);
+			// Pin8259-8333: all-constant value constructors bypass the narrowing-warning path.
+			BS_TEST_REQUIRE(parser.get_warnings().size() == (mode == 2 ? 1 : 0));
 			if (mode == 2)
 				warning_tuple(parser, 0, "UNSAFE_CALL_ARGUMENT", "The argument 1 of the constructor \"Vector2()\" requires the subtype \"Vector2\" but the supertype \"Variant\" was provided.", 2, 26, 2, 31);
 		}

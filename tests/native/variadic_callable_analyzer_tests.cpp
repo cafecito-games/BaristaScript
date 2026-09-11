@@ -52,6 +52,22 @@ const BSParser::VariableNode *local(const BSParser &parser, const StringName &na
 		}
 	return nullptr;
 }
+// The historical bare sources are gradual opposites; qualified sources below exercise
+// the intended precise transform contract without inventing an annotation on a bare reference.
+void bare_transform_remains_gradual(const String &source) {
+	BSParser parser;
+	BS_TEST_REQUIRE(parser.parse(source, "res://tests/variadic_callable/bare_opposite.barista", false) == OK);
+	BSAnalyzer analyzer(&parser);
+	CHECK(analyzer.analyze() == OK);
+	diagnostics(parser);
+	CHECK(parser.get_errors().is_empty());
+	const auto *bound = local(parser, "bound");
+	BS_TEST_REQUIRE(bound);
+	CHECK(bound->get_datatype().builtin_type == Variant::CALLABLE);
+	CHECK_FALSE(bound->get_datatype().has_explicit_method_signature);
+	CHECK(bound->get_datatype().method_parameter_types.is_empty());
+	CHECK(bound->get_datatype().method_return_type.is_empty());
+}
 Dictionary settings_snapshot() {
 	Dictionary result;
 	const TypedArray<Dictionary> properties = ProjectSettings::get_singleton()->get_property_list();
@@ -176,7 +192,8 @@ func test() -> void:
 				const String arguments = count == 0 ? "" : count == 1 ? "1"
 																	  : "1, \"x\"";
 				const String source = "func target(first: int, second: String = \"\", third: int = 0, ...tail: Array[String]) -> bool:\n\treturn first == third + second.length() + tail.size()\nfunc test() -> void:\n\tvar bound = target.bind(7)\n\tbound." + String(callv ? "callv([" : "call(") + arguments + String(callv ? "])\n" : ")\n");
-				const Error parsed = parser.parse(source, "res://tests/variadic_callable/hole.barista", false);
+				bare_transform_remains_gradual(source);
+				const Error parsed = parser.parse(source.replace("target.", "self.target."), "res://tests/variadic_callable/hole.barista", false);
 				diagnostics(parser);
 				BS_TEST_REQUIRE(parsed == OK);
 				BSAnalyzer analyzer(&parser);
@@ -209,7 +226,8 @@ func test() -> void:
 				const String values = mode == 0 ? "\"tail\"" : mode == 1 ? "7"
 																		 : "";
 				const String source = declaration + String("func test() -> void:\n\tvar bound = target.") + String(bindv ? "bindv([" : "bind(") + values + String(bindv ? "])\n" : ")\n") + "\tprint(bound)\n";
-				const Error parsed = parser.parse(source, "res://tests/variadic_callable/parity.barista", false);
+				bare_transform_remains_gradual(source);
+				const Error parsed = parser.parse(source.replace("target.", "self.target."), "res://tests/variadic_callable/parity.barista", false);
 				diagnostics(parser);
 				BS_TEST_REQUIRE(parsed == OK);
 				BSAnalyzer analyzer(&parser);
@@ -240,7 +258,8 @@ func test() -> void:
 				const bool valid = mode == 0 ? count == 1 : mode == 1 ? (count == 1 || count == 3)
 																	  : (count == 0 || count == 2);
 				const String source = "func target(first: int, second: String = \"\", third: int = 0, ...tail: Array[String]) -> bool:\n\treturn first == third + second.length() + tail.size()\nfunc test() -> void:\n\tvar bound = target.bind(7)" + chain + "\n\tbound.call(" + arguments + ")\n";
-				const Error parsed = parser.parse(source, "res://tests/variadic_callable/chained.barista", false);
+				bare_transform_remains_gradual(source);
+				const Error parsed = parser.parse(source.replace("target.", "self.target."), "res://tests/variadic_callable/chained.barista", false);
 				diagnostics(parser);
 				BS_TEST_REQUIRE(parsed == OK);
 				BSAnalyzer analyzer(&parser);
@@ -407,7 +426,8 @@ func test() -> void:
 						: count == 3							 ? "1, \"x\", 2"
 																 : "1, \"x\", 2, 3";
 				const String source = "func target(first: int, second: String = \"\", third: int = 0, ...tail: Array[int]) -> bool:\n\treturn first == third + second.length() + tail.size()\nfunc test() -> void:\n\tvar bound = target.bind(7)" + chain + "\n\tbound.call(" + args + ")\n";
-				const Error parsed = parser.parse(source, "res://tests/variadic_callable/prior_extras.barista", false);
+				bare_transform_remains_gradual(source);
+				const Error parsed = parser.parse(source.replace("target.", "self.target."), "res://tests/variadic_callable/prior_extras.barista", false);
 				diagnostics(parser);
 				BS_TEST_REQUIRE(parsed == OK);
 				BSAnalyzer analyzer(&parser);

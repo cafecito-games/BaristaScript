@@ -2772,17 +2772,17 @@ func _test_tagged_union_match_exhaustiveness(failures: PackedStringArray) -> voi
 
 func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 	# Foundry Callable.bind / bindv / unbind / call transforms @ c9d5e35 (#60).
-	# Bare function refs publish explicit Callable signatures; bind/unbind reshape them.
+	# Bare function refs retain rich compatibility metadata; their transforms use generic Callable signatures.
 	var probe := BaristaScriptAnalyzerProbe.new()
 
 	var bind_type_bad := _src_class("CallableBindTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _bound := one.bind(\"not an int\")\n")
 	var bind_type_bad_report: Dictionary = probe.analyze_source(bind_type_bad, "res://tests/callable_bind_type_bad.barista")
-	_expect(failures, bind_type_bad_report.get("valid", true) == false, "bind String where int expected is invalid")
+	_expect(failures, bind_type_bad_report.get("valid", false) == true, "bare bind accepts a gradual target argument")
 	var saw_bind_type := false
 	for message in bind_type_bad_report.get("errors", PackedStringArray()):
 		if 'argument 1 should be "int"' in message or 'should be "int" but is "String"' in message:
 			saw_bind_type = true
-	_expect(failures, saw_bind_type, "bind argument type mismatch diagnostic")
+	_expect(failures, not saw_bind_type and bind_type_bad_report.get("errors", PackedStringArray()).is_empty(), "bind_type_bad: generic Callable has no typed-target diagnostic")
 
 	var bind_call_ok := _src_class("CallableBindCallOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> int:\n\treturn add.bind(5).call(2)\n")
 	var bind_call_ok_report: Dictionary = probe.analyze_source(bind_call_ok, "res://tests/callable_bind_call_ok.barista")
@@ -2790,30 +2790,30 @@ func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 
 	var bind_call_arity := _src_class("CallableBindCallArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.bind(5).call()\n")
 	var bind_call_arity_report: Dictionary = probe.analyze_source(bind_call_arity, "res://tests/callable_bind_call_arity.barista")
-	_expect(failures, bind_call_arity_report.get("valid", true) == false, "bound call missing remaining arg is invalid")
+	_expect(failures, bind_call_arity_report.get("valid", false) == true, "bare bound call retains generic vararg arity")
 	var saw_too_few := false
 	for message in bind_call_arity_report.get("errors", PackedStringArray()):
 		if "Too few arguments for \"call()\" call" in message:
 			saw_too_few = true
-	_expect(failures, saw_too_few, "bound call too-few-arguments diagnostic")
+	_expect(failures, not saw_too_few and bind_call_arity_report.get("errors", PackedStringArray()).is_empty(), "bind_call_arity: generic Callable has no typed-target diagnostic")
 
 	var over_bound := _src_class("CallableOverBound extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).call()\n")
 	var over_bound_report: Dictionary = probe.analyze_source(over_bound, "res://tests/callable_over_bound.barista")
-	_expect(failures, over_bound_report.get("valid", true) == false, "over-bound callable invocation is invalid")
+	_expect(failures, over_bound_report.get("valid", false) == true, "bare bind does not publish an over-bound signature")
 	var saw_over_bound := false
 	for message in over_bound_report.get("errors", PackedStringArray()):
 		if "over-bound" in message:
 			saw_over_bound = true
-	_expect(failures, saw_over_bound, "over-bound invocation diagnostic")
+	_expect(failures, not saw_over_bound and over_bound_report.get("errors", PackedStringArray()).is_empty(), "over_bound: generic Callable has no typed-target diagnostic")
 
 	var unbind_bad := _src_class("CallableUnbindBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _u := one.unbind(0)\n")
 	var unbind_bad_report: Dictionary = probe.analyze_source(unbind_bad, "res://tests/callable_unbind_bad.barista")
-	_expect(failures, unbind_bad_report.get("valid", true) == false, "unbind(0) is invalid")
+	_expect(failures, unbind_bad_report.get("valid", false) == true, "generic Callable unbind accepts an int count")
 	var saw_unbind := false
 	for message in unbind_bad_report.get("errors", PackedStringArray()):
 		if 'Amount of "unbind()" arguments must be 1 or greater' in message:
 			saw_unbind = true
-	_expect(failures, saw_unbind, "unbind count diagnostic")
+	_expect(failures, not saw_unbind and unbind_bad_report.get("errors", PackedStringArray()).is_empty(), "unbind_bad: generic Callable has no typed-target diagnostic")
 
 	var unbind_ok := _src_class("CallableUnbindOk extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> int:\n\treturn one.unbind(1).call(9, 1)\n")
 	var unbind_ok_report: Dictionary = probe.analyze_source(unbind_ok, "res://tests/callable_unbind_ok.barista")
@@ -2821,7 +2821,7 @@ func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 
 	var bindv_type_bad := _src_class("CallableBindvTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _bound := one.bindv([\"not an int\"])\n")
 	var bindv_type_bad_report: Dictionary = probe.analyze_source(bindv_type_bad, "res://tests/callable_bindv_type_bad.barista")
-	_expect(failures, bindv_type_bad_report.get("valid", true) == false, "bindv String where int expected is invalid")
+	_expect(failures, bindv_type_bad_report.get("valid", false) == true, "bare bindv preserves only its outer Array contract")
 
 	var default_survival := _src_class("CallableBindDefaultSurvival extends Node\nfunc add_with_default(p: int, q: int, s: int = 1) -> int:\n\treturn p + q + s\nfunc test() -> int:\n\treturn add_with_default.bind(5).call(2)\n")
 	var default_survival_report: Dictionary = probe.analyze_source(default_survival, "res://tests/callable_bind_default_survival.barista")
@@ -2849,12 +2849,12 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var callv_type_bad := _src_class("CallableCallvTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tone.callv([\"not an int\"])\n")
 	var callv_type_bad_report: Dictionary = probe.analyze_source(callv_type_bad, "res://tests/callable_callv_type_bad.barista")
-	_expect(failures, callv_type_bad_report.get("valid", true) == false, "callv String element where int expected is invalid")
+	_expect(failures, callv_type_bad_report.get("valid", false) == true, "bare callv accepts gradual Array elements")
 	var saw_callv_type := false
 	for message in callv_type_bad_report.get("errors", PackedStringArray()):
 		if 'argument 1 should be "int"' in message or 'should be "int" but is "String"' in message:
 			saw_callv_type = true
-	_expect(failures, saw_callv_type, "callv array-literal element type mismatch diagnostic")
+	_expect(failures, not saw_callv_type and callv_type_bad_report.get("errors", PackedStringArray()).is_empty(), "callv_type_bad: generic Callable has no typed-target diagnostic")
 
 	var callv_ok := _src_class("CallableCallvOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> int:\n\treturn add.callv([2, 3])\n")
 	var callv_ok_report: Dictionary = probe.analyze_source(callv_ok, "res://tests/callable_callv_ok.barista")
@@ -2862,12 +2862,12 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var callv_arity := _src_class("CallableCallvArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.callv([1])\n")
 	var callv_arity_report: Dictionary = probe.analyze_source(callv_arity, "res://tests/callable_callv_arity.barista")
-	_expect(failures, callv_arity_report.get("valid", true) == false, "callv missing array element is invalid")
+	_expect(failures, callv_arity_report.get("valid", false) == true, "bare callv does not impose target arity")
 	var saw_callv_few := false
 	for message in callv_arity_report.get("errors", PackedStringArray()):
 		if "Too few arguments for \"callv()\" call" in message:
 			saw_callv_few = true
-	_expect(failures, saw_callv_few, "callv too-few-arguments diagnostic")
+	_expect(failures, not saw_callv_few and callv_arity_report.get("errors", PackedStringArray()).is_empty(), "callv_arity: generic Callable has no typed-target diagnostic")
 
 	var deferred_ok := _src_class("CallableDeferredOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.call_deferred(2, 3)\n")
 	var deferred_ok_report: Dictionary = probe.analyze_source(deferred_ok, "res://tests/callable_deferred_ok.barista")
@@ -2875,7 +2875,7 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var deferred_type_bad := _src_class("CallableDeferredTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tone.call_deferred(\"not an int\")\n")
 	var deferred_type_bad_report: Dictionary = probe.analyze_source(deferred_type_bad, "res://tests/callable_deferred_type_bad.barista")
-	_expect(failures, deferred_type_bad_report.get("valid", true) == false, "call_deferred type mismatch is invalid")
+	_expect(failures, deferred_type_bad_report.get("valid", false) == true, "bare call_deferred accepts gradual target arguments")
 
 	var rpc_ok := _src_class("CallableRpcOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.rpc(2, 3)\n")
 	var rpc_ok_report: Dictionary = probe.analyze_source(rpc_ok, "res://tests/callable_rpc_ok.barista")
@@ -2896,33 +2896,33 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var rpc_id_arity := _src_class("CallableRpcIdArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.rpc_id(1, 2)\n")
 	var rpc_id_arity_report: Dictionary = probe.analyze_source(rpc_id_arity, "res://tests/callable_rpc_id_arity.barista")
-	_expect(failures, rpc_id_arity_report.get("valid", true) == false, "rpc_id missing target arg after peer_id is invalid")
+	_expect(failures, rpc_id_arity_report.get("valid", false) == true, "bare rpc_id enforces peer_id without target arity")
 	var saw_rpc_id_few := false
 	for message in rpc_id_arity_report.get("errors", PackedStringArray()):
 		if "Too few arguments for \"rpc_id()\" call" in message:
 			saw_rpc_id_few = true
-	_expect(failures, saw_rpc_id_few, "rpc_id too-few-arguments diagnostic includes peer_id offset")
+	_expect(failures, not saw_rpc_id_few and rpc_id_arity_report.get("errors", PackedStringArray()).is_empty(), "rpc_id_arity: generic Callable has no typed-target diagnostic")
 
 	var over_callv := _src_class("CallableOverBoundCallv extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).callv([])\n")
 	var over_callv_report: Dictionary = probe.analyze_source(over_callv, "res://tests/callable_over_bound_callv.barista")
-	_expect(failures, over_callv_report.get("valid", true) == false, "over-bound callv invocation is invalid")
+	_expect(failures, over_callv_report.get("valid", false) == true, "bare bind callv remains gradual")
 
 	var over_deferred := _src_class("CallableOverBoundDeferred extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).call_deferred()\n")
 	var over_deferred_report: Dictionary = probe.analyze_source(over_deferred, "res://tests/callable_over_bound_deferred.barista")
-	_expect(failures, over_deferred_report.get("valid", true) == false, "over-bound call_deferred invocation is invalid")
+	_expect(failures, over_deferred_report.get("valid", false) == true, "bare bind call_deferred remains gradual")
 
 	var over_rpc := _src_class("CallableOverBoundRpc extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).rpc()\n")
 	var over_rpc_report: Dictionary = probe.analyze_source(over_rpc, "res://tests/callable_over_bound_rpc.barista")
-	_expect(failures, over_rpc_report.get("valid", true) == false, "over-bound rpc invocation is invalid")
+	_expect(failures, over_rpc_report.get("valid", false) == true, "bare bind rpc remains gradual")
 
 	var over_rpc_id := _src_class("CallableOverBoundRpcId extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).rpc_id(1)\n")
 	var over_rpc_id_report: Dictionary = probe.analyze_source(over_rpc_id, "res://tests/callable_over_bound_rpc_id.barista")
-	_expect(failures, over_rpc_id_report.get("valid", true) == false, "over-bound rpc_id invocation is invalid")
+	_expect(failures, over_rpc_id_report.get("valid", false) == true, "bare bind rpc_id remains gradual after peer_id")
 	var saw_over_rpc_id := false
 	for message in over_rpc_id_report.get("errors", PackedStringArray()):
 		if "over-bound" in message:
 			saw_over_rpc_id = true
-	_expect(failures, saw_over_rpc_id, "over-bound rpc_id invocation diagnostic")
+	_expect(failures, not saw_over_rpc_id and over_rpc_id_report.get("errors", PackedStringArray()).is_empty(), "over_rpc_id: generic Callable has no typed-target diagnostic")
 
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
@@ -2938,34 +2938,34 @@ func _test_async_callable_coroutine_wrap(failures: PackedStringArray) -> void:
 	# Foundry AsyncCallable→coroutine wrap on call/callv @ c9d5e35 (#60).
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	# Synchronous call on an async method reference yields Coroutine[T], not T.
+	# Synchronous call on a bare async reference yields Coroutine[Variant].
 	var async_call_assign := _src_class("AsyncCallableCallAssign extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch.call()\n")
 	var async_call_assign_report: Dictionary = probe.analyze_source(async_call_assign, "res://tests/async_callable_call_assign.barista")
 	_expect(failures, async_call_assign_report.get("valid", true) == false, "AsyncCallable.call result is not assignable to int")
 	var saw_async_call_coro := false
 	for message in async_call_assign_report.get("errors", PackedStringArray()):
-		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable "result" with specified type int' in message:
+		if "Cannot assign a value of type" in message and "Coroutine[Variant]" in message and 'variable "result" with specified type int' in message:
 			saw_async_call_coro = true
-	_expect(failures, saw_async_call_coro, "AsyncCallable.call diagnose Coroutine[int] assign to int")
+	_expect(failures, saw_async_call_coro, "bare AsyncCallable.call diagnoses Coroutine[Variant] assign to int")
 
 	var async_callv_assign := _src_class("AsyncCallableCallvAssign extends Node\nasync func fetch(value: int) -> String:\n\treturn \"ok\"\nfunc test() -> void:\n\tvar result: String = fetch.callv([1])\n")
 	var async_callv_assign_report: Dictionary = probe.analyze_source(async_callv_assign, "res://tests/async_callable_callv_assign.barista")
 	_expect(failures, async_callv_assign_report.get("valid", true) == false, "AsyncCallable.callv result is not assignable to String")
 	var saw_async_callv_coro := false
 	for message in async_callv_assign_report.get("errors", PackedStringArray()):
-		if "Cannot assign a value of type" in message and "Coroutine[String]" in message and 'variable "result" with specified type String' in message:
+		if "Cannot assign a value of type" in message and "Coroutine[Variant]" in message and 'variable "result" with specified type String' in message:
 			saw_async_callv_coro = true
-	_expect(failures, saw_async_callv_coro, "AsyncCallable.callv diagnose Coroutine[String] assign to String")
+	_expect(failures, saw_async_callv_coro, "bare AsyncCallable.callv diagnoses Coroutine[Variant] assign to String")
 
-	# Bound AsyncCallable preserves signature_is_async through bind, then call wraps.
+	# A generic bind result does not retain the bare async target signature.
 	var async_bound_call := _src_class("AsyncCallableBoundCall extends Node\nasync func add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tvar result: int = add.bind(1).call(2)\n")
 	var async_bound_call_report: Dictionary = probe.analyze_source(async_bound_call, "res://tests/async_callable_bound_call.barista")
-	_expect(failures, async_bound_call_report.get("valid", true) == false, "bound AsyncCallable.call still yields coroutine")
+	_expect(failures, async_bound_call_report.get("valid", false) == true, "generic bound AsyncCallable loses the explicit target signature")
 	var saw_bound_coro := false
 	for message in async_bound_call_report.get("errors", PackedStringArray()):
 		if "Cannot assign a value of type" in message and "Coroutine[int]" in message:
 			saw_bound_coro = true
-	_expect(failures, saw_bound_coro, "bound AsyncCallable.call diagnose Coroutine[int]")
+	_expect(failures, not saw_bound_coro and async_bound_call_report.get("errors", PackedStringArray()).is_empty(), "async_bound_call: generic Callable has no typed-target diagnostic")
 
 	# Deferred / RPC on AsyncCallable stay non-coroutine (NIL), so statement use is valid.
 	var async_deferred_ok := _src_class("AsyncCallableDeferredOk extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.call_deferred()\n")
@@ -2994,7 +2994,7 @@ func _test_async_callable_coroutine_wrap(failures: PackedStringArray) -> void:
 	_expect(failures, not saw_deferred_coro, "call_deferred on AsyncCallable must not wrap as Coroutine")
 	_expect(failures, saw_deferred_nil, "call_deferred on AsyncCallable diagnoses NIL/null assign to int")
 
-	# Plain (non-async) Callable.call is unchanged: returns T, assignable to T.
+	# Plain bare Callable.call returns Variant; permissive assignments remain admitted.
 	var sync_call_ok := _src_class("SyncCallableCallOk extends Node\nfunc fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch.call()\n")
 	var sync_call_ok_report: Dictionary = probe.analyze_source(sync_call_ok, "res://tests/sync_callable_call_ok.barista")
 	_expect(failures, sync_call_ok_report.get("valid", false) == true, "plain Callable.call return type unchanged")
@@ -3055,15 +3055,15 @@ func _test_await_reduction_and_missing_await(failures: PackedStringArray) -> voi
 			saw_missing_await = true
 	_expect(failures, saw_missing_await, "root-position non-void coroutine discard emits MISSING_AWAIT")
 
-	# Coroutine[void] / void async fire-and-forget does not warn.
+	# Bare fire.call() has Coroutine[Variant], so discarding it still warns; the precise void counterpart is native.
 	var void_fire := _src_class("VoidFireForget extends Node\nasync func fire() -> void:\n\tpass\nfunc test() -> void:\n\tfire.call()\n")
 	var void_fire_report: Dictionary = probe.validate_source(void_fire, "res://tests/void_fire_forget.barista", true)
-	_expect(failures, void_fire_report.get("valid", false) == true, "Coroutine[void] fire-and-forget stays valid")
+	_expect(failures, void_fire_report.get("valid", false) == true, "bare Coroutine[Variant] fire-and-forget stays valid at WARN")
 	var saw_void_missing := false
 	for warn in void_fire_report.get("warnings", []):
 		if "MISSING_AWAIT" in str(warn.get("string_code", "")):
 			saw_void_missing = true
-	_expect(failures, not saw_void_missing, "Coroutine[void] root discard does not emit MISSING_AWAIT")
+	_expect(failures, saw_void_missing, "bare Coroutine[Variant] root discard emits MISSING_AWAIT")
 
 	# call_deferred does not trigger MISSING_AWAIT (non-coroutine NIL).
 	var deferred_no_missing := _src_class("DeferredNoMissing extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.call_deferred()\n")
@@ -3120,15 +3120,15 @@ func _test_coroutine_annotation_decode(failures: PackedStringArray) -> void:
 	var annotate_await_report: Dictionary = probe.analyze_source(annotate_await, "res://tests/coroutine_annotate_await.barista")
 	_expect(failures, annotate_await_report.get("valid", false) == true, "await of Coroutine[int] annotation yields int")
 
-	# Phantom result mismatch: Coroutine[int] is not assignable to Coroutine[String].
+	# The bare call has a gradual Coroutine[Variant] payload, admitted by the typed destination.
 	var annotate_mismatch := _src_class("CoroutineAnnotateMismatch extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[String] = fetch.call()\n")
 	var annotate_mismatch_report: Dictionary = probe.analyze_source(annotate_mismatch, "res://tests/coroutine_annotate_mismatch.barista")
-	_expect(failures, annotate_mismatch_report.get("valid", true) == false, "Coroutine[int] is not assignable to Coroutine[String]")
+	_expect(failures, annotate_mismatch_report.get("valid", false) == true, "bare Coroutine[Variant] can enter Coroutine[String]")
 	var saw_coro_mismatch := false
 	for message in annotate_mismatch_report.get("errors", PackedStringArray()):
 		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and "Coroutine[String]" in message:
 			saw_coro_mismatch = true
-	_expect(failures, saw_coro_mismatch, "Coroutine phantom-result mismatch diagnoses Coroutine[int] vs Coroutine[String]")
+	_expect(failures, not saw_coro_mismatch and annotate_mismatch_report.get("errors", PackedStringArray()).is_empty(), "bare coroutine payload has no concrete int/String mismatch")
 
 	# Assigning annotated Coroutine[T] into T without await fails.
 	var annotate_no_await := _src_class("CoroutineAnnotateNoAwait extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[int] = fetch.call()\n\tvar result: int = work\n")

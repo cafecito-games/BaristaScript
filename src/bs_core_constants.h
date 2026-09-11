@@ -139,8 +139,12 @@ private:
 			if (p_vararg) {
 				info.flags |= METHOD_FLAG_VARARG;
 			}
-			for (const PropertyInfo &argument : p_arguments) {
-				info.arguments.push_back(argument);
+			// Engine vararg API entries describe a repeated placeholder, not a fixed minimum.
+			// Foundry info_from_utility_func preserves fixed slots only for non-varargs.
+			if (!p_vararg) {
+				for (const PropertyInfo &argument : p_arguments) {
+					info.arguments.push_back(argument);
+				}
 			}
 			utilities.insert(p_name, info);
 			utility_hashes.insert(p_name, p_hash);
