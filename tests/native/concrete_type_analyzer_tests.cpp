@@ -603,9 +603,9 @@ var bad_type: Type[Type[User]]
 		diagnostics(parser);
 		const auto *value = local(parser, "value"), *bound = local(parser, "bound"), *lambda = local(parser, "lambda"), *got = local(parser, "got");
 		BS_TEST_REQUIRE(value && bound && lambda && got);
-		CHECK(value->get_datatype().builtin_type == Variant::INT);
-		CHECK(got->get_datatype().builtin_type == Variant::INT);
-		CHECK(bound->get_datatype().has_explicit_method_signature);
+		CHECK(value->get_datatype().is_variant());
+		CHECK(got->get_datatype().is_variant());
+		CHECK_FALSE(bound->get_datatype().has_explicit_method_signature);
 		CHECK(bound->get_datatype().method_parameter_types.is_empty());
 		CHECK_FALSE(lambda->initializer->get_datatype().has_explicit_method_signature);
 		CHECK(lambda->initializer->get_datatype().has_method_signature);

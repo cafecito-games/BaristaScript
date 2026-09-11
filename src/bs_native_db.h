@@ -35,9 +35,7 @@ public:
 
 	static bool get_method_info(const StringName &p_class, const StringName &p_method, MethodInfo *r_info) {
 		ERR_FAIL_NULL_V(r_info, false);
-		if (!ClassDB::class_has_method(p_class, p_method, false)) {
-			return false;
-		}
+		// Virtual entries such as Object.free appear in the list but not class_has_method.
 		const TypedArray<Dictionary> methods = ClassDB::class_get_method_list(p_class, false);
 		for (int i = 0; i < methods.size(); i++) {
 			const Dictionary entry = methods[i];

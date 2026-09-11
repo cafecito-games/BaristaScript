@@ -520,7 +520,8 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			// parameter's declared type (during signature resolve, before the body sweep).
 			qualify_contextual_enum_case_consumer(parameter->initializer, parameter->get_datatype());
 			mark_coroutine_handle_capture(parameter->initializer, parameter->get_datatype());
-			if (parameter->initializer->is_constant) {
+			const bool constant_type_ok = update_constant_expression_type(parameter->initializer, parameter->get_datatype(), "assign");
+			if (constant_type_ok && parameter->initializer->is_constant) {
 				p_function->default_arg_values.push_back(parameter->initializer->reduced_value);
 			} else {
 				p_function->default_arg_values.push_back(Variant());

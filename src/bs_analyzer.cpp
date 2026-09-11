@@ -1512,7 +1512,65 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
+	auto resolve_nested = [&](BSParser::DataType base, int prefix_size) {
+		for (int i = prefix_size; i < p_type_node->type_chain.size(); ++i) {
+			BSParser::IdentifierNode *part = p_type_node->type_chain[i];
+			if (base.kind == BSParser::DataType::ENUM && base.is_tagged_union && p_type_node->allows_enum_case) {
+				if (i + 1 < p_type_node->type_chain.size()) {
+					push_error("Enum cases cannot contain nested types.", p_type_node->type_chain[i + 1]);
+					base.kind = BSParser::DataType::VARIANT;
+					return base;
+				}
+				if (!base.enum_values.has(part->name)) {
+					push_error(vformat(R"(Enum "%s" has no case named "%s".)", base.to_string(), part->name), part);
+					base.kind = BSParser::DataType::VARIANT;
+					return base;
+				}
+				base.enum_case_name = part->name;
+				break;
+			}
+			BSParser::ClassNode *owner = base.class_type;
+			HashSet<const BSParser::ClassNode *> visited;
+			while (owner != nullptr && !owner->has_member(part->name) && !visited.has(owner)) {
+				visited.insert(owner);
+				owner = owner->base_type.class_type;
+			}
+			if ((base.kind != BSParser::DataType::CLASS && base.kind != BSParser::DataType::SCRIPT) ||
+					owner == nullptr || !owner->has_member(part->name)) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			resolve_class_member(owner, part->name, part);
+			const BSParser::ClassNode::Member member = owner->get_member(part->name);
+			if (member.type != BSParser::ClassNode::Member::CLASS && member.type != BSParser::ClassNode::Member::ENUM && member.type != BSParser::ClassNode::Member::TUPLE) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			base = type_from_metatype(member.get_datatype());
+		}
+		base.is_nullable = p_type_node->is_nullable;
+		return base;
+	};
+
 	StringName name = p_type_node->type_chain[0]->name;
+	BSParser::IdentifierNode *first_id = p_type_node->type_chain[0];
+	if (first_id->suite != nullptr && first_id->suite->has_local(name)) {
+		const auto &local = first_id->suite->get_local(name);
+		if (local.type != BSParser::SuiteNode::Local::CONSTANT) {
+			push_error(vformat(R"(Local %s "%s" cannot be used as a type.)", local.get_name(), name), first_id);
+		} else if (!local.get_datatype().is_set()) {
+			push_error(vformat(R"(Local constant "%s" is not resolved at this point.)", name), first_id);
+		} else if (!local.get_datatype().is_meta_type) {
+			push_error(vformat(R"(Local constant "%s" is not a valid type.)", name), first_id);
+		} else {
+			return resolve_nested(type_from_metatype(local.get_datatype()), 1);
+		}
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+
 	if (current_class == witness_target_class && witness_declaration_scope != nullptr &&
 			name != SNAME("Self") && name != SNAME("Variant") && name != BSParser::get_number_type_name() &&
 			!BSParser::is_builtin_data_type(name) && name != SNAME("AsyncCallable")) {
@@ -1792,34 +1850,6 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 		return result;
 	}
-
-	auto resolve_nested = [&](BSParser::DataType base, int prefix_size) {
-		for (int i = prefix_size; i < p_type_node->type_chain.size(); ++i) {
-			BSParser::IdentifierNode *part = p_type_node->type_chain[i];
-			BSParser::ClassNode *owner = base.class_type;
-			HashSet<const BSParser::ClassNode *> visited;
-			while (owner != nullptr && !owner->has_member(part->name) && !visited.has(owner)) {
-				visited.insert(owner);
-				owner = owner->base_type.class_type;
-			}
-			if ((base.kind != BSParser::DataType::CLASS && base.kind != BSParser::DataType::SCRIPT) ||
-					owner == nullptr || !owner->has_member(part->name)) {
-				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
-				base.kind = BSParser::DataType::VARIANT;
-				return base;
-			}
-			resolve_class_member(owner, part->name, part);
-			const BSParser::ClassNode::Member member = owner->get_member(part->name);
-			if (member.type != BSParser::ClassNode::Member::CLASS && member.type != BSParser::ClassNode::Member::ENUM && member.type != BSParser::ClassNode::Member::TUPLE) {
-				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
-				base.kind = BSParser::DataType::VARIANT;
-				return base;
-			}
-			base = type_from_metatype(member.get_datatype());
-		}
-		base.is_nullable = p_type_node->is_nullable;
-		return base;
-	};
 
 	// A lexical metatype constant (including a preload handle) claims the prefix
 	// before an identically spelled namespace. Private aliases remain file-local.
@@ -2537,11 +2567,17 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 			bool valid = false;
 			Variant::evaluate(p_binary_op->variant_op, p_binary_op->left_operand->reduced_value, p_binary_op->right_operand->reduced_value, p_binary_op->reduced_value, valid);
 			if (!valid) {
-				push_error(vformat(R"(Invalid operands to operator %s, %s and %s.)",
-								   _operator_name(p_binary_op->variant_op),
-								   Variant::get_type_name(p_binary_op->left_operand->reduced_value.get_type()),
-								   Variant::get_type_name(p_binary_op->right_operand->reduced_value.get_type())),
-						p_binary_op);
+				const bool container_operand = left_type.builtin_type == Variant::ARRAY || left_type.builtin_type == Variant::DICTIONARY ||
+						right_type.builtin_type == Variant::ARRAY || right_type.builtin_type == Variant::DICTIONARY;
+				if (container_operand) {
+					push_error(vformat(R"(Invalid operands "%s" and "%s" for "%s" operator.)", left_type.to_string(), right_type.to_string(), _operator_name(p_binary_op->variant_op)), p_binary_op);
+				} else {
+					push_error(vformat(R"(Invalid operands to operator %s, %s and %s.)",
+									   _operator_name(p_binary_op->variant_op),
+									   Variant::get_type_name(p_binary_op->left_operand->reduced_value.get_type()),
+									   Variant::get_type_name(p_binary_op->right_operand->reduced_value.get_type())),
+							p_binary_op);
+				}
 				p_binary_op->reduced_value = Variant();
 			}
 		}
@@ -3202,12 +3238,6 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 
-			auto reject_void_result_use = [&]() {
-				const auto result = p_call->get_datatype();
-				if (!p_is_root && !p_is_await && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
-					push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
-				}
-			};
 			if (subscript->base != nullptr && p_call->function_name == SNAME("emit")) {
 				const BSParser::DataType base_type = subscript->base->get_datatype();
 				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
@@ -3218,7 +3248,6 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					void_type.kind = BSParser::DataType::BUILTIN;
 					void_type.builtin_type = Variant::NIL;
 					p_call->set_datatype(void_type);
-					reject_void_result_use();
 					return;
 				}
 			}
@@ -3237,7 +3266,6 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						p_call->set_datatype(type_from_property(method->info.return_val));
 					}
 					call_site_validation.validate_signal_connect_arg(base_type, p_call, 0);
-					reject_void_result_use();
 					return;
 				}
 			}
@@ -3262,7 +3290,6 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						call_site_validation.validate_call_arg(method->info, p_call, &receiver);
 						const auto result = type_from_property(method->info.return_val);
 						p_call->set_datatype(result);
-						reject_void_result_use();
 						return;
 					}
 				}
@@ -3529,7 +3556,34 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				p_call->set_datatype(type_from_metatype(meta));
 				return;
 			}
-			call_site_validation.validate_call_arg(accepted->info, p_call);
+			// Pin's all-constant value constructors take the direct construction path without
+			// narrowing warnings. Preserve that diagnostic distinction while this M3 path
+			// publishes argument conversions and types, without evaluating arbitrary CALLs.
+			bool constant_value_constructor = true;
+			for (const auto *argument : p_call->arguments) {
+				constant_value_constructor = constant_value_constructor && has_materialized_constant_value(argument);
+			}
+			switch (meta.builtin_type) {
+				case Variant::CALLABLE:
+				case Variant::SIGNAL:
+				case Variant::OBJECT:
+				case Variant::DICTIONARY:
+				case Variant::ARRAY:
+				case Variant::PACKED_BYTE_ARRAY:
+				case Variant::PACKED_INT32_ARRAY:
+				case Variant::PACKED_INT64_ARRAY:
+				case Variant::PACKED_FLOAT32_ARRAY:
+				case Variant::PACKED_FLOAT64_ARRAY:
+				case Variant::PACKED_STRING_ARRAY:
+				case Variant::PACKED_VECTOR2_ARRAY:
+				case Variant::PACKED_VECTOR3_ARRAY:
+				case Variant::PACKED_COLOR_ARRAY:
+				case Variant::PACKED_VECTOR4_ARRAY:
+					constant_value_constructor = false;
+					break;
+				default:
+					break;
+			}
 			if (parser->get_errors().size() == previous_errors) {
 				int i = 0;
 				for (const auto &property : accepted->info.arguments) {
@@ -3538,9 +3592,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					auto *argument = p_call->arguments[i];
 					const auto expected = type_from_property(property, true);
 					const auto actual = _substitute_self_type_parameter_with_bounds(argument->get_datatype(), false);
-					update_constant_expression_type(argument, expected, "pass", true);
 #ifdef DEBUG_ENABLED
-					if (expected.builtin_type == Variant::INT && actual.builtin_type == Variant::FLOAT && meta.builtin_type != Variant::INT) {
+					if (!constant_value_constructor && expected.builtin_type == Variant::INT && actual.builtin_type == Variant::FLOAT && meta.builtin_type != Variant::INT) {
 						Vector<String> symbols;
 						push_warning(p_call, BSWarning::NARROWING_CONVERSION, symbols);
 					}
@@ -3555,8 +3608,14 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						push_warning(argument, BSWarning::UNSAFE_CALL_ARGUMENT, symbols);
 					}
 #endif
+					update_constant_expression_type(argument, expected, "pass", constant_value_constructor);
 					++i;
 				}
+			}
+			// Keep shared validation and its resolved_parameter_types publication, after the
+			// selected constructor has owned conversion and warning origins.
+			if (parser->get_errors().size() == previous_errors) {
+				call_site_validation.validate_call_arg(accepted->info, p_call);
 			}
 			auto result = type_from_property(accepted->info.return_val);
 			const bool callable = meta.builtin_type == Variant::CALLABLE;
@@ -3698,10 +3757,6 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				MethodInfo language_info;
 				if (static_cast<BSParser::IdentifierNode *>(p_call->callee)->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
 						BSUtilityFunctions::get_function_info(constructor_name, language_info)) {
-					if (!p_is_root && !p_is_await && language_info.return_val.type == Variant::NIL &&
-							!(language_info.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT)) {
-						push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", constructor_name), p_call);
-					}
 					bool all_constant = true;
 					Vector<Variant> arguments;
 					for (const BSParser::ExpressionNode *argument : p_call->arguments) {
@@ -5020,11 +5075,20 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 
 	resolve_contextual_enum_case(p_cast->operand, cast_type);
 	p_cast->set_datatype(cast_type);
+	const auto original_operand_type = p_cast->operand->get_datatype();
+	if (original_operand_type.is_meta_type && original_operand_type.kind == BSParser::DataType::ENUM &&
+			!cast_type.is_variant()) {
+		push_error(vformat(R"(Cannot cast a value of type "%s" as "%s".)", original_operand_type.to_string(), cast_type.to_string()) +
+						BSParser::DataType::same_rendered_name_clause(original_operand_type, "value", cast_type, "target type"),
+				p_cast->operand);
+		return;
+	}
+	const bool int_backed_enum_cast = cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union && !cast_type.is_meta_type &&
+			!original_operand_type.is_meta_type && !original_operand_type.is_tagged_union && original_operand_type.builtin_type == Variant::INT;
 	bool publish_constant = false;
 	if (has_materialized_constant_value(p_cast->operand)) {
 		BSParser::DataType operand_type = p_cast->operand->get_datatype();
-		if (cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union &&
-				operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT) {
+		if (int_backed_enum_cast) {
 #ifdef DEBUG_ENABLED
 			if (!_enum_has_value(cast_type, p_cast->operand->reduced_value)) {
 				Vector<String> symbols;
@@ -5057,8 +5121,8 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 								: conversion_error,
 						p_cast->operand);
 			}
-		} else {
-			update_constant_expression_type(p_cast->operand, cast_type, "cast");
+		} else if (!update_constant_expression_type(p_cast->operand, cast_type, "cast")) {
+			return;
 		}
 		publish_constant = cast_type.is_variant() || p_cast->operand->get_datatype() == cast_type;
 	}
@@ -5085,8 +5149,7 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 	}
 
 	bool valid = false;
-	if (operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT &&
-			cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union) {
+	if (int_backed_enum_cast) {
 		mark_node_unsafe(p_cast);
 		valid = true;
 	} else if (operand_type.kind == BSParser::DataType::ENUM && !operand_type.is_tagged_union &&
@@ -5811,12 +5874,8 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 		p_expression->set_datatype(published);
 		return true;
 	}
-	// Concrete literals are described by their ordinary call/assign/return consumer. A gradual
-	// constant or closed union needs this value-aware path because the consumer otherwise admits
-	// Variant or loses the known alternative. Container elements use their pinned "include" wording.
-	if (!declared_type.is_variant() && declared_type.kind != BSParser::DataType::UNION && String(p_usage) != "include" && !p_builtin_constructor) {
-		return true;
-	}
+	const bool position_reports_refusal = !declared_type.is_variant() && declared_type.kind != BSParser::DataType::UNION &&
+			String(p_usage) != "include" && String(p_usage) != "cast" && !p_builtin_constructor;
 	if (p_expected_type.kind != BSParser::DataType::BUILTIN &&
 			p_expected_type.kind != BSParser::DataType::ENUM &&
 			p_expected_type.kind != BSParser::DataType::UNION) {
@@ -5854,6 +5913,9 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 		is_compatible = Variant::can_convert(comparison_type.builtin_type, p_expected_type.builtin_type);
 	}
 	if (!is_compatible) {
+		if (position_reports_refusal) {
+			return true;
+		}
 		const BSParser::DataType &reported_type = declared_type.is_variant() ? comparison_type : declared_type;
 		push_error(vformat(R"*(Cannot %s a value of type "%s" as "%s".)*",
 						   p_usage, reported_type.to_string(), p_expected_type.to_string()),
@@ -7991,9 +8053,15 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::AWAIT:
 			reduce_await(static_cast<BSParser::AwaitNode *>(p_expression));
 			break;
-		case BSParser::Node::CALL:
-			reduce_call(static_cast<BSParser::CallNode *>(p_expression), false, p_is_root);
-			break;
+		case BSParser::Node::CALL: {
+			auto *call = static_cast<BSParser::CallNode *>(p_expression);
+			reduce_call(call, false, p_is_root);
+			const auto result = call->get_datatype();
+			// Await reduces its call directly; statement and void-return calls pass root here.
+			if (!p_is_root && result.is_hard_type() && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
+				push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", call->function_name), call);
+			}
+		} break;
 		case BSParser::Node::LAMBDA:
 			reduce_lambda(static_cast<BSParser::LambdaNode *>(p_expression));
 			break;
@@ -8557,25 +8625,39 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 		case BSParser::Node::RETURN: {
 			BSParser::ReturnNode *ret = static_cast<BSParser::ReturnNode *>(p_node);
 			if (ret->return_value != nullptr) {
-				reduce_expression(ret->return_value);
 				// Foundry: contextual `.Case` return takes its union from the function return type.
 				BSParser::DataType expected_return;
 				if (current_function != nullptr) {
 					expected_return = current_function->get_datatype();
 				}
+				const bool returns_void = expected_return.is_hard_type() && expected_return.kind == BSParser::DataType::BUILTIN && expected_return.builtin_type == Variant::NIL;
+				const bool is_call = ret->return_value->type == BSParser::Node::CALL;
+				reduce_expression(ret->return_value, returns_void && is_call);
 				qualify_contextual_enum_case_consumer(ret->return_value, expected_return);
+				if (returns_void) {
+					ret->void_return = true;
+					if (is_call && !ret->return_value->get_datatype().is_hard_type()) {
+#ifdef DEBUG_ENABLED
+						Vector<String> symbols;
+						symbols.push_back(current_function->identifier != nullptr ? String(current_function->identifier->name) : String("<anonymous function>"));
+						symbols.push_back(static_cast<BSParser::CallNode *>(ret->return_value)->function_name);
+						push_warning(ret, BSWarning::UNSAFE_VOID_RETURN, symbols);
+#endif
+						mark_node_unsafe(ret);
+					} else if (!is_call) {
+						push_error("A void function cannot return a value.", ret);
+					}
+					BSParser::DataType result = expected_return;
+					result.is_constant = true;
+					ret->set_datatype(result);
+					break;
+				}
 				if (expected_return.is_set()) {
 					mark_coroutine_handle_capture(ret->return_value, expected_return);
 				}
 				const bool constant_type_ok = update_constant_expression_type(ret->return_value, expected_return, "return");
 				ret->set_datatype(ret->return_value->get_datatype());
-				const bool returns_void = expected_return.is_set() && expected_return.kind == BSParser::DataType::BUILTIN &&
-						expected_return.builtin_type == Variant::NIL;
 				if (!constant_type_ok) {
-					break;
-				}
-				if (returns_void) {
-					push_error("A void function cannot return a value.", ret);
 					break;
 				}
 				// Foundry resolve_return Self-contract RETURN gate @ c9d5e35.
@@ -8769,7 +8851,10 @@ void BSAnalyzer::resolve_for(BSParser::ForNode *p_for) {
 			if (iterator != nullptr) {
 				variable_type = iterator->get_datatype();
 				variable_type.type_source = list_type.type_source;
-			} else if (BSNativeDB::get_method_info(list_type.native_type, SNAME("_iter_get"), &method)) {
+			} else if (ClassDB::class_has_method(list_type.native_type, SNAME("_iter_get"), false) &&
+					BSNativeDB::get_method_info(list_type.native_type, SNAME("_iter_get"), &method)) {
+				// Object-core virtual metadata describes an extension point, not an iterator
+				// implementation. Preserve the hard/soft missing-implementation contract below.
 				variable_type = type_from_property(method.return_val, (method.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT) != 0);
 				variable_type.type_source = list_type.type_source;
 			} else if (!list_type.is_hard_type()) {
