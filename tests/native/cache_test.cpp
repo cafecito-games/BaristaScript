@@ -10,6 +10,7 @@
 
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 
 #if defined(WINDOWS_ENABLED)
@@ -390,17 +391,22 @@ TEST_SUITE("cache") {
 		CHECK_MESSAGE(!(via_utf8.length() == 3 && via_utf8[1] == 0),
 				"length-bounded String::utf8 unexpectedly preserved an embedded NUL");
 
-		// Production path: mutate an owned full store path via writable operator[] / ptrw().
-		String store = fixture.path("nul_store.bin");
+		// Production path: mutate an owned basename via writable operator[] so a truncated view of
+		// the path still names a leaf under the fixture root (not a prefix outside it).
+		const String leaf = String("nul_store.bin");
+		String store = fixture.path(leaf);
 		CHECK(DirAccess::make_dir_recursive_absolute(store.get_base_dir()) == OK);
-		const int nul_at = store.length() / 2;
-		CHECK(nul_at > 0);
+		const int basename_start = store.length() - leaf.length();
+		CHECK(basename_start > 0);
+		const int nul_at = basename_start + 1; // second codepoint of the owned leaf
+		CHECK(nul_at > basename_start);
 		CHECK(nul_at < store.length() - 1);
 		CHECK(store[nul_at] != 0);
 		const int length_before = store.length();
 		store[nul_at] = 0;
 		CHECK(store.length() == length_before);
 		CHECK(store[nul_at] == 0);
+		CHECK(store.substr(0, basename_start).begins_with(fixture.root));
 
 		const int before_temps = count_tmp_under(fixture.root);
 		CHECK(bs_validate_parse_cache_store_path(store) == ERR_INVALID_PARAMETER);
@@ -496,27 +502,38 @@ TEST_SUITE("cache") {
 		CHECK(user_writer.flush(user_leaf) == OK);
 		CHECK(read_bytes(user_leaf) == spaced_bytes);
 
-		const String relative = String("cache_test_relative_café.bin");
+		// Relative and res:// controls own unique scratch under captured cwd / project res and
+		// require flush OK. Soft-skipping on failure would let a regression pass.
+		const Ref<DirAccess> cwd_access = DirAccess::open(".");
+		CHECK(cwd_access.is_valid());
+		const String cwd = cwd_access->get_current_dir();
+		static uint64_t path_shape_serial = 0;
+		const String rel_dir_name = String("bs_cache_rel_") + String::num_uint64((uint64_t)OS::get_singleton()->get_process_id()) +
+				String("_") + String::num_uint64(++path_shape_serial);
+		const String abs_rel_dir = cwd.path_join(rel_dir_name);
+		CHECK(DirAccess::make_dir_recursive_absolute(abs_rel_dir) == OK);
+		CHECK(DirAccess::open(abs_rel_dir).is_valid());
+		const String relative = String(rel_dir_name).path_join("store_café.bin");
+		const String abs_relative = abs_rel_dir.path_join("store_café.bin");
 		BSParseCache rel_writer;
 		rel_writer.put(SCRIPT_A, source(SCRIPT_A), expected);
-		const Error rel_err = rel_writer.flush(relative);
-		if (rel_err != OK) {
-			WARN_PRINT("relative store path flush skipped: working directory is not writable");
-		} else {
-			CHECK(read_bytes(relative) == spaced_bytes);
-			CHECK(DirAccess::remove_absolute(relative) == OK);
-		}
+		CHECK(rel_writer.flush(relative) == OK);
+		CHECK(read_bytes(abs_relative) == spaced_bytes);
+		CHECK(DirAccess::remove_absolute(abs_relative) == OK);
+		CHECK(DirAccess::remove_absolute(abs_rel_dir) == OK);
 
-		const String res_store = String("res://tests/cache_test_scratch_res_café.bin");
+		const String res_dir_name = String("tests/bs_cache_res_") + String::num_uint64((uint64_t)OS::get_singleton()->get_process_id()) +
+				String("_") + String::num_uint64(++path_shape_serial);
+		const String res_dir = String("res://").path_join(res_dir_name);
+		CHECK(DirAccess::make_dir_recursive_absolute(res_dir) == OK);
+		CHECK(DirAccess::open(res_dir).is_valid());
+		const String res_store = res_dir.path_join("store_café.bin");
 		BSParseCache res_writer;
 		res_writer.put(SCRIPT_A, source(SCRIPT_A), expected);
-		const Error res_err = res_writer.flush(res_store);
-		if (res_err != OK) {
-			WARN_PRINT("writable res:// store path unavailable in this fixture; skipping with explicit guard");
-		} else {
-			CHECK(read_bytes(res_store) == spaced_bytes);
-			CHECK(DirAccess::remove_absolute(res_store) == OK);
-		}
+		CHECK(res_writer.flush(res_store) == OK);
+		CHECK(read_bytes(res_store) == spaced_bytes);
+		CHECK(DirAccess::remove_absolute(res_store) == OK);
+		CHECK(DirAccess::remove_absolute(res_dir) == OK);
 	}
 	TEST_CASE("path_shapes_publish_with_explicit_guards") { scenario_path_shapes_publish_with_explicit_guards(); }
 
@@ -630,12 +647,54 @@ TEST_SUITE("cache") {
 		CHECK(read_bytes(slash_store) != via_slash);
 	}
 	TEST_CASE("posix_slash_and_backslash_store_paths_are_equivalent") { scenario_posix_slash_and_backslash_store_paths_are_equivalent(); }
+
+	static void scenario_posix_backslash_fault4_cleanup_preserves_store_and_drops_temp() {
+		// R1: FileAccess normalizes `\` on write; discard must use the same spelling so fault 4
+		// cannot leave a promotable temp that bs_replace_file would publish over A.
+		StorageFixture fixture;
+		const String parent = fixture.path("fault4_backslash_dir");
+		CHECK(DirAccess::make_dir_recursive_absolute(parent) == OK);
+		const String slash_store = parent.path_join("leaf.bin");
+		const String backslash_store = parent + String("\\leaf.bin");
+		const String keeper = parent.path_join("keeper.tmp");
+		CHECK(write_bytes(keeper, bytes(String("keeper"))));
+
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(slash_store) == OK);
+		const auto previous = read_bytes(slash_store);
+
+		BSParseCache second;
+		const auto memory_payload = payload(source(SCRIPT_B));
+		second.put(SCRIPT_B, source(SCRIPT_B), memory_payload);
+		CHECK(second.flush(backslash_store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(slash_store) == previous);
+		CHECK(second.has_entry(SCRIPT_B));
+		CHECK(second.lookup(SCRIPT_B, source(SCRIPT_B)).payload == memory_payload);
+		CHECK(count_tmp_under(parent) == 1); // only the unrelated keeper
+		CHECK(FileAccess::file_exists(keeper));
+		CHECK(temporary_files(slash_store).is_empty());
+
+		CHECK(second.flush(backslash_store, Fault::TRUNCATE_TEMP_AFTER_WRITE) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(slash_store) == previous);
+		CHECK(count_tmp_under(parent) == 1);
+		CHECK(second.flush(backslash_store) == OK);
+		CHECK(read_bytes(slash_store) != previous);
+		CHECK(temporary_files(slash_store).is_empty());
+		CHECK(FileAccess::file_exists(keeper));
+	}
+	TEST_CASE("posix_backslash_fault4_cleanup_preserves_store_and_drops_temp") {
+		scenario_posix_backslash_fault4_cleanup_preserves_store_and_drops_temp();
+	}
 #else
 	TEST_CASE("posix_backslash_store_path_flush_round_trips") {
 		WARN_PRINT("POSIX backslash store-path cases require UNIX_ENABLED; skipped on this host");
 	}
 	TEST_CASE("posix_slash_and_backslash_store_paths_are_equivalent") {
 		WARN_PRINT("POSIX backslash equivalence case requires UNIX_ENABLED; skipped on this host");
+	}
+	TEST_CASE("posix_backslash_fault4_cleanup_preserves_store_and_drops_temp") {
+		WARN_PRINT("POSIX backslash fault-4 cleanup case requires UNIX_ENABLED; skipped on this host");
 	}
 #endif
 
@@ -651,15 +710,15 @@ TEST_SUITE("cache") {
 
 	static void scenario_windows_ascii_long_path_flush_round_trips() {
 		StorageFixture fixture;
+		// G1: these cases establish the disabled-host long-path profile explicitly. Ambient
+		// LongPathsEnabled=1 would not prove extended-prep behavior without the opt-in.
+		CHECK_FALSE(windows_long_paths_enabled_opt_in());
 		const String long_dir = fixture.path(String("L").repeat(40).path_join(String("M").repeat(40)).path_join(String("N").repeat(40)));
 		CHECK(DirAccess::make_dir_recursive_absolute(long_dir) == OK);
 		const String store = long_dir.path_join(String("O").repeat(40) + String(".bin"));
 		String absolute = ProjectSettings::get_singleton()->globalize_path(store);
 		const Char16String utf16 = absolute.utf16();
 		CHECK(utf16.length() > 260);
-		const bool opt_in = windows_long_paths_enabled_opt_in();
-		WARN_PRINT(opt_in ? "host LongPathsEnabled=1 (opt-in on); still requiring \\\\?\\ extended prep"
-						  : "host LongPathsEnabled=0 (opt-in off); extended prep must still succeed");
 		BSParseCache cache;
 		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
 		CHECK(cache.flush(store) == OK);
@@ -674,6 +733,7 @@ TEST_SUITE("cache") {
 
 	static void scenario_windows_supplementary_unicode_long_path_flush_succeeds() {
 		StorageFixture fixture;
+		CHECK_FALSE(windows_long_paths_enabled_opt_in());
 		String component;
 		while (component.utf16().length() < 130) {
 			component += String::chr(0x1F600);
@@ -696,12 +756,48 @@ TEST_SUITE("cache") {
 	TEST_CASE("windows_supplementary_unicode_long_path_flush_succeeds") {
 		scenario_windows_supplementary_unicode_long_path_flush_succeeds();
 	}
+
+	static String windows_localhost_admin_unc(const String &absolute_path) {
+		String normalized = absolute_path.replace("/", "\\");
+		if (normalized.length() < 3 || normalized[1] != ':' || normalized[2] != '\\') {
+			return String();
+		}
+		return String("\\\\localhost\\") + normalized.substr(0, 1) + String("$") + normalized.substr(2);
+	}
+
+	static void scenario_windows_unc_store_path_flush_round_trips_with_long_paths_disabled() {
+		StorageFixture fixture;
+		CHECK_FALSE(windows_long_paths_enabled_opt_in());
+		const String local_store = fixture.path("unc_leaf.bin");
+		const String absolute = ProjectSettings::get_singleton()->globalize_path(local_store);
+		const String unc_store = windows_localhost_admin_unc(absolute);
+		CHECK_FALSE(unc_store.is_empty());
+		CHECK(unc_store.begins_with("\\\\localhost\\"));
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(cache.flush(unc_store) == OK);
+		BSParseCache reader;
+		CHECK(reader.load(local_store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_A, source(SCRIPT_A)).hit);
+		CHECK(temporary_files(local_store).is_empty());
+		BSParseCache control;
+		control.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		const String control_store = fixture.path("unc_control.bin");
+		CHECK(control.flush(control_store) == OK);
+		CHECK(read_bytes(local_store) == read_bytes(control_store));
+	}
+	TEST_CASE("windows_unc_store_path_flush_round_trips_with_long_paths_disabled") {
+		scenario_windows_unc_store_path_flush_round_trips_with_long_paths_disabled();
+	}
 #else
 	TEST_CASE("windows_ascii_long_path_flush_round_trips") {
 		WARN_PRINT("Windows long-path ASCII case requires WINDOWS_ENABLED; skipped on this host");
 	}
 	TEST_CASE("windows_supplementary_unicode_long_path_flush_succeeds") {
 		WARN_PRINT("Windows supplementary-Unicode long-path case requires WINDOWS_ENABLED; skipped on this host");
+	}
+	TEST_CASE("windows_unc_store_path_flush_round_trips_with_long_paths_disabled") {
+		WARN_PRINT("Windows UNC store-path case requires WINDOWS_ENABLED; skipped on this host");
 	}
 #endif
 

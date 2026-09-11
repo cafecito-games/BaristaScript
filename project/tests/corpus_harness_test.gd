@@ -393,10 +393,14 @@ func _test_unreadable_directory_is_harness_error(failures: Array[String]) -> voi
 			"an unreadable corpus root must be a harness error even with --allow-empty: %s" % _text(unreadable_root)
 		)
 
-	_make_readable(locked_child)
-	_make_readable(locked_root)
-	_remove_directory(nested_root)
-	_remove_directory(locked_root)
+	if not _make_readable(locked_child):
+		failures.append("failed to restore read access on locked child before cleanup: %s" % ProjectSettings.globalize_path(locked_child))
+	if not _make_readable(locked_root):
+		failures.append("failed to restore read access on locked root before cleanup: %s" % ProjectSettings.globalize_path(locked_root))
+	if not _remove_directory(nested_root):
+		failures.append("owned nested unreadable fixture was not removed: %s" % ProjectSettings.globalize_path(nested_root))
+	if not _remove_directory(locked_root):
+		failures.append("owned unreadable corpus root was not removed: %s" % ProjectSettings.globalize_path(locked_root))
 
 
 func _test_runner_process_arguments(failures: Array[String]) -> void:
@@ -493,22 +497,35 @@ func _make_unreadable(path: String) -> bool:
 		# Remove inherited allow-ACEs (Administrators/Users) that would otherwise keep
 		# the directory readable after a per-user deny, then install an explicit grant
 		# so cleanup retains WRITE_DAC, and finally deny RX (deny overrides allow).
-		OS.execute("icacls", [native, "/inheritance:r"])
-		OS.execute("icacls", [native, "/grant:r", "%s:(OI)(CI)F" % user])
-		OS.execute("icacls", [native, "/deny", "%s:(OI)(CI)(RX)" % user])
+		if _run_checked("icacls", [native, "/inheritance:r"]) != 0:
+			return false
+		if _run_checked("icacls", [native, "/grant:r", "%s:(OI)(CI)F" % user]) != 0:
+			return false
+		if _run_checked("icacls", [native, "/deny", "%s:(OI)(CI)(RX)" % user]) != 0:
+			return false
 	else:
-		OS.execute("chmod", ["000", native])
+		if _run_checked("chmod", ["000", native]) != 0:
+			return false
 	return DirAccess.open(path) == null
 
 
-func _make_readable(path: String) -> void:
+## Restores read access and verifies DirAccess.open succeeds again. Returns false when
+## the ACL/chmod command fails or the directory remains unopenable.
+func _make_readable(path: String) -> bool:
 	var native := _native_fs_path(path)
 	if OS.get_name() == "Windows":
 		# Re-enable parent inheritance and drop the temporary deny/grant pair.
-		OS.execute("icacls", [native, "/reset"])
+		if _run_checked("icacls", [native, "/reset"]) != 0:
+			return false
 	else:
-		OS.execute("chmod", ["755", native])
+		if _run_checked("chmod", ["755", native]) != 0:
+			return false
+	return DirAccess.open(path) != null
 
+
+func _run_checked(executable: String, arguments: Array) -> int:
+	var output: Array = []
+	return OS.execute(executable, arguments, output)
 
 func _native_fs_path(path: String) -> String:
 	var native := ProjectSettings.globalize_path(path)
@@ -549,24 +566,30 @@ func _copy_fixture_directory(source_root: String, destination_root: String) -> v
 	directory.list_dir_end()
 
 
-func _remove_directory(path: String) -> void:
+func _remove_directory(path: String) -> bool:
+	if not DirAccess.dir_exists_absolute(path):
+		return true
 	var directory := DirAccess.open(path)
 	if directory == null:
-		return
+		return false
 	directory.list_dir_begin()
 	var entries: Array[String] = []
 	var entry := directory.get_next()
 	while not entry.is_empty():
-		entries.append(entry)
+		if entry != "." and entry != "..":
+			entries.append(entry)
 		entry = directory.get_next()
 	directory.list_dir_end()
 	for name in entries:
 		var child := "%s/%s" % [path, name]
 		if DirAccess.dir_exists_absolute(child):
-			_remove_directory(child)
-		else:
-			DirAccess.remove_absolute(child)
-	DirAccess.remove_absolute(path)
+			if not _remove_directory(child):
+				return false
+		elif DirAccess.remove_absolute(child) != OK:
+			return false
+	if DirAccess.remove_absolute(path) != OK:
+		return false
+	return not DirAccess.dir_exists_absolute(path)
 
 
 func _test_exact_case_selection(failures: Array[String]) -> void:

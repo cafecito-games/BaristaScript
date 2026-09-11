@@ -13,8 +13,10 @@ in `tests/native/cache_test.cpp` under `StorageFixture` with explicit prerequisi
 `nul_embedded_store_path_rejects_before_temp_creation` (mutable `String` NUL injection),
 `first_create_replace_and_replay_byte_identity`, fault-4 absent-destination / retry / memory-payload
 cases, invalid directory destination, path-shape guards, unrelated-temp preservation,
-`posix_backslash_store_path_flush_round_trips` / `posix_slash_and_backslash_store_paths_are_equivalent`
-(F2; non-Windows), and `windows_ascii_long_path_flush_round_trips` /
+`posix_backslash_store_path_flush_round_trips` / `posix_slash_and_backslash_store_paths_are_equivalent` /
+`posix_backslash_fault4_cleanup_preserves_store_and_drops_temp`
+(F2/R1; non-Windows), and `windows_ascii_long_path_flush_round_trips` /
+`windows_unc_store_path_flush_round_trips_with_long_paths_disabled` /
 `windows_supplementary_unicode_long_path_flush_succeeds` (F1; `WINDOWS_ENABLED` only).
 
 Each original group maps to one named native case; `repeated_and_reversed_cases_restore_ambient_state`
@@ -62,6 +64,7 @@ A hidden deliberate assertion failure exercises early-return RAII cleanup and is
 | _(issue #21 / F2)_ | `posix_backslash_store_path_flush_round_trips` |
 | _(issue #21 / F2)_ | `posix_slash_and_backslash_store_paths_are_equivalent` |
 | _(issue #21 / F1)_ | `windows_ascii_long_path_flush_round_trips` |
+| _(issue #21 / G1)_ | `windows_unc_store_path_flush_round_trips_with_long_paths_disabled` |
 | _(issue #21 / F1)_ | `windows_supplementary_unicode_long_path_flush_succeeds` |
 | `_test_miss_reason_vocabulary_is_closed` | `miss_reason_vocabulary_is_closed` |
 | `_test_every_miss_reason_has_a_distinct_log_line` | `every_miss_reason_has_a_distinct_log_line` |

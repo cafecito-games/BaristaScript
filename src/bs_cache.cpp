@@ -152,10 +152,18 @@ static uint64_t bs_get_u64(const uint8_t *p_source, uint64_t p_offset) {
  * Removes a temp store that will never be promoted. A failed flush must not leave a half-written
  * file behind for the next flush to append to or a reader to trip over; the real store is
  * untouched either way.
+ *
+ * Path spelling must match FileAccess: on POSIX, `\` is a separator alias for `/`, so write and
+ * exists-checks normalize while DirAccess::remove_absolute does not. Normalizing here keeps fault-4
+ * cleanup from leaving a still-promotable temp when the store path used backslashes.
  */
 static void bs_discard_temp_store(const String &p_temp_path) {
-	if (FileAccess::file_exists(p_temp_path)) {
-		DirAccess::remove_absolute(p_temp_path);
+	String path = p_temp_path;
+#if defined(UNIX_ENABLED)
+	path = path.replace("\\", "/");
+#endif
+	if (FileAccess::file_exists(path)) {
+		DirAccess::remove_absolute(path);
 	}
 }
 
