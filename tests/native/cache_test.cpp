@@ -713,11 +713,26 @@ TEST_SUITE("cache") {
 		// G1: these cases establish the disabled-host long-path profile explicitly. Ambient
 		// LongPathsEnabled=1 would not prove extended-prep behavior without the opt-in.
 		CHECK_FALSE(windows_long_paths_enabled_opt_in());
-		const String long_dir = fixture.path(String("L").repeat(40).path_join(String("M").repeat(40)).path_join(String("N").repeat(40)));
-		CHECK(DirAccess::make_dir_recursive_absolute(long_dir) == OK);
-		const String store = long_dir.path_join(String("O").repeat(40) + String(".bin"));
-		String absolute = ProjectSettings::get_singleton()->globalize_path(store);
-		const Char16String utf16 = absolute.utf16();
+		// Host user-dir length varies on CI (short AppData roots can keep a fixed 40/40/40/40
+		// layout under MAX_PATH). Grow ASCII segments until the absolute UTF-16 path is past
+		// MAX_PATH so MoveFileExW must use the extended prefix under LongPathsEnabled=0.
+		const String base = fixture.path("ascii_long_root");
+		CHECK(DirAccess::make_dir_recursive_absolute(base) == OK);
+		String relative;
+		String store;
+		Char16String utf16;
+		for (int segment = 0; segment < 16; ++segment) {
+			relative = relative.is_empty()
+					? String("D") + String::num_int64(segment) + String("X").repeat(48)
+					: relative.path_join(String("D") + String::num_int64(segment) + String("X").repeat(48));
+			const String long_dir = base.path_join(relative);
+			CHECK(DirAccess::make_dir_recursive_absolute(long_dir) == OK);
+			store = long_dir.path_join(String("leaf.bin"));
+			utf16 = ProjectSettings::get_singleton()->globalize_path(store).utf16();
+			if (utf16.length() > 260) {
+				break;
+			}
+		}
 		CHECK(utf16.length() > 260);
 		BSParseCache cache;
 		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
