@@ -399,4 +399,126 @@ TEST_SUITE("parent_contract_analyzer") {
 			CHECK(registered->get_parser()->get_errors().is_empty());
 		}
 	}
+	TEST_CASE("repair1_raw_async_coroutine_results_and_pinned_sync_opposite") {
+		for (int mode : { 0, 1, 2, 3 }) {
+			StorageFixture storage;
+			BSConformanceRegistry::ScopedCorpusState registry;
+			WarningScope warnings;
+			const bool async = mode != 2;
+			const String parent_type = mode == 3 ? "int" : "Coroutine[int]";
+			const String child_type = mode == 1 ? "Coroutine[String]" : parent_type;
+			const String prefix = async ? "abstract async func f() -> " : "abstract func f() -> ";
+			const String source = "abstract class Parent:\n\t" + prefix + parent_type + "\nabstract class Child extends Parent:\n\t" + prefix + child_type + "\n";
+			const String path = storage.path("raw_coroutine.barista");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const bool valid = mode == 0 || mode == 3;
+			CHECK((analyzer.analyze() == OK) == valid);
+			diagnostics(parser);
+			const auto *parent = parser.get_tree()->get_member("Parent").m_class->get_member("f").function;
+			const auto *child = parser.get_tree()->get_member("Child").m_class->get_member("f").function;
+			CHECK(parent->is_coroutine == async);
+			CHECK(child->is_coroutine == async);
+			CHECK(parent->get_datatype().to_string() == parent_type);
+			CHECK(child->get_datatype().to_string() == child_type);
+			for (const auto *function : { parent, child }) {
+				const auto type = function->get_datatype();
+				CHECK(type.is_coroutine == (mode != 3));
+				if (mode != 3) {
+					BS_TEST_REQUIRE(type.container_element_types.size() == 1);
+					const auto element = type.get_container_element_type(0);
+					CHECK_FALSE(element.is_coroutine);
+					CHECK(element.kind == BSParser::DataType::BUILTIN);
+					CHECK(element.builtin_type == (mode == 1 && function == child ? Variant::STRING : Variant::INT));
+				}
+			}
+			const String message = mode == 1 ? "The function signature doesn't match the parent. Parent signature is \"f() -> Coroutine[int]\"." : "The function signature doesn't match the parent. Parent signature is \"f() -> int\".";
+			CHECK(parser.get_errors().size() == (valid ? 0 : 1));
+			if (!valid && parser.get_errors().size() == 1) {
+				error_at(parser, 0, message, child);
+			}
+			CHECK(public_block(source, path, parser) == (valid ? String("BS_TEST_OK") : ">> ERROR at line 4: " + message));
+			const int count = parser.get_errors().size();
+			CHECK((analyzer.analyze() == OK) == valid);
+			CHECK(parser.get_errors().size() == count);
+			CHECK(parent->get_datatype().to_string() == parent_type);
+			CHECK(child->get_datatype().to_string() == child_type);
+			CHECK(parser.get_warnings().is_empty());
+		}
+	}
+	TEST_CASE("repair1_retained_async_coroutine_parent_preserves_raw_result") {
+		for (bool mismatch : { false, true }) {
+			StorageFixture storage;
+			BSConformanceRegistry::ScopedCorpusState registry;
+			WarningScope warnings;
+			const String provider = storage.path("async_parent.notest.barista");
+			BS_TEST_REQUIRE(write_bytes(provider, bytes("abstract extends RefCounted\nabstract async func f() -> Coroutine[int]\n")));
+			const String source = "abstract extends \"" + provider + "\"\nabstract async func f() -> Coroutine[" + String(mismatch ? "String" : "int") + "]\n";
+			const String path = storage.path("async_child.barista");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK((analyzer.analyze() == OK) == !mismatch);
+			diagnostics(parser);
+			const auto retained = parser.get_depended_parser_for(provider);
+			BS_TEST_REQUIRE(retained.is_valid());
+			const auto *parent = retained->get_parser()->get_tree()->get_member("f").function;
+			const auto *child = parser.get_tree()->get_member("f").function;
+			CHECK(parent->get_datatype().to_string() == "Coroutine[int]");
+			CHECK(parent->get_datatype().get_container_element_type(0).builtin_type == Variant::INT);
+			CHECK_FALSE(parent->get_datatype().get_container_element_type(0).is_coroutine);
+			CHECK(child->get_datatype().to_string() == (mismatch ? "Coroutine[String]" : "Coroutine[int]"));
+			CHECK(retained->get_parser()->get_errors().is_empty());
+			const String message = "The function signature doesn't match the parent. Parent signature is \"f() -> Coroutine[int]\".";
+			CHECK(parser.get_errors().size() == (mismatch ? 1 : 0));
+			if (mismatch && parser.get_errors().size() == 1)
+				error_at(parser, 0, message, child);
+			CHECK(public_block(source, path, parser) == (mismatch ? ">> ERROR at line 2: " + message : String("BS_TEST_OK")));
+			const int count = parser.get_errors().size();
+			const auto status = retained->get_status();
+			CHECK((analyzer.analyze() == OK) == !mismatch);
+			CHECK(parser.get_errors().size() == count);
+			CHECK(retained->get_status() == status);
+			CHECK(retained->get_parser()->get_errors().is_empty());
+		}
+	}
+	TEST_CASE("repair1_witness_async_coroutine_parent_uses_same_normalization") {
+		for (bool mismatch : { false, true }) {
+			StorageFixture storage;
+			BSConformanceRegistry::ScopedCorpusState registry;
+			WarningScope warnings;
+			const String provider = storage.path("async_witness.notest.barista");
+			BS_TEST_REQUIRE(write_bytes(provider, bytes("trait Reader:\n\tabstract async func f(_result: Coroutine[int]) -> Coroutine[int]\nextend RefCounted uses Reader:\n\tasync func f(_result: Coroutine[int]) -> Coroutine[int]:\n\t\treturn _result\n")));
+			Error err = OK;
+			const auto registered = BSCache::get_parser(provider, BSParserRef::INTERFACE_SOLVED, err);
+			BS_TEST_REQUIRE(err == OK && registered.is_valid());
+			const String source = "abstract extends RefCounted\nconst Provider = preload(\"" + provider + "\")\nabstract async func f(_result: Coroutine[int]) -> Coroutine[" + String(mismatch ? "String" : "int") + "]\n";
+			const String path = storage.path("witness_async_child.barista");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK((analyzer.analyze() == OK) == !mismatch);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(registered->get_parser()->get_tree()->conformances.size() == 1);
+			const auto *witness = registered->get_parser()->get_tree()->conformances[0]->witnesses[0];
+			CHECK(witness->is_coroutine);
+			CHECK(witness->get_datatype().to_string() == "Coroutine[int]");
+			CHECK_FALSE(witness->get_datatype().get_container_element_type(0).is_coroutine);
+			CHECK(witness->get_datatype().get_container_element_type(0).builtin_type == Variant::INT);
+			CHECK(registered->get_parser()->get_errors().is_empty());
+			CHECK(parser.get_depended_parsers().has(provider));
+			const auto *child = parser.get_tree()->get_member("f").function;
+			CHECK(child->get_datatype().to_string() == (mismatch ? "Coroutine[String]" : "Coroutine[int]"));
+			CHECK(parser.get_errors().size() == (mismatch ? 1 : 0));
+			const String message = "The function signature doesn't match the parent. Parent signature is \"f(Coroutine[int]) -> Coroutine[int]\".";
+			if (mismatch && parser.get_errors().size() == 1)
+				error_at(parser, 0, message, child);
+			CHECK(public_block(source, path, parser) == (mismatch ? ">> ERROR at line 3: " + message : String("BS_TEST_OK")));
+			const int count = parser.get_errors().size();
+			CHECK((analyzer.analyze() == OK) == !mismatch);
+			CHECK(parser.get_errors().size() == count);
+			CHECK(registered->get_parser()->get_errors().is_empty());
+		}
+	}
 }

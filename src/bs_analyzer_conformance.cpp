@@ -637,9 +637,11 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			}
 		}
 		if (has_parent) {
-			// FunctionNode stores raw async results; only metadata that already carries a
-			// coroutine wrapper needs unwrapping. Stock native metadata has no async bit.
-			if (parent_return.is_coroutine && parent_return.has_container_element_type(0)) {
+			// Pin16815-16830/15940-15961 wraps an async invocation before4824-4829
+			// peels it. We copied the raw FunctionNode result, so that pair is already
+			// cancelled: retain every declared Coroutine layer for async parents.
+			// A synchronous Coroutine result still takes the pin's one-level peel.
+			if (!parent_async && parent_return.is_coroutine && parent_return.has_container_element_type(0)) {
 				parent_return = parent_return.get_container_element_type(0);
 			}
 			if (parent_function != nullptr && parent_function->is_final) {
