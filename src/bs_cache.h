@@ -131,6 +131,10 @@ public:
 		// surfaces at flush or close -- a full volume, say. The read-back check before the rename
 		// must catch it and leave the previous store alone.
 		TRUNCATE_TEMP_AFTER_WRITE,
+		// After a successful read-back, deletes only this attempt's temp and then invokes the real
+		// replacement backend. Missing source must surface as a native failure so delete-before-
+		// rename backends cannot quietly destroy the previous store.
+		REMOVE_TEMP_BEFORE_PROMOTION,
 	};
 
 	struct Entry {
@@ -180,12 +184,14 @@ public:
 	void put(const String &p_script_path, const String &p_source, Vector<uint8_t> p_payload);
 
 	/**
-	 * Writes the buffered entries atomically: the full store is written to `<path>.tmp`, flushed,
-	 * closed, read back and compared, and only then renamed over the store. A crash at any point
-	 * leaves either the previous store or none; a partially written store is never visible under
-	 * the real name. The read-back is what makes that true for a write failure that surfaces only
-	 * at flush or close, which store_buffer's return value cannot report. Write failures are
-	 * returned and logged, never fatal to the caller -- parsing succeeds without a cache.
+	 * Writes the buffered entries with store-or-previous publication: the full store is written to
+	 * a sibling temp, flushed, closed, read back and compared, and only then published over the
+	 * destination with one `bs_replace_file` replacement. An ordinary rejected promotion preserves
+	 * the previous loadable bytes, reports failure, and keeps current in-memory entries. First
+	 * creation and successful replacement publish a complete store. EIO, device/OS/power failure,
+	 * and unusual remote/VFS semantics remain outside that ordinary-failure guarantee; load-time
+	 * corruption rejection still applies. Write failures are returned and logged, never fatal to
+	 * the caller -- parsing succeeds without a cache.
 	 */
 	Error flush(const String &p_store_path, WriteFault p_fault = WriteFault::NONE,
 			uint32_t p_version_tag = CACHE_FORMAT_VERSION);

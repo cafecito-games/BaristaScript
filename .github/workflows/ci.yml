@@ -101,9 +101,15 @@ jobs:
             target-type: template_debug
             float-precision: single
           - target: { platform: windows, arch: x86_64, os: windows-latest }
+            target-type: template_debug
+            float-precision: single
+          - target: { platform: windows, arch: x86_64, os: windows-latest }
             target-type: template_release
             float-precision: single
           - target: { platform: macos, arch: universal, os: macos-latest }
+            target-type: template_debug
+            float-precision: single
+          - target: { platform: ios, arch: arm64, os: macos-latest }
             target-type: template_debug
             float-precision: single
           - target: { platform: android, arch: arm64, os: ubuntu-22.04 }
@@ -255,6 +261,57 @@ jobs:
           cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON
           cmake --build build/native-cmake --parallel 2
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+
+      # Focused desktop debug import + SuiteGuard runners for #21 platform evidence. Linux keeps the
+      # heavier cmake on/off matrix above; Windows/macOS debug get import + gdscript + native suites
+      # without a second harness or SuiteGuard bypass. iOS remains compile-only via the matrix build.
+      - name: Verify editor recognition (Windows/macOS debug)
+        if: ${{ (matrix.target.platform == 'windows' || matrix.target.platform == 'macos') && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+          MATRIX_PLATFORM: ${{ matrix.target.platform }}
+        run: |
+          set -euo pipefail
+          if [[ "$MATRIX_PLATFORM" == "windows" ]]; then
+            curl --fail --location --retry 3 \
+              --output "$RUNNER_TEMP/godot.zip" \
+              "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_win64.exe.zip"
+            unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+            godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_win64.exe"
+          else
+            curl --fail --location --retry 3 \
+              --output "$RUNNER_TEMP/godot.zip" \
+              "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+            unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+            godot_binary="$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot"
+            chmod +x "$godot_binary"
+          fi
+
+          "$godot_binary" --headless --path project --editor --quit
+          grep -q 'example.barista::BaristaScript' project/.godot/editor/filesystem_cache*
+          python3 tests/run_gdscript_suites.py --godot "$godot_binary"
+
+          # G1: pin an explicit disabled LongPathsEnabled profile before native cache
+          # long-path/UNC controls. Ambient registry reporting alone is not evidence.
+          if [[ "$MATRIX_PLATFORM" == "windows" ]]; then
+            powershell.exe -NoProfile -Command \
+              "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Type DWord -Value 0 -Force; \
+               \$v = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled).LongPathsEnabled; \
+               if (\$v -ne 0) { throw \"LongPathsEnabled=\$v (want 0)\" }"
+          fi
+
+          scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug platform=${{ matrix.target.platform }} arch=${{ matrix.target.arch }} precision=${{ matrix.float-precision }} barista_tests=yes
+          python3 tests/run_native_suites.py --godot "$godot_binary"
+
+          # G1: arm64 launch of the universal artifact is useful but does not satisfy the
+          # required macOS x86_64 runtime. Re-run import + suites under Rosetta x86_64.
+          if [[ "$MATRIX_PLATFORM" == "macos" ]]; then
+            arch -x86_64 uname -m | grep -qx 'x86_64'
+            arch -x86_64 "$godot_binary" --headless --path project --editor --quit
+            arch -x86_64 python3 tests/run_gdscript_suites.py --godot "$godot_binary"
+            arch -x86_64 python3 tests/run_native_suites.py --godot "$godot_binary"
+          fi
 
       - name: Save .scons_cache
         uses: ./godot-cpp/.github/actions/godot-cache-save

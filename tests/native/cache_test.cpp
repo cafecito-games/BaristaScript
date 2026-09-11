@@ -10,6 +10,12 @@
 
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
+
+#if defined(WINDOWS_ENABLED)
+#include <windows.h>
+#endif
 
 using namespace barista_script;
 using namespace barista_script::native_tests;
@@ -335,6 +341,481 @@ TEST_SUITE("cache") {
 	}
 	TEST_CASE("deferred_write_failure_never_replaces_the_previous_store") { scenario_deferred_write_failure_never_replaces_the_previous_store(); }
 
+	static void scenario_remove_temp_before_promotion_preserves_previous_store() {
+		StorageFixture fixture;
+		const String store = fixture.path("fault4.bin");
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(store) == OK);
+		const auto previous = read_bytes(store);
+		BSParseCache second;
+		second.put(SCRIPT_B, source(SCRIPT_B), payload(source(SCRIPT_B)));
+		CHECK(second.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(store) == previous);
+		CHECK(second.has_entry(SCRIPT_B));
+		CHECK(temporary_files(store).is_empty());
+		BSParseCache reader;
+		CHECK(reader.load(store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_A, source(SCRIPT_A)).hit);
+		CHECK_FALSE(reader.has_entry(SCRIPT_B));
+	}
+	TEST_CASE("remove_temp_before_promotion_preserves_previous_store") { scenario_remove_temp_before_promotion_preserves_previous_store(); }
+
+	static void scenario_malformed_store_paths_reject_before_temp_creation() {
+		StorageFixture fixture;
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		// Snapshot temps under the fixture scratch (mirror GDScript `_count_tmp_under`), not an
+		// unrelated basename that would never match temps created for these paths.
+		const String paths[] = { String(), String("uid://not-a-store"), String("http://example.invalid/store.bin") };
+		for (const String &path : paths) {
+			const int before_temps = count_tmp_under(fixture.root);
+			CHECK(cache.flush(path) == ERR_INVALID_PARAMETER);
+			CHECK(count_tmp_under(fixture.root) == before_temps);
+		}
+		CHECK(cache.has_entry(SCRIPT_A));
+	}
+	TEST_CASE("malformed_store_paths_reject_before_temp_creation") { scenario_malformed_store_paths_reject_before_temp_creation(); }
+
+	static void scenario_nul_embedded_store_path_rejects_before_temp_creation() {
+		StorageFixture fixture;
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+
+		// Observation only: constructors still cannot carry an embedded NUL through godot-cpp String.
+		const String via_chr = String("a") + String::chr(0) + String("b");
+		CHECK_MESSAGE(!(via_chr.length() == 3 && via_chr[1] == 0),
+				"String::chr(0) concatenation unexpectedly preserved an embedded NUL");
+		const char raw[3] = { 'a', '\0', 'b' };
+		const String via_utf8 = String::utf8(raw, 3);
+		CHECK_MESSAGE(!(via_utf8.length() == 3 && via_utf8[1] == 0),
+				"length-bounded String::utf8 unexpectedly preserved an embedded NUL");
+
+		// Production path: mutate an owned basename via writable operator[] so a truncated view of
+		// the path still names a leaf under the fixture root (not a prefix outside it).
+		const String leaf = String("nul_store.bin");
+		String store = fixture.path(leaf);
+		CHECK(DirAccess::make_dir_recursive_absolute(store.get_base_dir()) == OK);
+		const int basename_start = store.length() - leaf.length();
+		CHECK(basename_start > 0);
+		const int nul_at = basename_start + 1; // second codepoint of the owned leaf
+		CHECK(nul_at > basename_start);
+		CHECK(nul_at < store.length() - 1);
+		CHECK(store[nul_at] != 0);
+		const int length_before = store.length();
+		store[nul_at] = 0;
+		CHECK(store.length() == length_before);
+		CHECK(store[nul_at] == 0);
+		CHECK(store.substr(0, basename_start).begins_with(fixture.root));
+
+		const int before_temps = count_tmp_under(fixture.root);
+		CHECK(bs_validate_parse_cache_store_path(store) == ERR_INVALID_PARAMETER);
+		CHECK(cache.flush(store) == ERR_INVALID_PARAMETER);
+		CHECK(count_tmp_under(fixture.root) == before_temps);
+		CHECK(cache.has_entry(SCRIPT_A));
+		// GDScript still cannot deliver NUL; production C++ scan is covered here. No raw-byte public API.
+	}
+	TEST_CASE("nul_embedded_store_path_rejects_before_temp_creation") { scenario_nul_embedded_store_path_rejects_before_temp_creation(); }
+
+	static void scenario_first_create_replace_and_replay_byte_identity() {
+		StorageFixture fixture;
+		const String store = fixture.path("create_replace_replay.bin");
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(store) == OK);
+		CHECK(temporary_files(store).is_empty());
+		BSParseCache reader;
+		CHECK(reader.load(store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_A, source(SCRIPT_A)).hit);
+		CHECK_FALSE(reader.has_entry(SCRIPT_B));
+		const auto bytes_after_a = read_bytes(store);
+
+		BSParseCache second;
+		second.put(SCRIPT_B, source(SCRIPT_B), payload(source(SCRIPT_B)));
+		CHECK(second.flush(store) == OK);
+		CHECK(read_bytes(store) != bytes_after_a);
+		CHECK(reader.load(store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_B, source(SCRIPT_B)).hit);
+		CHECK_FALSE(reader.has_entry(SCRIPT_A));
+		const auto bytes_after_b = read_bytes(store);
+
+		BSParseCache replay;
+		replay.put(SCRIPT_B, source(SCRIPT_B), payload(source(SCRIPT_B)));
+		CHECK(replay.flush(store) == OK);
+		CHECK(read_bytes(store) == bytes_after_b);
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("first_create_replace_and_replay_byte_identity") { scenario_first_create_replace_and_replay_byte_identity(); }
+
+	static void scenario_remove_temp_before_promotion_without_old_store_leaves_destination_absent() {
+		StorageFixture fixture;
+		const String store = fixture.path("fault4_absent.bin");
+		BSParseCache cache;
+		cache.put(SCRIPT_B, source(SCRIPT_B), payload(source(SCRIPT_B)));
+		CHECK(cache.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) != OK);
+		CHECK_FALSE(FileAccess::file_exists(store));
+		CHECK(cache.has_entry(SCRIPT_B));
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("remove_temp_before_promotion_without_old_store_leaves_destination_absent") {
+		scenario_remove_temp_before_promotion_without_old_store_leaves_destination_absent();
+	}
+
+	static void scenario_invalid_directory_destination_keeps_sentinel_and_cleans_temp() {
+		StorageFixture fixture;
+		const String directory = fixture.path("not_a_store_dir");
+		CHECK(DirAccess::make_dir_recursive_absolute(directory) == OK);
+		const String sentinel = directory.path_join("sentinel.txt");
+		const auto sentinel_bytes = bytes(String("sentinel-bytes"));
+		CHECK(write_bytes(sentinel, sentinel_bytes));
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(cache.flush(directory) != OK);
+		CHECK(DirAccess::dir_exists_absolute(directory));
+		CHECK(read_bytes(sentinel) == sentinel_bytes);
+		CHECK(temporary_files(directory).is_empty());
+		CHECK(cache.has_entry(SCRIPT_A));
+	}
+	TEST_CASE("invalid_directory_destination_keeps_sentinel_and_cleans_temp") {
+		scenario_invalid_directory_destination_keeps_sentinel_and_cleans_temp();
+	}
+
+	static void scenario_path_shapes_publish_with_explicit_guards() {
+		StorageFixture fixture;
+		const auto expected = payload(source(SCRIPT_A));
+		const String spaced = fixture.path("path with spaces/café_store.bin");
+		CHECK(DirAccess::make_dir_recursive_absolute(spaced.get_base_dir()) == OK);
+		BSParseCache writer;
+		writer.put(SCRIPT_A, source(SCRIPT_A), expected);
+		CHECK(writer.flush(spaced) == OK);
+		const auto spaced_bytes = read_bytes(spaced);
+
+		const String absolute = ProjectSettings::get_singleton()->globalize_path(spaced);
+		BSParseCache abs_writer;
+		abs_writer.put(SCRIPT_A, source(SCRIPT_A), expected);
+		CHECK(abs_writer.flush(absolute) == OK);
+		CHECK(read_bytes(absolute) == spaced_bytes);
+
+		const String user_leaf = fixture.path("user_leaf_café.bin");
+		BSParseCache user_writer;
+		user_writer.put(SCRIPT_A, source(SCRIPT_A), expected);
+		CHECK(user_writer.flush(user_leaf) == OK);
+		CHECK(read_bytes(user_leaf) == spaced_bytes);
+
+		// Relative and res:// controls own unique scratch under captured cwd / project res and
+		// require flush OK. Soft-skipping on failure would let a regression pass.
+		const Ref<DirAccess> cwd_access = DirAccess::open(".");
+		CHECK(cwd_access.is_valid());
+		const String cwd = cwd_access->get_current_dir();
+		static uint64_t path_shape_serial = 0;
+		const String rel_dir_name = String("bs_cache_rel_") + String::num_uint64((uint64_t)OS::get_singleton()->get_process_id()) +
+				String("_") + String::num_uint64(++path_shape_serial);
+		const String abs_rel_dir = cwd.path_join(rel_dir_name);
+		CHECK(DirAccess::make_dir_recursive_absolute(abs_rel_dir) == OK);
+		CHECK(DirAccess::open(abs_rel_dir).is_valid());
+		const String relative = String(rel_dir_name).path_join("store_café.bin");
+		const String abs_relative = abs_rel_dir.path_join("store_café.bin");
+		BSParseCache rel_writer;
+		rel_writer.put(SCRIPT_A, source(SCRIPT_A), expected);
+		CHECK(rel_writer.flush(relative) == OK);
+		CHECK(read_bytes(abs_relative) == spaced_bytes);
+		CHECK(DirAccess::remove_absolute(abs_relative) == OK);
+		CHECK(DirAccess::remove_absolute(abs_rel_dir) == OK);
+
+		const String res_dir_name = String("tests/bs_cache_res_") + String::num_uint64((uint64_t)OS::get_singleton()->get_process_id()) +
+				String("_") + String::num_uint64(++path_shape_serial);
+		const String res_dir = String("res://").path_join(res_dir_name);
+		CHECK(DirAccess::make_dir_recursive_absolute(res_dir) == OK);
+		CHECK(DirAccess::open(res_dir).is_valid());
+		const String res_store = res_dir.path_join("store_café.bin");
+		BSParseCache res_writer;
+		res_writer.put(SCRIPT_A, source(SCRIPT_A), expected);
+		CHECK(res_writer.flush(res_store) == OK);
+		CHECK(read_bytes(res_store) == spaced_bytes);
+		CHECK(DirAccess::remove_absolute(res_store) == OK);
+		CHECK(DirAccess::remove_absolute(res_dir) == OK);
+	}
+	TEST_CASE("path_shapes_publish_with_explicit_guards") { scenario_path_shapes_publish_with_explicit_guards(); }
+
+	static void scenario_same_cache_retry_after_remove_temp_before_promotion_succeeds() {
+		StorageFixture fixture;
+		const String store = fixture.path("fault4_retry.bin");
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(store) == OK);
+		const auto previous = read_bytes(store);
+		BSParseCache second;
+		const auto memory_payload = payload(source(SCRIPT_B));
+		second.put(SCRIPT_B, source(SCRIPT_B), memory_payload);
+		CHECK(second.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(store) == previous);
+		CHECK(second.has_entry(SCRIPT_B));
+		CHECK(second.lookup(SCRIPT_B, source(SCRIPT_B)).payload == memory_payload);
+		CHECK(second.flush(store) == OK);
+		BSParseCache reader;
+		CHECK(reader.load(store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_B, source(SCRIPT_B)).hit);
+		CHECK_FALSE(reader.has_entry(SCRIPT_A));
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("same_cache_retry_after_remove_temp_before_promotion_succeeds") {
+		scenario_same_cache_retry_after_remove_temp_before_promotion_succeeds();
+	}
+
+	static void scenario_failed_first_create_leaves_destination_absent() {
+		StorageFixture fixture;
+		const String store = fixture.path("failed_first_create.bin");
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(cache.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) != OK);
+		CHECK_FALSE(FileAccess::file_exists(store));
+		CHECK(cache.has_entry(SCRIPT_A));
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("failed_first_create_leaves_destination_absent") { scenario_failed_first_create_leaves_destination_absent(); }
+
+	static void scenario_exact_in_memory_payload_survives_failed_promotion() {
+		StorageFixture fixture;
+		const String store = fixture.path("memory_payload.bin");
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(store) == OK);
+		BSParseCache second;
+		const auto exact = payload(source(SCRIPT_B));
+		second.put(SCRIPT_B, source(SCRIPT_B), exact);
+		CHECK(second.lookup(SCRIPT_B, source(SCRIPT_B)).payload == exact);
+		CHECK(second.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(second.lookup(SCRIPT_B, source(SCRIPT_B)).hit);
+		CHECK(second.lookup(SCRIPT_B, source(SCRIPT_B)).payload == exact);
+	}
+	TEST_CASE("exact_in_memory_payload_survives_failed_promotion") { scenario_exact_in_memory_payload_survives_failed_promotion(); }
+
+	static void scenario_unrelated_temp_preserved_while_owned_temp_cleaned_on_failed_promotion() {
+		StorageFixture fixture;
+		const String store = fixture.path("owned_promote.bin");
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(store) == OK);
+		const String unrelated = fixture.path("unrelated_keep.tmp");
+		CHECK(write_bytes(unrelated, bytes(String("keep-me"))));
+		BSParseCache second;
+		second.put(SCRIPT_B, source(SCRIPT_B), payload(source(SCRIPT_B)));
+		CHECK(second.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(temporary_files(store).is_empty());
+		CHECK(FileAccess::file_exists(unrelated));
+		CHECK(read_bytes(unrelated) == bytes(String("keep-me")));
+	}
+	TEST_CASE("unrelated_temp_preserved_while_owned_temp_cleaned_on_failed_promotion") {
+		scenario_unrelated_temp_preserved_while_owned_temp_cleaned_on_failed_promotion();
+	}
+
+#if defined(UNIX_ENABLED)
+	static void scenario_posix_backslash_store_path_flush_round_trips() {
+		StorageFixture fixture;
+		const String parent = fixture.path("backslash_dir");
+		CHECK(DirAccess::make_dir_recursive_absolute(parent) == OK);
+		const String store = parent + String("\\leaf.bin");
+		const String unrelated = parent.path_join("unrelated_keep.tmp");
+		CHECK(write_bytes(unrelated, bytes(String("aside"))));
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(cache.flush(store) == OK);
+		CHECK(FileAccess::file_exists(parent.path_join("leaf.bin")));
+		BSParseCache reader;
+		CHECK(reader.load(parent.path_join("leaf.bin")) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_A, source(SCRIPT_A)).hit);
+		CHECK(temporary_files(parent.path_join("leaf.bin")).is_empty());
+		CHECK(count_tmp_under(parent) == 1); // only the unrelated keeper
+		CHECK(FileAccess::file_exists(unrelated));
+	}
+	TEST_CASE("posix_backslash_store_path_flush_round_trips") { scenario_posix_backslash_store_path_flush_round_trips(); }
+
+	static void scenario_posix_slash_and_backslash_store_paths_are_equivalent() {
+		StorageFixture fixture;
+		const String parent = fixture.path("equiv_dir");
+		CHECK(DirAccess::make_dir_recursive_absolute(parent) == OK);
+		const String slash_store = parent.path_join("equiv.bin");
+		const String backslash_store = parent + String("\\equiv.bin");
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(slash_store) == OK);
+		const auto via_slash = read_bytes(slash_store);
+		BSParseCache second;
+		second.put(SCRIPT_B, source(SCRIPT_B), payload(source(SCRIPT_B)));
+		CHECK(second.flush(backslash_store) == OK);
+		CHECK(read_bytes(slash_store) == read_bytes(backslash_store));
+		CHECK(read_bytes(slash_store) != via_slash);
+	}
+	TEST_CASE("posix_slash_and_backslash_store_paths_are_equivalent") { scenario_posix_slash_and_backslash_store_paths_are_equivalent(); }
+
+	static void scenario_posix_backslash_fault4_cleanup_preserves_store_and_drops_temp() {
+		// R1: FileAccess normalizes `\` on write; discard must use the same spelling so fault 4
+		// cannot leave a promotable temp that bs_replace_file would publish over A.
+		StorageFixture fixture;
+		const String parent = fixture.path("fault4_backslash_dir");
+		CHECK(DirAccess::make_dir_recursive_absolute(parent) == OK);
+		const String slash_store = parent.path_join("leaf.bin");
+		const String backslash_store = parent + String("\\leaf.bin");
+		const String keeper = parent.path_join("keeper.tmp");
+		CHECK(write_bytes(keeper, bytes(String("keeper"))));
+
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(slash_store) == OK);
+		const auto previous = read_bytes(slash_store);
+
+		BSParseCache second;
+		const auto memory_payload = payload(source(SCRIPT_B));
+		second.put(SCRIPT_B, source(SCRIPT_B), memory_payload);
+		CHECK(second.flush(backslash_store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(slash_store) == previous);
+		CHECK(second.has_entry(SCRIPT_B));
+		CHECK(second.lookup(SCRIPT_B, source(SCRIPT_B)).payload == memory_payload);
+		CHECK(count_tmp_under(parent) == 1); // only the unrelated keeper
+		CHECK(FileAccess::file_exists(keeper));
+		CHECK(temporary_files(slash_store).is_empty());
+
+		CHECK(second.flush(backslash_store, Fault::TRUNCATE_TEMP_AFTER_WRITE) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(slash_store) == previous);
+		CHECK(count_tmp_under(parent) == 1);
+		CHECK(second.flush(backslash_store) == OK);
+		CHECK(read_bytes(slash_store) != previous);
+		CHECK(temporary_files(slash_store).is_empty());
+		CHECK(FileAccess::file_exists(keeper));
+	}
+	TEST_CASE("posix_backslash_fault4_cleanup_preserves_store_and_drops_temp") {
+		scenario_posix_backslash_fault4_cleanup_preserves_store_and_drops_temp();
+	}
+#else
+	TEST_CASE("posix_backslash_store_path_flush_round_trips") {
+		WARN_PRINT("POSIX backslash store-path cases require UNIX_ENABLED; skipped on this host");
+	}
+	TEST_CASE("posix_slash_and_backslash_store_paths_are_equivalent") {
+		WARN_PRINT("POSIX backslash equivalence case requires UNIX_ENABLED; skipped on this host");
+	}
+	TEST_CASE("posix_backslash_fault4_cleanup_preserves_store_and_drops_temp") {
+		WARN_PRINT("POSIX backslash fault-4 cleanup case requires UNIX_ENABLED; skipped on this host");
+	}
+#endif
+
+#if defined(WINDOWS_ENABLED)
+	static bool windows_long_paths_enabled_opt_in() {
+		DWORD value = 0;
+		DWORD value_size = sizeof(value);
+		const LONG status = RegGetValueW(HKEY_LOCAL_MACHINE,
+				L"SYSTEM\\CurrentControlSet\\Control\\FileSystem",
+				L"LongPathsEnabled", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
+		return status == ERROR_SUCCESS && value != 0;
+	}
+
+	static void scenario_windows_ascii_long_path_flush_round_trips() {
+		StorageFixture fixture;
+		// G1: these cases establish the disabled-host long-path profile explicitly. Ambient
+		// LongPathsEnabled=1 would not prove extended-prep behavior without the opt-in.
+		CHECK_FALSE(windows_long_paths_enabled_opt_in());
+		// Host user-dir length varies on CI (short AppData roots can keep a fixed 40/40/40/40
+		// layout under MAX_PATH). Grow ASCII segments until the absolute UTF-16 path is past
+		// MAX_PATH so MoveFileExW must use the extended prefix under LongPathsEnabled=0.
+		const String base = fixture.path("ascii_long_root");
+		CHECK(DirAccess::make_dir_recursive_absolute(base) == OK);
+		String relative;
+		String store;
+		Char16String utf16;
+		for (int segment = 0; segment < 16; ++segment) {
+			relative = relative.is_empty()
+					? String("D") + String::num_int64(segment) + String("X").repeat(48)
+					: relative.path_join(String("D") + String::num_int64(segment) + String("X").repeat(48));
+			const String long_dir = base.path_join(relative);
+			CHECK(DirAccess::make_dir_recursive_absolute(long_dir) == OK);
+			store = long_dir.path_join(String("leaf.bin"));
+			utf16 = ProjectSettings::get_singleton()->globalize_path(store).utf16();
+			if (utf16.length() > 260) {
+				break;
+			}
+		}
+		CHECK(utf16.length() > 260);
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(cache.flush(store) == OK);
+		BSParseCache control;
+		control.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		const String control_store = fixture.path("ascii_long_control.bin");
+		CHECK(control.flush(control_store) == OK);
+		CHECK(read_bytes(store) == read_bytes(control_store));
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("windows_ascii_long_path_flush_round_trips") { scenario_windows_ascii_long_path_flush_round_trips(); }
+
+	static void scenario_windows_supplementary_unicode_long_path_flush_succeeds() {
+		StorageFixture fixture;
+		CHECK_FALSE(windows_long_paths_enabled_opt_in());
+		String component;
+		while (component.utf16().length() < 130) {
+			component += String::chr(0x1F600);
+		}
+		CHECK(component.utf16().length() < 255);
+		const String parent = fixture.path(component).path_join(component);
+		CHECK(DirAccess::make_dir_recursive_absolute(parent) == OK);
+		const String store = parent.path_join(String("store.bin"));
+		String absolute = ProjectSettings::get_singleton()->globalize_path(store);
+		CHECK(absolute.utf16().length() > 260);
+		CHECK(absolute.length() < 260);
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(cache.flush(store) == OK);
+		BSParseCache reader;
+		CHECK(reader.load(store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_A, source(SCRIPT_A)).hit);
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("windows_supplementary_unicode_long_path_flush_succeeds") {
+		scenario_windows_supplementary_unicode_long_path_flush_succeeds();
+	}
+
+	static String windows_localhost_admin_unc(const String &absolute_path) {
+		String normalized = absolute_path.replace("/", "\\");
+		if (normalized.length() < 3 || normalized[1] != ':' || normalized[2] != '\\') {
+			return String();
+		}
+		return String("\\\\localhost\\") + normalized.substr(0, 1) + String("$") + normalized.substr(2);
+	}
+
+	static void scenario_windows_unc_store_path_flush_round_trips_with_long_paths_disabled() {
+		StorageFixture fixture;
+		CHECK_FALSE(windows_long_paths_enabled_opt_in());
+		const String local_store = fixture.path("unc_leaf.bin");
+		const String absolute = ProjectSettings::get_singleton()->globalize_path(local_store);
+		const String unc_store = windows_localhost_admin_unc(absolute);
+		CHECK_FALSE(unc_store.is_empty());
+		CHECK(unc_store.begins_with("\\\\localhost\\"));
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(cache.flush(unc_store) == OK);
+		BSParseCache reader;
+		CHECK(reader.load(local_store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_A, source(SCRIPT_A)).hit);
+		CHECK(temporary_files(local_store).is_empty());
+		BSParseCache control;
+		control.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		const String control_store = fixture.path("unc_control.bin");
+		CHECK(control.flush(control_store) == OK);
+		CHECK(read_bytes(local_store) == read_bytes(control_store));
+	}
+	TEST_CASE("windows_unc_store_path_flush_round_trips_with_long_paths_disabled") {
+		scenario_windows_unc_store_path_flush_round_trips_with_long_paths_disabled();
+	}
+#else
+	TEST_CASE("windows_ascii_long_path_flush_round_trips") {
+		WARN_PRINT("Windows long-path ASCII case requires WINDOWS_ENABLED; skipped on this host");
+	}
+	TEST_CASE("windows_supplementary_unicode_long_path_flush_succeeds") {
+		WARN_PRINT("Windows supplementary-Unicode long-path case requires WINDOWS_ENABLED; skipped on this host");
+	}
+	TEST_CASE("windows_unc_store_path_flush_round_trips_with_long_paths_disabled") {
+		WARN_PRINT("Windows UNC store-path case requires WINDOWS_ENABLED; skipped on this host");
+	}
+#endif
+
 	static void scenario_miss_reason_vocabulary_is_closed() {
 		const auto names = bs_miss::get_names();
 		const char *expected[] = { "COLD", "VERSION_MISMATCH", "DIGEST_MISMATCH", "CORRUPT", "EVICTED" };
@@ -421,6 +902,17 @@ TEST_SUITE("cache") {
 			scenario_write_failure_is_logged_and_non_fatal,
 			scenario_atomic_write_leaves_the_previous_store_intact,
 			scenario_deferred_write_failure_never_replaces_the_previous_store,
+			scenario_remove_temp_before_promotion_preserves_previous_store,
+			scenario_malformed_store_paths_reject_before_temp_creation,
+			scenario_nul_embedded_store_path_rejects_before_temp_creation,
+			scenario_first_create_replace_and_replay_byte_identity,
+			scenario_remove_temp_before_promotion_without_old_store_leaves_destination_absent,
+			scenario_invalid_directory_destination_keeps_sentinel_and_cleans_temp,
+			scenario_path_shapes_publish_with_explicit_guards,
+			scenario_same_cache_retry_after_remove_temp_before_promotion_succeeds,
+			scenario_failed_first_create_leaves_destination_absent,
+			scenario_exact_in_memory_payload_survives_failed_promotion,
+			scenario_unrelated_temp_preserved_while_owned_temp_cleaned_on_failed_promotion,
 			scenario_miss_reason_vocabulary_is_closed,
 			scenario_every_miss_reason_has_a_distinct_log_line,
 			scenario_source_override_shadows_the_file_on_disk,
