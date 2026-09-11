@@ -41,6 +41,7 @@ LATER = {
     'features/typed_callable_unbind_gapped_arity_rpc_id.barista': 'FS_TEST_RUNTIME_ERROR',
 }
 SUPPORT = ['utils.notest.fs', 'runtime/features/rtc_runtime_self_adoptable.notest.fs']
+SHARED_SUPPORT_ROOTS = {'utils.notest.fs': 'res://tests/corpus_support/parser'}
 MISSING = ('analyzer/errors/preload_missing_relative_path.fs', './preload_missing_relative_target.notest.fs',
            'analyzer/errors/preload_missing_relative_target.notest.fs')
 
@@ -153,6 +154,8 @@ def path_map(files: dict[str, bytes], uri: str):
             mapping[path] = uri + '/' + barista_path(path.removeprefix('analyzer/'))
         elif path.startswith('parser/'):
             mapping[path] = 'res://tests/corpus/parser/' + barista_path(path.removeprefix('parser/'))
+        elif path in SHARED_SUPPORT_ROOTS:
+            mapping[path] = SHARED_SUPPORT_ROOTS[path] + '/' + barista_path(path)
         elif path in SUPPORT:
             mapping[path] = uri + '/_support/' + barista_path(path)
     # Only this case asserts absence. It is not a source and never enumerates as one.
@@ -328,7 +331,7 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
         data = files[path]
         source = checked_text(data, path)
         support = path in SUPPORT
-        relative = '_support/' + barista_path(path) if support else barista_path(path.removeprefix('analyzer/'))
+        relative = barista_path(path) if path in SHARED_SUPPORT_ROOTS else ('_support/' + barista_path(path) if support else barista_path(path.removeprefix('analyzer/')))
         role = 'support_helper' if support else ('helper' if path.endswith('.notest.fs') else 'case')
         changes = []
         references = []
@@ -342,6 +345,8 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                 raise ValueError(f'{path}: intentional missing target unexpectedly exists')
             if literal.startswith('res://'):
                 after = mapping[target]
+            elif target in SHARED_SUPPORT_ROOTS:
+                after = mapping[target]
             else:
                 # Keep relative spelling and dot segments exactly; only suffix changes.
                 after = barista_path(literal)
@@ -353,6 +358,8 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
             changes.append(change(data, start, end, after, 'resource-literal', target=target))
         changes.extend(source_policy_changes(data, path, policy))
         record = source_record(data, path, relative, role, changes, references)
+        if path in SHARED_SUPPORT_ROOTS:
+            record['root'] = SHARED_SUPPORT_ROOTS[path]
         if role == 'case':
             output = path[:-3] + '.out'
             status = files[output].split(b'\n')[0].decode()
@@ -386,9 +393,9 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                 raise ValueError(f'{record["identity"]}: required paired dependency removed by policy: {target}')
     ledger = {'root': uri, 'foundry_revision': policy['foundry_revision'], 'upstream_total': len(cases),
               'upstream_helpers': len(helpers) + len(SUPPORT), 'upstream_sources': len(sources) + len(SUPPORT),
-              'total': len(included), 'skipped': len(helpers) + len(SUPPORT), 'expected_failures': [], 'triage': triage}
+              'total': len(included), 'skipped': len(helpers) + len(SUPPORT) - len(SHARED_SUPPORT_ROOTS), 'expected_failures': [], 'triage': triage}
     complaint = validate_triage_ledger('analyzer staging', ledger, disk_cases=included,
-                                      disk_helpers=helpers | {'_support/' + barista_path(p) for p in SUPPORT})
+                                      disk_helpers=helpers | {'_support/' + barista_path(p) for p in SUPPORT if p not in SHARED_SUPPORT_ROOTS})
     if complaint:
         raise ValueError(complaint)
     return {'schema_version': 1, 'checkpoint': 'discovery', 'imported': False,
@@ -396,19 +403,41 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
             'policy_sha256': sha(encoded(policy)), 'ledger': ledger, 'sources': sorted(records, key=lambda r: r['identity'])}
 
 
-def generate(inv: dict, source: Path, destination: Path):
+def shared_source_path(record: dict, project_root: Path) -> Path | None:
+    """Resolve only the admitted real shared helper; all other records stay corpus-local."""
+    root = SHARED_SUPPORT_ROOTS.get(record['upstream_path'])
+    if root is None:
+        if 'root' in record:
+            raise ValueError('unregistered external source root')
+        return None
+    if (record.get('root') != root or record.get('role') != 'support_helper'
+            or record.get('imported_path') != barista_path(record['upstream_path'])):
+        raise ValueError('invalid shared support identity/root/path')
+    path = local_path(project_root, root.removeprefix('res://') + '/' + record['imported_path'])
+    if not path.is_file() or sha(path.read_bytes()) != record['imported_sha256']:
+        raise ValueError(f'shared support delivery missing or byte drift: {path}')
+    return path
+
+
+def generate(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
+    project_root = project_root or ROOT / 'project'
     cases, helpers = [], []
     for record in inv['sources']:
         if record.get('disposition') in ('deferred', 'excluded'):
             continue
+        shared = shared_source_path(record, project_root)
         path = destination / record['imported_path']
-        path.parent.mkdir(parents=True, exist_ok=True)
         data = (source / record['upstream_path']).read_bytes()
         if sha(data) != record['sha256']:
             raise ValueError(f'source drift after inventory: {record["identity"]}')
         transformed = patch(data, record['transformations'], record['identity'])
         if sha(transformed) != record['imported_sha256']:
             raise ValueError(f'provenance drift: {record["identity"]}')
+        if shared is not None:
+            if shared.read_bytes() != transformed:
+                raise ValueError(f'shared support differs from pinned source projection: {shared}')
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(transformed)
         if record['role'] == 'case':
             cases.append(record['imported_path'])
@@ -419,18 +448,19 @@ def generate(inv: dict, source: Path, destination: Path):
     (destination / 'inventory.json').write_bytes(encoded(inv))
     (destination / 'README.md').write_text(f'# Analyzer discovery staging\n\nPending final promotion. {len(cases)} static cases, {len(helpers)} helpers.\n'
         f'Foundry `{inv["foundry_revision"]}`. Full upstream inventory: {inv["counts"]["cases"]} cases, '
-        f'{inv["counts"]["helpers"]} analyzer helpers; {inv["counts"]["support_helpers"]} additional support helpers.\n'
+        f'{inv["counts"]["helpers"]} analyzer helpers; {inv["counts"]["support_helpers"]} support identities, '
+        f'{len(SHARED_SUPPORT_ROOTS)} supplied by the existing external parser-owned delivery.\n'
         'Execution selects cases; every included dependency remains available. No script body executes.\n')
 
 
-def write_stage(inv: dict, source: Path, destination: Path):
+def write_stage(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         tree_entries(destination)
     with tempfile.TemporaryDirectory(prefix='.analyzer-stage-', dir=destination.parent) as temporary:
         candidate = Path(temporary) / 'candidate'
         candidate.mkdir()
-        generate(inv, source, candidate)
+        generate(inv, source, candidate, project_root=project_root)
         previous = Path(temporary) / 'previous'
         if destination.exists():
             destination.rename(previous)
@@ -442,10 +472,10 @@ def write_stage(inv: dict, source: Path, destination: Path):
             raise
 
 
-def check_stage(inv: dict, source: Path, destination: Path):
+def check_stage(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
     with tempfile.TemporaryDirectory(prefix='analyzer-check-') as temporary:
         fresh = Path(temporary)
-        generate(inv, source, fresh)
+        generate(inv, source, fresh, project_root=project_root)
         expected, actual = tree_entries(fresh), tree_entries(destination)
         if expected != actual:
             raise ValueError('staging population/tree drift')

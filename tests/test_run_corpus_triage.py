@@ -117,15 +117,17 @@ class ReportTests(unittest.TestCase):
             policy['counts'] = importer.inventory_sources(source, policy, uri)['counts']
             inventory = importer.inventory_sources(source, policy, uri)
             corpus = root / 'project/tests/corpus_staging/analyzer'
-            importer.write_stage(inventory, source, corpus)
             files = ('project/project.godot', 'project/.godot/extension_list.cfg',
                      'project/tests/corpus_runner.gd', 'project/tests/corpus_harness.gd',
+                     'project/tests/corpus_support/parser/utils.notest.barista',
+                     'project/tests/corpus_support/parser/source_map.json',
                      'scripts/corpus_sources.json', 'scripts/run_corpus_triage.py',
                      'src/bs_corpus_sentinels.h', 'src/bs_analyzer_probe.cpp', 'src/bs_analyzer_probe.h')
             for name in files:
                 destination = root / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / name, destination)
+            importer.write_stage(inventory, source, corpus, project_root=root / 'project')
             (root / 'scripts/analyzer_corpus_policy.json').write_text(json.dumps(policy))
             library = root / 'project/bin/macos/lib.template_debug.dylib'
             library.parent.mkdir(parents=True)
@@ -136,7 +138,7 @@ class ReportTests(unittest.TestCase):
             for command in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                                                         'commit', '-qm', 'fixture']):
                 subprocess.run(['git', '-C', str(root), *command], check=True, capture_output=True)
-            cases = sorted(triage.validate_staging(corpus, inventory))[:2]
+            cases = sorted(triage.validate_staging(corpus, inventory, project_root=root / 'project'))[:2]
             report = base / 'report.json'
             checkout = dict(source=dict(revision='c' * 40, state='dirty'), config_sha256='d' * 64)
             real_run = subprocess.run

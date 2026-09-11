@@ -56,7 +56,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 from corpus_expectations import success_sentinel, extract_static_block  # noqa: E402
-from import_analyzer_corpus import (source_policy_changes, source_record, default_policy, patch, change, sha, encoded)
+from import_analyzer_corpus import (source_policy_changes, source_record, default_policy, patch, change, sha, encoded, SHARED_SUPPORT_ROOTS)
 from corpus_stages import write_stages  # noqa: E402
 from corpus_ledger import barista_path, build_triage_from_maps, validate_triage_ledger  # noqa: E402
 
@@ -74,8 +74,8 @@ DESTINATION = ROOT / REGISTRY["corpora"]["parser"]["destination"]
 BASELINE_PATH = ROOT / "tests" / "corpus_baseline.json"
 
 CATEGORIES = ("features", "errors", "warnings")
-SUPPORT_DESTINATION = ROOT / "project/tests/corpus_support/parser"
-SUPPORT_URI = "res://tests/corpus_support/parser/utils.notest.barista"
+SUPPORT_DESTINATION = ROOT / "project" / SHARED_SUPPORT_ROOTS["utils.notest.fs"].removeprefix("res://")
+SUPPORT_URI = SHARED_SUPPORT_ROOTS["utils.notest.fs"] + "/utils.notest.barista"
 ANALYZER_ERRORS = {
     "errors/export_enum_wrong_array_type.fs", "errors/export_enum_wrong_type.fs",
     "errors/export_tool_button_requires_tool_mode.fs",
