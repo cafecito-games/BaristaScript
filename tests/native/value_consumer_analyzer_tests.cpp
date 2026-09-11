@@ -6,6 +6,7 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+#include "bs_analyzer_probe.h"
 #include "bs_conformance_registry.h"
 #include "bs_type.h"
 #include "storage_fixture.h"
@@ -75,6 +76,73 @@ void original(const char *name, const char *source, const char *expected, std::i
 }
 } //namespace
 TEST_SUITE("value_consumer_analyzer") {
+	TEST_CASE("tuple_constant_member_and_local_keep_named_raw_and_public_errors") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		TypeProfile profile;
+		for (bool local : { false, true }) {
+			const String source = local ? "func test():\n\tconst VALUE: (int, int) = (1, \"x\")\n\tconst GOOD: (int, int) = (1, 2)\n" : "const VALUE: (int, int) = (1, \"x\")\nconst GOOD: (int, int) = (1, 2)\n";
+			const String path = storage.path(local ? "local_tuple_constant.barista" : "member_tuple_constant.barista");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			BSParser::ConstantNode *bad = nullptr, *good = nullptr;
+			if (local) {
+				auto *body = parser.get_tree()->get_member("test").function->body;
+				BS_TEST_REQUIRE(body && body->statements.size() == 2);
+				bad = static_cast<BSParser::ConstantNode *>(body->statements[0]);
+				good = static_cast<BSParser::ConstantNode *>(body->statements[1]);
+			} else {
+				bad = parser.get_tree()->get_member("VALUE").constant;
+				good = parser.get_tree()->get_member("GOOD").constant;
+			}
+			BS_TEST_REQUIRE(bad && good && bad->initializer && good->initializer);
+			BS_TEST_REQUIRE(bad->initializer->type == BSParser::Node::TUPLE_LITERAL);
+			auto *tuple = static_cast<BSParser::TupleLiteralNode *>(bad->initializer);
+			BS_TEST_REQUIRE(tuple->elements.size() == 2);
+			const auto *element = tuple->elements[1];
+			const int line = local ? 2 : 1, declaration_column = local ? 31 : 27, element_column = local ? 35 : 31;
+			const String include_error = "Cannot include a value of type \"String\" as \"int\".";
+			const String declaration_error = "Cannot assign a value of type (int, String) to constant \"VALUE\" with specified type (int, int).";
+			BS_TEST_REQUIRE(parser.get_errors().size() == 2);
+			int index = 0;
+			for (const auto &error : parser.get_errors()) {
+				const auto *origin = index == 0 ? element : bad->initializer;
+				CHECK(error.message == (index == 0 ? include_error : declaration_error));
+				CHECK(error.line == line);
+				CHECK(error.column == (index == 0 ? element_column : declaration_column));
+				CHECK(error.line == origin->start_line);
+				CHECK(error.column == origin->start_column);
+				CHECK(error.end_line == origin->end_line);
+				CHECK(error.end_column == origin->end_column);
+				++index;
+			}
+			CHECK_FALSE(BSAnalyzer::has_materialized_constant_value(bad->initializer));
+			CHECK_FALSE(bad->initializer->is_constant);
+			CHECK_FALSE(bad->initializer->get_datatype().is_constant);
+			CHECK(bad->initializer->reduced_value.get_type() == Variant::NIL);
+			CHECK(BSAnalyzer::has_materialized_constant_value(good->initializer));
+			CHECK(parser.get_warnings().is_empty());
+			CHECK(analyzer.analyze() != OK);
+			CHECK(parser.get_errors().size() == 2);
+			Ref<BaristaScriptAnalyzerProbe> probe;
+			probe.instantiate();
+			const Dictionary report = probe->validate_source(source, path, true);
+			CHECK_FALSE(bool(report.get("valid", true)));
+			const Array errors = report.get("errors", Array());
+			BS_TEST_REQUIRE(errors.size() == 2);
+			for (int i = 0; i < 2; ++i) {
+				const Dictionary error = errors[i];
+				CHECK(String(error.get("path", "")) == path);
+				CHECK(String(error.get("message", "")) == (i == 0 ? declaration_error : include_error));
+				CHECK(int(error.get("line", -1)) == line);
+				CHECK(int(error.get("column", -1)) == (i == 0 ? declaration_column : element_column));
+			}
+			CHECK(Array(report.get("warnings", Array())).is_empty());
+		}
+	}
+
 	TEST_CASE("original_type_self_named_tuple_argument_other_receiver") { original("type_self_named_tuple_argument_other_receiver", "# A named tuple with a `Self` field renders only its declared name, so the receiver-identity\n# rejection used to read \"should be \"Pair\" but is \"Pair\"\"; the clause names the `Self` binding\n# that actually differs.\nclass Receiver:\n\ttuple Pair(index: int, owner: Self)\n\n\tfunc take_pair(_pair: Pair) -> void:\n\t\tpass\n\n\nfunc test() -> void:\n\tvar receiver := Receiver.new()\n\tvar other := Receiver.new()\n\tvar pair := other.Pair(1, other)\n\treceiver.take_pair(pair)\n", ">> ERROR at line 15: Invalid argument for \"take_pair()\" function: argument 1 should be \"Pair\" but is \"Pair\". The parameter's \"Self\" stands for the exact receiver at this use; the argument has \"Receiver\" as field \"owner\".", { { 15, 24 } }); }
 	TEST_CASE("original_type_self_named_tuple_assignment_foreign_value") { original("type_self_named_tuple_assignment_foreign_value", "# Assigning a named tuple whose `Self` field was bound at construction to a variable whose\n# specified type still reads `Self` contrasts identically; the clause names the binding.\nclass Receiver:\n\ttuple Pair(index: int, owner: Self)\n\n\tfunc stash(other: Receiver) -> void:\n\t\tvar mine: Pair = other.Pair(1, other)\n\t\tprint(mine.index)\n\n\nfunc test() -> void:\n\tpass\n", ">> ERROR at line 7: Cannot assign a value of type Pair to variable \"mine\" with specified type Pair. The specified type's \"Self\" stands for the exact receiver at this use; the value has \"Receiver\" as field \"owner\".", { { 7, 26 } }); }
 	TEST_CASE("original_type_self_named_tuple_field_equal_bound_carrier_open_receiver") { original("type_self_named_tuple_field_equal_bound_carrier_open_receiver", "# A named tuple's `Self` field is the constructing receiver's, and a carrier's element type is checked\n# invariantly, so a carrier typed with the calling frame's `Self` is admissible only when the\n# construction runs through that same receiver.\nclass Cell:\n\ttuple Crate(index: int, items: Array[Self])\n\n\tfunc construct_via_base(cell: Cell) -> void:\n\t\tvar items: Array[Self] = []\n\t\tvar made := cell.Crate(1, items)\n\t\tprint(made.index)\n\n\nfunc test() -> void:\n\tpass\n", ">> ERROR at line 9: Invalid argument 2 for tuple \"Crate\": should be \"Array[Self]\" but is \"Array[Self]\". The tuple field's \"Self\" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", { { 9, 35 } }); }

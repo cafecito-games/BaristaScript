@@ -8524,10 +8524,14 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, constant->initializer, nullptr,
 												  _self_contract_options(strict_dynamic_checks, strict_null_checks,
 														  current_function == nullptr || !current_function->is_static)))) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-								constant->initializer);
+						if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(declared, initializer_type, "constant", constant->identifier != nullptr ? constant->identifier->name : StringName("<unknown>")), constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), declared.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+									constant->initializer);
+						}
 					}
 				} else {
 					BSTypeCompatibility::Options options;
@@ -8538,10 +8542,14 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						options.constant_source_value = &constant->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(declared, initializer_type, options).compatible) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-								constant->initializer);
+						if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(declared, initializer_type, "constant", constant->identifier != nullptr ? constant->identifier->name : StringName("<unknown>")), constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), declared.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+									constant->initializer);
+						}
 					}
 				}
 			}
