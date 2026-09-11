@@ -476,4 +476,272 @@ TEST_SUITE("abstract_contract_analyzer") {
 			public_block(source, path, parser);
 		}
 	}
+	TEST_CASE("repair1_static_parent_context_matrix") {
+		for (bool static_parent : { false, true })
+			for (bool static_caller : { false, true }) {
+				StorageFixture storage;
+				WarningScope warnings;
+				BSParser parser;
+				const String source = String("class Base:\n\t") + (static_parent ? "static " : "") + "func read() -> int:\n\t\treturn 1\nclass Child extends Base:\n\t" + (static_caller ? "static " : "") + "func test():\n\t\tsuper.read()\n";
+				const String path = storage.path("static_parent.barista");
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				const bool bad = static_caller && !static_parent;
+				CHECK((analyzer.analyze() != OK) == bad);
+				diagnostics(parser);
+				BS_TEST_REQUIRE(parser.get_errors().size() == (bad ? 1 : 0));
+				auto *call = parser.get_tree()->get_member("Child").m_class->get_member("test").function->body->statements[0];
+				if (bad)
+					error_at(parser, 0, R"*(Cannot call non-static function "read()" from the static function "test()".)*", call);
+				public_block(source, path, parser);
+			}
+	}
+	TEST_CASE("repair1_parent_lambda_capture_chain_and_static_noncapture") {
+		for (bool static_parent : { false, true })
+			for (bool static_caller : { false, true }) {
+				StorageFixture storage;
+				WarningScope warnings;
+				BSParser parser;
+				const String source = String("class Base:\n\t") + (static_parent ? "static " : "") + "func read():\n\t\tpass\nclass Child extends Base:\n\t" + (static_caller ? "static " : "") + "func test():\n\t\tvar outer = func():\n\t\t\tvar inner = func():\n\t\t\t\tsuper.read()\n";
+				const String path = storage.path("capture_parent.barista");
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				const bool bad = static_caller && !static_parent;
+				CHECK((analyzer.analyze() != OK) == bad);
+				diagnostics(parser);
+				auto *outer = static_cast<BSParser::LambdaNode *>(static_cast<BSParser::VariableNode *>(parser.get_tree()->get_member("Child").m_class->get_member("test").function->body->statements[0])->initializer);
+				auto *inner = static_cast<BSParser::LambdaNode *>(static_cast<BSParser::VariableNode *>(outer->function->body->statements[0])->initializer);
+				CHECK(inner->parent_lambda == outer);
+				CHECK(outer->use_self == (!static_parent && !static_caller));
+				CHECK(inner->use_self == (!static_parent && !static_caller));
+				BS_TEST_REQUIRE(parser.get_errors().size() == (bad ? 1 : 0));
+				if (bad)
+					error_at(parser, 0, R"*(Cannot call non-static function "read()" from the static function "test()".)*", inner->function->body->statements[0]);
+				public_block(source, path, parser);
+			}
+	}
+	TEST_CASE("repair1_parent_static_initializer_and_parameter_default_contexts") {
+		for (int mode : { 0, 1, 2, 3 }) {
+			StorageFixture storage;
+			WarningScope warnings;
+			BSParser parser;
+			const String tail = mode == 0 ? "\tstatic var value = super.read()\n" : mode == 1 ? "\tstatic var callback = func():\n\t\tsuper.read()\n"
+					: mode == 2																  ? "\tstatic func test(value = super.read()):\n\t\tpass\n"
+																							  : "\tstatic func test(callback = func(): super.read()):\n\t\tpass\n";
+			const String source = "class Base:\n\tfunc read() -> int:\n\t\treturn 1\nclass Child extends Base:\n" + tail;
+			const String path = storage.path("declaration_context.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+			auto *child = parser.get_tree()->get_member("Child").m_class;
+			const BSParser::Node *call = nullptr;
+			BSParser::LambdaNode *lambda = nullptr;
+			if (mode == 0)
+				call = child->get_member("value").variable->initializer;
+			else if (mode == 1)
+				lambda = static_cast<BSParser::LambdaNode *>(child->get_member("callback").variable->initializer);
+			else if (mode == 2)
+				call = child->get_member("test").function->parameters[0]->initializer;
+			else
+				lambda = static_cast<BSParser::LambdaNode *>(child->get_member("test").function->parameters[0]->initializer);
+			if (lambda) {
+				call = lambda->function->body->statements[0];
+				CHECK_FALSE(lambda->use_self);
+			}
+			// Pin5344/3824 drains pending lambdas under Base before Child's body;
+			// no creation-class field exists in the pinned lambda queue.
+			const String expected = mode == 1 || mode == 3 ? R"*(Function "read()" not found in base RefCounted.)*" : mode == 0 ? R"*(Cannot call non-static function "read()" from a static variable initializer.)*"
+																																: R"*(Cannot call non-static function "read()" from the static function "test()".)*";
+			error_at(parser, 0, expected, call);
+			public_block(source, path, parser);
+		}
+	}
+	TEST_CASE("repair1_unresolved_parent_named_argument_order") {
+		for (int claim : { 0, 1, 2 }) {
+			StorageFixture storage;
+			WarningScope warnings;
+			BSParser parser;
+			const String source = String("class Base:\n\t") + (claim == 0 ? "pass" : claim == 1 ? "var missing: int"
+																								: "var missing: Callable") +
+					"\nclass Child extends Base:\n\tfunc test():\n\t\tsuper.missing(value = 1)\n";
+			const String path = storage.path("named_parent.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (claim == 1 ? 3 : 2));
+			auto *call = static_cast<BSParser::CallNode *>(parser.get_tree()->get_member("Child").m_class->get_member("test").function->body->statements[0]);
+			int index = 0;
+			if (claim == 1)
+				error_at(parser, index++, R"(Member "missing" is not a function.)", call);
+			error_at(parser, index++, "Named arguments require a statically known BaristaScript function.", call->arguments[0]);
+			error_at(parser, index, R"*(Function "missing()" not found in base Base.)*", call);
+			public_block(source, path, parser);
+			CHECK(analyzer.analyze() != OK);
+			CHECK(parser.get_errors().size() == (claim == 1 ? 3 : 2));
+		}
+	}
+	TEST_CASE("repair1_parent_signal_payload_and_arity") {
+		for (int mode : { 0, 1, 2, 3 }) {
+			StorageFixture storage;
+			WarningScope warnings;
+			BSParser parser;
+			const String source = String("extends Node\nsignal ping(value: int)\nfunc test():\n\tsuper.emit_signal(\"ping\"") + (mode == 0 ? ", 1" : mode == 1 ? ", \"wrong\""
+																																				: mode == 2	   ? ""
+																																							   : ", 1, 2") +
+					")\n";
+			const String path = storage.path("signal_parent.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK((analyzer.analyze() != OK) == (mode != 0));
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (mode == 0 ? 0 : 1));
+			auto *call = static_cast<BSParser::CallNode *>(parser.get_tree()->get_member("test").function->body->statements[0]);
+			if (mode == 1)
+				error_at(parser, 0, R"*(Invalid argument for "emit_signal()" function: argument 2 should be "int" but is "String".)*", call->arguments[1]);
+			if (mode == 2)
+				error_at(parser, 0, R"*(Too few arguments for "emit_signal()" call. Expected at least 2 but received 1.)*", call);
+			if (mode == 3)
+				error_at(parser, 0, R"*(Too many arguments for "emit_signal()" call. Expected at most 2 but received 3.)*", call->arguments[2]);
+			CHECK(parser.get_tree()->get_member("ping").signal->usages == 1);
+			public_block(source, path, parser);
+		}
+	}
+	TEST_CASE("repair1_parent_signal_callable_validation") {
+		for (const String &method : { String("connect"), String("disconnect"), String("is_connected") })
+			for (bool bad : { false, true }) {
+				StorageFixture storage;
+				WarningScope warnings;
+				BSParser parser;
+				const String source = String("extends Node\nsignal ping(value: int)\nfunc handler(value: ") + (bad ? "String" : "int") + ") -> void:\n\tpass\nfunc test():\n\tsuper." + method + "(\"ping\", handler)\n";
+				const String path = storage.path("callback_parent.barista");
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() != OK) == bad);
+				diagnostics(parser);
+				BS_TEST_REQUIRE(parser.get_errors().size() == (bad ? 1 : 0));
+				const auto *call = static_cast<BSParser::CallNode *>(parser.get_tree()->get_member("test").function->body->statements[0]);
+				if (bad)
+					error_at(parser, 0, "Cannot " + (method == "is_connected" ? String("check connection for") : method) + R"*( signal "Signal[[int]]" to callable "Callable[[String], void]": signal argument 1 of type "int" cannot be passed to callable parameter of type "String".)*", call->arguments[1]);
+				CHECK(parser.get_tree()->get_member("ping").signal->usages == 1);
+				public_block(source, path, parser);
+			}
+	}
+	TEST_CASE("repair1_parent_signal_use_suppresses_only_used_signal_warning") {
+		for (const String &method : { String("emit_signal"), String("connect"), String("disconnect"), String("is_connected") }) {
+			StorageFixture storage;
+			WarningScope warnings;
+			BSParser parser;
+			ProjectSettings::get_singleton()->set_setting(BSWarning::get_setting_path_from_code(BSWarning::UNUSED_SIGNAL), BSWarning::WARN);
+			BSParser::update_project_settings();
+			const String source = String("extends Node\nsignal ping(value: int)\nsignal unused(value: int)\nfunc handler(value: int) -> void:\n\tpass\nfunc test():\n\tsuper.") + method + "(\"ping\", " + (method == "emit_signal" ? String("1") : String("handler")) + ")\n";
+			const String path = storage.path("signal_use_parent.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			BS_TEST_REQUIRE(parser.get_warnings().size() == 1);
+			const auto *used = parser.get_tree()->get_member("ping").signal;
+			const auto *unused = parser.get_tree()->get_member("unused").signal;
+			CHECK(used->usages == 1);
+			CHECK(unused->usages == 0);
+			const auto &warning = parser.get_warnings().front()->get();
+			CHECK(warning.code == BSWarning::UNUSED_SIGNAL);
+			CHECK(warning.symbols.size() == 1);
+			CHECK(warning.symbols[0] == "unused");
+			CHECK(warning.start_line == unused->identifier->start_line);
+			CHECK(warning.start_column == unused->identifier->start_column);
+			CHECK(warning.end_line == unused->identifier->end_line);
+			CHECK(warning.end_column == unused->identifier->end_column);
+			const int warning_count = parser.get_warnings().size();
+			CHECK(analyzer.analyze() == OK);
+			CHECK(used->usages == 1);
+			CHECK(parser.get_warnings().size() == warning_count);
+		}
+	}
+	TEST_CASE("repair1_head_initializer_and_default_lambdas_retain_static_context") {
+		for (bool static_context : { false, true })
+			for (bool parameter : { false, true }) {
+				StorageFixture storage;
+				WarningScope warnings;
+				BSParser parser;
+				const String prefix = static_context ? "static " : "";
+				const String source = "extends Node\n" + prefix + (parameter ? String("func test(callback = func(): super.get_instance_id()):\n\tpass\n") : String("var callback = func():\n\tsuper.get_instance_id()\n"));
+				const String path = storage.path("head_context.barista");
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() != OK) == static_context);
+				diagnostics(parser);
+				BS_TEST_REQUIRE(parser.get_errors().size() == (static_context ? 1 : 0));
+				auto *lambda = static_cast<BSParser::LambdaNode *>(parameter ? parser.get_tree()->get_member("test").function->parameters[0]->initializer : parser.get_tree()->get_member("callback").variable->initializer);
+				CHECK(lambda->use_self == !static_context);
+				CHECK(lambda->function->is_static == static_context);
+				if (static_context)
+					error_at(parser, 0, parameter ? R"*(Cannot call non-static function "get_instance_id()" from the static function "test()".)*" : R"*(Cannot call non-static function "get_instance_id()" from a static variable initializer.)*", lambda->function->body->statements[0]);
+				public_block(source, path, parser);
+			}
+	}
+	TEST_CASE("repair1_static_context_reaches_native_trait_and_witness_parents") {
+		for (int provider : { 0, 1, 2 }) {
+			StorageFixture storage;
+			BSConformanceRegistry::ScopedCorpusState registry;
+			WarningScope warnings;
+			BSParser parser;
+			const String source = provider == 0 ? "extends Node\nstatic func test():\n\tsuper.get_instance_id()\n" : provider == 1 ? "trait Reader:\n\tfunc read():\n\t\tpass\nclass Base:\n\tuses Reader\nclass Child extends Base:\n\tstatic func test():\n\t\tsuper.read()\n"
+																																   : "trait Reader:\n\tabstract func read()\nclass Base:\n\tpass\nclass Child extends Base:\n\tstatic func test():\n\t\tsuper.read()\nextend Base uses Reader:\n\tfunc read():\n\t\tpass\n";
+			const String path = storage.path("parent_context_provider.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+			const auto *owner = provider == 0 ? parser.get_tree() : parser.get_tree()->get_member("Child").m_class;
+			error_at(parser, 0, vformat(R"*(Cannot call non-static function "%s()" from the static function "test()".)*", provider == 0 ? "get_instance_id" : "read"), owner->get_member("test").function->body->statements[0]);
+			public_block(source, path, parser);
+		}
+	}
+	TEST_CASE("repair1_parent_error_tail_keeps_abstract_arity_static_void_order") {
+		StorageFixture storage;
+		WarningScope warnings;
+		BSParser parser;
+		const String source = "abstract class Base:\n\tabstract func read(value: int) -> void\nabstract class Child extends Base:\n\tstatic func test():\n\t\tvar result = super.read()\n";
+		const String path = storage.path("parent_order.barista");
+		BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		diagnostics(parser);
+		BS_TEST_REQUIRE(parser.get_errors().size() == 4);
+		auto *call = static_cast<BSParser::VariableNode *>(parser.get_tree()->get_member("Child").m_class->get_member("test").function->body->statements[0])->initializer;
+		error_at(parser, 0, R"*(Cannot call the parent class' abstract function "read()" because it hasn't been defined.)*", call);
+		error_at(parser, 1, R"*(Too few arguments for "read()" call. Expected at least 1 but received 0.)*", call);
+		error_at(parser, 2, R"*(Cannot call non-static function "read()" from the static function "test()".)*", call);
+		error_at(parser, 3, R"*(Cannot get return value of call to "read()" because it returns "void".)*", call);
+		public_block(source, path, parser);
+	}
+	TEST_CASE("repair1_nested_parent_signal_uses_active_class_not_head") {
+		for (bool bad : { false, true }) {
+			StorageFixture storage;
+			WarningScope warnings;
+			BSParser parser;
+			const String source = String("signal ping(value: String)\nclass Child extends Node:\n\tsignal ping(value: int)\n\tfunc test():\n\t\tsuper.emit_signal(\"ping\", ") + (bad ? "\"wrong\"" : "1") + ")\nfunc head():\n\temit_signal(\"ping\", \"okay\")\n";
+			const String path = storage.path("nested_signal_parent.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK((analyzer.analyze() != OK) == bad);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(parser.get_errors().size() == (bad ? 1 : 0));
+			auto *child = parser.get_tree()->get_member("Child").m_class;
+			auto *call = static_cast<BSParser::CallNode *>(child->get_member("test").function->body->statements[0]);
+			if (bad)
+				error_at(parser, 0, R"*(Invalid argument for "emit_signal()" function: argument 2 should be "int" but is "String".)*", call->arguments[1]);
+			CHECK(child->get_member("ping").signal->usages == 1);
+			// The following ordinary head call reads the original parser context. A leaked
+			// Child binding would reject its String payload against Child.ping(int).
+			CHECK(parser.get_tree()->get_member("ping").signal->usages == 1);
+			public_block(source, path, parser);
+		}
+	}
 }

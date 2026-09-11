@@ -3168,6 +3168,48 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	if (p_call->is_super && current_class != nullptr) {
 		BSParser::DataType parent_type = current_class->base_type;
 		parent_type.is_meta_type = false;
+		bool resolved_parent = false;
+		Finally complete_parent_call([&]() {
+			if (!resolved_parent) {
+				return;
+			}
+			// Foundry c9d5e35:8986-9022: every resolved super target is a self call.
+			// Keep the common consumers after argument validation, independent of provider.
+			{
+				// These existing helpers use the parser's self scope. Bind only their
+				// call to the analyzer's active receiver, restoring the parser afterward.
+				BSParser::ClassNode *previous_parser_class = parser->current_class;
+				parser->current_class = current_class;
+				Finally restore_signal_receiver([&]() { parser->current_class = previous_parser_class; });
+				call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
+				call_site_validation.validate_local_object_emit_signal_args(p_call, true);
+			}
+			if (!p_call->is_static) {
+				if (get_node_is_static_context()) {
+					const BSParser::FunctionNode *parent_function = current_function;
+					// Signature defaults/member initializers may be reduced while another
+					// function is active. Use their existing declaration context first.
+					if (get_node_declaration != nullptr) {
+						parent_function = get_node_declaration->type == BSParser::Node::FUNCTION ? static_cast<const BSParser::FunctionNode *>(get_node_declaration) : nullptr;
+					}
+					while (parent_function != nullptr && parent_function->source_lambda != nullptr) {
+						parent_function = parent_function->source_lambda->parent_function;
+					}
+					if (parent_function != nullptr) {
+						push_error(vformat(R"*(Cannot call non-static function "%s()" from the static function "%s()".)*", p_call->function_name, parent_function->identifier->name), p_call);
+					} else {
+						push_error(vformat(R"*(Cannot call non-static function "%s()" from a static variable initializer.)*", p_call->function_name), p_call);
+					}
+				} else {
+					for (BSParser::LambdaNode *lambda = current_lambda; lambda != nullptr; lambda = lambda->parent_lambda) {
+						lambda->use_self = true;
+					}
+				}
+			}
+			check_void_result();
+			// Foundry c9d5e35:9040-9051: literal-name signal APIs count as uses on self.
+			mark_implicit_signal_usage(p_call, true);
+		});
 		if (p_call->callee == nullptr && current_lambda != nullptr) {
 			push_error("Cannot use `super()` inside a lambda.", p_call);
 		}
@@ -3184,6 +3226,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			}
 		}
 		if (callee != nullptr) {
+			resolved_parent = true;
 			p_call->is_static = callee->is_static;
 			p_call->is_noreturn = callee->is_noreturn;
 			validate_local_call(p_call, callee);
@@ -3207,6 +3250,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		if (!member_claimed && parent_type.native_type != StringName()) {
 			MethodInfo method_info;
 			if (BSNativeDB::get_method_info(parent_type.native_type, p_call->function_name, &method_info)) {
+				resolved_parent = true;
 				call_site_validation.reject_named_call_arguments(p_call);
 				if (method_info.flags & METHOD_FLAG_VIRTUAL) {
 					push_error(vformat(R"*(Cannot call the parent class' virtual function "%s()" because it hasn't been defined.)*", p_call->function_name), p_call);
@@ -3223,12 +3267,15 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			// Foundry c9d5e35:17068-17085: only this receiver's visible witness is
 			// eligible after its ordinary, applied-trait and native methods miss.
 			if (BSParser::FunctionNode *witness = find_conformance_witness(parent_type, p_call->function_name)) {
+				resolved_parent = true;
 				p_call->is_static = witness->is_static;
 				p_call->is_noreturn = witness->is_noreturn;
 				validate_local_call(p_call, witness);
 				return;
 			}
 		}
+		// Foundry c9d5e35:9070-9075: unresolved names cannot map named arguments.
+		call_site_validation.reject_named_call_arguments(p_call);
 		push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, parent_type.to_string()), p_call);
 		BSParser::DataType unresolved;
 		unresolved.kind = BSParser::DataType::VARIANT;
