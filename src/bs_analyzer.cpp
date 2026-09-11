@@ -3039,7 +3039,13 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	};
 	// Named arguments rewrite into canonical positional order before arity/type checks
 	// (Foundry CallSiteValidationContext::canonicalize_named_call_arguments @ c9d5e35).
-	if (!call_site_validation.canonicalize_named_call_arguments(p_call, p_callee)) {
+	const bool named_arguments_valid = call_site_validation.canonicalize_named_call_arguments(p_call, p_callee);
+	// Foundry c9d5e35:8881-8888: selecting an abstract declaration is legal for
+	// ordinary interface calls, but super requires an actual parent implementation.
+	if (p_call->is_super && p_callee->is_abstract) {
+		push_error(vformat(R"*(Cannot call the parent class' abstract function "%s()" because it hasn't been defined.)*", p_call->function_name), p_call);
+	}
+	if (!named_arguments_valid) {
 		set_local_call_return_type();
 		return;
 	}
@@ -3156,6 +3162,79 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	(void)p_is_await;
 	(void)p_is_root;
 #endif
+
+	// Foundry c9d5e35:8608-8616: both super forms start at the actual parent.
+	// Never retry a missing parent method against the current override or its witnesses.
+	if (p_call->is_super && current_class != nullptr) {
+		BSParser::DataType parent_type = current_class->base_type;
+		parent_type.is_meta_type = false;
+		if (p_call->callee == nullptr && current_lambda != nullptr) {
+			push_error("Cannot use `super()` inside a lambda.", p_call);
+		}
+		bool member_claimed = false;
+		const int errors_before = parser->get_errors().size();
+		BSParser::FunctionNode *callee = nullptr;
+		BSParser::ClassNode *owner = find_member_in_class_or_trait_chain(parent_type.class_type, p_call->function_name, p_call);
+		if (owner != nullptr) {
+			member_claimed = true;
+			resolve_class_member(owner, p_call->function_name, p_call);
+			const BSParser::ClassNode::Member &member = owner->get_member(p_call->function_name);
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				callee = member.function;
+			}
+		}
+		if (callee != nullptr) {
+			p_call->is_static = callee->is_static;
+			p_call->is_noreturn = callee->is_noreturn;
+			validate_local_call(p_call, callee);
+			return;
+		}
+		if (parser->get_errors().size() > errors_before) {
+			return; // The retained owner already reported a failed declaration phase.
+		}
+		if (member_claimed) {
+			// Foundry c9d5e35:16730-16764: an ordinary name claim blocks fallback.
+			const BSParser::ClassNode::Member &member = owner->get_member(p_call->function_name);
+			const BSParser::DataType member_type = member.get_datatype();
+			if (!(member_type.kind == BSParser::DataType::BUILTIN && member_type.builtin_type == Variant::CALLABLE)) {
+				if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+					push_error(vformat(R"(Type alias "%s" cannot be called. It names a type without declaring one, so it has no constructor; call the aliased type instead.)", p_call->function_name), p_call);
+				} else {
+					push_error(vformat(R"(Member "%s" is not a function.)", p_call->function_name), p_call);
+				}
+			}
+		}
+		if (!member_claimed && parent_type.native_type != StringName()) {
+			MethodInfo method_info;
+			if (BSNativeDB::get_method_info(parent_type.native_type, p_call->function_name, &method_info)) {
+				call_site_validation.reject_named_call_arguments(p_call);
+				if (method_info.flags & METHOD_FLAG_VIRTUAL) {
+					push_error(vformat(R"*(Cannot call the parent class' virtual function "%s()" because it hasn't been defined.)*", p_call->function_name), p_call);
+				} else if (method_info.flags & METHOD_FLAG_VIRTUAL_REQUIRED) {
+					push_error(vformat(R"*(Cannot call the parent class' abstract function "%s()" because it hasn't been defined.)*", p_call->function_name), p_call);
+				}
+				p_call->is_static = method_info.flags & METHOD_FLAG_STATIC;
+				call_site_validation.validate_call_arg(method_info, p_call);
+				p_call->set_datatype(type_from_property(method_info.return_val));
+				return;
+			}
+		}
+		if (!member_claimed) {
+			// Foundry c9d5e35:17068-17085: only this receiver's visible witness is
+			// eligible after its ordinary, applied-trait and native methods miss.
+			if (BSParser::FunctionNode *witness = find_conformance_witness(parent_type, p_call->function_name)) {
+				p_call->is_static = witness->is_static;
+				p_call->is_noreturn = witness->is_noreturn;
+				validate_local_call(p_call, witness);
+				return;
+			}
+		}
+		push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, parent_type.to_string()), p_call);
+		BSParser::DataType unresolved;
+		unresolved.kind = BSParser::DataType::VARIANT;
+		p_call->set_datatype(unresolved);
+		return;
+	}
 
 	// Attribute call: `receiver.method(...)` — signal.emit and member-method shapes.
 	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
@@ -9069,10 +9148,18 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 			annotation->apply(parser, p_function, current_class);
 		}
 	}
-	if (!p_function->has_body) {
-		if (!p_function->is_abstract) {
-			push_error(vformat(R"(Function "%s" must have a body or be declared abstract.)", p_function->identifier != nullptr ? p_function->identifier->name : StringName()), p_function);
+	// Foundry c9d5e35:5025-5041: body shape is an analyzer contract, including
+	// parser-admitted empty-colon lambdas. Bodyful abstract errors belong to the suite.
+	if (p_function->body == nullptr || p_function->body->statements.is_empty()) {
+		if (p_function->source_lambda != nullptr) {
+			push_error(R"(A lambda function must have a ":" followed by a body.)", p_function);
+		} else if (!p_function->is_abstract) {
+			push_error(R"(A function must either have a ":" followed by a body, or be marked as "abstract".)", p_function);
 		}
+		current_function = previous;
+		return;
+	} else if (p_function->is_abstract) {
+		push_error("An abstract function cannot have a body.", p_function->body);
 		current_function = previous;
 		return;
 	}
@@ -9401,6 +9488,44 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 		// Foundry resolve_class_body @ c9d5e35: any leftover pending lambdas (e.g. class-level
 		// initializers) must still resolve before leaving the body phase.
 		resolve_pending_lambda_bodies();
+	}
+	// Foundry c9d5e35:3827-3862: nearest concrete implementations discharge
+	// inherited abstract obligations; a concrete intermediate ends the search.
+	if (!p_class->is_abstract && !p_class->is_trait) {
+		HashSet<StringName> implemented_functions;
+		const BSParser::ClassNode *base_class = p_class;
+		while (base_class != nullptr) {
+			if (base_class != p_class && !base_class->is_abstract) {
+				break;
+			}
+			for (const BSParser::ClassNode::Member &member : base_class->members) {
+				if (member.type != BSParser::ClassNode::Member::FUNCTION || member.function == nullptr) {
+					continue;
+				}
+				if (member.function->is_abstract) {
+					const String class_name = p_class->identifier == nullptr ? p_class->fqcn.get_file() : String(p_class->identifier->name);
+					if (base_class == p_class) {
+						push_error(vformat(R"*(Class "%s" is not abstract but contains abstract methods. Mark the class as "abstract" or remove "abstract" from all methods in this class.)*", class_name), p_class);
+						break;
+					} else if (!implemented_functions.has(member.function->identifier->name)) {
+						const String base_name = base_class->identifier == nullptr ? base_class->fqcn.get_file() : String(base_class->identifier->name);
+						push_error(vformat(R"*(Class "%s" must implement "%s.%s()" and other inherited abstract methods or be marked as "abstract".)*", class_name, base_name, member.function->identifier->name), p_class);
+						break;
+					}
+				} else {
+					implemented_functions.insert(member.function->identifier->name);
+				}
+			}
+			if (base_class->base_type.kind == BSParser::DataType::CLASS) {
+				base_class = base_class->base_type.class_type;
+			} else if (base_class->base_type.kind == BSParser::DataType::SCRIPT) {
+				const Ref<BSParserRef> base_ref = parser->get_depended_parser_for(base_class->base_type.script_path);
+				ERR_BREAK(base_ref.is_null());
+				base_class = base_ref->get_parser()->get_tree();
+			} else {
+				break;
+			}
+		}
 	}
 	current_class = previous;
 }
