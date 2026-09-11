@@ -122,24 +122,6 @@ func _errors_are_exact(actual: Array, expected: Array) -> bool:
 	return true
 
 
-## Matches errors by line/column plus required message fragments. Use this when a
-## platform-stable substring contract matters more than exact decimal spelling
-## (for example float stringify of out-of-range constants).
-func _errors_match_message_parts(actual: Array, expected: Array) -> bool:
-	if actual.size() != expected.size():
-		return false
-	for i in range(expected.size()):
-		var message := str(actual[i].get("message", ""))
-		if actual[i].get("line") != expected[i][1] or actual[i].get("column") != expected[i][2]:
-			return false
-		if not message.begins_with(expected[i][0]):
-			return false
-		for fragment in expected[i][3]:
-			if not message.contains(str(fragment)):
-				return false
-	return true
-
-
 func _warnings_are_exact(actual: Array, expected: Array) -> bool:
 	if actual.size() != expected.size():
 		return false
@@ -4947,13 +4929,18 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	]), "direct and Variant-carried explicit float-to-int casts preserve ordered narrowing warnings without UNSAFE_CAST: %s" % [fractional_cast_report])
 	var checked_numeric_cast_source := "const BOXED_INF: Variant = 1e309\nconst BOXED_LARGE: Variant = 1e30\nfunc test() -> void:\n\tprint(1e309 as int)\n\tprint(1e30 as int)\n\tprint(BOXED_INF as int)\n\tprint(BOXED_LARGE as int)\n"
 	var checked_numeric_cast_errors: Array = probe.validate_source(checked_numeric_cast_source, "res://tests/checked_numeric_constant_cast.barista", false).get("errors", [])
-	# Keep four errors at the same sites and semantic classes. Do not pin the
-	# finite out-of-range decimal spelling: Windows and Linux stringify 1e30 differently.
-	_expect(failures, _errors_match_message_parts(checked_numeric_cast_errors, [
-		["Cannot convert", 4, 11, ["not a finite number"]],
-		["Cannot convert", 5, 11, ['to "int"', "outside its range"]],
-		["Cannot convert", 6, 11, ["not a finite number"]],
-		["Cannot convert", 7, 11, ['to "int"', "outside its range"]],
+	# Exact full-message oracle: keep source, count/order, nonfinite/range wording, and
+	# spans. Derive the finite out-of-range numeral from the same stock Variant/String
+	# formatting seam the analyzer uses (Variant.stringify / str), so Linux and Windows
+	# each pin their platform rendering without substring weakening.
+	var out_of_range_numeral := str(1e30)
+	var out_of_range_message := 'Cannot convert %s to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.' % out_of_range_numeral
+	var nonfinite_message := 'Cannot convert inf to "int": it is not a finite number.'
+	_expect(failures, _errors_are_exact(checked_numeric_cast_errors, [
+		[nonfinite_message, 4, 11],
+		[out_of_range_message, 5, 11],
+		[nonfinite_message, 6, 11],
+		[out_of_range_message, 7, 11],
 	]), "direct and Variant-carried explicit float-to-int casts reject non-finite and out-of-range constants before ABI construction: %s" % [checked_numeric_cast_errors])
 	var shared_constant_source := "const BOXED: Variant = 1\nfunc return_boxed() -> float:\n\treturn BOXED\nfunc test() -> void:\n\tvar declared: float = BOXED\n\tvar assigned: float = 0.0\n\tassigned = BOXED\n\tvar tupled: (float, float) = (BOXED, BOXED)\n\tvar arrayed: Array[float] = [BOXED]\n\tvar mapped: Dictionary[String, float] = {\"one\": BOXED}\n\tprint(declared, assigned, tupled, arrayed, mapped, return_boxed())\n"
 	var shared_constant_report: Dictionary = probe.validate_source(shared_constant_source, "res://tests/boxed_constant_shared_consumers.barista", true)

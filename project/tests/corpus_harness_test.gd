@@ -359,11 +359,8 @@ func _test_unreadable_directory_is_harness_error(failures: Array[String]) -> voi
 	DirAccess.make_dir_recursive_absolute(locked_root)
 
 	if not _make_unreadable(locked_child) or not _make_unreadable(locked_root):
-		# chmod is a no-op on Windows; icacls may still be unavailable or ineffective
-		# under some runners. Skip rather than hard-fail when the OS cannot produce
-		# an unreadable directory, so the rest of the suite still verifies.
-		print(
-			"SKIP unreadable-directory assertions: could not revoke read permission on %s (OS primitive unavailable)"
+		failures.append(
+			"could not revoke read permission on %s; the unreadable-directory contract went unverified"
 			% ProjectSettings.globalize_path(locked_child)
 		)
 	else:
@@ -483,16 +480,22 @@ func _expect(failures: Array[String], condition: bool, description: String) -> v
 
 
 ## Revokes read permission and confirms the directory is genuinely unopenable.
-## POSIX uses chmod; Windows uses icacls to deny the current user read/execute.
-## Callers must skip (not hard-fail) when this returns false.
+## POSIX uses chmod; Windows uses a narrowly owned icacls fixture (disable
+## inheritance, grant self full control for cleanup, then deny RX so DirAccess.open
+## fails while /reset can still restore). Callers must hard-fail when this returns
+## false — unavailable setup is not a pass.
 func _make_unreadable(path: String) -> bool:
 	var native := _native_fs_path(path)
 	if OS.get_name() == "Windows":
 		var user := _windows_acl_user()
 		if user.is_empty():
 			return false
-		# Deny list/traverse so DirAccess.open fails; keep Write DAC so /reset works.
-		OS.execute("icacls", [native, "/deny", "%s:(OI)(CI)RX" % user])
+		# Remove inherited allow-ACEs (Administrators/Users) that would otherwise keep
+		# the directory readable after a per-user deny, then install an explicit grant
+		# so cleanup retains WRITE_DAC, and finally deny RX (deny overrides allow).
+		OS.execute("icacls", [native, "/inheritance:r"])
+		OS.execute("icacls", [native, "/grant:r", "%s:(OI)(CI)F" % user])
+		OS.execute("icacls", [native, "/deny", "%s:(OI)(CI)(RX)" % user])
 	else:
 		OS.execute("chmod", ["000", native])
 	return DirAccess.open(path) == null
@@ -501,10 +504,8 @@ func _make_unreadable(path: String) -> bool:
 func _make_readable(path: String) -> void:
 	var native := _native_fs_path(path)
 	if OS.get_name() == "Windows":
+		# Re-enable parent inheritance and drop the temporary deny/grant pair.
 		OS.execute("icacls", [native, "/reset"])
-		var user := _windows_acl_user()
-		if not user.is_empty():
-			OS.execute("icacls", [native, "/grant", "%s:(OI)(CI)F" % user])
 	else:
 		OS.execute("chmod", ["755", native])
 
