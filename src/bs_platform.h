@@ -92,10 +92,11 @@
 
 // Backing for the parse cache's on-disk store, also not a mapping of any upstream dependency:
 // upstream fs_cache is in-memory only -- its only file access is reading script sources
-// (fs_cache.cpp:407 at the pinned revision) -- so the store's atomic rename
-// (DirAccess::rename_absolute) and FileAccess's byte-array return type (PackedByteArray) are
+// (fs_cache.cpp:407 at the pinned revision) -- so the store's single-operation replacement
+// (`bs_replace_file`) and FileAccess's byte-array return type (PackedByteArray) are
 // BaristaScript additions. Recorded in the manifest's seam_support_headers, not as entries,
-// because there is no upstream include site to map them to.
+// because there is no upstream include site to map them to. DirAccess remains for temp cleanup
+// and non-promotion paths only.
 #include <godot_cpp/classes/dir_access.hpp>
 
 // Cohesive private implementation groups. These files are reachable only through this umbrella;
@@ -111,6 +112,34 @@
  * Foundry stays readable.
  */
 using namespace godot;
+
+/**
+ * Rejects empty, NUL-containing, or unsupported-scheme parse-cache store paths before a temp is
+ * created. Cache output is a filesystem path (`user://`, writable `res://`, absolute, or
+ * process-relative), never `uid://` or another virtual URI. A missing ProjectSettings singleton
+ * fails the same way when a virtual prefix must be resolved.
+ */
+Error bs_validate_parse_cache_store_path(const String &p_store_path);
+
+/**
+ * Publishes a complete temp file over the destination with one platform replacement operation.
+ *
+ * Windows uses MoveFileExW(temp, destination, MOVEFILE_REPLACE_EXISTING) only -- no copy-allowed
+ * or delayed-reboot flags, and no delete-before-rename. Linux/macOS/Android/iOS/Web use UTF-8
+ * libc `::rename` and propagate EXDEV without a copy/delete fallback. An unhandled target returns
+ * ERR_UNAVAILABLE. Native failure returns ERR_FILE_CANT_WRITE after capturing GetLastError()/errno
+ * immediately. Virtual prefixes are resolved through ProjectSettings::globalize_path before the
+ * native call; ordinary relative paths keep their working-directory meaning. Windows conversion
+ * preserves Unicode and long/UNC paths as absolute UTF-16.
+ *
+ * This removes the application-side delete window. It is not a universal filesystem transaction:
+ * EIO, device/OS/power failure, and unusual remote/VFS semantics remain outside the ordinary
+ * failure guarantee. On success or ordinary rejection, the destination is never truncated or
+ * removed first. When r_backend / r_native_error are non-null, they receive the backend label and
+ * the captured native error number (0 on success).
+ */
+Error bs_replace_file(const String &p_temp_path, const String &p_destination_path,
+		const char **r_backend = nullptr, int64_t *r_native_error = nullptr);
 
 namespace barista_script {
 // Definition lives in bs_core_constants.h; metadata comes from the pinned engine API producer.

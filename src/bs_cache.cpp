@@ -500,8 +500,9 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 		bs_put_u64(store, bs_hash_bytes(store.ptr() + entry_start, store.size() - entry_start, BS_ENTRY_CHECKSUM_BASIS));
 	}
 
-	// Atomic write: everything lands in a temp file first, so a crash mid-write leaves either the
-	// previous store or no store -- never a half-written one under the real name.
+	// Sibling temp first: a crash mid-write leaves either the previous store or no store -- never a
+	// half-written one under the real name. Ordinary rejected promotion preserves the previous
+	// loadable bytes; the destination is never deleted before replacement.
 	//
 	// The temp file's name is unique per flush rather than a fixed "<store>.tmp". Two editors open
 	// on one project share a user:// directory, and a fixed name lets one writer truncate the file
@@ -509,6 +510,17 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 	// bytes about to be written: two flushes carrying different content can never pick the same
 	// name, and two carrying identical content produce identical files, so sharing one is harmless.
 	// The read-back below is what makes that last case safe rather than merely likely.
+	{
+		const Error path_error = bs_validate_parse_cache_store_path(p_store_path);
+		if (path_error != Error::OK) {
+			const String line = "cache flush to '" + p_store_path +
+					"' rejected store path before creating a temp (error " +
+					String::num((int64_t)path_error) + "); parsing continues without a cache";
+			ERR_PRINT(line);
+			return path_error;
+		}
+	}
+
 	static std::atomic<uint64_t> flush_counter{ 0 };
 	const String temp_path = p_store_path + String(".") +
 			String::num_uint64(bs_hash_bytes(store.ptr(), (uint64_t)store.size(), BS_ENTRY_CHECKSUM_BASIS), 16) +
@@ -559,25 +571,37 @@ Error BSParseCache::flush(const String &p_store_path, WriteFault p_fault, uint32
 	}
 
 	if (p_fault == WriteFault::AFTER_WRITE_BEFORE_RENAME) {
-		// The temp file is complete but the rename never happens, so the previous store must still
-		// be the one a loader sees. The temp file is left in place; it is not under the real name.
+		// The temp file is complete but promotion never happens, so the previous store must still
+		// be the one a loader sees. The temp file is left in place intentionally; it is not under
+		// the real name.
 		const String line = "cache flush to '" + p_store_path +
-				"' failed between write and rename (simulated); the previous store is untouched";
+				"' failed between write and promotion (simulated); the previous store is untouched";
 		ERR_PRINT(line);
 		return Error::ERR_FILE_CANT_WRITE;
 	}
 
-	// On platforms whose rename cannot replace an existing file atomically, Godot's DirAccess
-	// removes the destination first, so a crash in that window leaves no store rather than the
-	// previous one. That is within the contract -- either the old entry or none, never a partial
-	// one -- and costs a cold parse on the next run, so it is not worked around here.
-	const Error rename_error = DirAccess::rename_absolute(temp_path, p_store_path);
-	if (rename_error != Error::OK) {
-		const String line = "cache flush to '" + p_store_path + "' failed to rename '" + temp_path +
-				"' (error " + String::num((int64_t)rename_error) + "); parsing continues without a cache";
+	if (p_fault == WriteFault::REMOVE_TEMP_BEFORE_PROMOTION) {
+		// Delete only this attempt's temp, then call the real replacement backend. A missing source
+		// must produce a native failure; fabricating ERR_FILE_CANT_WRITE here would hide a
+		// delete-before-rename backend that destroys the previous store.
+		bs_discard_temp_store(temp_path);
+	}
+
+	// One platform replacement: no destination delete/truncation beforehand and no copy/delete
+	// fallback. Ordinary rejection preserves previous loadable bytes; EIO/device/OS/power and
+	// unusual VFS semantics remain outside that guarantee.
+	const char *replace_backend = nullptr;
+	int64_t replace_native_error = 0;
+	const Error replace_error = bs_replace_file(temp_path, p_store_path, &replace_backend, &replace_native_error);
+	if (replace_error != Error::OK) {
+		const String backend_label = replace_backend != nullptr ? String(replace_backend) : String("unknown");
+		const String line = "cache flush to '" + p_store_path + "' failed to replace via " + backend_label +
+				" from '" + temp_path + "' (error " + String::num((int64_t)replace_error) +
+				", native " + String::num(replace_native_error) +
+				"); parsing continues without a cache";
 		ERR_PRINT(line);
 		bs_discard_temp_store(temp_path);
-		return rename_error;
+		return replace_error;
 	}
 
 	return Error::OK;

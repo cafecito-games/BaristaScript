@@ -65,3 +65,167 @@ Variant::Type prove_variant_operators() {
 }
 
 } // namespace bs_platform_seam
+
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+#if defined(WINDOWS_ENABLED)
+#include <windows.h>
+#elif defined(UNIX_ENABLED)
+#include <cerrno>
+#include <cstdio>
+#endif
+
+namespace {
+
+bool bs_path_contains_nul(const String &p_path) {
+	for (int i = 0; i < p_path.length(); i++) {
+		if (p_path[i] == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+Error bs_resolve_store_filesystem_path(const String &p_path, String &r_resolved) {
+	if (p_path.is_empty() || bs_path_contains_nul(p_path)) {
+		return Error::ERR_INVALID_PARAMETER;
+	}
+
+	const int scheme_sep = p_path.find("://");
+	if (scheme_sep >= 0) {
+		const String scheme = p_path.substr(0, scheme_sep);
+		if (scheme != "user" && scheme != "res") {
+			return Error::ERR_INVALID_PARAMETER;
+		}
+		ProjectSettings *settings = ProjectSettings::get_singleton();
+		if (settings == nullptr) {
+			return Error::ERR_INVALID_PARAMETER;
+		}
+		r_resolved = settings->globalize_path(p_path);
+		if (r_resolved.is_empty() || bs_path_contains_nul(r_resolved)) {
+			return Error::ERR_INVALID_PARAMETER;
+		}
+		return Error::OK;
+	}
+
+	r_resolved = p_path;
+	return Error::OK;
+}
+
+#if defined(WINDOWS_ENABLED)
+
+Error bs_windows_absolute_utf16(const String &p_path, std::vector<wchar_t> &r_wide, int64_t *r_native_error) {
+	const Char16String utf16 = p_path.utf16();
+	DWORD needed = GetFullPathNameW(reinterpret_cast<LPCWSTR>(utf16.get_data()), 0, nullptr, nullptr);
+	if (needed == 0) {
+		if (r_native_error != nullptr) {
+			*r_native_error = (int64_t)GetLastError();
+		}
+		return Error::ERR_FILE_CANT_WRITE;
+	}
+
+	std::vector<wchar_t> absolute(needed);
+	DWORD written = GetFullPathNameW(reinterpret_cast<LPCWSTR>(utf16.get_data()), needed, absolute.data(), nullptr);
+	if (written == 0 || written >= needed) {
+		if (r_native_error != nullptr) {
+			*r_native_error = (int64_t)GetLastError();
+		}
+		return Error::ERR_FILE_CANT_WRITE;
+	}
+
+	String full = String::utf16(reinterpret_cast<const char16_t *>(absolute.data()), written);
+	String prefixed = full;
+	if (full.length() >= MAX_PATH) {
+		if (full.begins_with("\\\\") && !full.begins_with("\\\\?\\")) {
+			prefixed = String("\\\\?\\UNC\\") + full.substr(2);
+		} else if (!full.begins_with("\\\\?\\")) {
+			prefixed = String("\\\\?\\") + full;
+		}
+	}
+
+	const Char16String out = prefixed.utf16();
+	r_wide.assign(reinterpret_cast<const wchar_t *>(out.get_data()),
+			reinterpret_cast<const wchar_t *>(out.get_data()) + out.length() + 1);
+	if (r_native_error != nullptr) {
+		*r_native_error = 0;
+	}
+	return Error::OK;
+}
+
+#endif // WINDOWS_ENABLED
+
+} // namespace
+
+Error bs_validate_parse_cache_store_path(const String &p_store_path) {
+	String resolved;
+	return bs_resolve_store_filesystem_path(p_store_path, resolved);
+}
+
+Error bs_replace_file(const String &p_temp_path, const String &p_destination_path,
+		const char **r_backend, int64_t *r_native_error) {
+	if (r_backend != nullptr) {
+		*r_backend = "unavailable";
+	}
+	if (r_native_error != nullptr) {
+		*r_native_error = 0;
+	}
+
+	String temp_resolved;
+	String destination_resolved;
+	const Error temp_path_error = bs_resolve_store_filesystem_path(p_temp_path, temp_resolved);
+	if (temp_path_error != Error::OK) {
+		return temp_path_error;
+	}
+	const Error destination_path_error = bs_resolve_store_filesystem_path(p_destination_path, destination_resolved);
+	if (destination_path_error != Error::OK) {
+		return destination_path_error;
+	}
+
+#if defined(WINDOWS_ENABLED)
+	if (r_backend != nullptr) {
+		*r_backend = "MoveFileExW";
+	}
+	std::vector<wchar_t> temp_wide;
+	std::vector<wchar_t> destination_wide;
+	Error convert_error = bs_windows_absolute_utf16(temp_resolved, temp_wide, r_native_error);
+	if (convert_error != Error::OK) {
+		return convert_error;
+	}
+	convert_error = bs_windows_absolute_utf16(destination_resolved, destination_wide, r_native_error);
+	if (convert_error != Error::OK) {
+		return convert_error;
+	}
+	if (!MoveFileExW(temp_wide.data(), destination_wide.data(), MOVEFILE_REPLACE_EXISTING)) {
+		const DWORD last_error = GetLastError();
+		if (r_native_error != nullptr) {
+			*r_native_error = (int64_t)last_error;
+		}
+		return Error::ERR_FILE_CANT_WRITE;
+	}
+	if (r_native_error != nullptr) {
+		*r_native_error = 0;
+	}
+	return Error::OK;
+#elif defined(UNIX_ENABLED)
+	if (r_backend != nullptr) {
+		*r_backend = "rename";
+	}
+	const CharString temp_utf8 = temp_resolved.utf8();
+	const CharString destination_utf8 = destination_resolved.utf8();
+	if (::rename(temp_utf8.get_data(), destination_utf8.get_data()) != 0) {
+		const int saved_errno = errno;
+		if (r_native_error != nullptr) {
+			*r_native_error = (int64_t)saved_errno;
+		}
+		return Error::ERR_FILE_CANT_WRITE;
+	}
+	if (r_native_error != nullptr) {
+		*r_native_error = 0;
+	}
+	return Error::OK;
+#else
+	return Error::ERR_UNAVAILABLE;
+#endif
+}

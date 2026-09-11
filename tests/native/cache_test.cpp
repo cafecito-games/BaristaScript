@@ -335,6 +335,41 @@ TEST_SUITE("cache") {
 	}
 	TEST_CASE("deferred_write_failure_never_replaces_the_previous_store") { scenario_deferred_write_failure_never_replaces_the_previous_store(); }
 
+	static void scenario_remove_temp_before_promotion_preserves_previous_store() {
+		StorageFixture fixture;
+		const String store = fixture.path("fault4.bin");
+		BSParseCache first;
+		first.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		CHECK(first.flush(store) == OK);
+		const auto previous = read_bytes(store);
+		BSParseCache second;
+		second.put(SCRIPT_B, source(SCRIPT_B), payload(source(SCRIPT_B)));
+		CHECK(second.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(store) == previous);
+		CHECK(second.has_entry(SCRIPT_B));
+		CHECK(temporary_files(store).is_empty());
+		BSParseCache reader;
+		CHECK(reader.load(store) == Reason::COLD);
+		CHECK(reader.lookup(SCRIPT_A, source(SCRIPT_A)).hit);
+		CHECK_FALSE(reader.has_entry(SCRIPT_B));
+	}
+	TEST_CASE("remove_temp_before_promotion_preserves_previous_store") { scenario_remove_temp_before_promotion_preserves_previous_store(); }
+
+	static void scenario_malformed_store_paths_reject_before_temp_creation() {
+		StorageFixture fixture;
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+		// Godot String APIs truncate at embedded NUL (utf16/chr/GDScript), so end-to-end NUL
+		// delivery is impossible through the extension boundary. The C++ validator still rejects
+		// NUL if one ever appears; empty and unsupported schemes are exercised here.
+		CHECK(cache.flush(String()) == ERR_INVALID_PARAMETER);
+		CHECK(cache.flush(String("uid://not-a-store")) == ERR_INVALID_PARAMETER);
+		CHECK(cache.flush(String("http://example.invalid/store.bin")) == ERR_INVALID_PARAMETER);
+		CHECK(cache.has_entry(SCRIPT_A));
+		CHECK(temporary_files(fixture.path("unused.bin")).is_empty());
+	}
+	TEST_CASE("malformed_store_paths_reject_before_temp_creation") { scenario_malformed_store_paths_reject_before_temp_creation(); }
+
 	static void scenario_miss_reason_vocabulary_is_closed() {
 		const auto names = bs_miss::get_names();
 		const char *expected[] = { "COLD", "VERSION_MISMATCH", "DIGEST_MISMATCH", "CORRUPT", "EVICTED" };
@@ -421,6 +456,8 @@ TEST_SUITE("cache") {
 			scenario_write_failure_is_logged_and_non_fatal,
 			scenario_atomic_write_leaves_the_previous_store_intact,
 			scenario_deferred_write_failure_never_replaces_the_previous_store,
+			scenario_remove_temp_before_promotion_preserves_previous_store,
+			scenario_malformed_store_paths_reject_before_temp_creation,
 			scenario_miss_reason_vocabulary_is_closed,
 			scenario_every_miss_reason_has_a_distinct_log_line,
 			scenario_source_override_shadows_the_file_on_disk,
