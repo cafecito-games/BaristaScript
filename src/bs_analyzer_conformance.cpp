@@ -549,6 +549,199 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->datatype_specifier != nullptr) {
 		p_function->rest_parameter->set_datatype(datatype_from_type_node(p_function->rest_parameter->datatype_specifier));
 	}
+	// Foundry c9d5e35:4809-4995. Ordinary overrides share one retained parent
+	// selection. The extension's static analyzer runs in every build (there is no
+	// TOOLS_ENABLED); only the native override warning remains debug-only.
+	const bool is_enum_function = p_function->owner_enum != nullptr;
+	if (p_class != nullptr && p_function->source_lambda == nullptr && !is_enum_function &&
+			function_name != SNAME("_init") && function_name != SNAME("_static_init")) {
+		BSParser::DataType base_type = p_class->base_type;
+		base_type.is_meta_type = false;
+		BSParser::FunctionNode *parent_function = nullptr;
+		BSParser::ClassNode *parent_class = nullptr;
+		List<BSParser::DataType> parent_parameters;
+		BSParser::DataType parent_return, parent_rest;
+		int parent_defaults = 0;
+		bool parent_static = false, parent_async = false, parent_variadic = false;
+		bool has_parent = false;
+		StringName native_owner;
+		const int parent_errors_before = parser->get_errors().size();
+		parent_class = find_member_in_class_or_trait_chain(base_type.class_type, function_name, p_function);
+		if (parent_class != nullptr) {
+			resolve_class_member(parent_class, function_name, p_function);
+			const auto &member = parent_class->get_member(function_name);
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				parent_function = member.function;
+			} else if (parser->get_errors().size() == parent_errors_before) {
+				const auto member_type = member.get_datatype();
+				if (!(member_type.kind == BSParser::DataType::BUILTIN && member_type.builtin_type == Variant::CALLABLE)) {
+					if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+						push_error(vformat(R"(Type alias "%s" cannot be called. It names a type without declaring one, so it has no constructor; call the aliased type instead.)", function_name), p_function);
+					} else {
+						push_error(vformat(R"(Member "%s" is not a function.)", function_name), p_function);
+					}
+				}
+			}
+		} else if (parser->get_errors().size() == parent_errors_before) {
+			MethodInfo parent_info;
+			if (base_type.native_type != StringName() && BSNativeDB::get_method_info(base_type.native_type, function_name, &parent_info)) {
+				has_parent = true;
+				parent_return = type_from_property(parent_info.return_val);
+				for (const auto &parameter : parent_info.arguments) {
+					parent_parameters.push_back(type_from_property(parameter, true));
+				}
+				parent_defaults = parent_info.default_arguments.size();
+				parent_static = (parent_info.flags & METHOD_FLAG_STATIC) != 0;
+				parent_variadic = (parent_info.flags & METHOD_FLAG_VARARG) != 0;
+#ifdef DEBUG_ENABLED
+				// Stock ClassDB exposes declaration-local lists rather than MethodBind owners.
+				// Virtual entries have no native implementation to shadow (pin17059-17062).
+				if (!(parent_info.flags & METHOD_FLAG_VIRTUAL) && ClassDB::class_has_method(base_type.native_type, function_name)) {
+					for (StringName owner = base_type.native_type; owner != StringName(); owner = ClassDB::get_parent_class(owner)) {
+						const TypedArray<Dictionary> methods = ClassDB::class_get_method_list(owner, true);
+						for (int i = 0; i < methods.size(); ++i) {
+							const Dictionary method = methods[i];
+							if (StringName(method.get("name", String())) == function_name) {
+								native_owner = owner;
+								break;
+							}
+						}
+						if (native_owner != StringName()) {
+							break;
+						}
+					}
+				}
+#endif
+			} else {
+				parent_function = find_conformance_witness(base_type, function_name);
+				// Witness lookup retains the declaring parser and its resolved signature.
+				parent_class = parent_function != nullptr ? base_type.class_type : nullptr;
+			}
+		}
+		const auto self_type = _self_type_for_class(p_class);
+		auto substitute_self = [&](const BSParser::DataType &type) {
+			return _substitute_type_parameters_and_self(type, HashMap<StringName, BSParser::DataType>(), self_type);
+		};
+		if (parent_function != nullptr && parser->get_errors().size() == parent_errors_before) {
+			has_parent = true;
+			parent_return = substitute_self(parent_function->get_datatype());
+			parent_static = parent_function->is_static;
+			parent_async = parent_function->is_coroutine;
+			parent_variadic = parent_function->is_vararg();
+			parent_defaults = parent_function->default_arg_values.size();
+			for (const auto *parameter : parent_function->parameters) {
+				parent_parameters.push_back(substitute_self(parameter->get_datatype()));
+			}
+			if (parent_variadic) {
+				parent_rest = substitute_self(parent_function->rest_parameter->get_datatype());
+			}
+		}
+		if (has_parent) {
+			// Pin16815-16830/15940-15961 wraps an async invocation before4824-4829
+			// peels it. We copied the raw FunctionNode result, so that pair is already
+			// cancelled: retain every declared Coroutine layer for async parents.
+			// A synchronous Coroutine result still takes the pin's one-level peel.
+			if (!parent_async && parent_return.is_coroutine && parent_return.has_container_element_type(0)) {
+				parent_return = parent_return.get_container_element_type(0);
+			}
+			if (parent_function != nullptr && parent_function->is_final) {
+				push_error(vformat(R"*(Cannot override final function "%s()" declared in "%s".)*", function_name, bs_class_or_trait_diagnostic_name(parent_class)), p_function);
+			}
+			const bool async_valid = parent_async == p_function->is_coroutine;
+			bool valid = async_valid && parent_static == p_function->is_static;
+			BSTypeCompatibility::Options options;
+			options.strict_null = strict_null_checks;
+			options.allow_runtime_narrowing = false;
+			options.strict_dynamic = strict_dynamic_checks;
+			if (p_function->return_type != nullptr) {
+				const auto result = substitute_self(p_function->get_datatype());
+				if (result.is_variant()) {
+					valid = valid && parent_return.is_variant();
+				} else if (result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
+					if (parent_return.is_hard_type() && !(parent_return.kind == BSParser::DataType::BUILTIN && parent_return.builtin_type == Variant::NIL)) {
+						valid = false;
+					}
+				} else if (parent_return.is_set() && result.is_set()) {
+					valid = valid && BSTypeCompatibility::check(parent_return, result, options).compatible;
+				}
+			}
+			const int parent_min = parent_parameters.size() - parent_defaults;
+			const int parent_max = parent_variadic ? INT_MAX : parent_parameters.size();
+			const int child_min = p_function->parameters.size() - p_function->default_arg_values.size();
+			const int child_max = p_function->is_vararg() ? INT_MAX : p_function->parameters.size();
+			valid = valid && child_min <= parent_min && parent_max <= child_max;
+			if (valid) {
+				int i = 0;
+				for (const auto &parent_parameter : parent_parameters) {
+					if (i >= p_function->parameters.size()) {
+						break;
+					}
+					const auto child_parameter = substitute_self(p_function->parameters[i++]->get_datatype());
+					if (parent_parameter.is_variant() && parent_parameter.is_hard_type()) {
+						valid = valid && child_parameter.is_variant();
+					} else if (child_parameter.is_set() && parent_parameter.is_set()) {
+						valid = valid && BSTypeCompatibility::check(child_parameter, parent_parameter, options).compatible;
+					}
+				}
+			}
+			const auto child_rest = p_function->is_vararg() ? substitute_self(p_function->rest_parameter->get_datatype()) : BSParser::DataType();
+			const bool rest_valid = BSTypeCompatibility::rest_parameter_accepts_required_arguments(p_function->is_vararg() ? &child_rest : nullptr, parent_variadic ? &parent_rest : nullptr, strict_null_checks, false);
+			bool absorbed_valid = true;
+			BSParser::DataType unabsorbed;
+			if (valid && p_function->is_vararg()) {
+				int i = 0;
+				for (const auto &parent_parameter : parent_parameters) {
+					if (i++ < p_function->parameters.size()) {
+						continue;
+					}
+					if (!BSTypeCompatibility::rest_parameter_accepts_required_argument(&child_rest, parent_parameter, strict_null_checks, false)) {
+						absorbed_valid = false;
+						unabsorbed = parent_parameter;
+						break;
+					}
+				}
+			}
+			auto rest_text = [](const BSParser::DataType *type) { return type == nullptr ? String("<none>") : BSTypeCompatibility::rest_parameter_type_is_narrowing(*type) ? type->to_string()
+																																										   : String("Array"); };
+			if (!async_valid) {
+				push_error(vformat(parent_async ? R"*(The function "%s()" must be async because it overrides an async parent function.)*" : R"*(The function "%s()" cannot be async because it overrides a synchronous parent function.)*", function_name), p_function);
+			} else if (!valid) {
+				String signature = String(function_name) + "(";
+				int i = 0;
+				for (const auto &parameter : parent_parameters) {
+					if (i > 0) {
+						signature += ", ";
+					}
+					const String type = parameter.to_string();
+					signature += type == "null" ? String("Variant") : type;
+					if (i++ >= parent_parameters.size() - parent_defaults) {
+						signature += " = <default>";
+					}
+				}
+				if (parent_variadic) {
+					if (!parent_parameters.is_empty()) {
+						signature += ", ";
+					}
+					signature += "...";
+					if (BSTypeCompatibility::rest_parameter_type_is_narrowing(parent_rest)) {
+						signature += ": " + parent_rest.to_string();
+					}
+				}
+				const String result = parent_return.to_string_strict();
+				signature += ") -> " + (result == "null" ? String("void") : result);
+				push_error(vformat(R"(The function signature doesn't match the parent. Parent signature is "%s".)", signature), p_function);
+			} else if (!rest_valid) {
+				push_error(vformat(R"(The rest parameter type "%s" does not accept every trailing argument allowed by the parent rest parameter type "%s".)", rest_text(p_function->is_vararg() ? &child_rest : nullptr), rest_text(parent_variadic ? &parent_rest : nullptr)), p_function->is_vararg() ? static_cast<const BSParser::Node *>(p_function->rest_parameter) : p_function);
+			} else if (!absorbed_valid) {
+				push_error(vformat(R"(The rest parameter type "%s" does not accept the parent parameter of type "%s".)", rest_text(&child_rest), unabsorbed.to_string()), p_function->rest_parameter);
+			}
+#ifdef DEBUG_ENABLED
+			if (native_owner != StringName() && !(p_class->is_trait && p_function->is_abstract)) {
+				push_warning(p_function, BSWarning::NATIVE_METHOD_OVERRIDE, { String(function_name), String(native_owner) });
+			}
+#endif
+		}
+	}
 	method_info.default_arguments.clear();
 	for (int i = 0; i < p_function->default_arg_values.size(); i++) {
 		method_info.default_arguments.push_back(p_function->default_arg_values[i]);

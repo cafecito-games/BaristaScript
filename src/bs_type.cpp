@@ -831,7 +831,7 @@ static bool _method_signature_equal(const MethodInfo &p_left, const MethodInfo &
 }
 
 static bool _datatype_method_signature_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
-		bool p_contravariant_rest = false, bool p_strict_null = false);
+		bool p_contravariant_rest = false, bool p_strict_null = false, bool p_allow_runtime_narrowing = true);
 
 // Strict signature-slot comparison for the explicit `Callable[[...], ...]` / `Signal[[...]]` path.
 // `operator==` establishes matching outer structure (including is_nullable, generic type arguments, and
@@ -923,7 +923,7 @@ static bool _callable_signature_rest_parameter_type(const BSParser::DataType &p_
 
 static bool _method_signature_rest_slots_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
 		bool (*p_slot_equal)(const BSParser::DataType &, const BSParser::DataType &), bool p_contravariant_rest,
-		bool p_strict_null) {
+		bool p_strict_null, bool p_allow_runtime_narrowing) {
 	if (p_contravariant_rest) {
 		BSParser::DataType target_rest;
 		BSParser::DataType source_rest;
@@ -931,7 +931,7 @@ static bool _method_signature_rest_slots_equal(const BSParser::DataType &p_left,
 		const bool source_is_variadic = _callable_signature_rest_parameter_type(p_right, source_rest);
 		return BSTypeCompatibility::rest_parameter_accepts_required_arguments(
 				source_is_variadic ? &source_rest : nullptr,
-				target_is_variadic ? &target_rest : nullptr, p_strict_null);
+				target_is_variadic ? &target_rest : nullptr, p_strict_null, p_allow_runtime_narrowing);
 	}
 	if (p_left.method_rest_parameter_type.size() != p_right.method_rest_parameter_type.size()) {
 		return false;
@@ -946,7 +946,7 @@ static bool _method_signature_rest_slots_equal(const BSParser::DataType &p_left,
 
 static bool _method_signature_slots_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
 		bool (*p_slot_equal)(const BSParser::DataType &, const BSParser::DataType &), bool p_contravariant_rest,
-		bool p_strict_null) {
+		bool p_strict_null, bool p_allow_runtime_narrowing) {
 	if (p_left.method_parameter_types.size() != p_right.method_parameter_types.size()) {
 		return false;
 	}
@@ -955,7 +955,7 @@ static bool _method_signature_slots_equal(const BSParser::DataType &p_left, cons
 			return false;
 		}
 	}
-	if (!_method_signature_rest_slots_equal(p_left, p_right, p_slot_equal, p_contravariant_rest, p_strict_null)) {
+	if (!_method_signature_rest_slots_equal(p_left, p_right, p_slot_equal, p_contravariant_rest, p_strict_null, p_allow_runtime_narrowing)) {
 		return false;
 	}
 	if (p_left.builtin_type == Variant::CALLABLE) {
@@ -972,7 +972,7 @@ static bool _method_signature_slots_equal(const BSParser::DataType &p_left, cons
 }
 
 static bool _datatype_method_signature_equal(const BSParser::DataType &p_left, const BSParser::DataType &p_right,
-		bool p_contravariant_rest, bool p_strict_null) {
+		bool p_contravariant_rest, bool p_strict_null, bool p_allow_runtime_narrowing) {
 	// AsyncCallable and plain Callable are not interchangeable: a callable whose signature is async
 	// carries a coroutine result that a synchronous Callable does not, so their signatures differ.
 	if (p_left.signature_is_async != p_right.signature_is_async) {
@@ -981,13 +981,13 @@ static bool _datatype_method_signature_equal(const BSParser::DataType &p_left, c
 	// Both sides written as explicit annotations: compare the rich slots strictly, exactly as the
 	// explicit Callable/Signal path always has.
 	if (p_left.has_explicit_method_signature && p_right.has_explicit_method_signature) {
-		return _method_signature_slots_equal(p_left, p_right, _datatype_signature_slot_equal, p_contravariant_rest, p_strict_null);
+		return _method_signature_slots_equal(p_left, p_right, _datatype_signature_slot_equal, p_contravariant_rest, p_strict_null, p_allow_runtime_narrowing);
 	}
 	// A lambda/function-reference Callable or a declared Signal carries rich slots without the explicit
 	// flag. Compare those slots the way the `MethodInfo` fallback did, but recurse to catch the nested
 	// Callable/Signal mismatches the fallback erased — the #382 fix for the non-explicit source path.
 	if (_has_rich_method_signature(p_left) && _has_rich_method_signature(p_right)) {
-		return _method_signature_slots_equal(p_left, p_right, _nonexplicit_signature_slot_equal, p_contravariant_rest, p_strict_null);
+		return _method_signature_slots_equal(p_left, p_right, _nonexplicit_signature_slot_equal, p_contravariant_rest, p_strict_null, p_allow_runtime_narrowing);
 	}
 	return _method_signature_equal(p_left.method_info, p_right.method_info);
 }
@@ -1088,7 +1088,7 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 			if (p_target.has_method_signature && p_source.has_method_signature) {
 				// Assignment position: the target states what callers may pass, so its rest tail is
 				// contravariant while every other slot stays invariant.
-				result.compatible = _datatype_method_signature_equal(p_target, p_source, true, p_options.strict_null);
+				result.compatible = _datatype_method_signature_equal(p_target, p_source, true, p_options.strict_null, p_options.allow_runtime_narrowing);
 			} else if (p_target.has_method_signature && !p_source.has_method_signature) {
 				result.requires_runtime_check = true;
 			}
@@ -1309,7 +1309,7 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 			if (p_target.can_reference(p_source)) {
 				return Result(true, false, false);
 			}
-			if (allows_runtime_narrowing(p_target, p_source)) {
+			if (p_options.allow_runtime_narrowing && allows_runtime_narrowing(p_target, p_source)) {
 				return Result(true, true, false);
 			}
 		}
@@ -1465,7 +1465,7 @@ bool BSTypeCompatibility::rest_parameter_type_is_narrowing(const BSParser::DataT
 }
 
 bool BSTypeCompatibility::rest_parameter_accepts_required_arguments(const BSParser::DataType *p_implementation_rest_array,
-		const BSParser::DataType *p_required_rest_array, bool p_strict_null) {
+		const BSParser::DataType *p_required_rest_array, bool p_strict_null, bool p_allow_runtime_narrowing) {
 	if (p_required_rest_array == nullptr) {
 		return true;
 	}
@@ -1480,13 +1480,14 @@ bool BSTypeCompatibility::rest_parameter_accepts_required_arguments(const BSPars
 	}
 	Options element_options;
 	element_options.strict_null = p_strict_null;
+	element_options.allow_runtime_narrowing = p_allow_runtime_narrowing;
 	return check(p_implementation_rest_array->get_container_element_type(0),
 			p_required_rest_array->get_container_element_type(0), element_options)
 			.compatible;
 }
 
 bool BSTypeCompatibility::rest_parameter_accepts_required_argument(const BSParser::DataType *p_implementation_rest_array,
-		const BSParser::DataType &p_required_argument_type, bool p_strict_null) {
+		const BSParser::DataType &p_required_argument_type, bool p_strict_null, bool p_allow_runtime_narrowing) {
 	if (p_implementation_rest_array == nullptr) {
 		return false;
 	}
@@ -1501,6 +1502,7 @@ bool BSTypeCompatibility::rest_parameter_accepts_required_argument(const BSParse
 	}
 	Options element_options;
 	element_options.strict_null = p_strict_null;
+	element_options.allow_runtime_narrowing = p_allow_runtime_narrowing;
 	return check(p_implementation_rest_array->get_container_element_type(0), p_required_argument_type, element_options)
 			.compatible;
 }
