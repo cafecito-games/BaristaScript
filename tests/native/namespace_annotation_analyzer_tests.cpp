@@ -575,3 +575,184 @@ TEST_SUITE("namespace_annotation_analyzer") {
 		CHECK(verify_case_isolation(scenario));
 	}
 }
+
+namespace {
+void one_error(const BSParser &parser, const String &message, const BSParser::Node *site) {
+	INFO(std::string(block(parser).utf8().get_data()));
+	BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+	const auto &error = parser.get_errors().front()->get();
+	CHECK(error.message == message);
+	CHECK(error.line == site->start_line);
+	CHECK(error.column == site->start_column);
+	CHECK(error.end_line == site->end_line);
+	CHECK(error.end_column == site->end_column);
+}
+void materialization_failure(bool nested) {
+	StorageFixture storage;
+	const String path = "res://tests/f2/item.barista";
+	install(storage, path, "namespace a.child\nclass_name Item\nextends MissingBase\nclass Nested:\n\tpass\n");
+	Error err = OK;
+	Ref<BSParserRef> retained = BSCache::get_parser(path, BSParserRef::PARSED, err);
+	BS_TEST_REQUIRE(retained.is_valid());
+	BS_TEST_REQUIRE(err == OK);
+	CHECK(retained->get_status() == BSParserRef::PARSED);
+	const String store = storage.path("before.bsgi");
+	BS_TEST_REQUIRE(storage.index().flush(store) == OK);
+	const auto before = read_bytes(store);
+	const auto generation = storage.index().get_refresh_revision(path);
+	const String type = nested ? "child.Item.Nested" : "child.Item";
+	for (int consumer = 0; consumer < 3; ++consumer) {
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("import a\nvar x: " + type + "\n", "res://tests/f2/consumer" + itos(consumer) + ".barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		one_error(parser, consumer == 0 ? "Could not resolve type \"a.child.Item\" from \"res://tests/f2/item.barista\"." : "Could not resolve type \"" + String("child.Item") + "\": provider \"res://tests/f2/item.barista\" could not be parsed.", parser.get_tree()->get_member("x").variable->datatype_specifier);
+	}
+	BS_TEST_REQUIRE(storage.index().flush(store) == OK);
+	CHECK(read_bytes(store) == before);
+	CHECK(storage.index().get_refresh_revision(path) == generation);
+	const String old_errors = block(*retained->get_parser());
+	const String repaired = "namespace a.child\nclass_name Item\nextends RefCounted\nclass Nested:\n\tpass\n";
+	BSCache::set_source_override(path, repaired);
+	BaristaScriptLanguage::get_singleton()->synchronize_declaration_path_from_source(path, repaired);
+	CHECK(BSCache::get_source_code(path) == repaired);
+	CHECK(storage.index().get_refresh_revision(path) > generation);
+	check_source("import a\nvar x: " + type + "\n");
+	CHECK(block(*retained->get_parser()) == old_errors);
+	Ref<BSParserRef> fresh = BSCache::get_parser(path, BSParserRef::INTERFACE_SOLVED, err);
+	BS_TEST_REQUIRE(fresh.is_valid());
+	CHECK(fresh != retained);
+	CHECK(err == OK);
+}
+} //namespace
+TEST_SUITE("namespace_annotation_analyzer") {
+	TEST_CASE("repair1_variable_root_is_terminal_before_relative_namespace") {
+		StorageFixture storage;
+		install(storage, "res://tests/f1/item.barista", "namespace a.child\nclass_name Item\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("import a\nvar child: int\nvar x: child.Item\n", "res://tests/f1/consumer.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		one_error(parser, "\"child\" is a variable but does not contain a type.", parser.get_tree()->get_member("x").variable->datatype_specifier);
+		check_source("import a\nclass Owner:\n\tclass Item:\n\t\tpass\nconst child = Owner\nvar x: child.Item\n");
+	}
+	TEST_CASE("repair1_dotted_trait_claims_local_and_inherited_roots") {
+		StorageFixture storage;
+		install(storage, "res://tests/f1/trait.barista", "namespace a.child\ntrait_name T\n");
+		for (bool wrong_class : { false, true }) {
+			BSParser parser;
+			const String source = wrong_class ? "import a\nuses child.T\nclass child:\n\tclass T:\n\t\tpass\n" : "import a\nuses child.T\nconst child = 7\n";
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/f1/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			one_error(parser, wrong_class ? "Class \"T\" cannot be used as a trait." : "Cannot use constant \"child\" as a trait.", parser.get_tree()->used_traits[0].name[0]);
+		}
+		for (bool inherited : { false, true }) {
+			const String declaration = "class child:\n\ttrait T:\n\t\tvar marker: int = 7\n";
+			install(storage, "res://tests/f1/base.barista", declaration);
+			const String source = inherited ? "import a\nextends \"base.barista\"\nuses child.T\n" : String("import a\nuses child.T\n") + declaration;
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/f1/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			BS_TEST_REQUIRE(analyzer.analyze() == OK);
+			auto *trait = parser.get_tree()->used_traits[0].resolved_trait;
+			BS_TEST_REQUIRE(trait != nullptr);
+			CHECK(trait->has_member("marker"));
+			CHECK(trait->get_datatype().script_path == (inherited ? "res://tests/f1/base.barista" : "res://tests/f1/consumer.barista"));
+		}
+	}
+	TEST_CASE("repair1_inherited_compound_tails_keep_root_identity_with_namespace_competitors") {
+		StorageFixture storage;
+		const String root = "res://tests/f1/root.barista", mid = "res://tests/f1/mid.barista";
+		install(storage, root, "class LeafType:\n\tclass Nested:\n\t\tpass\n\tenum Kind:\n\t\tVALUE = 0\n");
+		install(storage, mid, "extends \"res://tests/f1/root.barista\"\n");
+		for (bool collision : { false, true }) {
+			if (collision) {
+				install(storage, "res://tests/f1/competing_nested.barista", "namespace a.LeafType\nclass_name Nested\n");
+				install(storage, "res://tests/f1/competing_kind.barista", "namespace a.LeafType\nclass_name Kind\n");
+			}
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(String(collision ? "import a\n" : "") + "extends \"res://tests/f1/mid.barista\"\n" + "var x: LeafType.Nested\nvar e: LeafType.Kind\n", "res://tests/f1/consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			const auto x = parser.get_tree()->get_member("x").get_datatype(), e = parser.get_tree()->get_member("e").get_datatype();
+			CHECK(x.kind == BSParser::DataType::CLASS);
+			CHECK(x.script_path == root);
+			CHECK(e.kind == BSParser::DataType::ENUM);
+			CHECK(e.script_path == root);
+			Error err = OK;
+			auto provider = BSCache::get_parser(root, BSParserRef::INTERFACE_SOLVED, err);
+			BS_TEST_REQUIRE(provider.is_valid());
+			BS_TEST_REQUIRE(err == OK);
+			auto *leaf = provider->get_parser()->get_tree()->get_member("LeafType").m_class;
+			CHECK(x.class_type == leaf->get_member("Nested").m_class);
+			CHECK(e.enum_type == leaf->get_member("Kind").get_datatype().enum_type);
+		}
+	}
+	TEST_CASE("repair1_native_compound_root_is_terminal_before_relative_namespace") {
+		StorageFixture storage;
+		install(storage, "res://tests/f1/native_collision.barista", "namespace a.Node\nclass_name Missing\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("import a\nvar x: Node.Missing\n", "res://tests/f1/consumer.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		one_error(parser, "Could not find type \"Missing\" in \"Node\".", parser.get_tree()->get_member("x").variable->datatype_specifier->type_chain[1]);
+		BSParser good;
+		BS_TEST_REQUIRE(good.parse("import a\nvar x: Node.ProcessMode\nvar y: a.Node.Missing\n", "res://tests/f1/good.barista", false) == OK);
+		BSAnalyzer good_analyzer(&good);
+		BS_TEST_REQUIRE(good_analyzer.analyze() == OK);
+		CHECK(good.get_tree()->get_member("x").get_datatype().kind == BSParser::DataType::ENUM);
+		CHECK(good.get_tree()->get_member("x").get_datatype().enum_type == StringName("Node.ProcessMode"));
+		CHECK(good.get_tree()->get_member("y").get_datatype().script_path == "res://tests/f1/native_collision.barista");
+	}
+	TEST_CASE("repair1_whole_chain_provider_materialization_failure_is_terminal") { materialization_failure(false); }
+	TEST_CASE("repair1_shorter_prefix_provider_materialization_failure_is_terminal") { materialization_failure(true); }
+}
+TEST_SUITE("namespace_annotation_analyzer") {
+	TEST_CASE("repair1_compound_alias_keeps_lexical_visibility") {
+		StorageFixture storage;
+		install(storage, "res://tests/f1/item.barista", "namespace a.child\nclass_name Item\n");
+		check_source("import a\nclass Owner:\n\tclass Item:\n\t\tpass\ntype child = Owner\nvar x: child.Item\n");
+		install(storage, "res://tests/f1/alias_base.barista", "class Owner:\n\tclass Item:\n\t\tpass\ntype child = Owner\n");
+		check_source("import a\nextends \"res://tests/f1/alias_base.barista\"\nvar x: child.Item\n", ">> ERROR at line 3: Type alias \"child\" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.");
+	}
+	TEST_CASE("repair1_compound_inherited_owner_survives_new_generation_and_restores_state") {
+		const auto scenario = []() {
+			StorageFixture storage;
+			const String root = "res://tests/f1/root.barista", mid = "res://tests/f1/mid.barista";
+			const String original = "class LeafType:\n\tclass Nested:\n\t\tpass\n\tenum Kind:\n\t\tVALUE = 0\n";
+			install(storage, root, original);
+			install(storage, mid, "extends \"root.barista\"\n");
+			const String store = storage.path("before.bsgi");
+			BS_TEST_REQUIRE(storage.index().flush(store) == OK);
+			const auto before = read_bytes(store);
+			const auto generation = storage.index().get_refresh_revision(root);
+			BSParser old;
+			BS_TEST_REQUIRE(old.parse("extends \"mid.barista\"\nvar x: LeafType.Nested\nvar e: LeafType.Kind\n", "res://tests/f1/old.barista", false) == OK);
+			BSAnalyzer old_analyzer(&old);
+			BS_TEST_REQUIRE(old_analyzer.analyze() == OK);
+			const auto old_x = old.get_tree()->get_member("x").get_datatype(), old_e = old.get_tree()->get_member("e").get_datatype();
+			CHECK(storage.index().get_refresh_revision(root) == generation);
+			BS_TEST_REQUIRE(storage.index().flush(store) == OK);
+			CHECK(read_bytes(store) == before);
+			const String changed = original.replace("VALUE = 0", "VALUE = 1");
+			BSCache::set_source_override(root, changed);
+			BSCache::prepare_semantic_refresh(root);
+			BSParser fresh;
+			BS_TEST_REQUIRE(fresh.parse("extends \"mid.barista\"\nvar x: LeafType.Nested\nvar e: LeafType.Kind\n", "res://tests/f1/fresh.barista", false) == OK);
+			BSAnalyzer fresh_analyzer(&fresh);
+			BS_TEST_REQUIRE(fresh_analyzer.analyze() == OK);
+			const auto fresh_x = fresh.get_tree()->get_member("x").get_datatype(), fresh_e = fresh.get_tree()->get_member("e").get_datatype();
+			CHECK(fresh_x.class_type != old_x.class_type);
+			CHECK(fresh_x.script_path == root);
+			CHECK(fresh_e.kind == BSParser::DataType::ENUM);
+			CHECK(fresh_e.enum_type == old_e.enum_type);
+			BS_TEST_REQUIRE(old_e.enum_values.has("VALUE"));
+			BS_TEST_REQUIRE(fresh_e.enum_values.has("VALUE"));
+			CHECK(old_e.enum_values["VALUE"] == 0);
+			CHECK(fresh_e.enum_values["VALUE"] == 1);
+			CHECK(old.get_tree()->get_member("x").get_datatype().class_type == old_x.class_type);
+		};
+		CHECK(verify_case_isolation(scenario));
+	}
+}

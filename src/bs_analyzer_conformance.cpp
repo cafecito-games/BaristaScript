@@ -1375,6 +1375,57 @@ BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_
 			break;
 		}
 	}
+	if (trait == nullptr && name.contains(".")) {
+		// Foundry c9d5e35:10051: a found local/inherited root, including a
+		// non-class value or a failed member, terminates trait lookup.
+		List<BSParser::ClassNode *> scopes;
+		get_class_node_current_scope_classes(p_scope, &scopes, p_trait_use.name[0]);
+		for (BSParser::ClassNode *scope : scopes) {
+			BSParser::ClassNode *candidate = nullptr;
+			if (scope->identifier != nullptr && scope->identifier->name == p_trait_use.name[0]->name) {
+				candidate = scope;
+			} else if (scope->has_member(p_trait_use.name[0]->name)) {
+				const int errors = parser->get_errors().size();
+				resolve_class_member(scope, p_trait_use.name[0]->name, p_trait_use.name[0]);
+				if (parser->get_errors().size() > errors) {
+					return nullptr;
+				}
+				const auto member = scope->get_member(p_trait_use.name[0]->name);
+				if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr) {
+					push_error(vformat(R"(Cannot use %s "%s" as a trait.)", member.get_type_name(), p_trait_use.name[0]->name), p_trait_use.name[0]);
+					return nullptr;
+				}
+				candidate = member.m_class;
+			}
+			if (candidate == nullptr) {
+				continue;
+			}
+			for (int i = 1; i < p_trait_use.name.size(); ++i) {
+				const auto *part = p_trait_use.name[i];
+				if (!candidate->has_member(part->name)) {
+					push_error(vformat(R"(Could not resolve trait "%s".)", name), p_trait_use.name[0]);
+					return nullptr;
+				}
+				const int errors = parser->get_errors().size();
+				resolve_class_member(candidate, part->name, part);
+				if (parser->get_errors().size() > errors) {
+					return nullptr;
+				}
+				const auto member = candidate->get_member(part->name);
+				if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr) {
+					push_error(vformat(R"(Cannot use %s "%s" as a trait.)", member.get_type_name(), part->name), part);
+					return nullptr;
+				}
+				candidate = member.m_class;
+			}
+			if (!candidate->is_trait) {
+				push_error(vformat(R"(Class "%s" cannot be used as a trait.)", bs_class_or_trait_diagnostic_name(candidate)), p_trait_use.name[0]);
+				return nullptr;
+			}
+			trait = candidate;
+			break;
+		}
+	}
 	if (trait == nullptr) {
 		const BSParser::Node *source = _trait_use_source(p_trait_use, p_scope);
 		const NameLookup lookup = lookup_declaration(name, p_scope, source, "trait");

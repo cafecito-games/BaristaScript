@@ -1866,29 +1866,68 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
-	// A lexical metatype constant (including a preload handle) claims the prefix
-	// before an identically spelled namespace. Private aliases remain file-local.
+	// Foundry c9d5e35:2950,3050: a lexical root claims the whole chain,
+	// including inherited roots. Resolve members through their retained owner.
 	const StringName lexical_name = p_type_node->type_chain[0]->name;
-	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+	List<BSParser::ClassNode *> lexical_scopes;
+	if (current_class != nullptr) {
+		get_class_node_current_scope_classes(current_class, &lexical_scopes, p_type_node);
+	}
+	for (BSParser::ClassNode *scope : lexical_scopes) {
+		if (scope->identifier != nullptr && scope->identifier->name == lexical_name) {
+			return resolve_nested(type_from_metatype(scope->get_datatype()), 1);
+		}
 		if (!scope->has_member(lexical_name)) {
 			continue;
 		}
 		const auto member = scope->get_member(lexical_name);
-		if (member.type == BSParser::ClassNode::Member::CONSTANT) {
-			resolve_class_member(scope, lexical_name, p_type_node);
-			if (member.get_datatype().is_meta_type) {
-				return resolve_nested(type_from_metatype(member.get_datatype()), 1);
-			}
-			push_error(vformat(R"("%s" is a constant but does not contain a type.)", lexical_name), p_type_node);
+		if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS &&
+				find_type_alias_in_scope(lexical_name) != member.type_alias) {
+			push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", lexical_name), p_type_node);
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
-		if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
-			// The selected lexical owner supplies nested classes, enums and tuples alike.
-			resolve_class_member(scope, lexical_name, p_type_node);
+		const int errors = parser->get_errors().size();
+		resolve_class_member(scope, lexical_name, p_type_node);
+		if (parser->get_errors().size() > errors) {
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+		if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+			const auto *alias = resolved_type_aliases.getptr(member.type_alias);
+			if (alias != nullptr && alias->is_set()) {
+				return resolve_nested(type_from_metatype(*alias), 1);
+			}
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+		if (member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::ENUM ||
+				member.type == BSParser::ClassNode::Member::TUPLE ||
+				(member.type == BSParser::ClassNode::Member::CONSTANT && member.get_datatype().is_meta_type)) {
 			return resolve_nested(type_from_metatype(member.get_datatype()), 1);
 		}
-		break;
+		push_error(vformat(R"("%s" is a %s but does not contain a type.)", lexical_name, member.get_type_name()), p_type_node);
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+
+	// A native root has only an enum tail; an absent enum must not reopen
+	// namespace lookup (Foundry c9d5e35:2944,3245).
+	if (ClassDB::class_exists(lexical_name)) {
+		BSParser::IdentifierNode *tail = p_type_node->type_chain[1];
+		const auto native_enum = _engine_enum_type(String(lexical_name) + String(".") + String(tail->name));
+		if (native_enum.kind == BSParser::DataType::ENUM) {
+			if (p_type_node->type_chain.size() == 2) {
+				result = type_from_metatype(native_enum);
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
+			push_error("Enums cannot contain nested types.", p_type_node->type_chain[2]);
+		} else {
+			push_error(vformat(R"(Could not find type "%s" in "%s".)", tail->name, lexical_name), tail);
+		}
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
 	}
 
 	String qualified;
@@ -10415,14 +10454,22 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 
 BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source, bool &r_error) {
 	const NameLookup lookup = lookup_declaration(String(p_name), current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
-	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup, p_source);
+	BSParser::DataType result = named_type_from_lookup(lookup, p_source);
+	// A selected declaration whose owner failed is an error, never a namespace
+	// miss eligible for another (shorter) prefix. Foundry c9d5e35:2987.
+	r_error = lookup.status == NameLookupStatus::ERROR ||
+			(lookup.status == NameLookupStatus::FOUND && result.is_variant());
+	return result;
 }
 
 BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error) {
 	const NameLookup lookup = lookup_declaration(p_qualified, current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
-	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup, p_source);
+	BSParser::DataType result = named_type_from_lookup(lookup, p_source);
+	// A selected declaration whose owner failed is an error, never a namespace
+	// miss eligible for another (shorter) prefix. Foundry c9d5e35:2987.
+	r_error = lookup.status == NameLookupStatus::ERROR ||
+			(lookup.status == NameLookupStatus::FOUND && result.is_variant());
+	return result;
 }
 
 BSParser::DataType BSAnalyzer::resolve_global_head(const String &p_name, const BSParser::Node *p_source) {
