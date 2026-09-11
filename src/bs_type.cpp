@@ -1321,7 +1321,25 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 	}
 
 	if (p_target.kind == BSParser::DataType::TUPLE && p_source.kind == BSParser::DataType::TUPLE) {
-		return Result(is_invariant_equal(p_target, p_source), false, false);
+		if (p_target.is_meta_type != p_source.is_meta_type)
+			return Result(false, false, false);
+		if (p_target.tuple_name != StringName())
+			return Result(is_invariant_equal(p_target, p_source), false, false);
+		if (p_target.container_element_types.size() != p_source.container_element_types.size())
+			return Result(false, false, false);
+		Options element_options = p_options;
+		element_options.allow_implicit_conversion = false;
+		element_options.constant_source_value = nullptr;
+		Result result(false, false, false);
+		for (int i = 0; i < p_target.container_element_types.size(); ++i) {
+			const Result forward = check(p_target.container_element_types[i], p_source.container_element_types[i], element_options);
+			const Result backward = check(p_source.container_element_types[i], p_target.container_element_types[i], element_options);
+			if (!forward.compatible || !backward.compatible)
+				return Result(false, false, false);
+			result.requires_runtime_check = result.requires_runtime_check || forward.requires_runtime_check;
+		}
+		result.compatible = true;
+		return result;
 	}
 
 	// Foundry FSTypeCompatibility::check @ c9d5e35: a union *source* satisfies a target only when

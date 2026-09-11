@@ -76,7 +76,7 @@ public:
 	public:
 		explicit CallSiteValidationContext(BSAnalyzer *p_analyzer);
 
-		void validate_call_arg(const MethodInfo &p_method, const BSParser::CallNode *p_call);
+		void validate_call_arg(const MethodInfo &p_method, const BSParser::CallNode *p_call, const BSParser::DataType *p_receiver = nullptr);
 		void validate_call_arg(const List<BSParser::DataType> &p_par_types, int p_default_args_count, bool p_is_vararg, const BSParser::CallNode *p_call, const Vector<int> &p_extra_allowed_argument_counts = Vector<int>(), int p_trailing_unbound_argument_count = 0, const BSParser::DataType *p_rest_parameter_type = nullptr, int p_extra_allowed_argument_offset = 0);
 		void validate_argument_against_type(const BSParser::DataType &p_expected_type, BSParser::ExpressionNode *p_argument, int p_argument_number, const StringName &p_function, const BSParser::CallNode *p_call);
 		static const BSParser::DataType *rest_element_type(const BSParser::DataType *p_rest_parameter_type);
@@ -541,6 +541,7 @@ private:
 	HashSet<const BSParser::ExpressionNode *> resolved_contextual_enum_cases;
 	// Parser-owned nodes rejected by subscript/contextual analysis; never retry their carriers.
 	HashSet<const BSParser::ExpressionNode *> failed_constant_expressions;
+	HashSet<const BSParser::ExpressionNode *> diagnosed_constant_literal_failures;
 	/** Foundry transparent type-alias expansion cache / failure and cycle guards. */
 	HashMap<const BSParser::TypeAliasNode *, BSParser::DataType> resolved_type_aliases;
 	HashSet<const BSParser::TypeAliasNode *> failed_type_aliases;
@@ -729,6 +730,7 @@ private:
 	Variant make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced);
 	bool reduce_semantic_constant_subscript(BSParser::SubscriptNode *p_subscript);
 	void publish_constant_subscript(BSParser::SubscriptNode *p_subscript, const Variant &p_value);
+	BSParser::DataType type_from_native_property(const StringName &p_native, const PropertyInfo &p_property);
 	void materialize_constant_initializer(BSParser::ConstantNode *p_constant);
 	void check_assignable_inference(BSParser::AssignableNode *p_assignable, const char *p_kind);
 	void reduce_array(BSParser::ArrayNode *p_array);
@@ -805,15 +807,15 @@ private:
 	 * Foundry update_container_literal_element_types @ c9d5e35: select a unique concrete literal
 	 * target, patch Array/Dictionary/tuple elements, and preserve contextual Self provenance.
 	 */
-	bool update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
+	bool update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract = false);
 	/** Value-aware constant retyping/reporting shared by assign/return/pass consumers. */
 	void warn_plain_enum_conversion(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const BSParser::Node *p_origin);
 	void downgrade_assignment_source(BSParser::ExpressionNode *p_assignee);
 	bool update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage, bool p_builtin_constructor = false);
-	void update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type);
-	void update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type);
+	void update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type, bool p_self_parameter_contract = false);
+	void update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type, bool p_self_parameter_contract = false);
 	/** resolve_contextual_enum_case + container-literal element descent for one consumer site. */
-	void qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
+	void qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract = false);
 	/**
 	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (SelfFieldLeg + self-ref completion):
 	 * arity + payload field compatibility with Self spelling legs + constant bake +
@@ -845,7 +847,7 @@ private:
 	bool self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) const;
 	bool self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) const;
 	String self_parameter_receiver_identity_clause(const BSParser::DataType &p_expected_type,
-			const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call) const;
+			const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const String &p_expected_role = "parameter", const String &p_actual_role = "argument") const;
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);

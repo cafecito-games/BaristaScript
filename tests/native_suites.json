@@ -20,7 +20,8 @@
     "get_node_analyzer",
     "numeric_consumer_analyzer",
     "warning_producer_analyzer",
-    "concrete_type_analyzer"
+    "concrete_type_analyzer",
+    "value_consumer_analyzer"
   ],
   "editor_import": [
     "global_class"
