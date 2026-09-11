@@ -95,13 +95,30 @@ def godot_data_path():
     raise ValueError(f"unsupported native test host: {sys.platform}")
 
 
+def remove_tree(path):
+    """Delete a disposable tree, including Windows long/supplementary paths with LongPathsEnabled off."""
+    target = Path(path)
+    if sys.platform == "win32":
+        absolute = str(target.resolve())
+        if absolute.startswith("\\\\?\\"):
+            extended = absolute
+        elif absolute.startswith("\\\\"):
+            extended = "\\\\?\\UNC\\" + absolute[2:]
+        else:
+            extended = "\\\\?\\" + absolute
+        shutil.rmtree(extended)
+    else:
+        shutil.rmtree(target)
+
+
 @contextmanager
 def staged_project(artifact):
     # No import runs against the ordinary fixture. Its res:// paths remain identical, while
     # writable state, descriptor and the selected library belong to this disposable project.
     data_path = godot_data_path()
     data_path.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="barista-native-", dir=data_path) as temporary:
+    temporary = tempfile.mkdtemp(prefix="barista-native-", dir=data_path)
+    try:
         project = Path(temporary) / "project"
         shutil.copytree(ROOT / "project", project,
                         ignore=shutil.ignore_patterns(".godot", "bin"))
@@ -124,6 +141,8 @@ def staged_project(artifact):
         (project / ".godot").mkdir()
         shutil.copy2(ROOT / "project/.godot/extension_list.cfg", project / ".godot/extension_list.cfg")
         yield project
+    finally:
+        remove_tree(temporary)
 
 
 def supervise(command, timeout):

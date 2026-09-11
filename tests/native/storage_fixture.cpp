@@ -94,11 +94,33 @@ StorageFixture::StorageFixture() :
 	BSAnalyzer::set_bootstrap_allowed_dependency_root("");
 }
 
+#if defined(WINDOWS_ENABLED)
+static std::filesystem::path windows_extended_filesystem_path(const String &absolute_path) {
+	// LongPathsEnabled may be off (G1 negative profile). Extended \\?\ / \\?\UNC\ paths keep
+	// remove_all working for supplementary-Unicode and ASCII long fixtures without the opt-in.
+	String normalized = absolute_path.replace("/", "\\");
+	String extended;
+	if (normalized.begins_with("\\\\?\\")) {
+		extended = normalized;
+	} else if (normalized.begins_with("\\\\")) {
+		extended = String("\\\\?\\UNC\\") + normalized.substr(2);
+	} else {
+		extended = String("\\\\?\\") + normalized;
+	}
+	const Char16String utf16 = extended.utf16();
+	return std::filesystem::path(reinterpret_cast<const wchar_t *>(utf16.get_data()));
+}
+#endif
+
 StorageFixture::~StorageFixture() {
 	BSAnalyzer::set_bootstrap_allowed_dependency_root(previous_bootstrap_root);
 	std::error_code error;
 	const String absolute = ProjectSettings::get_singleton()->globalize_path(root);
+#if defined(WINDOWS_ENABLED)
+	std::filesystem::remove_all(windows_extended_filesystem_path(absolute), error);
+#else
 	std::filesystem::remove_all(std::filesystem::u8path(absolute.utf8().get_data()), error);
+#endif
 	CHECK_MESSAGE(!error, "could not remove native scratch directory: ", error.message());
 }
 
