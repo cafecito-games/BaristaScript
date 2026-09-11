@@ -1392,7 +1392,11 @@ BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_
 		}
 		Error err = OK;
 		Ref<BSParserRef> trait_ref = get_depended_parser(record.path, BSParserRef::INTERFACE_SOLVED, err);
-		if (trait_ref.is_null() || err != OK || trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
+		// A previous consumer may already have latched a BODY failure. Keep the
+		// completed interface available; analyze_class_body replays the body failure
+		// for this applying class using the retained declaration owner.
+		if (trait_ref.is_null() || (err != OK && trait_ref->get_result_for_status(BSParserRef::INTERFACE_SOLVED) != OK) ||
+				trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
 			push_error(vformat(R"(Could not resolve trait "%s".)", name), p_source);
 			return nullptr;
 		}
