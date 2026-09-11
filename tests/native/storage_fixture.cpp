@@ -66,6 +66,16 @@ Vector<String> temporary_files(const String &store) {
 	return result;
 }
 
+int count_tmp_under(const String &root) {
+	int count = 0;
+	for (const String &name : DirAccess::get_files_at(root)) {
+		if (name.ends_with(".tmp")) {
+			++count;
+		}
+	}
+	return count;
+}
+
 void append_integer(Vector<uint8_t> &destination, uint64_t value, int width) {
 	for (int i = 0; i < width; ++i) {
 		destination.push_back(uint8_t(value >> (i * 8)));

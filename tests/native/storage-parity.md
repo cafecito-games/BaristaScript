@@ -5,6 +5,13 @@ production typed APIs; existing goldens and source fixtures remain read-only. Ol
 passed concurrently at `d5381831c62000d22fcb38e4fe8276982c65c4f4`; independent per-scenario
 review approved all 41 groups before the three GDScript suites/UIDs and unused global-class
 probe were retired. The immutable baseline above retains the old suites and probe sources.
+Issue #21 reintroduces the guarded GDScript suite `project/tests/cache_test.gd` for one-shot
+store-promotion contracts (create/replace/replay, fault 4, invalid destination, path shapes,
+malformed paths, faults 1–3, and golden/damaged load checks). Native coverage adds
+`remove_temp_before_promotion_preserves_previous_store`,
+`malformed_store_paths_reject_before_temp_creation` (scratch-dir temp snapshots), and
+`nul_embedded_store_path_rejects_before_temp_creation` (e2e NUL rejection when Godot String can
+carry NUL; otherwise documents the godot-cpp String limitation without claiming the AC).
 
 Each original group maps to one named native case; `repeated_and_reversed_cases_restore_ambient_state`
 in each suite also executes those exact bodies twice forward and twice backward in one process.
@@ -37,6 +44,9 @@ A hidden deliberate assertion failure exercises early-return RAII cleanup and is
 | `_test_write_failure_is_logged_and_non_fatal` | `write_failure_is_logged_and_non_fatal` |
 | `_test_atomic_write_leaves_the_previous_store_intact` | `atomic_write_leaves_the_previous_store_intact` |
 | `_test_deferred_write_failure_never_replaces_the_previous_store` | `deferred_write_failure_never_replaces_the_previous_store` |
+| _(issue #21)_ | `remove_temp_before_promotion_preserves_previous_store` |
+| _(issue #21)_ | `malformed_store_paths_reject_before_temp_creation` |
+| _(issue #21)_ | `nul_embedded_store_path_rejects_before_temp_creation` |
 | `_test_miss_reason_vocabulary_is_closed` | `miss_reason_vocabulary_is_closed` |
 | `_test_every_miss_reason_has_a_distinct_log_line` | `every_miss_reason_has_a_distinct_log_line` |
 | `_test_source_override_shadows_the_file_on_disk` | `source_override_shadows_the_file_on_disk` |
@@ -76,7 +86,11 @@ A hidden deliberate assertion failure exercises early-return RAII cleanup and is
   objects, identical serialization independent of store path, source/mtime handling, eviction,
   source overrides and dependency removal. AFTER_WRITE_BEFORE_RENAME leaves two distinct temps
   until asserted/cleaned; TRUNCATE_TEMP_AFTER_WRITE removes its rejected temp. Faults remain the
-  existing production enum values; #21's platform promotion change is outside this migration.
+  existing production enum values, with #21's `REMOVE_TEMP_BEFORE_PROMOTION` (fault 4) exercising
+  native replacement failure while preserving the previous store. Malformed store paths reject
+  before temp creation (scratch-dir temp counts); NUL-path rejection is covered end-to-end when
+  Godot String can carry an embedded NUL, otherwise the native case documents the String limitation.
+  The reintroduced GDScript `cache_test` suite mirrors those promotion contracts under SuiteGuard.
 - Declaration index: same typed records, kind/view metadata, stale/current generation claims,
   canonical-path rejection, four corrupt fixture mutations and exact statuses, three write faults,
   and registered language commit/remove notifications plus installed host conformance/bootstrap

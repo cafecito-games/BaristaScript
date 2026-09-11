@@ -22,7 +22,7 @@ const DUPLICATE_KEY_STORE := "%s/duplicate_key_store.bin" % FIXTURES
 
 const SCRATCH_ROOT := "user://cache_test_scratch"
 
-# Distinct exercised cases. Keep in sync with the calls in _initialize.
+# Distinct exercised sub-scenarios returned by the _test_* helpers below.
 const TEST_COUNT := 14
 
 const COLD := 0
@@ -39,22 +39,23 @@ const FAULT_REMOVE_TEMP_BEFORE_PROMOTION := 4
 
 func _initialize() -> void:
 	var failures: Array[String] = []
+	var tested := 0
 	DirAccess.make_dir_recursive_absolute(SCRATCH_ROOT)
 
-	_test_first_create_replace_and_replay_identity(failures)
-	_test_fault_four_preserves_old_store_and_memory(failures)
-	_test_fault_four_without_old_store_leaves_destination_absent(failures)
-	_test_invalid_directory_destination_is_rejected(failures)
-	_test_path_shapes_publish_identically(failures)
-	_test_malformed_paths_reject_before_temp_creation(failures)
-	_test_faults_one_through_three_still_preserve_previous_store(failures)
-	_test_golden_and_damaged_store_contracts(failures)
+	tested += _test_first_create_replace_and_replay_identity(failures)
+	tested += _test_fault_four_preserves_old_store_and_memory(failures)
+	tested += _test_fault_four_without_old_store_leaves_destination_absent(failures)
+	tested += _test_invalid_directory_destination_is_rejected(failures)
+	tested += _test_path_shapes_publish_identically(failures)
+	tested += _test_malformed_paths_reject_before_temp_creation(failures)
+	tested += _test_faults_one_through_three_still_preserve_previous_store(failures)
+	tested += _test_golden_and_damaged_store_contracts(failures)
 
-	_expect(failures, TEST_COUNT == 14, "TEST_COUNT must match the suite's declared coverage")
+	_expect(failures, tested == TEST_COUNT, "exercised %d cases but TEST_COUNT is %d" % [tested, TEST_COUNT])
 	quit(SuiteGuard.report("cache_test", failures))
 
 
-func _test_first_create_replace_and_replay_identity(failures: Array[String]) -> void:
+func _test_first_create_replace_and_replay_identity(failures: Array[String]) -> int:
 	var store := _scratch("create_replace_replay.bpc")
 	_remove(store)
 	var source_a := _read_text(SCRIPT_A)
@@ -88,9 +89,9 @@ func _test_first_create_replace_and_replay_identity(failures: Array[String]) -> 
 	_expect(failures, replay.flush(store, FAULT_NONE, version) == OK, "replay flush must succeed")
 	_expect(failures, FileAccess.get_file_as_bytes(store) == bytes_after_b, "identical entries must replay byte-identically")
 	_expect(failures, _temp_files_for(store).is_empty(), "replay must leave no temp")
+	return 3
 
-
-func _test_fault_four_preserves_old_store_and_memory(failures: Array[String]) -> void:
+func _test_fault_four_preserves_old_store_and_memory(failures: Array[String]) -> int:
 	var store := _scratch("fault4_preserve.bpc")
 	_remove(store)
 	var source_a := _read_text(SCRIPT_A)
@@ -115,9 +116,9 @@ func _test_fault_four_preserves_old_store_and_memory(failures: Array[String]) ->
 	_expect(failures, reader.load(store) == COLD, "previous store must still load")
 	_expect(failures, reader.lookup(SCRIPT_A, source_a)["hit"], "previous A must still hit on disk")
 	_expect(failures, not reader.has_entry(SCRIPT_B), "B must remain absent on disk after fault 4")
+	return 1
 
-
-func _test_fault_four_without_old_store_leaves_destination_absent(failures: Array[String]) -> void:
+func _test_fault_four_without_old_store_leaves_destination_absent(failures: Array[String]) -> int:
 	var store := _scratch("fault4_absent.bpc")
 	_remove(store)
 	var source_b := _read_text(SCRIPT_B)
@@ -128,9 +129,9 @@ func _test_fault_four_without_old_store_leaves_destination_absent(failures: Arra
 	_expect(failures, not FileAccess.file_exists(store), "fault 4 without an old store must leave destination absent")
 	_expect(failures, cache.has_entry(SCRIPT_B), "in-memory B must survive fault 4")
 	_expect(failures, _temp_files_for(store).is_empty(), "fault 4 absent-old case must leave no temp")
+	return 1
 
-
-func _test_invalid_directory_destination_is_rejected(failures: Array[String]) -> void:
+func _test_invalid_directory_destination_is_rejected(failures: Array[String]) -> int:
 	var directory := _scratch("not_a_store_dir")
 	DirAccess.make_dir_recursive_absolute(directory)
 	var sentinel := "%s/sentinel.txt" % directory
@@ -143,10 +144,11 @@ func _test_invalid_directory_destination_is_rejected(failures: Array[String]) ->
 	_expect(failures, err != OK, "flush to a directory destination must fail")
 	_expect(failures, DirAccess.dir_exists_absolute(directory), "directory destination must remain a directory")
 	_expect(failures, FileAccess.get_file_as_bytes(sentinel) == sentinel_bytes, "sentinel inside the directory must be unchanged")
+	_expect(failures, _temp_files_for(directory).is_empty(), "failed directory promotion must leave no temp")
 	_expect(failures, cache.has_entry(SCRIPT_A), "memory must stay usable after invalid destination")
+	return 1
 
-
-func _test_path_shapes_publish_identically(failures: Array[String]) -> void:
+func _test_path_shapes_publish_identically(failures: Array[String]) -> int:
 	var source := _read_text(SCRIPT_A)
 	var payload := _payload(source)
 	var version := BaristaScriptParseCache.get_cache_format_version()
@@ -195,9 +197,9 @@ func _test_path_shapes_publish_identically(failures: Array[String]) -> void:
 		long_writer.put(SCRIPT_A, source, payload)
 		_expect(failures, long_writer.flush(long_path, FAULT_NONE, version) == OK, "Windows long path flush must succeed")
 		_expect(failures, FileAccess.get_file_as_bytes(long_path) == user_bytes, "Windows long path bytes must match")
+	return 1
 
-
-func _test_malformed_paths_reject_before_temp_creation(failures: Array[String]) -> void:
+func _test_malformed_paths_reject_before_temp_creation(failures: Array[String]) -> int:
 	var cache := BaristaScriptParseCache.new()
 	cache.put(SCRIPT_A, _read_text(SCRIPT_A), _payload(_read_text(SCRIPT_A)))
 	var version := BaristaScriptParseCache.get_cache_format_version()
@@ -213,8 +215,9 @@ func _test_malformed_paths_reject_before_temp_creation(failures: Array[String]) 
 	# extension. C++ `bs_validate_parse_cache_store_path` still rejects NUL; covered by the
 	# native cache suite's path-validation case.
 	_expect(failures, cache.has_entry(SCRIPT_A), "memory must remain usable after malformed path rejection")
+	return 1
 
-func _test_faults_one_through_three_still_preserve_previous_store(failures: Array[String]) -> void:
+func _test_faults_one_through_three_still_preserve_previous_store(failures: Array[String]) -> int:
 	var source_a := _read_text(SCRIPT_A)
 	var source_b := _read_text(SCRIPT_B)
 	var version := BaristaScriptParseCache.get_cache_format_version()
@@ -242,9 +245,9 @@ func _test_faults_one_through_three_still_preserve_previous_store(failures: Arra
 				DirAccess.remove_absolute(leftover)
 		else:
 			_expect(failures, _temp_files_for(store).is_empty(), "fault %d must not leave a temp" % fault)
+	return 3
 
-
-func _test_golden_and_damaged_store_contracts(failures: Array[String]) -> void:
+func _test_golden_and_damaged_store_contracts(failures: Array[String]) -> int:
 	var source_a := _read_text(SCRIPT_A)
 	var source_b := _read_text(SCRIPT_B)
 
@@ -274,7 +277,7 @@ func _test_golden_and_damaged_store_contracts(failures: Array[String]) -> void:
 	var digest := stale.lookup(SCRIPT_A, source_a + "\n# edited\n")
 	_expect(failures, not digest["hit"], "digest mismatch must not hit")
 	_expect(failures, digest["reason"] == DIGEST_MISMATCH, "digest mismatch must report DIGEST_MISMATCH")
-
+	return 3
 
 func _expect_damaged(failures: Array[String], store: String, label: String) -> void:
 	var cache := BaristaScriptParseCache.new()

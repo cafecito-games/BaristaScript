@@ -359,16 +359,65 @@ TEST_SUITE("cache") {
 		StorageFixture fixture;
 		BSParseCache cache;
 		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
-		// Godot String APIs truncate at embedded NUL (utf16/chr/GDScript), so end-to-end NUL
-		// delivery is impossible through the extension boundary. The C++ validator still rejects
-		// NUL if one ever appears; empty and unsupported schemes are exercised here.
-		CHECK(cache.flush(String()) == ERR_INVALID_PARAMETER);
-		CHECK(cache.flush(String("uid://not-a-store")) == ERR_INVALID_PARAMETER);
-		CHECK(cache.flush(String("http://example.invalid/store.bin")) == ERR_INVALID_PARAMETER);
+		// Snapshot temps under the fixture scratch (mirror GDScript `_count_tmp_under`), not an
+		// unrelated basename that would never match temps created for these paths.
+		const String paths[] = { String(), String("uid://not-a-store"), String("http://example.invalid/store.bin") };
+		for (const String &path : paths) {
+			const int before_temps = count_tmp_under(fixture.root);
+			CHECK(cache.flush(path) == ERR_INVALID_PARAMETER);
+			CHECK(count_tmp_under(fixture.root) == before_temps);
+		}
 		CHECK(cache.has_entry(SCRIPT_A));
-		CHECK(temporary_files(fixture.path("unused.bin")).is_empty());
 	}
 	TEST_CASE("malformed_store_paths_reject_before_temp_creation") { scenario_malformed_store_paths_reject_before_temp_creation(); }
+
+	static void scenario_nul_embedded_store_path_rejects_before_temp_creation() {
+		StorageFixture fixture;
+		BSParseCache cache;
+		cache.put(SCRIPT_A, source(SCRIPT_A), payload(source(SCRIPT_A)));
+
+		// Focused experiment: can a Godot String carry an embedded NUL into flush?
+		// Preferred construction from the review: "a" + String::chr(0) + "b".
+		const String via_chr = String("a") + String::chr(0) + String("b");
+		bool via_chr_carries_nul = via_chr.length() == 3 && via_chr[1] == 0;
+
+		// Alternate construction used elsewhere for length-bounded UTF-8 (see bs_cache.cpp keys).
+		const char raw[3] = { 'a', '\0', 'b' };
+		const String via_utf8 = String::utf8(raw, 3);
+		bool via_utf8_carries_nul = via_utf8.length() == 3 && via_utf8[1] == 0;
+
+		const String candidates[] = { via_chr, via_utf8 };
+		const bool carries[] = { via_chr_carries_nul, via_utf8_carries_nul };
+		bool exercised_rejection = false;
+		for (int c = 0; c < 2; ++c) {
+			if (!carries[c]) {
+				continue;
+			}
+			const String store = fixture.path(candidates[c]);
+			const int before_temps = count_tmp_under(fixture.root);
+			CHECK(cache.flush(store) == ERR_INVALID_PARAMETER);
+			CHECK(bs_validate_parse_cache_store_path(store) == ERR_INVALID_PARAMETER);
+			CHECK(count_tmp_under(fixture.root) == before_temps);
+			exercised_rejection = true;
+		}
+
+		if (!exercised_rejection) {
+			// Proven limitation: neither String::chr(0) concatenation nor length-bounded
+			// String::utf8 preserves an embedded NUL through godot-cpp String into flush.
+			// bs_path_contains_nul / bs_validate_parse_cache_store_path still defend the C++
+			// boundary if a NUL-bearing String ever appears, but that path is untestable
+			// end-to-end here. Do not treat the empty/uid/http cases as covering the NUL AC.
+			const bool via_chr_lacks_nul = via_chr.length() != 3 || via_chr[1] != 0;
+			const bool via_utf8_lacks_nul = via_utf8.length() != 3 || via_utf8[1] != 0;
+			CHECK_MESSAGE(via_chr_lacks_nul,
+					"String::chr(0) path unexpectedly preserved NUL without reaching the rejection branch");
+			CHECK_MESSAGE(via_utf8_lacks_nul,
+					"String::utf8(len=3) path unexpectedly preserved NUL without reaching the rejection branch");
+			CHECK(count_tmp_under(fixture.root) == 0);
+		}
+		CHECK(cache.has_entry(SCRIPT_A));
+	}
+	TEST_CASE("nul_embedded_store_path_rejects_before_temp_creation") { scenario_nul_embedded_store_path_rejects_before_temp_creation(); }
 
 	static void scenario_miss_reason_vocabulary_is_closed() {
 		const auto names = bs_miss::get_names();
@@ -458,6 +507,7 @@ TEST_SUITE("cache") {
 			scenario_deferred_write_failure_never_replaces_the_previous_store,
 			scenario_remove_temp_before_promotion_preserves_previous_store,
 			scenario_malformed_store_paths_reject_before_temp_creation,
+			scenario_nul_embedded_store_path_rejects_before_temp_creation,
 			scenario_miss_reason_vocabulary_is_closed,
 			scenario_every_miss_reason_has_a_distinct_log_line,
 			scenario_source_override_shadows_the_file_on_disk,
