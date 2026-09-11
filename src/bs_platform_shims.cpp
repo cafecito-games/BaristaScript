@@ -107,17 +107,78 @@ Error bs_resolve_store_filesystem_path(const String &p_path, String &r_resolved)
 		if (r_resolved.is_empty() || bs_path_contains_nul(r_resolved)) {
 			return Error::ERR_INVALID_PARAMETER;
 		}
-		return Error::OK;
+	} else {
+		r_resolved = p_path;
 	}
 
-	r_resolved = p_path;
+#if defined(UNIX_ENABLED)
+	// Match FileAccess::fix_path: on POSIX, '\\' is treated as a separator alias for '/', so
+	// FileAccess write/readback and libc ::rename must see the same normalized bytes.
+	r_resolved = r_resolved.replace("\\", "/");
+#endif
 	return Error::OK;
 }
 
 #if defined(WINDOWS_ENABLED)
 
+static String bs_windows_ensure_extended_prefix(const String &p_path) {
+	String path = p_path.replace("/", "\\");
+	if (path.begins_with("\\\\?\\")) {
+		return path;
+	}
+	if (path.begins_with("\\\\")) {
+		// UNC \\server\share\... -> \\?\UNC\server\share\...
+		return String("\\\\?\\UNC\\") + path.substr(2);
+	}
+	return String("\\\\?\\") + path;
+}
+
+static bool bs_windows_is_drive_absolute(const String &p_path) {
+	return p_path.length() >= 2 && p_path[1] == ':' &&
+			((p_path[0] >= 'A' && p_path[0] <= 'Z') || (p_path[0] >= 'a' && p_path[0] <= 'z'));
+}
+
 Error bs_windows_absolute_utf16(const String &p_path, std::vector<wchar_t> &r_wide, int64_t *r_native_error) {
-	const Char16String utf16 = p_path.utf16();
+	// Always prepare absolute UTF-16 with the extended local/UNC prefix for MoveFileExW, for both
+	// short and long destinations. Do this without first requiring LongPathsEnabled: unprefixed
+	// GetFullPathNameW / MoveFileExW stay subject to the legacy WCHAR MAX_PATH ceiling unless the
+	// path is already extended. Length policy uses UTF-16 code units (Char16String::length /
+	// wcslen), never String::length() (UTF-32 codepoints) compared against MAX_PATH.
+
+	String path = p_path.replace("/", "\\");
+	String extended_input;
+	if (path.begins_with("\\\\?\\")) {
+		extended_input = path;
+	} else if (path.begins_with("\\\\")) {
+		extended_input = String("\\\\?\\UNC\\") + path.substr(2);
+	} else if (bs_windows_is_drive_absolute(path)) {
+		extended_input = String("\\\\?\\") + path;
+	} else {
+		DWORD dir_needed = GetCurrentDirectoryW(0, nullptr);
+		if (dir_needed == 0) {
+			if (r_native_error != nullptr) {
+				*r_native_error = (int64_t)GetLastError();
+			}
+			return Error::ERR_FILE_CANT_WRITE;
+		}
+		std::vector<wchar_t> dir_buf(dir_needed);
+		DWORD dir_written = GetCurrentDirectoryW(dir_needed, dir_buf.data());
+		if (dir_written == 0 || dir_written >= dir_needed) {
+			if (r_native_error != nullptr) {
+				*r_native_error = (int64_t)GetLastError();
+			}
+			return Error::ERR_FILE_CANT_WRITE;
+		}
+		String cwd = String::utf16(reinterpret_cast<const char16_t *>(dir_buf.data()), (int64_t)dir_written);
+		String extended_cwd = bs_windows_ensure_extended_prefix(cwd);
+		if (extended_cwd.ends_with("\\")) {
+			extended_input = extended_cwd + path;
+		} else {
+			extended_input = extended_cwd + String("\\") + path;
+		}
+	}
+
+	const Char16String utf16 = extended_input.utf16();
 	DWORD needed = GetFullPathNameW(reinterpret_cast<LPCWSTR>(utf16.get_data()), 0, nullptr, nullptr);
 	if (needed == 0) {
 		if (r_native_error != nullptr) {
@@ -135,15 +196,9 @@ Error bs_windows_absolute_utf16(const String &p_path, std::vector<wchar_t> &r_wi
 		return Error::ERR_FILE_CANT_WRITE;
 	}
 
-	String full = String::utf16(reinterpret_cast<const char16_t *>(absolute.data()), written);
-	String prefixed = full;
-	if (full.length() >= MAX_PATH) {
-		if (full.begins_with("\\\\") && !full.begins_with("\\\\?\\")) {
-			prefixed = String("\\\\?\\UNC\\") + full.substr(2);
-		} else if (!full.begins_with("\\\\?\\")) {
-			prefixed = String("\\\\?\\") + full;
-		}
-	}
+	// GetFullPathNameW may drop the extended prefix; restore it so MoveFileExW always receives one.
+	String full = String::utf16(reinterpret_cast<const char16_t *>(absolute.data()), (int64_t)written);
+	String prefixed = bs_windows_ensure_extended_prefix(full);
 
 	const Char16String out = prefixed.utf16();
 	r_wide.assign(reinterpret_cast<const wchar_t *>(out.get_data()),
