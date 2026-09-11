@@ -993,13 +993,15 @@ bool BSAnalyzer::validate_bootstrap_namespace_import(const String &p_import) {
 	return true;
 }
 
-Error BSAnalyzer::run_phase_preflight() {
+Error BSAnalyzer::run_phase_preflight(bool p_validate_annotations) {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
 	if (!parser->get_errors().is_empty()) {
 		return ERR_PARSE_ERROR;
 	}
 	validate_bootstrap_namespace_imports();
-	validate_annotation_declarations();
+	if (p_validate_annotations) {
+		validate_annotation_declarations();
+	}
 	mark_phase(AnalyzerPhase::PREFLIGHT);
 	mark_phase(AnalyzerPhase::DEPENDENCY_PARSE_AVAILABILITY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
@@ -1614,6 +1616,32 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 		}
 	}
+	// Foundry c9d5e35:2757,2817-2870: compiler-provided roots own their
+	// compound tails before class or namespace discovery.
+	if (p_type_node->type_chain.size() > 1) {
+		const bool is_self = name == SNAME("Self") && current_class != nullptr;
+		const bool is_number = name == BSParser::get_number_type_name();
+		const bool is_variant = name == SNAME("Variant");
+		const bool is_builtin = BSParser::is_builtin_data_type(name) || name == SNAME("AsyncCallable");
+		if (is_self || is_number || is_variant || is_builtin) {
+			BSParser::IdentifierNode *tail = p_type_node->type_chain[1];
+			if (is_self || is_number) {
+				push_error(vformat(R"(Type "%s" does not contain nested types.)", name), tail);
+			} else if (p_type_node->type_chain.size() > 2) {
+				push_error(is_variant ? "Variant only contains enum types, which do not have nested types." : "Built-in types only contain enum types, which do not have nested types.", p_type_node->type_chain[2]);
+			} else {
+				const auto enum_type = _engine_enum_type(String(name) + String(".") + String(tail->name));
+				if (enum_type.kind == BSParser::DataType::ENUM) {
+					result = type_from_metatype(enum_type);
+					result.is_nullable = p_type_node->is_nullable;
+					return result;
+				}
+				push_error(vformat(R"(Name "%s" is not a nested type of "%s".)", tail->name, name), tail);
+			}
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+	}
 	if (p_type_node->type_chain.size() == 1) {
 		if (name == BSParser::get_number_type_name()) {
 			// Foundry @ c9d5e35: `Number` is the closed int|float union at builtin precedence.
@@ -1748,8 +1776,12 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
-		// Same-file class/trait declarations are valid value types in annotations.
-		for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+		// Inherited nested heads retain their declaring parser, even across multiple bases.
+		List<BSParser::ClassNode *> type_scopes;
+		if (current_class != nullptr) {
+			get_class_node_current_scope_classes(current_class, &type_scopes, p_type_node);
+		}
+		for (BSParser::ClassNode *scope : type_scopes) {
 			if (!scope->has_member(name)) {
 				continue;
 			}
@@ -1838,20 +1870,21 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
-		bool lookup_error = false;
-		BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
-		if (lookup_error || !indexed.is_variant()) {
-			if (!indexed.is_variant()) {
-				indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
-			}
-			return indexed;
-		}
+		// Foundry c9d5e35:2944: flat native types precede namespace candidates.
 		if (ClassDB::class_exists(name)) {
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = name;
 			result.builtin_type = Variant::OBJECT;
 		} else {
-			push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
+			bool lookup_error = false;
+			BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
+			if (lookup_error || !indexed.is_variant()) {
+				if (!indexed.is_variant()) {
+					indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
+				}
+				return indexed;
+			}
+			push_error(vformat(R"(Could not find type "%s" in the current scope.)", name), p_type_node->type_chain[0]);
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
@@ -1859,29 +1892,74 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
-	// A lexical metatype constant (including a preload handle) claims the prefix
-	// before an identically spelled namespace. Private aliases remain file-local.
+	// Foundry c9d5e35:2950,3050: a lexical root claims the whole chain,
+	// including inherited roots. Resolve members through their retained owner.
 	const StringName lexical_name = p_type_node->type_chain[0]->name;
-	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+	List<BSParser::ClassNode *> lexical_scopes;
+	if (current_class != nullptr) {
+		get_class_node_current_scope_classes(current_class, &lexical_scopes, p_type_node);
+	}
+	bool found_out_of_scope_alias = false;
+	for (BSParser::ClassNode *scope : lexical_scopes) {
+		if (scope->identifier != nullptr && scope->identifier->name == lexical_name) {
+			return resolve_nested(type_from_metatype(scope->get_datatype()), 1);
+		}
 		if (!scope->has_member(lexical_name)) {
 			continue;
 		}
 		const auto member = scope->get_member(lexical_name);
-		if (member.type == BSParser::ClassNode::Member::CONSTANT) {
-			resolve_class_member(scope, lexical_name, p_type_node);
-			if (member.get_datatype().is_meta_type) {
-				return resolve_nested(type_from_metatype(member.get_datatype()), 1);
-			}
-			push_error(vformat(R"("%s" is a constant but does not contain a type.)", lexical_name), p_type_node);
+		if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS &&
+				find_type_alias_in_scope(lexical_name) != member.type_alias) {
+			// An invisible inherited alias cannot hide a legal enclosing root.
+			found_out_of_scope_alias = true;
+			continue;
+		}
+		const int errors = parser->get_errors().size();
+		resolve_class_member(scope, lexical_name, p_type_node);
+		if (parser->get_errors().size() > errors) {
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
-		if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
-			// The selected lexical owner supplies nested classes, enums and tuples alike.
-			resolve_class_member(scope, lexical_name, p_type_node);
+		if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+			const auto *alias = resolved_type_aliases.getptr(member.type_alias);
+			if (alias != nullptr && alias->is_set()) {
+				return resolve_nested(type_from_metatype(*alias), 1);
+			}
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+		if (member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::ENUM ||
+				member.type == BSParser::ClassNode::Member::TUPLE ||
+				(member.type == BSParser::ClassNode::Member::CONSTANT && member.get_datatype().is_meta_type)) {
 			return resolve_nested(type_from_metatype(member.get_datatype()), 1);
 		}
-		break;
+		push_error(vformat(R"("%s" is a %s but does not contain a type.)", lexical_name, member.get_type_name()), p_type_node);
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+	if (found_out_of_scope_alias) {
+		push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", lexical_name), p_type_node);
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+
+	// A native root has only an enum tail; an absent enum must not reopen
+	// namespace lookup (Foundry c9d5e35:2944,3245).
+	if (ClassDB::class_exists(lexical_name)) {
+		BSParser::IdentifierNode *tail = p_type_node->type_chain[1];
+		const auto native_enum = _engine_enum_type(String(lexical_name) + String(".") + String(tail->name));
+		if (native_enum.kind == BSParser::DataType::ENUM) {
+			if (p_type_node->type_chain.size() == 2) {
+				result = type_from_metatype(native_enum);
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
+			push_error("Enums cannot contain nested types.", p_type_node->type_chain[2]);
+		} else {
+			push_error(vformat(R"(Could not find type "%s" in "%s".)", tail->name, lexical_name), tail);
+		}
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
 	}
 
 	String qualified;
@@ -2862,6 +2940,19 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	}
 	if (reduce_identifier_from_witness_declaration_scope(p_identifier))
 		return;
+	// Foundry c9d5e35:12737: native handles follow lexical values and precede namespaces.
+	if (ClassDB::class_exists(p_identifier->name)) {
+		BSParser::DataType native_meta;
+		native_meta.kind = BSParser::DataType::NATIVE;
+		native_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		native_meta.builtin_type = Variant::OBJECT;
+		native_meta.native_type = p_identifier->name;
+		native_meta.is_meta_type = true;
+		native_meta.is_constant = true;
+		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
+		p_identifier->set_datatype(native_meta);
+		return;
+	}
 	bool lookup_error = false;
 	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier, lookup_error);
 	if (lookup_error) {
@@ -2884,20 +2975,6 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		builtin_meta.is_meta_type = true;
 		builtin_meta.is_constant = true;
 		p_identifier->set_datatype(builtin_meta);
-		return;
-	}
-	// Native classes are expression-position class handles after locals and members have missed.
-	// This also lets match patterns distinguish an unshadowed native type from a value pattern.
-	if (ClassDB::class_exists(p_identifier->name)) {
-		BSParser::DataType native_meta;
-		native_meta.kind = BSParser::DataType::NATIVE;
-		native_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-		native_meta.builtin_type = Variant::OBJECT;
-		native_meta.native_type = p_identifier->name;
-		native_meta.is_meta_type = true;
-		native_meta.is_constant = true;
-		p_identifier->source = BSParser::IdentifierNode::NATIVE_CLASS;
-		p_identifier->set_datatype(native_meta);
 		return;
 	}
 	{
@@ -10331,7 +10408,7 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 	auto exists = [&](const String &p_candidate) {
 		return ScriptServer::has_global_class_candidate(StringName(p_candidate));
 	};
-	if (p_name.contains(".") || p_scope == nullptr) {
+	if ((p_name.contains(".") && exists(p_name)) || p_scope == nullptr) {
 		if (exists(p_name)) {
 			result.qualified = p_name;
 		}
@@ -10361,9 +10438,9 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 					if (i > 0) {
 						choices += i == candidates.size() - 1 ? " and " : ", ";
 					}
-					choices += String("\"") + candidates[i] + String("\"");
+					choices += String("\"") + candidates[i].trim_suffix(String(".") + p_name) + String("\"");
 				}
-				push_error(vformat(R"(Could not resolve %s "%s": imported declarations %s are ambiguous.)", p_symbol_kind, p_name, choices), p_source);
+				push_error(vformat(R"(Could not resolve %s "%s": imported namespaces %s are ambiguous.)", p_symbol_kind, p_name, choices), p_source);
 				failed_name_lookups.insert(p_source);
 				result.status = NameLookupStatus::ERROR;
 				return result;
@@ -10409,14 +10486,22 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 
 BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source, bool &r_error) {
 	const NameLookup lookup = lookup_declaration(String(p_name), current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
-	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup, p_source);
+	BSParser::DataType result = named_type_from_lookup(lookup, p_source);
+	// A selected declaration whose owner failed is an error, never a namespace
+	// miss eligible for another (shorter) prefix. Foundry c9d5e35:2987.
+	r_error = lookup.status == NameLookupStatus::ERROR ||
+			(lookup.status == NameLookupStatus::FOUND && result.is_variant());
+	return result;
 }
 
 BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error) {
-	const NameLookup lookup = lookup_declaration(p_qualified, nullptr, p_source, "type");
-	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup, p_source);
+	const NameLookup lookup = lookup_declaration(p_qualified, current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
+	BSParser::DataType result = named_type_from_lookup(lookup, p_source);
+	// A selected declaration whose owner failed is an error, never a namespace
+	// miss eligible for another (shorter) prefix. Foundry c9d5e35:2987.
+	r_error = lookup.status == NameLookupStatus::ERROR ||
+			(lookup.status == NameLookupStatus::FOUND && result.is_variant());
+	return result;
 }
 
 BSParser::DataType BSAnalyzer::resolve_global_head(const String &p_name, const BSParser::Node *p_source) {
@@ -10536,7 +10621,10 @@ Error BSAnalyzer::run_phase_conformance_witness_body() {
 Error BSAnalyzer::resolve_inheritance() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
 	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
-	Error err = run_phase_preflight();
+	// Foundry c9d5e35:4387: dependency interfaces expose duplicate annotation
+	// signatures so usage can diagnose their canonical identity. Full analyze
+	// still validates the provider declarations in its own preflight.
+	Error err = run_phase_preflight(false);
 	if (err != OK) {
 		commit_or_remove_declaration(false);
 		return err;
