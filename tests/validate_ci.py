@@ -351,8 +351,9 @@ def check_build_version_wiring(ci, package, action):
     """Pin actual matrix inputs, shared versions and the gate before the uploaded bytes."""
     try:
         config = load_config()
-        expected_ci = {("linux", "x86_64", "template_debug"), ("windows", "x86_64", "template_release"),
-                       ("macos", "universal", "template_debug"), ("android", "arm64", "template_debug"),
+        expected_ci = {("linux", "x86_64", "template_debug"), ("windows", "x86_64", "template_debug"),
+                       ("windows", "x86_64", "template_release"), ("macos", "universal", "template_debug"),
+                       ("ios", "arm64", "template_debug"), ("android", "arm64", "template_debug"),
                        ("web", "wasm32", "template_release")}
         expected_package = {(platform, arch) for platform, arches in {
             "linux": ("x86_64", "x86_32", "arm64", "arm32"), "windows": ("x86_64", "x86_32", "arm64"),
