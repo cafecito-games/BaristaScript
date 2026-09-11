@@ -1467,6 +1467,34 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
+	// Pin fs_analyzer.cpp:3174-3193: concrete Type[T] is a handle annotation,
+	// independent of user generic specialization.
+	if (p_type_node->type_chain[0]->name == SNAME("Type")) {
+		if (p_type_node->type_chain.size() != 1 || p_type_node->container_types.size() != 1) {
+			push_error("Type[T] expects exactly one type argument.", p_type_node);
+			return result;
+		}
+		BSParser::DataType represented = datatype_from_type_node(p_type_node->container_types[0]);
+		if (represented.kind == BSParser::DataType::UNION) {
+			push_error(vformat(R"(A type handle cannot represent the type union "%s", because a handle names exactly one type at runtime. Use a handle of one alternative instead.)", represented.to_string()), p_type_node->container_types[0]);
+			return result;
+		}
+		if (represented.is_variant() || represented.kind == BSParser::DataType::ENUM || represented.kind == BSParser::DataType::TUPLE || represented.is_type_handle_annotation) {
+			push_error("Type[T] requires an object, script, class, trait, or type-parameter argument.", p_type_node);
+			return result;
+		}
+		if (represented.kind == BSParser::DataType::BUILTIN) {
+			push_error(vformat(R"(Builtin metatypes such as "Type[%s]" are not supported yet.)", represented.to_string()), p_type_node);
+			return result;
+		}
+		represented.is_type_handle_annotation = true;
+		represented.is_meta_type = false;
+		represented.is_constant = false;
+		represented.is_nullable = p_type_node->is_nullable;
+		represented.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		return represented;
+	}
+
 	if (!p_type_node->container_types.is_empty() || !p_type_node->type_argument_expressions.is_empty()) {
 		// Generic / container specialization — deferred unless it is a plain builtin container.
 		const StringName head = p_type_node->type_chain[0]->name;
@@ -3909,6 +3937,10 @@ void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
 	resolve_function_signature_in_class(p_lambda->function, current_class);
 	current_lambda = previous_lambda;
 
+	lambda_type = CallSiteValidationContext(this).callable_type_from_function(p_lambda->function);
+	lambda_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+	lambda_type.is_constant = false;
+	p_lambda->set_datatype(lambda_type);
 	pending_lambda_bodies.push_back(p_lambda);
 }
 
@@ -4012,7 +4044,9 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 			if (receiver.kind == BSParser::DataType::BUILTIN && receiver.is_hard_type() && (receiver.is_meta_type || receiver.builtin_type != Variant::DICTIONARY)) {
 				if (auto *witness = find_conformance_witness(receiver, name)) {
 					if (witness->is_static || !receiver.is_meta_type) {
-						p_subscript->set_datatype(call_site_validation.callable_type_from_function(witness));
+						BSParser::DataType callable = call_site_validation.callable_type_from_function(witness);
+						callable.has_explicit_method_signature = true;
+						p_subscript->set_datatype(callable);
 						return;
 					}
 				}
@@ -4306,7 +4340,8 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
 						p_subscript->attribute->function_source = member.function;
 						p_subscript->attribute->function_source_is_static = member.function->is_static;
-						const BSParser::DataType callable = call_site_validation.callable_type_from_function(member.function);
+						BSParser::DataType callable = call_site_validation.callable_type_from_function(member.function);
+						callable.has_explicit_method_signature = true;
 						p_subscript->attribute->set_datatype(callable);
 						p_subscript->set_datatype(callable);
 						return;
@@ -8171,10 +8206,31 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 						options.constant_source_value = &assignment->assigned_value->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
-						push_error(vformat(R"*(Value of type "%s" cannot be assigned to a variable of type "%s".)*",
-										   assigned_value_type.to_string(), assignee_type.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type"),
-								assignment->assigned_value);
+						StringName target_name;
+						if (assignment->assignee->type == BSParser::Node::IDENTIFIER)
+							target_name = static_cast<BSParser::IdentifierNode *>(assignment->assignee)->name;
+						else if (assignment->assignee->type == BSParser::Node::SUBSCRIPT) {
+							const auto *subscript = static_cast<BSParser::SubscriptNode *>(assignment->assignee);
+							if (subscript->is_attribute && subscript->attribute)
+								target_name = subscript->attribute->name;
+						}
+						// Pin7900-7968: strict-profile failures take precedence over handle identity.
+						String error;
+						if (strict_dynamic_checks && op_type.is_variant()) {
+							error = target_name != StringName()
+									? vformat(R"(Cannot assign Variant value to variable "%s" in strict dynamic mode; expected "%s".)", target_name, assignee_type.to_string())
+									: vformat(R"(Cannot assign Variant value to target in strict dynamic mode; expected "%s".)", assignee_type.to_string());
+						} else if (strict_null_checks && op_type.is_nullable && !assignee_type.is_nullable && !assignee_type.is_variant()) {
+							error = target_name != StringName()
+									? vformat(R"(Cannot assign nullable value of type "%s" to variable "%s"; expected non-nullable "%s".)", assigned_value_type.to_string(), target_name, assignee_type.to_string())
+									: vformat(R"(Cannot assign nullable value of type "%s" to target; expected non-nullable "%s".)", assigned_value_type.to_string(), assignee_type.to_string());
+						} else {
+							error = make_type_handle_assignment_error(assignee_type, assigned_value_type, "variable", target_name, false);
+							if (error.is_empty()) {
+								error = vformat(R"(Value of type "%s" cannot be assigned to a variable of type "%s".)", assigned_value_type.to_string(), assignee_type.to_string()) + BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type");
+							}
+						}
+						push_error(error, assignment->assigned_value);
 					} else if (op_type.is_variant() || !op_type.is_hard_type()) {
 						mark_node_unsafe(assignment);
 						assignment->use_conversion_assign = true;
@@ -8198,6 +8254,97 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 	}
 }
 
+// Foundry fs_analyzer.cpp:2215-2255,2282-2313: report the represented class,
+// keeping declaration and subsequent-store wording distinct.
+String BSAnalyzer::make_type_handle_assignment_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name, bool p_specified) {
+	if (!p_target.is_type_handle_annotation || (p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::NIL))
+		return String();
+	const String target = p_name != StringName() ? vformat(R"(%s "%s"%s "%s")", p_kind, p_name, p_specified ? " with specified type" : " of type", p_target.to_string()) : vformat(R"(target of type "%s")", p_target.to_string());
+	const String represented_target = _type_handle_represented_type(p_target).to_string();
+	if (_type_handle_source_is_handle(p_source)) {
+		const String represented_source = _type_handle_represented_type(p_source).to_string();
+		return vformat(R"(Cannot assign class handle "%s" to %s; handle represents "%s", which is not compatible with "%s".)", represented_source, target, represented_source, represented_target);
+	}
+	return vformat(R"(Cannot assign instance value of type "%s" to %s; expected a class handle whose represented instance type is "%s".)", p_source.to_string(), target, represented_target);
+}
+String BSAnalyzer::make_type_handle_argument_error(const StringName &p_function, int p_argument, const BSParser::DataType &p_target, const BSParser::DataType &p_source) {
+	if (!p_target.is_type_handle_annotation || (p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::NIL))
+		return String();
+	const String represented_target = _type_handle_represented_type(p_target).to_string();
+	if (_type_handle_source_is_handle(p_source)) {
+		const String represented_source = _type_handle_represented_type(p_source).to_string();
+		return vformat(R"*(Cannot pass class handle "%s" as argument %d of "%s()"; handle represents "%s", which is not compatible with expected represented instance type "%s" for "%s".)*", represented_source, p_argument, p_function, represented_source, represented_target, p_target.to_string());
+	}
+	return vformat(R"*(Cannot pass instance value of type "%s" as argument %d of "%s()"; expected a class handle whose represented instance type is "%s" for "%s".)*", p_source.to_string(), p_argument, p_function, represented_target, p_target.to_string());
+}
+String BSAnalyzer::make_declaration_type_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name) {
+	// Foundry resolve_assignable @ c9d5e35:5477-5524: profile errors precede class-handle explanations.
+	if (strict_dynamic_checks && p_source.is_variant()) {
+		return vformat(R"(Cannot assign Variant value to %s "%s" in strict dynamic mode; expected "%s".)", p_kind, p_name, p_target.to_string());
+	}
+	if (strict_null_checks && p_source.is_nullable && !p_target.is_nullable && !p_target.is_variant()) {
+		return vformat(R"(Cannot assign nullable value of type "%s" to %s "%s"; expected non-nullable "%s".)", p_source.to_string(), p_kind, p_name, p_target.to_string());
+	}
+	const String handle_error = make_type_handle_assignment_error(p_target, p_source, p_kind, p_name, true);
+	if (!handle_error.is_empty())
+		return handle_error;
+	return vformat(R"(Cannot assign a value of type %s to %s "%s" with specified type %s.)", p_source.to_string(), p_kind, p_name, p_target.to_string()) + BSParser::DataType::same_rendered_name_clause(p_source, "value", p_target, "specified type");
+}
+
+void BSAnalyzer::resolve_variable_destructure(BSParser::VariableDestructureNode *p_destructure) {
+	BSParser::DataType initializer_type;
+	if (p_destructure->initializer != nullptr) {
+		reduce_expression(p_destructure->initializer);
+		initializer_type = p_destructure->initializer->get_datatype();
+	}
+
+	bool shape_is_known = false;
+	if (p_destructure->initializer == nullptr) {
+		// The parser already reported the missing initializer.
+	} else if (!initializer_type.is_set() || !initializer_type.is_hard_type() || initializer_type.kind != BSParser::DataType::TUPLE) {
+		push_error(vformat(R"(Cannot destructure a value of type "%s"; only a tuple with a statically known shape can be destructured.)",
+						   initializer_type.to_string()),
+				p_destructure->initializer);
+	} else if (initializer_type.is_meta_type) {
+		push_error(vformat(R"(Cannot destructure the tuple type "%s"; construct a value first.)", initializer_type.to_string()),
+				p_destructure->initializer);
+	} else if (strict_null_checks && initializer_type.is_nullable) {
+		// Destructuring reads the elements, so it dereferences the value: a nullable tuple must be
+		// narrowed to non-null first, exactly like the other strict-null boundaries.
+		push_error(vformat(R"(Cannot destructure the nullable value of type "%s"; check for null first.)", initializer_type.to_string()),
+				p_destructure->initializer);
+	} else if (initializer_type.container_element_types.size() != p_destructure->bindings.size()) {
+		push_error(vformat(R"(Cannot destructure the tuple "%s" into %d bindings; it has %d elements.)",
+						   initializer_type.to_string(), p_destructure->bindings.size(), initializer_type.container_element_types.size()),
+				p_destructure->initializer);
+	} else {
+		shape_is_known = true;
+	}
+
+	for (int i = 0; i < p_destructure->bindings.size(); i++) {
+		BSParser::VariableNode *binding = p_destructure->bindings[i];
+		if (binding == nullptr) {
+			continue; // A `_` slot binds nothing.
+		}
+
+		BSParser::DataType binding_type;
+		if (shape_is_known) {
+			binding_type = initializer_type.get_container_element_type_or_variant(i);
+			binding_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+		} else {
+			// Keep going with a Variant binding so a broken initializer reports once instead of
+			// cascading through every later use of the names it declares.
+			binding_type.kind = BSParser::DataType::VARIANT;
+			binding_type.type_source = BSParser::DataType::UNDETECTED;
+		}
+		// A `const` binding is immutable, not compile-time constant: its value comes from a runtime
+		// tuple, so it must not be treated as a foldable constant.
+		binding_type.is_constant = false;
+		binding_type.is_read_only = false;
+		binding->set_datatype(binding_type);
+	}
+}
+
 void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 	if (p_node == nullptr) {
 		return;
@@ -8215,6 +8362,9 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 		return;
 	}
 	switch (p_node->type) {
+		case BSParser::Node::VARIABLE_DESTRUCTURE:
+			resolve_variable_destructure(static_cast<BSParser::VariableDestructureNode *>(p_node));
+			break;
 		case BSParser::Node::VARIABLE: {
 			BSParser::VariableNode *variable = static_cast<BSParser::VariableNode *>(p_node);
 			if (variable->initializer != nullptr) {
@@ -8292,10 +8442,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
 									variable->initializer);
 						} else {
-							push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-											   initializer_type.to_string(), declared.to_string()) +
-											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-									variable->initializer);
+							push_error(make_declaration_type_error(declared, initializer_type, "variable", variable->identifier != nullptr ? variable->identifier->name : StringName("<unknown>")), variable->initializer);
 						}
 					}
 				}

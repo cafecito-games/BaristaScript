@@ -321,9 +321,9 @@ TEST_SUITE("numeric_consumer_analyzer") {
 			int column;
 		};
 		const Consumer consumers[] = {
-			{ "var member: E = BOX\n", "Cannot assign a value of type \"int?\" to a variable of type \"numeric_nullable.barista.E\".", 4, 17 },
-			{ "func test():\n\tvar value: E = BOX\n", "Cannot assign a value of type \"int?\" to a variable of type \"numeric_nullable.barista.E\".", 5, 20 },
-			{ "func test():\n\tvar value: E = E.A\n\tvalue = BOX\n", "Value of type \"int?\" cannot be assigned to a variable of type \"numeric_nullable.barista.E\".", 6, 13 },
+			{ "var member: E = BOX\n", "Cannot assign nullable value of type \"int?\" to variable \"member\"; expected non-nullable \"numeric_nullable.barista.E\".", 4, 17 },
+			{ "func test():\n\tvar value: E = BOX\n", "Cannot assign nullable value of type \"int?\" to variable \"value\"; expected non-nullable \"numeric_nullable.barista.E\".", 5, 20 },
+			{ "func test():\n\tvar value: E = E.A\n\tvalue = BOX\n", "Cannot assign nullable value of type \"int?\" to variable \"value\"; expected non-nullable \"numeric_nullable.barista.E\".", 6, 13 },
 			{ "func test() -> E:\n\treturn BOX\n", "Cannot return value of type \"int?\" because the function return type is \"numeric_nullable.barista.E\".", 5, 5 },
 			{ "func take(_value: E):\n\tpass\nfunc test():\n\ttake(BOX)\n", "Cannot pass nullable value of type \"int?\" as argument 1 of \"take()\"; expected non-nullable \"numeric_nullable.barista.E\".", 7, 10 },
 		};

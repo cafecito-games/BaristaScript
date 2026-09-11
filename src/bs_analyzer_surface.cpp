@@ -1319,10 +1319,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 						options.constant_source_value = &member.variable->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-										   initializer_type.to_string(), type.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
-								member.variable->initializer);
+						push_error(make_declaration_type_error(type, initializer_type, "variable", member.variable->identifier != nullptr ? member.variable->identifier->name : StringName("<unknown>")), member.variable->initializer);
 					}
 				}
 			}

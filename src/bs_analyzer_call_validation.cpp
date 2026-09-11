@@ -128,6 +128,9 @@ String BSAnalyzer::CallSiteValidationContext::make_invalid_argument_error(
 				p_function,
 				p_expected_type.to_string_diagnostic());
 	}
+	const String handle_error = analyzer->make_type_handle_argument_error(p_function, p_argument_number, p_expected_type, p_actual_type);
+	if (!handle_error.is_empty())
+		return handle_error;
 	return vformat(R"*(Invalid argument for "%s()" function: argument %d should be "%s" but is "%s".)*",
 				   p_function,
 				   p_argument_number,
@@ -761,9 +764,8 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::callable_type_from_fun
 	type.builtin_type = Variant::CALLABLE;
 	type.is_constant = true;
 	type.has_method_signature = true;
-	// Foundry MEMBER_FUNCTION / make_callable_type @ c9d5e35: bare function refs publish an
-	// explicit signature so Callable.bind/unbind/call/callv/rpc transforms can validate it.
-	type.has_explicit_method_signature = true;
+	// Pin make_callable_type: references retain rich slots without pretending to be
+	// authored Callable annotations. Transformed callables publish their own explicit shape.
 	if (p_function == nullptr) {
 		return type;
 	}
@@ -821,6 +823,7 @@ bool BSAnalyzer::CallSiteValidationContext::callable_type_from_method(const BSPa
 		BSParser::FunctionNode *function = analyzer->find_class_function(receiver_type.class_type, p_method_name, &found_member, p_source);
 		if (function != nullptr) {
 			r_callable_type = callable_type_from_function(function);
+			r_callable_type.has_explicit_method_signature = true;
 			return true;
 		}
 		if (found_member) {
@@ -1126,7 +1129,11 @@ bool BSAnalyzer::CallSiteValidationContext::try_type_callable_method_call(BSPars
 		return false;
 	}
 
-	if (!p_base_type.has_explicit_method_signature) {
+	// Rich function-reference and lambda signatures survive without an authored
+	// annotation flag. Preserve their existing call/transform contract; only a
+	// truly signatureless Callable takes the gradual path.
+	if (!p_base_type.has_explicit_method_signature &&
+			(!p_base_type.has_method_signature || (p_base_type.method_parameter_types.is_empty() && p_base_type.method_return_type.is_empty()))) {
 		// Foundry bare AsyncCallable @ c9d5e35 (~16658): signatureless `var cb: AsyncCallable` still
 		// yields a coroutine from call/callv (untyped Variant result wrapped). Deferred/RPC stay NIL.
 		if (p_base_type.signature_is_async && (is_callable_call || is_callable_callv)) {

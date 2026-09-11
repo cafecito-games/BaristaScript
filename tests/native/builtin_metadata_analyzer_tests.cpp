@@ -428,7 +428,7 @@ TEST_SUITE("builtin_metadata_analyzer") {
 		CHECK(vector.constant->initializer->reduced_value == Variant(Vector3(1, 1, 1)));
 		CHECK(axis.constant->get_datatype().native_type == SNAME("Vector3.Axis"));
 		BS_TEST_REQUIRE(parser.get_errors().size() == 1);
-		error_tuple(parser, 0, "Cannot assign a value of type \"Vector3.Axis\" to a variable of type \"Vector2.Axis\".", 4, 30, 4, 44);
+		error_tuple(parser, 0, "Cannot assign a value of type Vector3.Axis to variable \"axis\" with specified type Vector2.Axis.", 4, 30, 4, 44);
 		CHECK(parser.get_warnings().is_empty());
 	}
 	TEST_CASE("builtin_trait_implementation_accepts_matching_and_rejects_mismatch") {
