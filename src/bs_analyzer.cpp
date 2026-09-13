@@ -508,6 +508,33 @@ static String _dependency_error_suffix(const char *p_noun, const String &p_path,
 	return vformat(R"(The %s is declared in "%s", which has errors, the first at %s)", p_noun, script_path, first_error);
 }
 
+// Foundry `_resolving_context_name` / `_unresolved_dependency_type_message` @ c9d5e35:
+// a sticky dependency result may be an analyzer failure, not a parser failure. Preserve the
+// selected provider and replay its first concrete error at the consumer relationship.
+static String _resolving_context_name(const BSParser *p_parser) {
+	if (p_parser == nullptr || p_parser->get_tree() == nullptr) {
+		return String();
+	}
+	const BSParser::ClassNode *head = p_parser->get_tree();
+	const StringName global_name = head->get_global_name();
+	return global_name != StringName() ? String(global_name) : bs_class_or_trait_diagnostic_name(head);
+}
+
+static String _unresolved_dependency_type_message(const char *p_noun, const StringName &p_type_name,
+		const BSParser *p_current_parser, const String &p_dependency_path, BSParser *p_dependency_parser) {
+	String message = vformat(R"(Could not resolve %s "%s")", p_noun, p_type_name);
+	const String resolving = _resolving_context_name(p_current_parser);
+	if (!resolving.is_empty() && resolving != String(p_type_name)) {
+		message += vformat(R"( while resolving "%s")", resolving);
+	}
+	message += ".";
+	const String suffix = _dependency_error_suffix(p_noun, p_dependency_path, p_dependency_parser, 0);
+	if (!suffix.is_empty()) {
+		message += " " + suffix;
+	}
+	return message;
+}
+
 // Foundry coroutine_result_is_void @ c9d5e35 (~1664): True when a coroutine's phantom result is
 // hard `void` (BUILTIN NIL in container_element_types[0]). Root-position discards of
 // Coroutine[void] are intentional fire-and-forget launches — no result exists to lose — so
@@ -10834,8 +10861,11 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 	const bool trait_body_pending = p_symbol_kind == "trait" && result.record.kind == BSDeclarationKind::TRAIT &&
 			provider.is_valid() && provider->get_status() == BSParserRef::FULLY_SOLVED &&
 			provider->get_result_for_status(BSParserRef::INTERFACE_SOLVED) == OK;
+	const bool class_type_lookup = p_symbol_kind == "type" && result.record.kind == BSDeclarationKind::CLASS;
+	const bool provider_parse_failed = class_type_lookup ? provider.is_valid() && provider->get_result_for_status(BSParserRef::PARSED) != OK
+														 : error != OK || provider.is_valid() && !provider->get_parser()->get_errors().is_empty();
 	if (provider.is_null() || provider->get_parser() == nullptr ||
-			(!trait_body_pending && (error != OK || !provider->get_parser()->get_errors().is_empty()))) {
+			(!trait_body_pending && provider_parse_failed)) {
 		push_error(vformat(R"(Could not resolve %s "%s": provider "%s" could not be parsed.)", p_symbol_kind, p_name, result.record.path), p_source);
 		failed_name_lookups.insert(p_source);
 		result.status = NameLookupStatus::ERROR;
@@ -10912,8 +10942,16 @@ BSParser::DataType BSAnalyzer::named_type_from_lookup(const NameLookup &p_lookup
 	}
 	Error error = OK;
 	Ref<BSParserRef> ref = get_depended_parser(path, BSParserRef::INHERITANCE_SOLVED, error);
-	if (ref.is_null() || error != OK || ref->get_parser() == nullptr || ref->get_parser()->get_tree() == nullptr) {
+	if (ref.is_null() || ref->get_parser() == nullptr || ref->get_parser()->get_tree() == nullptr) {
 		push_error(vformat(R"(Could not resolve type "%s" from "%s".)", p_lookup.qualified, path), p_source);
+		return result;
+	}
+	if (ref->get_result_for_status(BSParserRef::INHERITANCE_SOLVED) != OK) {
+		if (p_lookup.record.kind == BSDeclarationKind::CLASS) {
+			push_error(_unresolved_dependency_type_message("class", StringName(p_lookup.qualified), parser, path, ref->get_parser()), p_source);
+		} else {
+			push_error(vformat(R"(Could not resolve type "%s" from "%s".)", p_lookup.qualified, path), p_source);
+		}
 		return result;
 	}
 	BSAnalyzer *owner = ref->get_analyzer();

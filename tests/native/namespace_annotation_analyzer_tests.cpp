@@ -606,7 +606,7 @@ void materialization_failure(bool nested) {
 		BS_TEST_REQUIRE(parser.parse("import a\nvar x: " + type + "\n", "res://tests/f2/consumer" + itos(consumer) + ".barista", false) == OK);
 		BSAnalyzer analyzer(&parser);
 		CHECK(analyzer.analyze() != OK);
-		one_error(parser, consumer == 0 ? "Could not resolve type \"a.child.Item\" from \"res://tests/f2/item.barista\"." : "Could not resolve type \"" + String("child.Item") + "\": provider \"res://tests/f2/item.barista\" could not be parsed.", parser.get_tree()->get_member("x").variable->datatype_specifier);
+		one_error(parser, "Could not resolve class \"a.child.Item\" while resolving \"consumer" + itos(consumer) + ".barista\". The class is declared in \"res://tests/f2/item.barista\", which has errors, the first at line 3: Could not find base class \"MissingBase\".", parser.get_tree()->get_member("x").variable->datatype_specifier);
 	}
 	BS_TEST_REQUIRE(storage.index().flush(store) == OK);
 	CHECK(read_bytes(store) == before);
