@@ -2,11 +2,13 @@
 
 This inventory is reconciled with `project/tests/analyzer_test.gd` at merged main
 `4b2439fb95a4ed6069c3771ea1663ae50eeb8ac1` (PR #199), rechecked unchanged at
-`eb0e7275747f6ac585117777f17222c70b66f30e` (PR #200). The suite still invokes exactly
+`eb0e7275747f6ac585117777f17222c70b66f30e` (PR #200), and reconciled with the two
+Callable-member changes at `4c9c561c6096e020440483328c13fc0fcbd3aa71` (PR #201).
+The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 79 scenarios have explicit native equivalents and 11
+The legacy suite remains enabled: 80 scenarios have explicit native equivalents and 10
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -106,7 +108,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 10 | `_test_validate_and_is_valid_agree` | diagnostics/settings | native `analyzer_cache` |
 | 11 | `_test_semantic_errors` | diagnostics/settings | native `analyzer_diagnostics` |
 | 12 | `_test_undeclared_identifier_diagnostic` | diagnostics/settings | native `analyzer_diagnostics` |
-| 13 | `_test_review_resolution_regressions` | expressions/calls | legacy-only |
+| 13 | `_test_review_resolution_regressions` | expressions/calls | native `analyzer_resolution` |
 | 14 | `_test_pinned_global_api_lookup` | expressions/calls | legacy-only |
 | 15 | `_test_language_utility_registry` | expressions/calls | legacy-only |
 | 16 | `_test_dictionary_literal_constant_parity` | expressions/calls | native `analyzer_constants` |
@@ -256,6 +258,15 @@ were deleted.
 
 ## Remaining gates
 
+Normal merge `c990405` integrates PR #201 without rewriting the original commits. Both the
+private `reduce_subscript` signature and the test-only analyzer friend remain present; every
+new main suite is retained. `merge201-native-full.log` records 43 suites, 850 cases and 72,756
+assertions with zero failures at clean `c990405`. The new `analyzer_resolution` scenario keeps
+all 53 resolution-regression fixture invocations, including the exact PR #201 Callable-member
+negative. `resolution-stage-2.log` records two cases / 439 assertions with zero failures,
+including normal/reverse/shuffle runs. Its first build exposed an ambiguous Godot String
+concatenation, corrected using explicit String construction without changing fixture bytes.
+
 The first `analyzer_constants` cases preserve both dictionary-literal and typed-key conversion
 functions: exact nested key/value carriers, empty and runtime dictionaries, duplicate-key
 messages/positions, six builtin conversion positives and four exact rejected-key controls.
@@ -273,7 +284,7 @@ and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payl
 control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
 Focused results are recorded in `members-stage-analyzer_*.log`.
 
-- Migrate the 11 remaining legacy-only functions; newly merged scenarios
+- Migrate the 10 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
