@@ -474,14 +474,157 @@ void scenario_constant_producer_child_evidence() {
 	}
 }
 
+void scenario_nested_constant_evidence_and_contextual_casts() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	struct EvidenceCase {
+		const char *source;
+		const char *datatype;
+		Variant expected;
+		const char *path;
+	};
+	const std::vector<EvidenceCase> evidence = {
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [KEYS]\nvar probe_expression = BOX[0]\n", "Dictionary[float, int]", dictionary_value({ { Variant(double(1)), Variant(int64_t(2)) } }), "res://tests/nested_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nested_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Variant] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nested_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = {\"keys\": KEYS}\nvar probe_expression = BOX[\"keys\"][1]\n", "int", Variant(int64_t(2)), "res://tests/nested_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Dictionary[float, int]] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nested_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nvar probe_expression = KEYS[1]\n", "int", Variant(int64_t(2)), "res://tests/nested_constant_evidence.barista" },
+		{ "const VALUES: Array[int] = [1, 2]\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0]\n", "Array[int]", array_value({ Variant(int64_t(1)), Variant(int64_t(2)) }), "res://tests/nested_constant_evidence.barista" },
+		{ "const VALUES: Array[float] = [1, 2]\nconst BOX = {\"values\": VALUES}\nvar probe_expression = BOX[\"values\"]\n", "Array[float]", array_value({ Variant(double(1)), Variant(double(2)) }), "res://tests/nested_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX: Array[Dictionary[Variant, int]] = [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nested_constant_evidence.barista" },
+		{ "const BOX = [[1, 2]]\nvar probe_expression = BOX[0]\n", "Array", array_value({ Variant(int64_t(1)), Variant(int64_t(2)) }), "res://tests/nested_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst VALUE: Variant = KEYS\nvar probe_expression = VALUE\n", "Variant", dictionary_value({ { Variant(double(1)), Variant(int64_t(2)) } }), "res://tests/nested_constant_evidence.barista" },
+		{ "const VALUES: Array[int?] = [null, 1]\nconst BOX = [VALUES]\nvar probe_expression = BOX[0]\n", "Array[int?]", array_value({ Variant(), Variant(int64_t(1)) }), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0][0]\n", "null", Variant(), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [VALUES]\nvar probe_expression = BOX[0]\n", "Dictionary[float?, int?]", dictionary_value({ { Variant(), Variant() }, { Variant(double(1)), Variant(int64_t(2)) } }), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Array[Variant] = [VALUES]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = {\"values\": VALUES}\nvar probe_expression = BOX[\"values\"][null]\n", "null", Variant(), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int] = {null: 3, 1.0: 2}\nconst BOX = [VALUES]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int] = {null: 3, 1.0: 2}\nvar probe_expression = VALUES[null]\n", "int", Variant(int64_t(3)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst VALUE: Variant = KEYS\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nconst BOX = [VALUE] + []\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE[1]\n", "int", Variant(int64_t(2)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE[null]\n", "null", Variant(), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = VALUES\nvar probe_expression = VALUE\n", "Variant", dictionary_value({ { Variant(), Variant() }, { Variant(double(1)), Variant(int64_t(2)) } }), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = VALUES\nconst VALUE: Variant = RAW\nconst BOX = [VALUE, VALUES]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUES: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = VALUES\nconst BOX = [RAW] if true else [VALUES]\nvar probe_expression = BOX[0]\n", "Dictionary[float?, int?]", dictionary_value({ { Variant(), Variant() }, { Variant(double(1)), Variant(int64_t(2)) } }), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUE = [1, 2] as Array[float]\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "float", Variant(double(2)), "res://tests/nullable_constant_evidence.barista" },
+		{ "const VALUE = {1: 2} as Dictionary[float, int]\nconst BOX = [VALUE]\nvar probe_expression = BOX[0][1]\n", "int", Variant(int64_t(2)), "res://tests/nullable_constant_evidence.barista" },
+	};
+	for (const auto &sample : evidence) {
+		INFO(sample.source);
+		const auto observed = analyze_source(sample.source, sample.path);
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(observed.valid());
+		CHECK(expression->is_constant);
+		CHECK(expression->get_datatype().to_string() == sample.datatype);
+		check_readonly_carrier(expression->reduced_value, sample.expected);
+		check_public_success(public_validate(sample.source, sample.path));
+		CHECK(source_analyzes(sample.source, sample.path));
+	}
+	struct RefusalCase {
+		const char *source;
+		ExpectedError error;
+	};
+	const std::vector<RefusalCase> refusals = {
+		{ "const KEYS: Dictionary[float, int] = {1.0: 2}\nconst RAW = {1.0: 2}\nconst BOX = [KEYS, RAW]\nvar probe_expression = BOX[1][1]\n", { "Cannot get index \"1\" from \"{ 1.0: 2 }\".", 4, 31 } },
+		{ "const KEYS: Dictionary[int, int] = {1: 2}\nconst BOX: Variant = KEYS\nvar probe_expression = BOX[1e309]\n", { "Cannot get index \"inf\" from \"{ 1: 2 }\".", 3, 28 } },
+		{ "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [KEYS, RAW]\nvar probe_expression = BOX[1][1]\n", { "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\".", 4, 31 } },
+	};
+	for (const auto &sample : refusals) {
+		const String path = "res://tests/raw_constant_evidence.barista";
+		const auto observed = analyze_source(sample.source, path);
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK_FALSE(observed.valid());
+		CHECK_FALSE(expression->is_constant);
+		CHECK((expression->is_constant ? expression->reduced_value : Variant()).get_type() == Variant::NIL);
+		const Dictionary report = public_validate(sample.source, path);
+		CHECK_FALSE(bool(report.get("valid", true)));
+		CHECK(Array(report.get("warnings", Array())).is_empty());
+		check_public_errors(report, { sample.error });
+		const Array errors = report.get("errors", Array());
+		BS_TEST_REQUIRE(errors.size() == 1);
+		const Dictionary error = errors[0];
+		CHECK(error.size() == 4);
+		CHECK(String(error.get("path", "")) == path);
+	}
+	struct CastCase {
+		const char *source;
+		const char *datatype;
+		Variant::Type child_type;
+		Variant key;
+	};
+	const std::vector<CastCase> casts = {
+		{ "var probe_expression = [1, 2] as Array[float]\n", "Array[float]", Variant::FLOAT, Variant(0) },
+		{ "var probe_expression = {\"x\": 1} as Dictionary[String, float]\n", "Dictionary[String, float]", Variant::FLOAT, Variant("x") },
+		{ "var probe_expression = [[1, 2]] as Array[PackedInt32Array]\n", "Array[PackedInt32Array]", Variant::PACKED_INT32_ARRAY, Variant(0) },
+		{ "const VALUE = [1, 2] as Array[float]\nvar probe_expression = VALUE\n", "Array[float]", Variant::FLOAT, Variant(0) },
+		{ "const VALUE: Array[float] = [1, 2]\nvar probe_expression = VALUE\n", "Array[float]", Variant::FLOAT, Variant(0) },
+		{ "const VALUE: Dictionary[String, float] = {\"x\": 1}\nvar probe_expression = VALUE\n", "Dictionary[String, float]", Variant::FLOAT, Variant("x") },
+	};
+	for (const auto &sample : casts) {
+		const String path = "res://tests/contextual_cast_value.barista";
+		const auto observed = analyze_source(sample.source, path);
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(observed.valid());
+		CHECK(expression->is_constant);
+		CHECK(expression->get_datatype().to_string() == sample.datatype);
+		check_public_success(public_validate(sample.source, path));
+		const Variant value = expression->reduced_value;
+		BS_TEST_REQUIRE(value.get_type() == Variant::ARRAY || value.get_type() == Variant::DICTIONARY);
+		Variant child;
+		if (value.get_type() == Variant::ARRAY) {
+			const Array values = value;
+			CHECK(values.is_read_only());
+			BS_TEST_REQUIRE(int(sample.key) >= 0 && int(sample.key) < values.size());
+			child = values[int(sample.key)];
+			if (sample.child_type == Variant::FLOAT) {
+				BS_TEST_REQUIRE(values.size() > 1);
+				CHECK(values[1].get_type() == Variant::FLOAT);
+				CHECK(values[1] == Variant(2.0));
+			}
+		} else {
+			const Dictionary values = value;
+			CHECK(values.is_read_only());
+			BS_TEST_REQUIRE(values.has(sample.key));
+			child = values[sample.key];
+		}
+		CHECK(child.get_type() == sample.child_type);
+		if (sample.child_type == Variant::FLOAT) {
+			CHECK(child == Variant(1.0));
+		} else {
+			PackedInt32Array expected;
+			expected.push_back(1);
+			expected.push_back(2);
+			CHECK(child == Variant(expected));
+		}
+	}
+	const String runtime_source = "var value: int = 1\nvar probe_expression = [value] as Array[float]\n";
+	const String runtime_path = "res://tests/runtime_contextual_cast.barista";
+	const auto runtime = analyze_source(runtime_source, runtime_path);
+	const auto *expression = find_expression(runtime);
+	BS_TEST_REQUIRE(expression != nullptr);
+	CHECK(runtime.valid());
+	CHECK_FALSE(expression->is_constant);
+	CHECK((expression->is_constant ? expression->reduced_value : Variant()).get_type() == Variant::NIL);
+	CHECK(expression->get_datatype().to_string() == "Array[float]");
+	check_public_success(public_validate(runtime_source, runtime_path));
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_constants") {
+	TEST_CASE("nested_constant_evidence_and_contextual_casts") { scenario_nested_constant_evidence_and_contextual_casts(); }
 	TEST_CASE("constant_producer_child_evidence") { scenario_constant_producer_child_evidence(); }
 	TEST_CASE("pure_constant_review_regressions") { scenario_pure_constant_review_regressions(); }
 	TEST_CASE("dictionary_literal_constant_parity") { scenario_dictionary_literal_constant_parity(); }
 	TEST_CASE("constant_dictionary_key_conversion") { scenario_constant_dictionary_key_conversion(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence });
+		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence, scenario_nested_constant_evidence_and_contextual_casts });
 	}
 }

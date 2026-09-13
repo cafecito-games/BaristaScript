@@ -8,7 +8,7 @@ The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 85 scenarios have explicit native equivalents and 5
+The legacy suite remains enabled: 86 scenarios have explicit native equivalents and 4
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -183,7 +183,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 85 | `_test_pure_literal_constant_materialization` | expressions/calls | legacy-only |
 | 86 | `_test_pure_constant_review_regressions` | expressions/calls | native `analyzer_constants` |
 | 87 | `_test_constant_dictionary_key_conversion` | expressions/calls | native `analyzer_constants` |
-| 88 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | legacy-only |
+| 88 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | native `analyzer_constants` |
 | 89 | `_test_folded_tuple_child_and_failed_contextual_materialization` | expressions/calls | legacy-only |
 | 90 | `_test_constant_producer_child_evidence` | expressions/calls | native `analyzer_constants` |
 
@@ -325,7 +325,13 @@ hard types, partial/failed materialization, complete public errors/warnings, sem
 and exact repeated public reports. `producer-stage-1.log` records 5 cases / 4,320 assertions,
 zero failures, including normal/reverse/shuffle execution.
 
-- Migrate the 5 remaining legacy-only functions; newly merged scenarios
+Nested constant evidence preserves 11 established-child and 16 nullable/converted-child sources,
+three exact raw-key refusals, six contextual casts, and the runtime nonconstant control. Direct
+typed values retain integer/float distinctions and recursive read-only evidence.
+`nested-constants-stage-1.log` records 6 cases / 6,415 assertions, zero failures, including
+normal/reverse/shuffle execution.
+
+- Migrate the 4 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
