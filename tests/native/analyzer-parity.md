@@ -8,7 +8,7 @@ The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 80 scenarios have explicit native equivalents and 10
+The legacy suite remains enabled: 81 scenarios have explicit native equivalents and 9
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -109,7 +109,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 11 | `_test_semantic_errors` | diagnostics/settings | native `analyzer_diagnostics` |
 | 12 | `_test_undeclared_identifier_diagnostic` | diagnostics/settings | native `analyzer_diagnostics` |
 | 13 | `_test_review_resolution_regressions` | expressions/calls | native `analyzer_resolution` |
-| 14 | `_test_pinned_global_api_lookup` | expressions/calls | legacy-only |
+| 14 | `_test_pinned_global_api_lookup` | expressions/calls | native `analyzer_resolution` |
 | 15 | `_test_language_utility_registry` | expressions/calls | legacy-only |
 | 16 | `_test_dictionary_literal_constant_parity` | expressions/calls | native `analyzer_constants` |
 | 17 | `_test_unary_sign_constant_folding` | expressions/calls | native `analyzer_diagnostics` |
@@ -258,6 +258,16 @@ were deleted.
 
 ## Remaining gates
 
+The native `pinned_global_api_lookup` case reads the exact selected pinned producer JSON from
+the legacy `res://../godot-cpp/gdextension` location. Build configuration selects only its filename;
+no generated analyzer metadata supplies expected names or values. Every global constant/enum
+value, both exact int64 bounds, every utility value, and both indexed/imported handles retain
+their legacy predicates. The supervisor copies only this JSON into its disposable tree. Three
+focused staging tests cover exact selection/bytes/presence, missing input without fallback, and
+copy-failure cleanup; they failed before implementation and passed afterward. The real-process
+supervisor passes all 19 tests. `pinned-api-stage-1.log` records three cases / 11,578 assertions
+with zero failures, including normal/reverse/shuffle runs.
+
 Normal merge `c990405` integrates PR #201 without rewriting the original commits. Both the
 private `reduce_subscript` signature and the test-only analyzer friend remain present; every
 new main suite is retained. `merge201-native-full.log` records 43 suites, 850 cases and 72,756
@@ -284,7 +294,7 @@ and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payl
 control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
 Focused results are recorded in `members-stage-analyzer_*.log`.
 
-- Migrate the 10 remaining legacy-only functions; newly merged scenarios
+- Migrate the 9 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.

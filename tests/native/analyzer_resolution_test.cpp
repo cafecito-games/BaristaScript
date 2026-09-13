@@ -7,9 +7,16 @@
 /**************************************************************************/
 
 #include "analyzer_helpers.h"
+#include "bs_build_info.h"
 #include "bs_conformance_registry.h"
 #include "storage_fixture.h"
 #include "test_require.h"
+
+#include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/json.hpp>
+
+#include <cmath>
+#include <limits>
 
 using namespace godot;
 using namespace barista_script;
@@ -17,6 +24,71 @@ using namespace barista_script::native_tests;
 
 // Complete scenario sources and predicates from merged main 4c9c561 (PR #201).
 namespace {
+void scenario_pinned_global_api_lookup() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	// Build configuration selects the file only. Expected symbols and values come from
+	// the raw pinned producer JSON, not generated analyzer/implementation metadata.
+	const String api_version = bs_get_build_info()["godot_api"];
+	const String path = String("res://../godot-cpp/gdextension/extension_api-") + api_version.replace(".", "-") + String(".json");
+	const String raw = FileAccess::get_file_as_string(path);
+	BS_TEST_REQUIRE(!raw.is_empty());
+	const Variant parsed = JSON::parse_string(raw);
+	BS_TEST_REQUIRE(parsed.get_type() == Variant::DICTIONARY);
+	const Dictionary api = parsed;
+	BS_TEST_REQUIRE(api.has("global_constants") && api.has("global_enums") && api.has("utility_functions"));
+	Array constants = Array(api["global_constants"]).duplicate();
+	for (const Dictionary &enumeration : Array(api["global_enums"])) {
+		constants.append_array(enumeration["values"]);
+	}
+	BS_TEST_REQUIRE(!constants.is_empty());
+	for (const Dictionary &entry : constants) {
+		const String name = entry["name"];
+		INFO(std::string(name.utf8().get_data()));
+		const auto result = analyze_source(String("var probe_expression = ") + name + String("\n"), "res://tests/fold_probe.barista");
+		CHECK(result.valid());
+		const auto *value = find_expression(result);
+		BS_TEST_REQUIRE(value != nullptr);
+		CHECK(value->is_constant);
+		CHECK(value->reduced_value.get_type() == Variant::INT);
+		// Godot JSON numbers use double; the legacy suite separately checks int64 limits.
+		const double expected = entry["value"];
+		if (std::abs(expected) < 9007199254740992.0) {
+			CHECK(value->reduced_value == Variant(int64_t(expected)));
+		}
+	}
+	for (const auto &limit : { std::pair<const char *, int64_t>{ "INT64_MAX", std::numeric_limits<int64_t>::max() },
+				 std::pair<const char *, int64_t>{ "INT64_MIN", std::numeric_limits<int64_t>::min() } }) {
+		const auto result = analyze_source(String("var probe_expression = ") + limit.first + String("\n"), "res://tests/fold_probe.barista");
+		const auto *value = find_expression(result);
+		BS_TEST_REQUIRE(value != nullptr);
+		CHECK(value->is_constant);
+		CHECK(value->reduced_value == Variant(limit.second));
+	}
+	const Array functions = api["utility_functions"];
+	BS_TEST_REQUIRE(!functions.is_empty());
+	for (const Dictionary &function : functions) {
+		const String source = String("func test():\n\tvar utility: Callable = ") + String(function["name"]) + String("\n");
+		CHECK(analyze_source(source, "res://tests/review_utility.barista").valid());
+	}
+	BSDeclarationIndex &index = fixture.index();
+	index.clear();
+	const String indexed_source = "class_name ReviewIndexed extends RefCounted\n";
+	const String imported_source = "namespace review_scope\nclass_name ReviewImported extends RefCounted\n";
+	auto *language = BaristaScriptLanguage::get_singleton();
+	CHECK(language->synchronize_declaration_path_from_source("res://tests/review_indexed.barista", indexed_source) == OK);
+	CHECK(language->synchronize_declaration_path_from_source("res://tests/review_imported.barista", imported_source) == OK);
+	BSCache::set_source_override("res://tests/review_indexed.barista", indexed_source);
+	BSCache::set_source_override("res://tests/review_imported.barista", imported_source);
+	for (const char *source : { "func test():\n\tvar handle = ReviewIndexed\n", "import review_scope\nfunc test():\n\tvar handle = ReviewImported\n" }) {
+		CHECK(analyze_source(source, "res://tests/review_handle.barista").valid());
+	}
+	BSCache::clear_source_override("res://tests/review_indexed.barista");
+	BSCache::clear_source_override("res://tests/review_imported.barista");
+	index.clear();
+}
+
 void scenario_review_resolution_regressions() {
 	StorageFixture fixture;
 	BSConformanceRegistry::ScopedCorpusState registry;
@@ -109,8 +181,9 @@ void scenario_review_resolution_regressions() {
 } // namespace
 
 TEST_SUITE("analyzer_resolution") {
+	TEST_CASE("pinned_global_api_lookup") { scenario_pinned_global_api_lookup(); }
 	TEST_CASE("review_resolution_regressions") { scenario_review_resolution_regressions(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_review_resolution_regressions });
+		check_scenario_orders({ scenario_review_resolution_regressions, scenario_pinned_global_api_lookup });
 	}
 }
