@@ -9357,7 +9357,9 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 
 void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 #ifdef DEBUG_ENABLED
-	if (p_function == nullptr || p_function->is_abstract) {
+	// Inline accessors enter body analysis directly; their parameters bypass the
+	// signature lifecycle that owns UNUSED_PARAMETER (Foundry c9d5e35:4726-4733).
+	if (p_function == nullptr || !p_function->resolved_signature || p_function->is_abstract) {
 		return;
 	}
 	const String function_visible_name = p_function->identifier != nullptr ? String(p_function->identifier->name) : String("<anonymous>");

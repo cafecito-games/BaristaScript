@@ -556,7 +556,13 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 				p_function->default_arg_values.push_back(Variant());
 			}
 		}
-		method_info.arguments.push_back(parameter->get_datatype().to_property_info(parameter_name));
+		// Foundry resolve_assignable c9d5e35:5583-5585: a parameter is a mutable
+		// binding even when its default expression is constant or read-only.
+		auto parameter_type = parameter->get_datatype();
+		parameter_type.is_constant = false;
+		parameter_type.is_read_only = false;
+		parameter->set_datatype(parameter_type);
+		method_info.arguments.push_back(parameter_type.to_property_info(parameter_name));
 	}
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->datatype_specifier != nullptr) {
 		p_function->rest_parameter->set_datatype(datatype_from_type_node(p_function->rest_parameter->datatype_specifier));

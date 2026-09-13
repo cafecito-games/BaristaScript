@@ -108,6 +108,104 @@ void analyze(const String &source, std::initializer_list<Expected> expected = {}
 }
 } // namespace
 TEST_SUITE("declaration_context_analyzer") {
+	TEST_CASE("repair1_inline_accessor_preserves_exact_corpus_warnings") {
+		WarningLevel unused(BSWarning::UNUSED_PARAMETER);
+		WarningLevel unreachable(BSWarning::UNREACHABLE_CODE);
+		// Exact committed parser corpus source and ordered two-warning oracle.
+		analyze("var property:\n\tget:\n\t\treturn 1\n\t\tprint(\"unreachable getter\")\n\tset(value):\n\t\treturn\n\t\tprint(\"unreachable setter\")\n\n\nfunc test():\n\tprint(property)\n", {}, "context.barista", [](const TestParser &parser) {
+			BS_TEST_REQUIRE(parser.get_warnings().size() == 2);
+			int line = 4;
+			for (const auto &warning : parser.get_warnings()) {
+				CHECK(warning.code == BSWarning::UNREACHABLE_CODE);
+				CHECK(warning.get_message() == String("Unreachable code (statement after return) in function \"@property_") + (line == 4 ? "getter" : "setter") + "()\".");
+				CHECK(warning.start_line == line);
+				CHECK(warning.start_column == 9);
+				CHECK(warning.end_line == line);
+				CHECK(warning.end_column == 36);
+				line = 7;
+			}
+		});
+	}
+	TEST_CASE("repair1_unused_parameters_belong_to_resolved_signatures") {
+		WarningLevel unused(BSWarning::UNUSED_PARAMETER);
+		analyze("var p: int:\n\tset(value):\n\t\tpass\n", {}, "context.barista", [](const TestParser &parser) {
+			CHECK(parser.get_warnings().is_empty());
+			CHECK_FALSE(parser.get_tree()->get_member("p").variable->setter->resolved_signature);
+			CHECK(parser.get_tree()->get_member("p").variable->setter->resolved_body);
+		});
+		for (const String &source : { String("func f(value: int):\n\tpass\n"), String("var p: int:\n\tset = f\nfunc f(value: int):\n\tpass\n"), String("var saved = func(value: int):\n\tpass\n") }) {
+			analyze(source, {}, "context.barista", [](const TestParser &parser) {
+				const bool lambda = parser.get_tree()->has_member("saved");
+				auto *f = lambda ? static_cast<BSParser::LambdaNode *>(parser.get_tree()->get_member("saved").variable->initializer)->function : parser.get_tree()->get_member("f").function;
+				BS_TEST_REQUIRE(f && f->parameters.size() == 1);
+				CHECK(f->resolved_signature);
+				BS_TEST_REQUIRE(parser.get_warnings().size() == 1);
+				const String name = f->identifier ? String(f->identifier->name) : String("<anonymous>");
+				check_warning(parser, BSWarning::UNUSED_PARAMETER, "The parameter \"value\" is never used in the function \"" + name + "()\". If this is intended, prefix it with an underscore: \"_value\".", f->parameters[0], 1);
+			});
+		}
+	}
+	TEST_CASE("repair1_default_parameter_bindings_are_mutable") {
+		for (const String &declaration : { String("value = 1"), String("value := 1"), String("value: int = 1") }) {
+			for (bool compound : { false, true }) {
+				analyze("var saved = f\nfunc f(" + declaration + "):\n\tvalue " + (compound ? "+=" : "=") + " 2\n\tprint(value)\n", {}, "context.barista", [&](const TestParser &parser) {
+					auto *f = parser.get_tree()->get_member("f").function;
+					BS_TEST_REQUIRE(f && f->parameters.size() == 1 && f->default_arg_values.size() == 1 && f->info.default_arguments.size() == 1 && f->info.arguments.size() == 1);
+					auto *parameter = f->parameters[0];
+					CHECK_FALSE(parameter->get_datatype().is_constant);
+					CHECK_FALSE(parameter->get_datatype().is_read_only);
+					CHECK(parameter->get_datatype().is_hard_type() == (declaration != "value = 1"));
+					CHECK(parameter->initializer->is_constant);
+					CHECK(parameter->initializer->get_datatype().is_constant);
+					CHECK(parameter->initializer->reduced_value == Variant(1));
+					CHECK(f->default_arg_values[0] == Variant(1));
+					CHECK(f->info.default_arguments[0] == Variant(1));
+					CHECK(f->info.arguments[0].type == (declaration == "value = 1" ? Variant::NIL : Variant::INT));
+					const auto callable = parser.get_tree()->get_member("saved").variable->get_datatype();
+					BS_TEST_REQUIRE(callable.has_method_signature && callable.method_parameter_types.size() == 1);
+					CHECK_FALSE(callable.method_parameter_types[0].is_constant);
+					CHECK_FALSE(callable.method_parameter_types[0].is_read_only);
+					CHECK(callable.method_parameter_types[0].type_source == parameter->get_datatype().type_source);
+				});
+			}
+		}
+	}
+	TEST_CASE("repair1_inferred_lambda_default_binding_is_mutable") {
+		analyze("var saved = func(value := 1):\n\tvalue = 2\n\tvalue += 3\n\tprint(value)\n", {}, "context.barista", [](const TestParser &parser) {
+			auto *variable = parser.get_tree()->get_member("saved").variable;
+			auto *f = static_cast<BSParser::LambdaNode *>(variable->initializer)->function;
+			BS_TEST_REQUIRE(f && f->parameters.size() == 1 && f->default_arg_values.size() == 1);
+			CHECK_FALSE(f->parameters[0]->get_datatype().is_constant);
+			CHECK_FALSE(f->parameters[0]->get_datatype().is_read_only);
+			CHECK(f->parameters[0]->get_datatype().type_source == BSParser::DataType::ANNOTATED_INFERRED);
+			CHECK(f->parameters[0]->initializer->is_constant);
+			CHECK(f->default_arg_values[0] == Variant(1));
+			const auto callable = variable->get_datatype();
+			BS_TEST_REQUIRE(callable.has_method_signature && callable.method_parameter_types.size() == 1);
+			CHECK_FALSE(callable.method_parameter_types[0].is_constant);
+			CHECK_FALSE(callable.method_parameter_types[0].is_read_only);
+		});
+	}
+	TEST_CASE("repair1_readonly_scalar_default_keeps_initializer_metadata") {
+		analyze("extends PhysicsDirectBodyState3DExtension\nvar saved = f\nfunc f(value := inverse_mass):\n\tvalue = 2.0\n\tvalue += 3.0\n\tprint(value)\n", {}, "context.barista", [](const TestParser &parser) {
+			auto *f = parser.get_tree()->get_member("f").function;
+			BS_TEST_REQUIRE(f && f->parameters.size() == 1 && f->default_arg_values.size() == 1 && f->info.default_arguments.size() == 1);
+			auto *parameter = f->parameters[0];
+			CHECK(parameter->initializer->get_datatype().is_read_only);
+			CHECK_FALSE(parameter->get_datatype().is_read_only);
+			CHECK_FALSE(parameter->get_datatype().is_constant);
+			CHECK(parameter->get_datatype().builtin_type == Variant::FLOAT);
+			CHECK(f->default_arg_values[0].get_type() == Variant::NIL);
+			CHECK(f->info.default_arguments[0].get_type() == Variant::NIL);
+			const auto callable = parser.get_tree()->get_member("saved").variable->get_datatype();
+			BS_TEST_REQUIRE(callable.has_method_signature && callable.method_parameter_types.size() == 1);
+			CHECK_FALSE(callable.method_parameter_types[0].is_read_only);
+			CHECK_FALSE(callable.method_parameter_types[0].is_constant);
+		});
+	}
+	TEST_CASE("repair1_real_constant_and_tuple_element_remain_immutable") {
+		analyze("func f(pair := (1, 2)):\n\tconst fixed = 1\n\tfixed = 2\n\tpair.0 = 3\n", { { "Cannot assign a new value to a constant.", 3, BSParser::Node::IDENTIFIER, "fixed" }, { "Cannot assign to an element of tuple \"(int, int)\"; tuples are immutable.", 4, BSParser::Node::SUBSCRIPT, "" } });
+	}
 	TEST_CASE("original_inferring_with_weak_type_parameter") {
 		// Foundry c9d5e35: modules/foundry_script/tests/scripts/analyzer/errors/inferring_with_weak_type_parameter.fs; source SHA256 3bb73541fa942b32e7c22164b87ebc0a797d71cfd43a50d4e56564cf703f2c0e.
 		analyze("func check(untyped = 1, inferred := untyped):\n\tpass\n\nfunc test():\n\tcheck()\n", { { "Cannot infer the type of \"inferred\" parameter because the value doesn't have a set type.", 1, BSParser::Node::PARAMETER, "inferred" } }, "inferring_with_weak_type_parameter.barista");
