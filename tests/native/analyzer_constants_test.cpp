@@ -766,9 +766,157 @@ void scenario_folded_tuple_child_and_failed_contextual_materialization() {
 	}
 }
 
+void check_inference_warning(const Dictionary &report, const char *kind, int line, int column, int end_line, int end_column) {
+	CHECK(bool(report.get("valid", false)));
+	check_public_errors(report, {});
+	const Array warnings = report.get("warnings", Array());
+	BS_TEST_REQUIRE(warnings.size() == 1);
+	const Dictionary warning = warnings[0];
+	CHECK(String(warning.get("string_code", "")) == "INFERENCE_ON_VARIANT");
+	CHECK(String(warning.get("message", "")) == vformat("The %s type is being inferred from a Variant value, so it will be typed as Variant.", kind));
+	CHECK(int(warning.get("start_line", -1)) == line);
+	CHECK(int(warning.get("start_column", -1)) == column);
+	CHECK(int(warning.get("end_line", -1)) == end_line);
+	CHECK(int(warning.get("end_column", -1)) == end_column);
+}
+
+void scenario_pure_literal_constant_materialization() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	check_folded_value("(1, 2)", array_value({ Variant(1), Variant(2) }));
+	check_folded_value("(1, 2).1", Variant(2));
+	check_folded_value("{\"outer\": [10, 20]}[\"outer\"][1]", Variant(20));
+	check_folded_value("{\"value\": null}[\"value\"]", Variant());
+	const auto nested = fold_source("{\"outer\": [1, {\"inner\": (2, 3)}]}");
+	const auto *nested_expression = find_expression(nested);
+	BS_TEST_REQUIRE(nested_expression != nullptr);
+	CHECK(nested.valid());
+	CHECK(nested_expression->is_constant);
+	check_readonly_carrier(nested_expression->reduced_value, dictionary_value({ { Variant("outer"), array_value({ Variant(1), dictionary_value({ { Variant("inner"), array_value({ Variant(2), Variant(3) }) } }) }) } }));
+	const auto tuple = analyze_source("var probe_expression = (1, [2, 3])\n", "res://tests/pure_tuple_identity.barista");
+	const auto *tuple_expression = find_expression(tuple);
+	BS_TEST_REQUIRE(tuple_expression != nullptr);
+	CHECK(tuple.valid());
+	CHECK(tuple_expression->get_datatype().to_string() == "(int, Array)");
+	CHECK(tuple_expression->is_constant);
+	const String original_source = "const base := [0]\n\nfunc test():\n\tvar sub := base[0]\n\tif sub is String: pass\n";
+	const String original_path = "res://tests/original_constant_subscript_type.barista";
+	const Dictionary original_report = public_validate(original_source, original_path, false);
+	check_public_errors(original_report, { { "Expression is of type \"int\" so it can't be of type \"String\".", 5, 8 } });
+	struct LiteralRefusal {
+		const char *source;
+		const char *path;
+		ExpectedError error;
+	};
+	const std::vector<LiteralRefusal> refusals = {
+		{ "func test(value: int):\n\tconst BAD = [1, {\"value\": value}]\n", "res://tests/pure_constant_refusal.barista", { "Assigned value for constant \"BAD\" isn't a constant expression.", 2, 17 } },
+		{ "func produce() -> int:\n\treturn 1\nfunc test():\n\tconst BAD = [produce()]\n", "res://tests/pure_constant_refusal.barista", { "Assigned value for constant \"BAD\" isn't a constant expression.", 4, 17 } },
+		{ "func test():\n\tvar weak = 2\n\tvar result := weak\n", "res://tests/pure_constant_refusal.barista", { "Cannot infer the type of \"result\" variable because the value doesn't have a set type.", 3, 19 } },
+		{ "func test():\n\tvar result := null\n", "res://tests/pure_constant_refusal.barista", { "Cannot infer the type of \"result\" variable because the value is \"null\".", 2, 19 } },
+		{ "func test():\n\tvar python_dict = {\n\t\t\"a\": 1,\n\t\t\"b\": 2,\n\t\t\"a\": 3, # Duplicate isn't allowed.\n\t}\n", "res://tests/dictionary_duplicate_key_python.barista", { "Key \"a\" was already used in this dictionary (at line 3).", 5, 9 } },
+		{ "func test():\n\tvar lua_dict = {\n\t\ta = 1,\n\t\tb = 2,\n\t\ta = 3, # Duplicate isn't allowed.\n\t}\n", "res://tests/dictionary_duplicate_key_lua.barista", { "Key \"a\" was already used in this dictionary (at line 3).", 5, 9 } },
+		{ "# https://github.com/godotengine/godot/issues/62957\n\nfunc test():\n\tvar dict = {\n\t\t&\"key\": \"StringName\",\n\t\t\"key\": \"String\"\n\t}\n\n\tprint(\"Invalid dictionary: %s\" % dict)\n", "res://tests/dictionary_string_stringname_equivalent.barista", { "Key \"key\" was already used in this dictionary (at line 5).", 6, 9 } },
+		{ "func test():\n\t# Error here. Array indices must be integers.\n\tprint([0, 1][true])\n", "res://tests/invalid_array_index.barista", { "Invalid index type \"bool\" for a base of type \"Array\".", 3, 18 } },
+		{ "const base := [0]\n\nfunc test():\n\tvar sub := base[0]\n\tif sub is String: pass\n", "res://tests/constant_subscript_type.barista", { "Expression is of type \"int\" so it can't be of type \"String\".", 5, 8 } },
+		{ "func test():\n\tvar i = 12\n\t# Constants must be made of a constant, deterministic expression.\n\t# A constant that depends on a variable's value is not a constant expression.\n\tconst TEST = 13 + i\n", "res://tests/invalid_constant.barista", { "Assigned value for constant \"TEST\" isn't a constant expression.", 5, 18 } },
+	};
+	for (const auto &sample : refusals) {
+		const Dictionary report = public_validate(sample.source, sample.path, false);
+		CHECK_FALSE(bool(report.get("valid", true)));
+		check_public_errors(report, { sample.error });
+	}
+	const auto invalid_index = fold_source("[1, 2][4]");
+	const auto *invalid_expression = find_expression(invalid_index);
+	BS_TEST_REQUIRE(invalid_expression != nullptr);
+	CHECK_FALSE((invalid_index.valid() && invalid_expression->is_constant));
+	CHECK((invalid_expression->is_constant ? invalid_expression->reduced_value : Variant()).get_type() == Variant::NIL);
+	const String positive_source = "enum Message:\n\tQuit\n\tMove(value: int)\nconst CLASS_VALUES: Array[Array[Message]] = [[.Quit]]\nconst CLASS_PICK := {\"values\": [1, 2]}[\"values\"][1]\nconst NULL_VALUE := [null][0]\nfunc test(value: int):\n\tconst LOCAL_VALUES: Dictionary[String, Array[Message]] = {\"values\": [.Quit]}\n\tconst LOCAL_PICK := ([10, 20], 3).0[1]\n\tvar inferred := [[value]]\n\tvar nested := ([1, 2], 3).0[1]\n\tprint(LOCAL_VALUES, LOCAL_PICK, inferred, nested)\n";
+	const String positive_path = "res://tests/pure_constant_consumers.barista";
+	// Isolated records begin empty; equality to the initial empty vector is exact.
+	BS_TEST_REQUIRE(fixture.index().get_records().is_empty());
+	const uint64_t generation_before = fixture.index().claim_refresh("res://tests/pure_generation_control.barista");
+	for (int iteration = 0; iteration < 2; ++iteration) {
+		const auto analyzed = analyze_source(positive_source, positive_path);
+		CHECK(analyzed.valid());
+		CHECK(analyzed.parser->get_errors().is_empty());
+		check_public_success(public_validate(positive_source, positive_path, false));
+		CHECK(source_analyzes(positive_source, positive_path));
+		const auto invalid = analyze_source(original_source, original_path);
+		CHECK_FALSE(invalid.valid());
+		BS_TEST_REQUIRE(invalid.parser->get_errors().size() == 1);
+		CHECK(invalid.parser->get_errors().front()->get().message == "Expression is of type \"int\" so it can't be of type \"String\".");
+		const Dictionary report = public_validate(original_source, original_path, false);
+		CHECK(Array(report.get("errors", Array())) == Array(original_report.get("errors", Array())));
+		CHECK_FALSE(source_analyzes(original_source, original_path));
+	}
+	CHECK(fixture.index().get_records().is_empty());
+	CHECK(fixture.index().claim_refresh("res://tests/pure_generation_control.barista") == generation_before + 1);
+	{
+		const auto observed = analyze_source("var value: int = 1\nvar probe_expression = [1, {\"value\": value}]\n", "res://tests/pure_nonconstant_child.barista");
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(observed.valid());
+		CHECK_FALSE(expression->is_constant);
+		CHECK((expression->is_constant ? expression->reduced_value : Variant()).get_type() == Variant::NIL);
+	}
+	{
+		const auto observed = analyze_source("func produce() -> int:\n\treturn 1\nvar probe_expression = [produce()]\n", "res://tests/pure_nonconstant_child.barista");
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(observed.valid());
+		CHECK_FALSE(expression->is_constant);
+		CHECK((expression->is_constant ? expression->reduced_value : Variant()).get_type() == Variant::NIL);
+	}
+	check_public_errors(public_validate("func test(value: int):\n\tvar result := [value][0]\n", "res://tests/pure_nested_inference.barista", false), { { "Cannot infer the type of \"result\" variable because the value doesn't have a set type.", 2, 19 } });
+	const auto converted = analyze_source("const VALUE: (float, Array[float]) = (1, [2])\nvar probe_expression = VALUE\n", "res://tests/pure_converted_carrier.barista");
+	const auto *converted_expression = find_expression(converted);
+	BS_TEST_REQUIRE(converted_expression != nullptr);
+	CHECK(converted.valid());
+	CHECK(converted_expression->get_datatype().to_string() == "(float, Array[float])");
+	CHECK(converted_expression->is_constant);
+	check_readonly_carrier(converted_expression->reduced_value, array_value({ Variant(1.0), array_value({ Variant(2.0) }) }));
+	check_public_errors(public_validate("func test():\n\tconst BAD = [1, 2][4]\n", "res://tests/pure_invalid_constant_index.barista", false), {
+																																					  { "Assigned value for constant \"BAD\" isn't a constant expression.", 2, 17 },
+																																					  { "Cannot get index \"4\" from \"[1, 2]\".", 2, 24 },
+																																			  });
+	settings.warnings_enabled(true);
+	settings.warning(BSWarning::INFERENCE_ON_VARIANT, BSWarning::WARN);
+	const String variant_source = "func test(value: Variant):\n\tvar inferred := value\n\tprint(inferred)\n";
+	for (int iteration = 0; iteration < 2; ++iteration) {
+		check_inference_warning(public_validate(variant_source, "res://tests/pure_variant_inference.barista"), "variable", 2, 5, 2, 26);
+	}
+	const String ignored_source = variant_source.replace("\tvar inferred", "\t@warning_ignore(\"inference_on_variant\")\n\tvar inferred");
+	for (int iteration = 0; iteration < 2; ++iteration) {
+		check_public_success(public_validate(ignored_source, "res://tests/pure_ignored_variant_inference.barista"));
+	}
+	check_inference_warning(public_validate("func test(value: Variant):\n\t@warning_ignore(\"inference_on_variant\")\n\tvar ignored := value\n\tvar inferred := value\n\tprint(ignored, inferred)\n", "res://tests/pure_adjacent_variant_inference.barista"), "variable", 4, 5, 4, 26);
+	check_inference_warning(public_validate("const VALUE: Variant = 1\n@warning_ignore(\"inference_on_variant\")\nvar ignored := VALUE\nvar inferred := VALUE\n", "res://tests/pure_adjacent_variant_inference.barista"), "variable", 4, 1, 4, 22);
+	check_inference_warning(public_validate("const VALUE: Variant = 1\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tconst ignored := VALUE\n\tconst inferred := VALUE\n\tprint(ignored, inferred)\n", "res://tests/pure_adjacent_variant_inference.barista"), "constant", 5, 5, 5, 28);
+	check_inference_warning(public_validate("const VALUE: Variant = 1\n@warning_ignore(\"inference_on_variant\")\nconst ignored := VALUE\nconst inferred := VALUE\n", "res://tests/pure_adjacent_variant_inference.barista"), "constant", 4, 1, 4, 24);
+	settings.warning(BSWarning::INFERENCE_ON_VARIANT, BSWarning::IGNORE);
+	{
+		const auto concatenated = fold_source("[1] + [2]");
+		const auto *expression = find_expression(concatenated);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(concatenated.valid());
+		CHECK(expression->is_constant);
+		check_readonly_carrier(expression->reduced_value, array_value({ Variant(1), Variant(2) }));
+	}
+	{
+		const auto concatenated = fold_source("[[1] + [2]]");
+		const auto *expression = find_expression(concatenated);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(concatenated.valid());
+		CHECK(expression->is_constant);
+		check_readonly_carrier(expression->reduced_value, array_value({ array_value({ Variant(1), Variant(2) }) }));
+	}
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_constants") {
+	TEST_CASE("pure_literal_constant_materialization") { scenario_pure_literal_constant_materialization(); }
 	TEST_CASE("folded_tuple_child_and_failed_contextual_materialization") { scenario_folded_tuple_child_and_failed_contextual_materialization(); }
 	TEST_CASE("nested_constant_evidence_and_contextual_casts") { scenario_nested_constant_evidence_and_contextual_casts(); }
 	TEST_CASE("constant_producer_child_evidence") { scenario_constant_producer_child_evidence(); }
@@ -776,6 +924,6 @@ TEST_SUITE("analyzer_constants") {
 	TEST_CASE("dictionary_literal_constant_parity") { scenario_dictionary_literal_constant_parity(); }
 	TEST_CASE("constant_dictionary_key_conversion") { scenario_constant_dictionary_key_conversion(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence, scenario_nested_constant_evidence_and_contextual_casts, scenario_folded_tuple_child_and_failed_contextual_materialization });
+		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence, scenario_nested_constant_evidence_and_contextual_casts, scenario_folded_tuple_child_and_failed_contextual_materialization, scenario_pure_literal_constant_materialization });
 	}
 }

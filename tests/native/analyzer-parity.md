@@ -8,7 +8,7 @@ The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 87 scenarios have explicit native equivalents and 3
+The legacy suite remains enabled: 88 scenarios have explicit native equivalents and 2
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -180,7 +180,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | native `analyzer_calls` |
 | 83 | `_test_local_enum_value_cycles` | declarations | native `analyzer_declarations` |
 | 84 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | legacy-only |
-| 85 | `_test_pure_literal_constant_materialization` | expressions/calls | legacy-only |
+| 85 | `_test_pure_literal_constant_materialization` | expressions/calls | native `analyzer_constants` |
 | 86 | `_test_pure_constant_review_regressions` | expressions/calls | native `analyzer_constants` |
 | 87 | `_test_constant_dictionary_key_conversion` | expressions/calls | native `analyzer_constants` |
 | 88 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | native `analyzer_constants` |
@@ -337,7 +337,14 @@ preserve all 46 ordered public errors, hard/constant distinctions, exact recursi
 semantic validity, and repeated reports. `folded-tuples-stage-1.log` records 7 cases / 9,654
 assertions, zero failures, including normal/reverse/shuffle execution.
 
-- Migrate the 3 remaining legacy-only functions; newly merged scenarios
+Pure literal materialization preserves the four initial folds, recursive read-only tree, tuple
+identity, all six pinned static source layouts, refusal and nested inference errors, repeated
+public/semantic results, unchanged index records/revision tokens, nonconstant children, converted
+carriers, both invalid-index errors, repeated and adjacent warning suppression, and concatenation.
+`pure-literal-stage-2.log` records 8 cases / 10,777 assertions, zero failures, including all orders.
+The first build required only parentheses around a compound doctest expression.
+
+- Migrate the 2 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
