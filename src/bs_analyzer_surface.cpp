@@ -1276,10 +1276,15 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 
 	if (member.get_datatype().is_resolving()) {
 		if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
-			if (diagnosed_function_member_cycles.has(member.function)) {
+			// A single call may reach member resolution through both its CallNode and
+			// callee IdentifierNode, which share a start position. Distinct back-edge
+			// calls need independent diagnostics even when they target the same member.
+			const uint64_t source_site = p_source != nullptr ? (uint64_t(uint32_t(p_source->start_line)) << 32) | uint32_t(p_source->start_column) : 0;
+			HashSet<uint64_t> &diagnosed_sites = diagnosed_function_member_cycle_sites[member.function];
+			if (diagnosed_sites.has(source_site)) {
 				return;
 			}
-			diagnosed_function_member_cycles.insert(member.function);
+			diagnosed_sites.insert(source_site);
 		}
 		push_error(vformat(R"(Could not resolve member "%s": Cyclic reference.)", member.get_name()), p_source);
 		return;

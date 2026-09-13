@@ -183,6 +183,26 @@ TEST_SUITE("declaration_cycle_analyzer") {
 				});
 	}
 
+	TEST_CASE("distinct_function_default_back_edges_each_replay_the_cycle") {
+		const String source = "static func f1(a := f2(), b := f3()) -> int:\n\treturn 1\nstatic func f2(p := f1()) -> int:\n\treturn 2\nstatic func f3(p := f1()) -> int:\n\treturn 3\n";
+		original("review_140_two_default_back_edges.barista", source,
+				">> ERROR at line 3: Could not resolve member \"f1\": Cyclic reference.\n>> ERROR at line 3: Cannot infer the type of \"p\" parameter because the value doesn't have a set type.\n>> ERROR at line 5: Could not resolve member \"f1\": Cyclic reference.\n>> ERROR at line 5: Cannot infer the type of \"p\" parameter because the value doesn't have a set type.",
+				[](const BSParser &parser) {
+					const auto f2_member = parser.get_tree()->get_member("f2");
+					const auto f3_member = parser.get_tree()->get_member("f3");
+					BS_TEST_REQUIRE(f2_member.type == BSParser::ClassNode::Member::FUNCTION && f2_member.function != nullptr);
+					BS_TEST_REQUIRE(f3_member.type == BSParser::ClassNode::Member::FUNCTION && f3_member.function != nullptr);
+					BS_TEST_REQUIRE(f2_member.function->parameters.size() == 1 && f2_member.function->parameters[0]->initializer != nullptr);
+					BS_TEST_REQUIRE(f3_member.function->parameters.size() == 1 && f3_member.function->parameters[0]->initializer != nullptr);
+					auto *f2_call = static_cast<BSParser::CallNode *>(f2_member.function->parameters[0]->initializer);
+					auto *f3_call = static_cast<BSParser::CallNode *>(f3_member.function->parameters[0]->initializer);
+					exact_error(parser, 0, "Could not resolve member \"f1\": Cyclic reference.", f2_call);
+					exact_error(parser, 1, "Cannot infer the type of \"p\" parameter because the value doesn't have a set type.", f2_call);
+					exact_error(parser, 2, "Could not resolve member \"f1\": Cyclic reference.", f3_call);
+					exact_error(parser, 3, "Cannot infer the type of \"p\" parameter because the value doesn't have a set type.", f3_call);
+				});
+	}
+
 	TEST_CASE("cyclic_override_defaults_replay_the_member_cycle") {
 		const String source = "func test():\n\tprint(v)\n\nvar v := InnerA.new().f()\n\nclass InnerA:\n\tfunc f(p := InnerB.new().f()) -> int:\n\t\treturn 1\n\nclass InnerB extends InnerA:\n\tfunc f(p := 1) -> int:\n\t\treturn super.f()\n";
 		original("cyclic_ref_override.barista", source, ">> ERROR at line 11: Could not resolve member \"f\": Cyclic reference.", [](const BSParser &parser) {
