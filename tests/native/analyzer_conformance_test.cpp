@@ -489,9 +489,150 @@ void scenario_self_type_parameter_compat() {
 	BSCache::clear_source_overrides();
 }
 
+void scenario_trait_target_assignability() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	BS_TEST_REQUIRE(fixture.index().get_records().is_empty());
+	const auto report = AnalyzerMigrationTestAccess::trait_target_assignability();
+	const auto repeated = AnalyzerMigrationTestAccess::trait_target_assignability();
+	CHECK(report.class_registry_membership);
+	CHECK(repeated.class_registry_membership == report.class_registry_membership);
+	CHECK(report.class_registry_conflict_rejects);
+	CHECK(repeated.class_registry_conflict_rejects == report.class_registry_conflict_rejects);
+	CHECK(report.class_registry_match_accepts);
+	CHECK(repeated.class_registry_match_accepts == report.class_registry_match_accepts);
+	CHECK(report.class_registry_no_evidence_accepts);
+	CHECK(repeated.class_registry_no_evidence_accepts == report.class_registry_no_evidence_accepts);
+	CHECK(report.native_membership);
+	CHECK(repeated.native_membership == report.native_membership);
+	CHECK(report.native_conflict_rejects);
+	CHECK(repeated.native_conflict_rejects == report.native_conflict_rejects);
+	CHECK(report.builtin_membership);
+	CHECK(repeated.builtin_membership == report.builtin_membership);
+	CHECK(report.builtin_conflict_rejects);
+	CHECK(repeated.builtin_conflict_rejects == report.builtin_conflict_rejects);
+	CHECK(report.uses_project_ok);
+	CHECK(repeated.uses_project_ok == report.uses_project_ok);
+	CHECK(report.uses_projection_conflict_rejects);
+	CHECK(repeated.uses_projection_conflict_rejects == report.uses_projection_conflict_rejects);
+	CHECK(report.trait_self_match_accepts);
+	CHECK(repeated.trait_self_match_accepts == report.trait_self_match_accepts);
+	CHECK(report.trait_self_conflict_rejects);
+	CHECK(repeated.trait_self_conflict_rejects == report.trait_self_conflict_rejects);
+	CHECK(report.structured_nominal_projects);
+	CHECK(repeated.structured_nominal_projects == report.structured_nominal_projects);
+	CHECK(report.unknown_nominal_projects);
+	CHECK(repeated.unknown_nominal_projects == report.unknown_nominal_projects);
+	CHECK(report.structured_nominal_rejects);
+	CHECK(repeated.structured_nominal_rejects == report.structured_nominal_rejects);
+	CHECK(report.unknown_nominal_rejects);
+	CHECK(repeated.unknown_nominal_rejects == report.unknown_nominal_rejects);
+	CHECK(report.live_arity_no_evidence_accepts);
+	CHECK(repeated.live_arity_no_evidence_accepts == report.live_arity_no_evidence_accepts);
+	using Evidence = BSTypeCompatibility::ArgumentEvidence;
+	struct Expected {
+		const char *name;
+		Evidence evidence;
+	};
+	const std::vector<Expected> expected = {
+		{ "nested_match", Evidence::MATCH },
+		{ "nested_conflict", Evidence::CONFLICT },
+		{ "dictionary_key_conflict", Evidence::CONFLICT },
+		{ "tuple_match", Evidence::MATCH },
+		{ "tuple_conflict", Evidence::CONFLICT },
+		{ "tuple_arity", Evidence::CONFLICT },
+		{ "named_tuple_match", Evidence::MATCH },
+		{ "tuple_owner", Evidence::CONFLICT },
+		{ "tuple_path", Evidence::CONFLICT },
+		{ "union_canonical", Evidence::MATCH },
+		{ "union_conflict", Evidence::CONFLICT },
+		{ "union_scalar", Evidence::CONFLICT },
+		{ "open_union_conflict", Evidence::CONFLICT },
+		{ "open_union_unknown", Evidence::UNKNOWN },
+		{ "open_union_reordered", Evidence::UNKNOWN },
+		{ "open_union_arity", Evidence::UNKNOWN },
+		{ "closed_union_arity", Evidence::CONFLICT },
+		{ "open_array", Evidence::UNKNOWN },
+		{ "destination_open_array", Evidence::CONFLICT },
+		{ "closed_array_arity", Evidence::CONFLICT },
+		{ "destination_closed_array_arity", Evidence::CONFLICT },
+		{ "parameter", Evidence::UNKNOWN },
+		{ "bounded_parameter", Evidence::UNKNOWN },
+		{ "destination_parameter", Evidence::CONFLICT },
+		{ "unset", Evidence::UNKNOWN },
+		{ "expected_unset", Evidence::UNKNOWN },
+		{ "callable_match", Evidence::MATCH },
+		{ "callable_fixed", Evidence::CONFLICT },
+		{ "union_callable", Evidence::CONFLICT },
+		{ "callable_return", Evidence::CONFLICT },
+		{ "callable_rest", Evidence::CONFLICT },
+		{ "callable_async", Evidence::CONFLICT },
+		{ "signature_presence", Evidence::CONFLICT },
+		{ "fixed_arity", Evidence::CONFLICT },
+		{ "return_arity", Evidence::CONFLICT },
+		{ "rest_arity", Evidence::CONFLICT },
+		{ "gradual_vararg", Evidence::CONFLICT },
+		{ "signal_match", Evidence::MATCH },
+		{ "signal_fixed", Evidence::CONFLICT },
+		{ "unknown_sibling", Evidence::UNKNOWN },
+		{ "conflict_before_unknown", Evidence::CONFLICT },
+		{ "conflict_after_unknown", Evidence::CONFLICT },
+		{ "type_argument_arity", Evidence::CONFLICT },
+		{ "bound_arity", Evidence::CONFLICT },
+		{ "bound_conflict", Evidence::CONFLICT },
+		{ "bound_match", Evidence::MATCH },
+		{ "nullable", Evidence::CONFLICT },
+		{ "meta", Evidence::CONFLICT },
+		{ "handle", Evidence::CONFLICT },
+		{ "handle_match", Evidence::MATCH },
+		{ "open_payload", Evidence::UNKNOWN },
+		{ "open_payload_conflict", Evidence::CONFLICT },
+		{ "depth_unknown", Evidence::UNKNOWN },
+		{ "depth_sibling_conflict", Evidence::CONFLICT },
+		{ "unset_sibling_conflict", Evidence::CONFLICT },
+		{ "native_match", Evidence::MATCH },
+		{ "native_conflict", Evidence::CONFLICT },
+		{ "coroutine_match", Evidence::MATCH },
+		{ "coroutine_result", Evidence::CONFLICT },
+		{ "variant_match", Evidence::MATCH },
+		{ "variant_concrete", Evidence::CONFLICT },
+		{ "class_fqcn_match", Evidence::MATCH },
+		{ "class_fqcn_conflict", Evidence::CONFLICT },
+		{ "missing_class_conflict", Evidence::CONFLICT },
+		{ "script_match", Evidence::MATCH },
+		{ "script_conflict", Evidence::CONFLICT },
+		{ "enum_identity", Evidence::CONFLICT },
+		{ "tuple_display_names", Evidence::MATCH },
+		{ "open_signature", Evidence::UNKNOWN },
+		{ "open_signature_conflict", Evidence::CONFLICT },
+	};
+	BS_TEST_REQUIRE(report.structured_arguments.size() == int(expected.size()));
+	BS_TEST_REQUIRE(repeated.structured_arguments.size() == report.structured_arguments.size());
+	for (int i = 0; i < report.structured_arguments.size(); ++i) {
+		const auto &actual = report.structured_arguments[i];
+		const auto &again = repeated.structured_arguments[i];
+		INFO(expected[i].name);
+		CHECK(actual.name == expected[i].name);
+		CHECK(actual.evidence == expected[i].evidence);
+		CHECK(actual.projected);
+		CHECK(actual.compatible == (expected[i].evidence != Evidence::CONFLICT));
+		CHECK(again.name == actual.name);
+		CHECK(again.evidence == actual.evidence);
+		CHECK(again.projected == actual.projected);
+		CHECK(again.compatible == actual.compatible);
+	}
+	CHECK(fixture.index().get_records().is_empty());
+	const int before = fixture.index().get_record_count();
+	analyze_source("class_name TtaIndexGuard extends Node\n", "res://tests/tta_index_guard.barista");
+	CHECK(fixture.index().get_record_count() == before);
+	BSCache::clear_source_overrides();
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_conformance") {
+	TEST_CASE("trait_target_assignability") { scenario_trait_target_assignability(); }
 	TEST_CASE("self_type_parameter_compat") { scenario_self_type_parameter_compat(); }
 	TEST_CASE("conformance_scoped_visibility") { scenario_conformance_scoped_visibility(); }
 	TEST_CASE("trait_requirements_and_conformance_witness") { scenario_trait_requirements_and_conformance_witness(); }
@@ -503,6 +644,6 @@ TEST_SUITE("analyzer_conformance") {
 	TEST_CASE("witness_collision_arbitration") { scenario_witness_collision_arbitration(); }
 	TEST_CASE("complete_self_referential_enum_type") { scenario_complete_self_referential_enum_type(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_conformance_registry_registration, scenario_conformance_witness_lookup, scenario_conformance_hidden_witness, scenario_class_trait_binding_chain_coherence, scenario_recorded_trait_arguments_query, scenario_witness_collision_arbitration, scenario_complete_self_referential_enum_type, scenario_trait_requirements_and_conformance_witness, scenario_conformance_scoped_visibility, scenario_self_type_parameter_compat });
+		check_scenario_orders({ scenario_conformance_registry_registration, scenario_conformance_witness_lookup, scenario_conformance_hidden_witness, scenario_class_trait_binding_chain_coherence, scenario_recorded_trait_arguments_query, scenario_witness_collision_arbitration, scenario_complete_self_referential_enum_type, scenario_trait_requirements_and_conformance_witness, scenario_conformance_scoped_visibility, scenario_self_type_parameter_compat, scenario_trait_target_assignability });
 	}
 }

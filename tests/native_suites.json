@@ -21,6 +21,7 @@
     "analyzer_operations",
     "analyzer_conformance",
     "analyzer_members",
+    "analyzer_enum",
     "analyzer_type_compatibility",
     "source_analyzer",
     "autoload_analyzer",

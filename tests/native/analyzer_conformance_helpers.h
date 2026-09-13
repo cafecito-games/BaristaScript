@@ -14,6 +14,33 @@ namespace barista_script {
 // Private test-only access; observation bodies preserve the old probe's typed
 // compiler/registry operations while replacing its script Dictionary carrier.
 struct AnalyzerMigrationTestAccess {
+	struct ProjectedArgumentObservation {
+		String name;
+		bool projected = false;
+		bool compatible = false;
+		BSTypeCompatibility::ArgumentEvidence evidence = BSTypeCompatibility::ArgumentEvidence::UNKNOWN;
+	};
+	struct TraitTargetObservation {
+		bool class_registry_conflict_rejects = false;
+		bool class_registry_membership = false;
+		bool class_registry_match_accepts = false;
+		bool class_registry_no_evidence_accepts = false;
+		bool native_conflict_rejects = false;
+		bool native_membership = false;
+		bool builtin_conflict_rejects = false;
+		bool builtin_membership = false;
+		bool uses_project_ok = false;
+		bool uses_projection_conflict_rejects = false;
+		bool unknown_nominal_projects = false;
+		bool unknown_nominal_rejects = false;
+		bool structured_nominal_projects = false;
+		bool structured_nominal_rejects = false;
+		bool live_arity_no_evidence_accepts = false;
+		bool trait_self_match_accepts = false;
+		bool trait_self_conflict_rejects = false;
+		Vector<ProjectedArgumentObservation> structured_arguments;
+	};
+	static TraitTargetObservation trait_target_assignability();
 	struct ExhaustionObservation {
 		String name;
 		bool helper = false;

@@ -197,14 +197,60 @@ void scenario_type_alias_surface() {
 	CHECK_MESSAGE((conflict_errors.contains("Type alias \"Label\" hides a native class")), "type alias cannot hide native class");
 }
 
+void scenario_custom_annotation_surface() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	CHECK(analyze_source("# Custom annotations declared and used in the same namespace resolve without an import and\n# accept positional, named, default, variadic, stacked, and repeated arguments. They apply to\n# class, method, member-variable, signal, and constant targets.\nnamespace cafecito.usage\n\nannotation suite(name: String = \"\") targets CLASS\nannotation test targets METHOD\nannotation timeout(seconds: float) targets METHOD\nannotation tags(...names: String) targets METHOD, CLASS\nannotation fixture targets VARIABLE\nannotation event targets SIGNAL\nannotation config(key: String) targets CONSTANT\n\n@suite(name = \"Combat\")\n@tags(\"gameplay\")\nclass CombatTests:\n\t@fixture\n\tvar world: int\n\n\t@config(\"max_health\")\n\tconst MAX_HEALTH = 100\n\n\t@event\n\tsignal damage_taken(amount: int)\n\n\t@test\n\t@timeout(10.0)\n\t@tags(\"slow\", \"integration\")\n\t@tags(\"flaky\")\n\tfunc crit_table() -> void:\n\t\tpass\n\nfunc test() -> void:\n\tpass\n", "res://tests/annotation_custom_usage.barista").valid());
+	struct InvalidCase {
+		const char *name;
+		const char *path;
+		const char *source;
+		const char *needle;
+	};
+	const std::vector<InvalidCase> invalid_cases = {
+		{ "type mismatch", "annotation_argument_type_mismatch", "namespace cafecito.typemismatch\n\nannotation timeout(seconds: float) targets METHOD\n\n@timeout(\"not a number\")\nfunc test() -> void:\n\tpass\n", "expected \"float\" but got \"String\"" },
+		{ "nonconstant", "annotation_non_constant_arg", "namespace cafecito.nonconst\n\nannotation timeout(seconds: float) targets METHOD\n\nvar seconds_value: float = 1.0\n\n@timeout(seconds_value)\nfunc test() -> void:\n\tprint(seconds_value)\n", "not a constant expression" },
+		{ "wrong target", "annotation_wrong_target", "namespace cafecito.wrongtarget\n\nannotation fixture targets VARIABLE\n\n@fixture\nfunc test() -> void:\n\tpass\n", "cannot be applied to a method" },
+		{ "missing required", "annotation_missing_required_arg", "namespace cafecito.missingarg\n\nannotation cases(provider: String) targets METHOD\n\n@cases\nfunc test() -> void:\n\tpass\n", "missing required argument \"provider\"" },
+		{ "unknown named", "annotation_unknown_named_arg", "namespace cafecito.unknownnamed\n\nannotation suite(name: String = \"\") targets CLASS\n\n@suite(title = \"x\")\nclass Demo:\n\tpass\n", "has no parameter named \"title\"" },
+		{ "positional after named", "annotation_positional_after_named", "namespace cafecito.posafternamed\n\nannotation pair(first: String, second: String) targets METHOD\n\n@pair(first = \"a\", \"b\")\nfunc test() -> void:\n\tpass\n", "Positional argument after named argument" },
+		{ "too many", "annotation_too_many_args", "namespace cafecito.toomany\n\nannotation test targets METHOD\n\n@test(\"extra\")\nfunc test() -> void:\n\tpass\n", "takes at most 0 argument(s), but 1 were given" },
+	};
+	for (const auto &sample : invalid_cases) {
+		INFO(sample.name);
+		const auto result = analyze_source(sample.source, vformat("res://tests/%s.barista", sample.path));
+		CHECK_FALSE(result.valid());
+		CHECK(errors_contain(result, sample.needle));
+	}
+	const auto unknown = analyze_source("@not_declared\nfunc test() -> void:\n\tpass\n", "res://tests/annotation_unknown.barista");
+	CHECK_FALSE(unknown.valid());
+	CHECK(errors_contain(unknown, "Unknown annotation"));
+	fixture.index().clear();
+	const String provider_path = "res://tests/annotation_index_library.barista";
+	const String provider_source = "# Provider file used by analyzer custom-annotation import tests. It intentionally has no test()\n# function; the companion consumer imports this namespace and applies all three declarations.\nnamespace cafecito.annotation_index\n\nannotation suite(name: String = \"\") targets CLASS\nannotation index_test targets METHOD\nannotation fixture targets VARIABLE\n";
+	CHECK(BaristaScriptLanguage::get_singleton()->synchronize_declaration_path_from_source(provider_path, provider_source) == OK);
+	BSCache::set_source_override(provider_path, provider_source);
+	const auto consumer = analyze_source("# Custom annotations declared in another file resolve through an imported namespace.\n# This is the analyzer half of the declaration-index coverage: the provider fixture is indexed\n# before this script is analyzed.\nnamespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = \"Imported\")\nclass ImportedSuite:\n\t@fixture\n\tvar state: int\n\n\t@index_test\n\tfunc works() -> void:\n\t\tpass\n\nfunc test() -> void:\n\tpass\n", "res://tests/annotation_custom_import.barista");
+	CHECK(consumer.valid());
+	const auto &dependencies = consumer.parser->get_depended_parsers();
+	BS_TEST_REQUIRE(dependencies.has(provider_path));
+	BS_TEST_REQUIRE(dependencies[provider_path].is_valid());
+	CHECK(dependencies[provider_path]->get_status() >= BSParserRef::INHERITANCE_SOLVED);
+	CHECK_FALSE(analyze_source("namespace cafecito.annotation_consumer\nimport cafecito.annotation_index\n\n@suite(name = 7)\nclass ImportedSuite:\n\tpass\n", "res://tests/annotation_custom_import_mismatch.barista").valid());
+	BSCache::clear_source_override(provider_path);
+	fixture.index().clear();
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_declarations") {
+	TEST_CASE("custom_annotation_surface") { scenario_custom_annotation_surface(); }
 	TEST_CASE("local_enum_value_cycles") { scenario_local_enum_value_cycles(); }
 	TEST_CASE("type_alias_surface") { scenario_type_alias_surface(); }
 	TEST_CASE("member_name_conflicts") { scenario_member_name_conflicts(); }
 	TEST_CASE("builtin_annotation_resolve") { scenario_builtin_annotation_resolve(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_member_name_conflicts, scenario_builtin_annotation_resolve, scenario_type_alias_surface, scenario_local_enum_value_cycles });
+		check_scenario_orders({ scenario_member_name_conflicts, scenario_builtin_annotation_resolve, scenario_type_alias_surface, scenario_local_enum_value_cycles, scenario_custom_annotation_surface });
 	}
 }

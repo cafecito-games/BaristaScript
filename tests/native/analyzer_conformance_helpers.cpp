@@ -7,6 +7,7 @@
 /**************************************************************************/
 
 #include "analyzer_conformance_helpers.h"
+#include "barista_script.h"
 
 #include "bs_cache.h"
 #include "bs_conformance_registry.h"
@@ -14,6 +15,489 @@
 #include "bs_type.h"
 
 namespace barista_script {
+AnalyzerMigrationTestAccess::TraitTargetObservation AnalyzerMigrationTestAccess::trait_target_assignability() {
+	TraitTargetObservation result;
+
+	BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+	ERR_FAIL_COND_V(registry == nullptr, result);
+
+	const String conflict_file = "res://tests/tta_conflict.barista";
+	const String match_file = "res://tests/tta_match.barista";
+	const String empty_file = "res://tests/tta_empty.barista";
+	const String native_file = "res://tests/tta_native.barista";
+	const String builtin_file = "res://tests/tta_builtin.barista";
+
+	registry->clear_file(conflict_file);
+	registry->clear_file(match_file);
+	registry->clear_file(empty_file);
+	registry->clear_file(native_file);
+	registry->clear_file(builtin_file);
+
+	BSParser::IdentifierNode trait_id;
+	trait_id.name = SNAME("TtaKeeper");
+	BSParser::IdentifierNode param_id;
+	param_id.name = SNAME("T");
+	BSParser::TypeParameterNode type_parameter;
+	type_parameter.identifier = &param_id;
+
+	BSParser::ClassNode trait;
+	trait.is_trait = true;
+	trait.identifier = &trait_id;
+	trait.fqcn = "res://tests/tta_keeper.barista";
+	trait.type_parameters.push_back(&type_parameter);
+
+	auto make_builtin = [](Variant::Type p_type) -> BSParser::DataType {
+		BSParser::DataType type;
+		type.kind = BSParser::DataType::BUILTIN;
+		type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		type.builtin_type = p_type;
+		return type;
+	};
+
+	BSParser::DataType target;
+	target.kind = BSParser::DataType::CLASS;
+	target.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	target.class_type = &trait;
+	target.type_arguments.push_back(make_builtin(Variant::STRING));
+
+	auto builtin_recorded = [](Variant::Type p_type) -> Vector<BSConformanceRegistry::RecordedTypeArgument> {
+		BSConformanceRegistry::RecordedTypeArgument argument;
+		argument.kind = BSConformanceRegistry::RecordedTypeArgument::BUILTIN;
+		argument.builtin_type = p_type;
+		Vector<BSConformanceRegistry::RecordedTypeArgument> arguments;
+		arguments.push_back(argument);
+		return arguments;
+	};
+
+	auto make_conformance = [](const String &p_target_key, const StringName &p_trait,
+									const Vector<BSConformanceRegistry::RecordedTypeArgument> &p_args,
+									const String &p_source) -> BSConformanceRegistry::Conformance {
+		BSConformanceRegistry::Conformance entry;
+		entry.target_keys.push_back(p_target_key);
+		entry.target_fqcn = p_target_key;
+		entry.target_script_path = p_target_key.begins_with("res://") ? p_target_key : String();
+		entry.target_is_root_class = true;
+		entry.trait_name = p_trait;
+		entry.trait_type_arguments = p_args;
+		entry.target_label = p_target_key;
+		entry.source_file = p_source;
+		entry.conformance_index = 0;
+		return entry;
+	};
+
+	// CLASS source: registry-recorded INT conflicts with Keeper[String] destination.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(make_conformance("res://tests/tta_source.barista", SNAME("TtaKeeper"),
+				builtin_recorded(Variant::INT), conflict_file));
+		registry->try_replace_file_conformances(conflict_file, candidates);
+
+		BSParser::ClassNode source_class;
+		source_class.fqcn = "res://tests/tta_source.barista";
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &source_class;
+
+		const BSTypeCompatibility::Result check_result = BSTypeCompatibility::check(target, source);
+		result.class_registry_conflict_rejects = !check_result.compatible;
+		result.class_registry_membership = registry->has_conformance(
+				"res://tests/tta_source.barista", SNAME("TtaKeeper"));
+	}
+
+	// CLASS source: matching recorded STRING stays compatible.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(make_conformance("res://tests/tta_match_source.barista", SNAME("TtaKeeper"),
+				builtin_recorded(Variant::STRING), match_file));
+		registry->try_replace_file_conformances(match_file, candidates);
+
+		BSParser::ClassNode source_class;
+		source_class.fqcn = "res://tests/tta_match_source.barista";
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &source_class;
+
+		result.class_registry_match_accepts = BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	// CLASS source: empty recorded args = gradual no-evidence, stays compatible.
+	{
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(make_conformance("res://tests/tta_empty_source.barista", SNAME("TtaKeeper"),
+				Vector<BSConformanceRegistry::RecordedTypeArgument>(), empty_file));
+		registry->try_replace_file_conformances(empty_file, candidates);
+
+		BSParser::ClassNode source_class;
+		source_class.fqcn = "res://tests/tta_empty_source.barista";
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &source_class;
+
+		result.class_registry_no_evidence_accepts = BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	// NATIVE source: Object conformance with conflicting args reachable from Node.
+	{
+		BSConformanceRegistry::Conformance entry = make_conformance(
+				"Object", SNAME("TtaKeeper"), builtin_recorded(Variant::INT), native_file);
+		entry.target_script_path = String();
+		entry.target_native_base = SNAME("Object");
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(entry);
+		registry->try_replace_file_conformances(native_file, candidates);
+
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::NATIVE;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.native_type = SNAME("Node");
+
+		result.native_conflict_rejects = !BSTypeCompatibility::check(target, source).compatible;
+		result.native_membership = registry->native_class_conforms(SNAME("Node"), SNAME("TtaKeeper"));
+	}
+
+	// BUILTIN source: INT conforms with conflicting recorded args.
+	{
+		BSConformanceRegistry::Conformance entry = make_conformance(
+				String(Variant::get_type_name(Variant::INT)), SNAME("TtaKeeper"),
+				builtin_recorded(Variant::FLOAT), builtin_file);
+		entry.target_script_path = String();
+		Vector<BSConformanceRegistry::Conformance> candidates;
+		candidates.push_back(entry);
+		registry->try_replace_file_conformances(builtin_file, candidates);
+
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::BUILTIN;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.builtin_type = Variant::INT;
+
+		result.builtin_conflict_rejects = !BSTypeCompatibility::check(target, source).compatible;
+		result.builtin_membership = registry->builtin_type_conforms(Variant::INT, SNAME("TtaKeeper"));
+	}
+
+	// Declared `uses` projection: class binds Keeper[int] against Keeper[String] destination.
+	{
+		BSParser::IdentifierNode implementer_id;
+		implementer_id.name = SNAME("TtaUsesInt");
+		BSParser::ClassNode implementer;
+		implementer.identifier = &implementer_id;
+		implementer.fqcn = "res://tests/tta_uses_int.barista";
+		BSParser::ClassNode::TraitUse trait_use;
+		trait_use.resolved_trait = &trait;
+		trait_use.resolved_type_arguments.push_back(make_builtin(Variant::INT));
+		implementer.used_traits.push_back(trait_use);
+		implementer.resolved_traits.push_back(&trait);
+
+		BSParser::DataType source;
+		source.kind = BSParser::DataType::CLASS;
+		source.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		source.class_type = &implementer;
+
+		Vector<BSParser::DataType> projected;
+		result.uses_project_ok = BSTypeCompatibility::project_class_trait_arguments(source, &trait, projected) &&
+				projected.size() == 1 &&
+				projected[0].kind == BSParser::DataType::BUILTIN &&
+				projected[0].builtin_type == Variant::INT;
+		result.uses_projection_conflict_rejects = !BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	// Live structured arguments must reach the real trait consumer without persistence erasure.
+	// These already-represented datatypes need no source-level generic declaration (#138 step 8).
+	{
+		using DataType = BSParser::DataType;
+		BSParser::ClassNode implementer;
+		implementer.fqcn = "res://tests/tta_structured.barista";
+		BSParser::ClassNode::TraitUse use;
+		use.resolved_trait = &trait;
+		use.resolved_type_arguments.push_back(DataType());
+		implementer.used_traits.push_back(use);
+		implementer.resolved_traits.push_back(&trait);
+		DataType source = target;
+		source.class_type = &implementer;
+		source.type_arguments.clear();
+		Vector<ProjectedArgumentObservation> observations;
+		auto observe = [&](const String &p_name, const DataType &p_projected, const DataType &p_expected) {
+			implementer.used_traits.write[0].resolved_type_arguments.write[0] = p_projected;
+			target.type_arguments.write[0] = p_expected;
+			Vector<DataType> projected;
+			ProjectedArgumentObservation observation;
+			observation.name = p_name;
+			observation.projected = BSTypeCompatibility::project_class_trait_arguments(source, &trait, projected) && projected.size() == 1;
+			observation.compatible = BSTypeCompatibility::check(target, source).compatible;
+			if (projected.size() == 1) {
+				const auto evidence = BSTypeCompatibility::compare_projected_argument(projected[0], p_expected);
+				observation.evidence = evidence;
+			}
+			observations.push_back(observation);
+		};
+		const DataType integer = make_builtin(Variant::INT);
+		const DataType string = make_builtin(Variant::STRING);
+		const DataType boolean = make_builtin(Variant::BOOL);
+		DataType parameter;
+		parameter.kind = DataType::TYPE_PARAMETER;
+		parameter.type_source = DataType::ANNOTATED_EXPLICIT;
+		parameter.type_parameter_name = SNAME("U");
+		parameter.type_parameter_scope = DataType::TYPE_PARAMETER_CLASS;
+		auto array_of = [&](const DataType &p_element) {
+			DataType array = make_builtin(Variant::ARRAY);
+			array.container_element_types.push_back(p_element);
+			return array;
+		};
+		auto union_of = [](const DataType &p_first, const DataType &p_second) {
+			Vector<DataType> members;
+			members.push_back(p_first);
+			members.push_back(p_second);
+			return DataType::make_union(members);
+		};
+		DataType dictionary = make_builtin(Variant::DICTIONARY);
+		dictionary.container_element_types.push_back(string);
+		dictionary.container_element_types.push_back(array_of(integer));
+		observe("nested_match", dictionary, dictionary);
+		DataType changed = dictionary;
+		changed.container_element_types.write[1] = array_of(string);
+		observe("nested_conflict", dictionary, changed);
+		changed = dictionary;
+		changed.container_element_types.write[0] = integer;
+		observe("dictionary_key_conflict", dictionary, changed);
+		DataType tuple = integer;
+		tuple.kind = DataType::TUPLE;
+		tuple.builtin_type = Variant::ARRAY;
+		tuple.container_element_types.push_back(integer);
+		tuple.container_element_types.push_back(string);
+		observe("tuple_match", tuple, tuple);
+		changed = tuple;
+		changed.container_element_types.write[1] = boolean;
+		observe("tuple_conflict", tuple, changed);
+		changed = tuple;
+		changed.container_element_types.remove_at(1);
+		observe("tuple_arity", tuple, changed);
+		tuple.native_type = SNAME("Owner.Point");
+		tuple.script_path = "res://tests/tta_owner.barista";
+		observe("named_tuple_match", tuple, tuple);
+		changed = tuple;
+		changed.native_type = SNAME("Other.Point");
+		observe("tuple_owner", tuple, changed);
+		changed = tuple;
+		changed.script_path = "res://tests/tta_other.barista";
+		observe("tuple_path", tuple, changed);
+		observe("union_canonical", union_of(integer, string), union_of(string, integer));
+		observe("union_conflict", union_of(integer, string), union_of(integer, boolean));
+		observe("union_scalar", union_of(integer, string), integer);
+		observe("open_union_conflict", union_of(integer, parameter), union_of(string, boolean));
+		observe("open_union_unknown", union_of(integer, parameter), union_of(integer, boolean));
+		observe("open_union_reordered", union_of(array_of(parameter), array_of(integer)), union_of(array_of(integer), array_of(string)));
+		observe("open_union_arity", union_of(integer, parameter), union_of(union_of(integer, string), boolean));
+		observe("closed_union_arity", union_of(integer, string), union_of(union_of(integer, string), boolean));
+		observe("open_array", array_of(parameter), make_builtin(Variant::ARRAY));
+		observe("destination_open_array", make_builtin(Variant::ARRAY), array_of(parameter));
+		observe("closed_array_arity", array_of(integer), make_builtin(Variant::ARRAY));
+		observe("destination_closed_array_arity", make_builtin(Variant::ARRAY), array_of(integer));
+		observe("parameter", parameter, integer);
+		changed = parameter;
+		changed.type_parameter_bound.push_back(string);
+		observe("bounded_parameter", changed, integer);
+		observe("destination_parameter", integer, parameter);
+		observe("unset", DataType(), integer);
+		observe("expected_unset", integer, DataType());
+		DataType callable = make_builtin(Variant::CALLABLE);
+		callable.has_method_signature = true;
+		callable.method_parameter_types.push_back(integer);
+		callable.method_return_type.push_back(string);
+		callable.method_rest_parameter_type.push_back(array_of(integer));
+		callable.method_info.flags = METHOD_FLAG_VARARG;
+		observe("callable_match", callable, callable);
+		changed = callable;
+		changed.method_parameter_types.write[0] = string;
+		observe("callable_fixed", callable, changed);
+		observe("union_callable", union_of(callable, integer), union_of(changed, integer));
+		changed = callable;
+		changed.method_return_type.write[0] = integer;
+		observe("callable_return", callable, changed);
+		changed = callable;
+		changed.method_rest_parameter_type.write[0] = array_of(string);
+		observe("callable_rest", callable, changed);
+		changed = callable;
+		changed.signature_is_async = true;
+		observe("callable_async", callable, changed);
+		changed = callable;
+		changed.has_method_signature = false;
+		observe("signature_presence", callable, changed);
+		changed = callable;
+		changed.method_parameter_types.clear();
+		observe("fixed_arity", callable, changed);
+		changed = callable;
+		changed.method_return_type.clear();
+		observe("return_arity", callable, changed);
+		changed = callable;
+		changed.method_rest_parameter_type.clear();
+		observe("rest_arity", callable, changed);
+		callable.method_rest_parameter_type.clear();
+		changed = callable;
+		changed.method_info.flags = METHOD_FLAG_NORMAL;
+		observe("gradual_vararg", callable, changed);
+		callable.builtin_type = Variant::SIGNAL;
+		observe("signal_match", callable, callable);
+		changed = callable;
+		changed.method_parameter_types.write[0] = string;
+		observe("signal_fixed", callable, changed);
+		DataType pair = source;
+		pair.type_arguments.push_back(integer);
+		pair.type_arguments.push_back(parameter);
+		changed = pair;
+		changed.type_arguments.write[1] = string;
+		observe("unknown_sibling", pair, changed);
+		changed.type_arguments.write[0] = string;
+		observe("conflict_before_unknown", pair, changed);
+		pair.type_arguments.reverse();
+		changed.type_arguments.reverse();
+		observe("conflict_after_unknown", pair, changed);
+		changed = source;
+		changed.type_arguments.push_back(integer);
+		observe("type_argument_arity", source, changed);
+		changed = source;
+		changed.type_parameter_bound.push_back(integer);
+		observe("bound_arity", source, changed);
+		DataType bounded = changed;
+		changed.type_parameter_bound.write[0] = string;
+		observe("bound_conflict", bounded, changed);
+		observe("bound_match", bounded, bounded);
+		changed = integer;
+		changed.is_nullable = true;
+		observe("nullable", integer, changed);
+		changed = source;
+		changed.is_meta_type = true;
+		observe("meta", source, changed);
+		DataType handle = changed;
+		handle.is_type_handle_annotation = true;
+		observe("handle", changed, handle);
+		observe("handle_match", handle, handle);
+		DataType enumeration = integer;
+		enumeration.kind = DataType::ENUM;
+		enumeration.is_tagged_union = true;
+		enumeration.native_type = SNAME("TtaResult");
+		enumeration.type_arguments.push_back(integer);
+		DataType::EnumCasePayload payload;
+		payload.field_types.push_back(parameter);
+		enumeration.enum_case_payloads.insert(SNAME("Value"), payload);
+		observe("open_payload", enumeration, enumeration);
+		changed = enumeration;
+		changed.type_arguments.write[0] = string;
+		observe("open_payload_conflict", enumeration, changed);
+		DataType deep = integer;
+		// Same bound as BSParser::MAX_NESTING_DEPTH and compatibility's TYPE_WALK_MAX_DEPTH.
+		for (int i = 0; i < 1026; i++) {
+			deep = array_of(deep);
+		}
+		observe("depth_unknown", deep, deep);
+		DataType deep_pair = source;
+		deep_pair.type_arguments.push_back(deep);
+		deep_pair.type_arguments.push_back(integer);
+		changed = deep_pair;
+		changed.type_arguments.write[1] = string;
+		observe("depth_sibling_conflict", deep_pair, changed);
+		DataType unset_pair = source;
+		unset_pair.type_arguments.push_back(DataType());
+		unset_pair.type_arguments.push_back(integer);
+		changed = unset_pair;
+		changed.type_arguments.write[1] = string;
+		observe("unset_sibling_conflict", unset_pair, changed);
+		DataType native = integer;
+		native.kind = DataType::NATIVE;
+		native.native_type = SNAME("Node");
+		observe("native_match", native, native);
+		changed = native;
+		changed.native_type = SNAME("Object");
+		observe("native_conflict", native, changed);
+		native.native_type = SNAME("BSFunctionState");
+		native.is_coroutine = true;
+		native.container_element_types.push_back(integer);
+		observe("coroutine_match", native, native);
+		changed = native;
+		changed.container_element_types.write[0] = string;
+		observe("coroutine_result", native, changed);
+		DataType variant;
+		variant.kind = DataType::VARIANT;
+		variant.type_source = DataType::ANNOTATED_EXPLICIT;
+		observe("variant_match", variant, variant);
+		observe("variant_concrete", variant, integer);
+		BSParser::ClassNode same_class;
+		same_class.fqcn = implementer.fqcn;
+		changed = source;
+		changed.class_type = &same_class;
+		observe("class_fqcn_match", source, changed);
+		same_class.fqcn = "res://tests/tta_other.barista";
+		observe("class_fqcn_conflict", source, changed);
+		changed.class_type = nullptr;
+		observe("missing_class_conflict", source, changed);
+		DataType script = integer;
+		script.kind = DataType::SCRIPT;
+		Ref<BaristaScript> first_script;
+		first_script.instantiate();
+		script.script_type = first_script;
+		observe("script_match", script, script);
+		changed = script;
+		Ref<BaristaScript> other_script;
+		other_script.instantiate();
+		changed.script_type = other_script;
+		observe("script_conflict", script, changed);
+		changed = enumeration;
+		changed.native_type = SNAME("OtherResult");
+		observe("enum_identity", enumeration, changed);
+		changed = tuple;
+		changed.tuple_field_names.push_back(SNAME("display_only"));
+		observe("tuple_display_names", tuple, changed);
+		DataType open_callable = callable;
+		open_callable.method_parameter_types.write[0] = parameter;
+		observe("open_signature", open_callable, callable);
+		changed = callable;
+		changed.method_return_type.write[0] = integer;
+		observe("open_signature_conflict", open_callable, changed);
+		// A live projection is not nominal proof, even when its argument matches or stays UNKNOWN.
+		implementer.resolved_traits.clear();
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = parameter;
+		target.type_arguments.write[0] = integer;
+		Vector<DataType> without_membership;
+		result.unknown_nominal_projects = BSTypeCompatibility::project_class_trait_arguments(source, &trait, without_membership) &&
+				without_membership.size() == 1 &&
+				BSTypeCompatibility::compare_projected_argument(without_membership[0], integer) == BSTypeCompatibility::ArgumentEvidence::UNKNOWN;
+		result.unknown_nominal_rejects = !BSTypeCompatibility::check(target, source).compatible;
+		target.type_arguments.write[0] = tuple;
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = tuple;
+		result.structured_nominal_projects = BSTypeCompatibility::project_class_trait_arguments(source, &trait, without_membership) &&
+				without_membership.size() == 1 &&
+				BSTypeCompatibility::compare_projected_argument(without_membership[0], tuple) == BSTypeCompatibility::ArgumentEvidence::MATCH;
+		result.structured_nominal_rejects = !BSTypeCompatibility::check(target, source).compatible;
+		implementer.resolved_traits.push_back(&trait);
+		// A live one-argument projection with a two-argument target supplies no arity evidence.
+		implementer.used_traits.write[0].resolved_type_arguments.write[0] = string;
+		target.type_arguments.write[0] = integer;
+		target.type_arguments.push_back(integer);
+		result.live_arity_no_evidence_accepts = BSTypeCompatibility::check(target, source).compatible;
+		target.type_arguments.remove_at(1);
+		result.structured_arguments = observations;
+		target.type_arguments.write[0] = string;
+	}
+
+	// Trait typed as itself with matching args (source is the trait specialization).
+	{
+		BSParser::DataType source = target;
+		result.trait_self_match_accepts = BSTypeCompatibility::check(target, source).compatible;
+
+		source.type_arguments.write[0] = make_builtin(Variant::INT);
+		result.trait_self_conflict_rejects = !BSTypeCompatibility::check(target, source).compatible;
+	}
+
+	registry->clear_file(conflict_file);
+	registry->clear_file(match_file);
+	registry->clear_file(empty_file);
+	registry->clear_file(native_file);
+	registry->clear_file(builtin_file);
+
+	return result;
+}
+
 Vector<AnalyzerMigrationTestAccess::ExhaustionObservation> AnalyzerMigrationTestAccess::type_test_exhaustion_controls() {
 	using DataType = BSParser::DataType;
 	DataType integer;

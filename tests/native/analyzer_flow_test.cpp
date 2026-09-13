@@ -33,6 +33,7 @@ struct SourceCase {
 	bool strict_null = false;
 	bool strict_dynamic = false;
 	bool check_warning_severity = false;
+	std::vector<std::string> raw_error_order;
 };
 
 struct NodeTypeExpectation {
@@ -61,6 +62,21 @@ void check_case(StorageFixture &fixture, AnalyzerSettings &settings, const char 
 	CHECK(source_analyzes(test_case.source, path) == test_case.errors.empty());
 	const AnalysisResult repeated = analyze_source(test_case.source, path);
 	check_analysis(repeated, test_case.errors, test_case.warnings, test_case.phase);
+	if (std::string(group) == "suite_exit") {
+		std::vector<std::string> expected = test_case.raw_error_order;
+		if (expected.empty()) {
+			for (const ExpectedError &error : test_case.errors) {
+				expected.push_back(error.message);
+			}
+		}
+		for (const AnalysisResult *result : { &first, &repeated }) {
+			BS_TEST_REQUIRE(size_t(result->parser->get_errors().size()) == expected.size());
+			size_t index = 0;
+			for (const BSParser::ParserError &error : result->parser->get_errors()) {
+				CHECK(std::string(error.message.utf8().get_data()) == expected[index++]);
+			}
+		}
+	}
 	if (test_case.check_warning_severity) {
 		BS_TEST_REQUIRE(test_case.warnings.size() == 1);
 		const ExpectedWarning &warning = test_case.warnings.front();
@@ -133,8 +149,8 @@ TEST_SUITE("analyzer_flow") {
 			{ "original_noreturn_function_return", "@noreturn\nfunc invalid_return() -> void:\n\treturn\n", { E("A \"@noreturn\" function cannot return.", 2, 1) }, {} },
 			{ "original_noreturn_function_fallthrough", "@noreturn\nfunc invalid_fallthrough() -> void:\n\tprint(\"fallthrough\")\n", { E("A \"@noreturn\" function cannot complete normally.", 2, 1) }, {} },
 			{ "original_noreturn_unreachable_norun", "@noreturn\nfunc abort_user() -> void:\n\tpush_fatal(\"abort\")\n\nfunc unreachable_after_noreturn() -> void:\n\tabort_user()\n\tprint(\"unreachable\")\n", {}, { W(UNREACHABLE_CODE, "Unreachable code (statement after return) in function \"unreachable_after_noreturn()\".", 7, 5, 7, 25) } },
-			{ "body_unknown_call", "func f() -> int:\n\tunknown_abort()\n", { E("Not all code paths return a value.", 1, 1), E("Identifier \"unknown_abort\" not declared in the current scope.", 2, 5) }, {}, Phase::BODY_EXPRESSION_CALLABLE_SIGNAL },
-			{ "body_failure_before_flow", "func f() -> int:\n\tmissing_name\n", { E("Not all code paths return a value.", 1, 1), E("Identifier \"missing_name\" not declared in the current scope.", 2, 5) }, {}, Phase::BODY_EXPRESSION_CALLABLE_SIGNAL },
+			{ "body_unknown_call", "func f() -> int:\n\tunknown_abort()\n", { E("Not all code paths return a value.", 1, 1), E("Identifier \"unknown_abort\" not declared in the current scope.", 2, 5) }, {}, Phase::BODY_EXPRESSION_CALLABLE_SIGNAL, false, false, false, { "Identifier \"unknown_abort\" not declared in the current scope.", "Not all code paths return a value." } },
+			{ "body_failure_before_flow", "func f() -> int:\n\tmissing_name\n", { E("Not all code paths return a value.", 1, 1), E("Identifier \"missing_name\" not declared in the current scope.", 2, 5) }, {}, Phase::BODY_EXPRESSION_CALLABLE_SIGNAL, false, false, false, { "Identifier \"missing_name\" not declared in the current scope.", "Not all code paths return a value." } },
 			{ "parse_failure_before_flow", "func f(\n", { E("Expected closing \")\" after function parameters.", 1, 7) }, {}, Phase::NONE },
 			{ "lambda_missing_return", "func f() -> void:\n\tvar _callback := func() -> int:\n\t\tpass\n", { E("Not all code paths return a value.", 2, 22) }, {} },
 			{ "nested_class_missing_return", "class C:\n\tfunc f() -> int:\n\t\tpass\n", { E("Not all code paths return a value.", 2, 5) }, {} },

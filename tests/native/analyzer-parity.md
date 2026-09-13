@@ -1,11 +1,12 @@
 # Analyzer migration parity inventory
 
 This inventory is reconciled with `project/tests/analyzer_test.gd` at merged main
-`4b2439fb95a4ed6069c3771ea1663ae50eeb8ac1` (PR #199). The suite still invokes exactly
+`4b2439fb95a4ed6069c3771ea1663ae50eeb8ac1` (PR #199), rechecked unchanged at
+`eb0e7275747f6ac585117777f17222c70b66f30e` (PR #200). The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 71 scenarios have explicit native equivalents and 19
+The legacy suite remains enabled: 76 scenarios have explicit native equivalents and 14
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -141,13 +142,13 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 46 | `_test_lambda_capture_and_compound_narrowing` | flow/finality | native `analyzer_finality` |
 | 47 | `_test_get_operation_type` | expressions/calls | native `analyzer_operations` |
 | 48 | `_test_builtin_annotation_resolve` | declarations | native `analyzer_declarations` |
-| 49 | `_test_custom_annotation_surface` | declarations | legacy + #140 |
+| 49 | `_test_custom_annotation_surface` | declarations | native `analyzer_declarations` |
 | 50 | `_test_type_alias_surface` | declarations | native `analyzer_declarations` |
 | 51 | `_test_union_union_assignability` | expressions/calls | native `analyzer_type_compatibility` |
 | 52 | `_test_union_store_carrier_select` | expressions/calls | native `analyzer_type_compatibility` |
-| 53 | `_test_enum_case_match_and_case_binds` | expressions/calls | legacy-only |
-| 54 | `_test_contextual_case_shorthand` | expressions/calls | legacy-only |
-| 55 | `_test_tagged_union_match_exhaustiveness` | flow/finality | legacy-only |
+| 53 | `_test_enum_case_match_and_case_binds` | expressions/calls | native `analyzer_enum` |
+| 54 | `_test_contextual_case_shorthand` | expressions/calls | native `analyzer_enum` |
+| 55 | `_test_tagged_union_match_exhaustiveness` | flow/finality | native `analyzer_enum` |
 | 56 | `_test_callable_bind_unbind` | expressions/calls | native `analyzer_calls` |
 | 57 | `_test_callable_callv_rpc` | expressions/calls | native `analyzer_calls` |
 | 58 | `_test_async_callable_coroutine_wrap` | expressions/calls | native `analyzer_calls` |
@@ -164,7 +165,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 69 | `_test_conformance_hidden_witness` | traits/conformance | native `analyzer_conformance` |
 | 70 | `_test_class_trait_binding_chain_coherence` | traits/conformance | native `analyzer_conformance` |
 | 71 | `_test_recorded_trait_arguments_query` | traits/conformance | native `analyzer_conformance` |
-| 72 | `_test_trait_target_assignability` | traits/conformance | legacy-only |
+| 72 | `_test_trait_target_assignability` | traits/conformance | native `analyzer_conformance` |
 | 73 | `_test_witness_collision_arbitration` | traits/conformance | native `analyzer_conformance` |
 | 74 | `_test_self_type_parameter_compat` | traits/conformance | native `analyzer_conformance` |
 | 75 | `_test_enum_self_payload_field_leg` | declarations | native `analyzer_type_compatibility` |
@@ -236,6 +237,23 @@ The complete SCons supervisor log `65-parity-native-full.log` records 39 require
 817 executed cases and 65,637 assertions, with zero failed cases/assertions. The legacy suite
 and all adapters remain unchanged; this is progress evidence, not deletion authorization.
 
+## Enum, projected argument and annotation checkpoint
+
+Three full legacy enum scenarios now have same-name cases in `analyzer_enum`. Typed
+trait-target observations preserve all 17 membership/compatibility predicates and all 70
+named tri-state projection controls, including complete repeat equality, without a Dictionary
+observer. Custom annotation cases preserve the full producer sources, seven rejection controls,
+unknown-name rejection, imported signatures and retained dependency phase. All five scenarios
+join normal/reverse/shuffle runs. The suite-exit flow group now also checks raw diagnostic queue
+order on both runs, including the two current-main raw-order overrides.
+
+The last fully integrated checkpoint, `a0988d8`, normally merged PR #200 and passed SCons and
+CMake inventories (40 suites, 828 cases, 67,137 assertions each), ordinary current build identity
+and native surface checks, all eight public/corpus sentinel runs, CI configuration, global API,
+language utilities, format, license and diff checks. Its evidence is `a0988d8-*`; newer focused
+evidence is `enum-trait-stage-*` and `annotation-raw-stage-*`. No legacy coverage or adapters
+were deleted.
+
 ## Remaining gates
 
 The next additive group covers four complete same-/cross-file member lookup and owner-failure
@@ -244,7 +262,7 @@ and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payl
 control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
 Focused results are recorded in `members-stage-analyzer_*.log`.
 
-- Migrate the 19 remaining legacy-only functions; newly merged scenarios
+- Migrate the 14 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
