@@ -76,21 +76,30 @@
 	"entries": [
 		{
 			"core_header": "core/variant/callable.h",
-			"sites": ["fs_utility_callable.h:35"],
+			"sites": [
+				"fs_utility_callable.h:35"
+			],
 			"resolution": "mapped",
-			"godot_cpp_headers": ["godot_cpp/variant/callable.hpp", "godot_cpp/variant/callable_custom.hpp"],
+			"godot_cpp_headers": [
+				"godot_cpp/variant/callable.hpp",
+				"godot_cpp/variant/callable_custom.hpp"
+			],
 			"rationale": "bs_utility_functions.cpp ports the complete 11-entry language utility metadata registry and a private analyzer-only CallableCustom identity. It is never registered, exposed as a runtime callable, or deliberately invoked; is_valid is false and invocation fails closed. Only type_exists, char, ord, len and representable TYPE_* is_instance_of constants are evaluated by the analyzer. Resource loading, range allocation, debugger/stack access and proxy execution remain M4/M7; object/script/trait instance checks remain runtime-only. General Callable assignment compatibility is the existing #138 residual, not a parallel validator here."
 		},
 		{
 			"core_header": "core/templates/a_hash_map.h",
-			"sites": ["fs_utility_functions.cpp:40"],
+			"sites": [
+				"fs_utility_functions.cpp:40"
+			],
 			"resolution": "guarded-out",
 			"omission_reason": "unreferenced",
 			"rationale": "The analyzer-only 11-entry utility registry uses the existing mapped Vector carrier; no runtime registration or AHashMap symbol is ported."
 		},
 		{
 			"core_header": "core/variant/typed_array.h",
-			"sites": ["fs_utility_functions.cpp:42"],
+			"sites": [
+				"fs_utility_functions.cpp:42"
+			],
 			"resolution": "guarded-out",
 			"omission_reason": "unreferenced",
 			"rationale": "The typed debugger-stack construction in get_stack is runtime-only and is not ported. Analyzer/public return metadata remains the pinned untyped Array MethodInfo."
@@ -119,7 +128,9 @@
 				"fs_analyzer.cpp:47"
 			],
 			"resolution": "shimmed",
-			"shim_symbols": ["CoreConstants"],
+			"shim_symbols": [
+				"CoreConstants"
+			],
 			"rationale": "The seam aliases CoreConstants to BSCoreConstants, defined in src/bs_core_constants.h and exercised by bs_platform_seam.cpp. GDExtension cannot enumerate this registry or utility signatures, so scripts/generate_global_api.py embeds the complete corresponding sections of pinned godot-cpp/gdextension/extension_api-4-7.json for both build paths. Exact int64 values and engine carrier names are retained; malformed producer input fails generation and unknown names remain absent."
 		},
 		{
@@ -577,5 +588,15 @@
 			],
 			"rationale": "godot-cpp mirrors type_info.hpp. FoundryTypeInfo numeric-width metadata is deleted by D1; bs_type_info.h keeps only METADATA_NONE."
 		}
-	]
+	],
+	"native_os_headers": {
+		"comment": "OS headers included only by src/bs_platform_shims.cpp for bs_replace_file. Not godot-cpp mappings; recorded so the seam inventory stays honest about libc/Win32 dependencies.",
+		"windows": [
+			"windows.h"
+		],
+		"unix_family": [
+			"errno.h",
+			"stdio.h"
+		]
+	}
 }

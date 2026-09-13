@@ -20,6 +20,8 @@ Vector<uint8_t> bytes(const String &text);
 Vector<uint8_t> read_bytes(const String &path);
 bool write_bytes(const String &path, const Vector<uint8_t> &data);
 Vector<String> temporary_files(const String &store);
+/** Count `*.tmp` files directly under `root` (non-recursive), matching GDScript `_count_tmp_under`. */
+int count_tmp_under(const String &root);
 void append_integer(Vector<uint8_t> &destination, uint64_t value, int width);
 bool verify_case_isolation(void (*scenario)());
 
