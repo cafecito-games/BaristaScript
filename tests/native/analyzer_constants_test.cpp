@@ -315,13 +315,173 @@ void scenario_pure_constant_review_regressions() {
 	check_public_success(public_validate("func test():\n\tconst PACKED: Variant = [1, 2] as PackedInt32Array\n\tconst VALUE: Array = PACKED\n\tconst NESTED: Array[PackedInt32Array] = [[1, 2]]\n\tprint(VALUE, NESTED)\n", "res://tests/review_local_conversion.barista"));
 }
 
+Dictionary dictionary_value(std::initializer_list<std::pair<Variant, Variant>> entries) {
+	Dictionary result;
+	for (const auto &entry : entries) {
+		result[entry.first] = entry.second;
+	}
+	return result;
+}
+
+// Compare the legacy recursive carrier contract directly, without serializing AST observations.
+void check_readonly_carrier(const Variant &actual, const Variant &expected, int depth = 0) {
+	BS_TEST_REQUIRE(depth < 32);
+	BS_TEST_REQUIRE(actual.get_type() == expected.get_type());
+	if (actual.get_type() == Variant::ARRAY) {
+		const Array values = actual;
+		const Array wanted = expected;
+		CHECK(values.is_read_only());
+		BS_TEST_REQUIRE(values.size() == wanted.size());
+		for (int i = 0; i < values.size(); ++i) {
+			check_readonly_carrier(values[i], wanted[i], depth + 1);
+		}
+	} else if (actual.get_type() == Variant::DICTIONARY) {
+		const Dictionary values = actual;
+		const Dictionary wanted = expected;
+		CHECK(values.is_read_only());
+		BS_TEST_REQUIRE(values.size() == wanted.size());
+		const Array keys = values.keys();
+		const Array wanted_keys = wanted.keys();
+		for (int i = 0; i < keys.size(); ++i) {
+			check_readonly_carrier(keys[i], wanted_keys[i], depth + 1);
+			check_readonly_carrier(values[keys[i]], wanted[wanted_keys[i]], depth + 1);
+		}
+	} else {
+		CHECK(actual == expected);
+	}
+}
+
+void scenario_constant_producer_child_evidence() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	settings.warnings_enabled(true);
+	settings.warning(BSWarning::REDUNDANT_AWAIT, BSWarning::WARN);
+	struct ProducerCase {
+		const char *name;
+		const char *source;
+		const char *datatype;
+		bool valid;
+		bool constant;
+		bool hard;
+		Variant carrier;
+		std::vector<ExpectedError> errors;
+		std::vector<ExpectedWarning> warnings;
+	};
+	const std::vector<ProducerCase> cases = {
+		{ "nested", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)]\nvar probe_expression = BOX[0][1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "direct", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = Message.Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "selected", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)]\nvar probe_expression = BOX[0][1]\n", "Dictionary[float?, int?]", true, true, true, dictionary_value({ { Variant(), Variant() }, { Variant(double(1)), Variant(int64_t(2)) } }), {}, {} },
+		{ "null", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)]\nvar probe_expression = BOX[0][1][null]\n", "null", true, true, true, Variant(), {}, {} },
+		{ "variant_alias", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Variant = Message.Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "direct_variant", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Variant = Message.Data(KEYS)\nvar probe_expression = BOX\n", "Variant", true, true, true, array_value({ Variant(int64_t(0)), dictionary_value({ { Variant(), Variant() }, { Variant(double(1)), Variant(int64_t(2)) } }) }), {}, {} },
+		{ "array_selected", "enum Message:\n\tData(value: Variant)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX = [Message.Data(VALUES)]\nvar probe_expression = BOX[0][1]\n", "Array[int?]", true, true, true, array_value({ Variant(), Variant(int64_t(1)) }), {}, {} },
+		{ "array_null", "enum Message:\n\tData(value: Variant)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX = [Message.Data(VALUES)]\nvar probe_expression = BOX[0][1][0]\n", "null", true, true, true, Variant(), {}, {} },
+		{ "array_integer", "enum Message:\n\tData(value: Variant)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX = [Message.Data(VALUES)]\nvar probe_expression = BOX[0][1][1]\n", "int", true, true, true, Variant(int64_t(1)), {}, {} },
+		{ "nested_enum", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(Message.Data(KEYS))]\nvar probe_expression = BOX[0][1][1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "enum_in_tuple", "enum Message:\n\tData(value: Variant)\ntuple Pair(value: Variant, count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(Message.Data(KEYS), 0)]\nvar probe_expression = BOX[0][0][1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "tuple_in_enum", "enum Message:\n\tData(value: Variant)\ntuple Pair(value: Variant, count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(Pair(KEYS, 0))]\nvar probe_expression = BOX[0][1][0][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "dict_value_path", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = {\"items\": [Message.Data({\"inner\": KEYS})]}\nvar probe_expression = BOX[\"items\"][0][1][\"inner\"][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "dict_key_value_path", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data({KEYS: KEYS})]\nvar probe_expression = BOX[0][1][KEYS][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "concat", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)] + []\nvar probe_expression = BOX[0][1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "ternary", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)] if true else []\nvar probe_expression = BOX[0][1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "cast", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS)] as Array[Variant]\nvar probe_expression = BOX[0][1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "raw_before_typed", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW: Dictionary = KEYS\nconst BOX = [Message.Data([RAW, KEYS])]\nvar probe_expression = BOX[0][1][0][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "equal_raw", "enum Message:\n\tData(known: Variant, raw: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [Message.Data(KEYS, RAW)]\nvar probe_expression = BOX[0][2][1]\n", "Variant", false, false, false, Variant(), {
+																																																																											  { "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\".", 6, 34 },
+																																																																									  },
+				{} },
+		{ "invalid_payload", "enum Message:\n\tData(value: int)\nvar probe_expression = Message.Data(\"bad\")\n", "repair4_invalid_payload.barista.Message", false, false, true, Variant(), {
+																																																	{ "Invalid argument 1 for enum case \"Message.Data\": should be \"int\" but is \"String\".", 3, 37 },
+																																															},
+				{} },
+		{ "failed_conversion", "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data([1, \"bad\"] as Array[int])\n", "repair4_failed_conversion.barista.Message", false, false, true, Variant(), {
+																																																							   { "Cannot include a value of type \"String\" as \"int\".", 3, 41 },
+																																																							   { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 3, 41 },
+																																																					   },
+				{} },
+		{ "nonconstant_payload", "enum Message:\n\tData(value: Variant)\nvar value: int = 1\nvar probe_expression = Message.Data(value)\n", "repair4_nonconstant_payload.barista.Message", true, false, true, Variant(), {}, {} },
+		{ "typed_payload_nonbakeable", "enum Message:\n\tData(value: Dictionary[float?, int?])\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nvar probe_expression = Message.Data(KEYS)\n", "repair4_typed_payload_nonbakeable.barista.Message", true, false, true, Variant(), {}, {} },
+		{ "actual_null", "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data(null)\n", "repair4_actual_null.barista.Message", true, true, true, array_value({ Variant(int64_t(0)), Variant() }), {}, {} },
+		{ "partial_payload", "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data(\n", "<unresolved type>", false, false, false, Variant(), {
+																																										   { "Expected expression as the function argument.", 3, 36 },
+																																										   { "Expected closing \")\" after call arguments.", 3, 36 },
+																																								   },
+				{} },
+		{ "wrong_arity", "enum Message:\n\tData(value: Variant)\nvar probe_expression = Message.Data()\n", "repair4_wrong_arity.barista.Message", false, false, true, Variant(), {
+																																														 { "Enum case \"Message.Data\" expects 1 argument(s), but 0 were given.", 3, 24 },
+																																												 },
+				{} },
+		{ "await_container", "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n@warning_ignore(\"redundant_await\")\nconst BOX = await [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "await_enum", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n@warning_ignore(\"redundant_await\")\nconst BOX = await Message.Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "class_attribute", "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Holder.KEYS]\nvar probe_expression = BOX[0][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "class_attribute_alias", "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n\tconst VALUE: Variant = [KEYS]\nconst BOX = Holder.VALUE\nvar probe_expression = BOX[0][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "self_attribute", "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = [KEYS]\nconst BOX = self.VALUE\nvar probe_expression = BOX[0][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "utility_scalar", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nvar probe_expression = len(Message.Data(KEYS))\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "singleton", "enum Message:\n\tEmpty\n\tData(value: Variant)\nvar probe_expression = Message.Empty\n", "repair4_singleton.barista.Message", true, true, true, array_value({ Variant(int64_t(0)) }), {}, {} },
+		{ "contextual_enum", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX: Message = .Data(KEYS)\nvar probe_expression = BOX[1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "await_warning", "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = await [KEYS]\nvar probe_expression = BOX[0][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {
+																																																				  { BSWarning::REDUNDANT_AWAIT, "\"await\" keyword is unnecessary because the expression isn't a coroutine nor a signal.", 2, 13, 2, 25 },
+																																																		  } },
+		{ "await_dynamic", "var value: Variant = [1]\nvar probe_expression = await value\n", "Variant", true, false, true, Variant(), {}, {} },
+		{ "await_coroutine", "var value: Coroutine[Dictionary[float?, int?]]\nvar probe_expression = await value\n", "Dictionary[float?, int?]", true, false, true, Variant(), {}, {} },
+		{ "attribute_direct_variant", "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n\tconst VALUE: Variant = [KEYS]\nvar probe_expression = Holder.VALUE\n", "Variant", true, true, true, array_value({ dictionary_value({ { Variant(), Variant() }, { Variant(double(1)), Variant(int64_t(2)) } }) }), {}, {} },
+		{ "attribute_equal_raw", "class Holder:\n\tconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\n\tconst RAW = {null: null, 1.0: 2}\n\tconst VALUE: Variant = [KEYS, RAW]\nconst BOX = Holder.VALUE\nvar probe_expression = BOX[1][1]\n", "Variant", false, false, false, Variant(), {
+																																																																											{ "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\".", 6, 31 },
+																																																																									},
+				{} },
+		{ "dictionary_key_child", "enum Message:\n\tData(value: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = {KEYS: Message.Data(KEYS)}\nvar probe_expression = BOX[KEYS][1][1]\n", "int", true, true, true, Variant(int64_t(2)), {}, {} },
+		{ "await_scalar_warning", "var probe_expression = await 1\n", "int", true, true, true, Variant(int64_t(1)), {}, {
+																																{ BSWarning::REDUNDANT_AWAIT, "\"await\" keyword is unnecessary because the expression isn't a coroutine nor a signal.", 1, 24, 1, 31 },
+																														} },
+	};
+	CHECK(int(BSWarning::REDUNDANT_AWAIT) == 27);
+	for (const auto &sample : cases) {
+		INFO(sample.name);
+		const String path = vformat("res://tests/repair4_%s.barista", sample.name);
+		const auto observed = analyze_source(sample.source, path);
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(observed.valid() == sample.valid);
+		CHECK(expression->get_datatype().to_string() == sample.datatype);
+		CHECK(expression->get_datatype().is_hard_type() == sample.hard);
+		CHECK(expression->is_constant == sample.constant);
+		check_readonly_carrier(expression->is_constant ? expression->reduced_value : Variant(), sample.carrier);
+		const Dictionary report = public_validate(sample.source, path);
+		CHECK(bool(report.get("valid", false)) == sample.valid);
+		check_public_errors(report, sample.errors);
+		const Array errors = report.get("errors", Array());
+		for (const Dictionary &error : errors) {
+			CHECK(error.size() == 4);
+			CHECK(String(error.get("path", "")) == path);
+		}
+		const Array warnings = report.get("warnings", Array());
+		BS_TEST_REQUIRE(size_t(warnings.size()) == sample.warnings.size());
+		for (int i = 0; i < warnings.size(); ++i) {
+			const Dictionary warning = warnings[i];
+			const auto &expected = sample.warnings[i];
+			CHECK(warning.size() == 7);
+			CHECK(int(warning.get("code", -1)) == int(expected.code));
+			CHECK(String(warning.get("string_code", "")) == "REDUNDANT_AWAIT");
+			CHECK(String(warning.get("message", "")) == expected.message.c_str());
+			CHECK(int(warning.get("start_line", -1)) == expected.start_line);
+			CHECK(int(warning.get("start_column", -1)) == expected.start_column);
+			CHECK(int(warning.get("end_line", -1)) == expected.end_line);
+			CHECK(int(warning.get("end_column", -1)) == expected.end_column);
+		}
+		CHECK(source_analyzes(sample.source, path) == sample.valid);
+		CHECK(public_validate(sample.source, path) == report);
+	}
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_constants") {
+	TEST_CASE("constant_producer_child_evidence") { scenario_constant_producer_child_evidence(); }
 	TEST_CASE("pure_constant_review_regressions") { scenario_pure_constant_review_regressions(); }
 	TEST_CASE("dictionary_literal_constant_parity") { scenario_dictionary_literal_constant_parity(); }
 	TEST_CASE("constant_dictionary_key_conversion") { scenario_constant_dictionary_key_conversion(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions });
+		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence });
 	}
 }

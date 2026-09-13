@@ -8,7 +8,7 @@ The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 84 scenarios have explicit native equivalents and 6
+The legacy suite remains enabled: 85 scenarios have explicit native equivalents and 5
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -185,7 +185,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 87 | `_test_constant_dictionary_key_conversion` | expressions/calls | native `analyzer_constants` |
 | 88 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | legacy-only |
 | 89 | `_test_folded_tuple_child_and_failed_contextual_materialization` | expressions/calls | legacy-only |
-| 90 | `_test_constant_producer_child_evidence` | expressions/calls | legacy-only |
+| 90 | `_test_constant_producer_child_evidence` | expressions/calls | native `analyzer_constants` |
 
 ## Current-main additive checkpoint
 
@@ -319,7 +319,13 @@ The preceding repair-regressions scenario additionally preserves 25 public valid
 45 ordered exact diagnostics, the strict-dynamic toggle, and both gradual tuple safe-line
 observations. It joins the normal/reverse/shuffle isolation runner without changing semantics.
 
-- Migrate the 6 remaining legacy-only functions; newly merged scenarios
+All 41 constant-producer controls now use direct typed AST observations and recursive carrier
+checks (exact scalar type/value, child order, and read-only containers), preserving validity,
+hard types, partial/failed materialization, complete public errors/warnings, semantic validity,
+and exact repeated public reports. `producer-stage-1.log` records 5 cases / 4,320 assertions,
+zero failures, including normal/reverse/shuffle execution.
+
+- Migrate the 5 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
