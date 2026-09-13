@@ -4929,7 +4929,8 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 							member.type == BSParser::ClassNode::Member::ENUM) {
 						p_subscript->attribute->set_datatype(member.get_datatype());
 						p_subscript->set_datatype(member.get_datatype());
-						if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr && !member.m_class->is_trait) {
+						if ((member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr && !member.m_class->is_trait) ||
+								(member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr)) {
 							p_subscript->is_constant = true;
 							p_subscript->is_unmaterialized_constant = true;
 						}

@@ -32,7 +32,8 @@
     "call_admission_analyzer",
     "declaration_cycle_analyzer",
     "provider_failure_replay_analyzer",
-    "base_outer_analyzer"
+    "base_outer_analyzer",
+    "external_enum_constant_analyzer"
   ],
   "editor_import": [
     "global_class"
