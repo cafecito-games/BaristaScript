@@ -739,7 +739,7 @@ private:
 	/** Foundry reduce_lambda (@ c9d5e35): Callable type + body under `current_lambda`. */
 	void reduce_lambda(BSParser::LambdaNode *p_lambda);
 	void reduce_get_node(BSParser::GetNodeNode *p_get_node);
-	void reduce_subscript(BSParser::SubscriptNode *p_subscript);
+	void reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_can_be_pseudo_type = false);
 	void reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple);
 	void reject_constant_materialization(BSParser::ExpressionNode *p_expression);
 	Variant make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced);

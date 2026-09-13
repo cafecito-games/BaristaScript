@@ -546,7 +546,13 @@ func test(value: Receiver) -> void:
 			BS_TEST_REQUIRE(body->statements[0]->type == BSParser::Node::CALL);
 			const auto *call = static_cast<const BSParser::CallNode *>(body->statements[0]);
 			BS_TEST_REQUIRE(call->callee != nullptr);
-			exact_error(parser, expression.begins_with("get_instance_id") ? "Cannot call \"get_instance_id\": it is not a function." : "Name \"get_instance_id\" called as a function but is a \"int\".", call->callee);
+			if (expression.begins_with("get_instance_id")) {
+				BS_TEST_REQUIRE(parser.get_errors().size() == 2);
+				error_at(parser, 0, R"(Member "get_instance_id" is not a function.)", call);
+				error_at(parser, 1, R"(Name "get_instance_id" called as a function but is a "int".)", call->callee);
+			} else {
+				exact_error(parser, R"(Name "get_instance_id" called as a function but is a "int".)", call->callee);
+			}
 		}
 	}
 	TEST_CASE("abstract_receivers_expose_transitive_requirements") {
