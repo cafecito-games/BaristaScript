@@ -19,6 +19,7 @@
 /**************************************************************************/
 
 #include "bs_analyzer.h"
+#include "bs_core_constants.h"
 
 #include "barista_script.h"
 #include "barista_script_language.h"
@@ -706,6 +707,41 @@ BSParser::DataType BSAnalyzer::type_from_metatype(const BSParser::DataType &p_me
 		result.is_constant = false;
 	}
 	return result;
+}
+
+const BSParser::FunctionNode *BSAnalyzer::get_enclosing_enum_function() const {
+	for (const auto *function = current_function; function; function = function->source_lambda ? function->source_lambda->parent_function : nullptr)
+		if (function->owner_enum)
+			return function;
+	return nullptr;
+}
+
+BSParser::DataType BSAnalyzer::enum_self_type() const {
+	const auto *function = get_enclosing_enum_function();
+	return function ? type_from_metatype(function->owner_enum->get_datatype()) : BSParser::DataType();
+}
+
+BSParser::FunctionNode *BSAnalyzer::find_enum_function(const BSParser::DataType &p_receiver, const StringName &p_name, const BSParser::Node *p_source) {
+	if (p_receiver.kind != BSParser::DataType::ENUM || !p_receiver.class_type)
+		return nullptr;
+	auto *owner = p_receiver.class_type;
+	analyze_class_interface(owner, p_source);
+	BSParser::EnumNode *declaration = owner->is_enum_file ? owner->enum_file_decl : nullptr;
+	if (!declaration && owner->has_member(p_receiver.enum_type)) {
+		const auto &member = owner->get_member(p_receiver.enum_type);
+		if (member.type == BSParser::ClassNode::Member::ENUM)
+			declaration = member.m_enum;
+	}
+	const int *index = declaration ? declaration->functions_indices.getptr(p_name) : nullptr;
+	if (!index || *index < 0 || *index >= declaration->functions.size())
+		return nullptr;
+	auto *function = declaration->functions[*index];
+	if (function && p_receiver.is_meta_type && !function->is_static &&
+			p_receiver.builtin_type == Variant::DICTIONARY && BSCoreConstants::get_builtin_method(Variant::DICTIONARY, p_name))
+		return nullptr;
+	if (function)
+		resolve_function_signature_in_class(function, owner);
+	return function;
 }
 
 BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, const BSParser::DataType &p_enum_type, BSParser::ClassNode *p_owner) {

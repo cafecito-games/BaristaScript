@@ -1815,6 +1815,12 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 		}
 		if (name == SNAME("Self") && current_class != nullptr) {
+			const auto enum_self = enum_self_type();
+			if (enum_self.is_set() && p_type_node->container_types.is_empty()) {
+				result = enum_self;
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
 			// Foundry datatype_from_type_node @ c9d5e35: Self lowers to @Self bound by the
 			// declaring class so trait signature matching can reify it to the implementer.
 			if (!p_type_node->container_types.is_empty()) {
@@ -2763,6 +2769,10 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		const bool signal = p_identifier->source == BSParser::IdentifierNode::MEMBER_SIGNAL;
 		if (!variable && !function && !signal)
 			return;
+		if (const auto *owner = get_enclosing_enum_function()) {
+			push_error(vformat(R"*(Enum function "%s()" cannot access containing class instance member "%s".)*", owner->identifier->name, p_identifier->name), p_identifier);
+			return;
+		}
 		if (get_node_is_static_context()) {
 			const String kind = variable ? "non-static variable" : function ? "non-static function"
 																			: "signal";
@@ -2932,7 +2942,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	}
 	// Foundry reduce_identifier Self class-handle @ c9d5e35: expression-position `Self` is the
 	// receiver-relative `@Self` meta handle (needed for `Self.Message.…` SelfFieldLeg selection).
-	if (p_identifier->name == SNAME("Self") && current_class != nullptr && current_function != nullptr) {
+	if (p_identifier->name == SNAME("Self") && current_class != nullptr && current_function != nullptr && !enum_self_type().is_set()) {
 		BSParser::DataType self_handle;
 		self_handle.kind = BSParser::DataType::TYPE_PARAMETER;
 		self_handle.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
@@ -3440,11 +3450,68 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 
+			// Foundry get_function_signature @ c9d5e35: enum hosts claim their methods
+			// before Dictionary fallback. A type receiver may use an instance method's
+			// Dictionary namesake; enum values never acquire the int builtin surface.
+			const auto enum_receiver = subscript->base->get_datatype();
+			if (enum_receiver.kind == BSParser::DataType::ENUM) {
+				if (auto *function = find_enum_function(enum_receiver, p_call->function_name, p_call)) {
+					if (function->is_static != enum_receiver.is_meta_type) {
+						push_error(vformat(R"*(Cannot call %s enum function "%s()" on enum %s "%s".)*",
+										   function->is_static ? "static" : "instance", p_call->function_name,
+										   enum_receiver.is_meta_type ? "type" : "value", enum_receiver.enum_type),
+								p_call->callee);
+					} else {
+						p_call->enum_call_kind = function->is_static ? BSParser::CallNode::ENUM_CALL_STATIC : BSParser::CallNode::ENUM_CALL_INSTANCE;
+						p_call->enum_call_owner_script_path = enum_receiver.script_path;
+						p_call->enum_call_owner_class = enum_receiver.class_type ? StringName(enum_receiver.class_type->fqcn) : StringName();
+						p_call->enum_call_enum_type = enum_receiver.enum_type;
+						p_call->enum_call_function = p_call->function_name;
+					}
+					p_call->is_static = function->is_static;
+					p_call->is_noreturn = function->is_noreturn;
+					validate_local_call(p_call, function);
+					return;
+				}
+				if (enum_receiver.is_meta_type && enum_receiver.builtin_type == Variant::DICTIONARY) {
+					if (const auto *method = BSCoreConstants::get_builtin_method(Variant::DICTIONARY, p_call->function_name)) {
+						call_site_validation.reject_named_call_arguments(p_call);
+						if (!(method->info.flags & (METHOD_FLAG_STATIC | METHOD_FLAG_CONST)))
+							push_error(vformat(R"*(Cannot call non-const Dictionary function "%s()" on enum "%s".)*", p_call->function_name, enum_receiver.enum_type), p_call);
+						call_site_validation.validate_call_arg(method->info, p_call);
+						p_call->set_datatype(type_from_property(method->info.return_val));
+						return;
+					}
+				}
+				if (!enum_receiver.is_meta_type)
+					push_error(vformat(R"*(Function "%s()" does not exist for enum value "%s".)*", p_call->function_name, enum_receiver.enum_type), p_call->callee);
+				else if (enum_receiver.builtin_type == Variant::DICTIONARY)
+					push_error(vformat(R"*(Function "%s()" does not exist for enum "%s" or its Dictionary methods.)*", p_call->function_name, enum_receiver.enum_type), p_call->callee);
+				else
+					push_error(vformat(R"*(The native enum "%s" does not behave like Dictionary and does not have methods of its own.)*", enum_receiver.enum_type), p_call->callee);
+				BSParser::DataType unresolved;
+				unresolved.kind = BSParser::DataType::VARIANT;
+				p_call->set_datatype(unresolved);
+				return;
+			}
+
 			// Foundry constructor admission @ c9d5e35:8805-8834,17037-17043. Native
 			// and local class handles construct their instance type before ordinary method lookup.
 			if (subscript->base != nullptr && p_call->function_name == SNAME("new")) {
 				const BSParser::DataType class_meta_type = subscript->base->get_datatype();
 				if ((class_meta_type.kind == BSParser::DataType::CLASS || class_meta_type.kind == BSParser::DataType::NATIVE) && class_meta_type.is_meta_type) {
+					if (BSNativeDB::is_abstract_core_class(class_meta_type.native_type)) {
+						if (class_meta_type.kind == BSParser::DataType::CLASS)
+							push_error(vformat(R"(Class "%s" cannot be constructed as it is based on abstract native class "%s".)", bs_class_or_trait_diagnostic_name(class_meta_type.class_type), class_meta_type.native_type), p_call);
+						else
+							push_error(vformat(R"(Native class "%s" cannot be constructed as it is abstract.)", class_meta_type.native_type), p_call);
+						// Pinned failed-constructor lookup still diagnoses the Callable callee.
+						push_error(R"*(Name "new" is a Callable. You can call it with "new.call()" instead.)*", p_call->callee);
+						BSParser::DataType unresolved;
+						unresolved.kind = BSParser::DataType::VARIANT;
+						p_call->set_datatype(unresolved);
+						return;
+					}
 					BSParser::FunctionNode *initializer = class_meta_type.kind == BSParser::DataType::CLASS ? find_class_function(class_meta_type.class_type, SNAME("_init")) : nullptr;
 					if (initializer != nullptr) {
 						validate_local_call(p_call, initializer, class_meta_type.class_type);
@@ -4199,6 +4266,10 @@ void BSAnalyzer::check_self_call(BSParser::CallNode *p_call) {
 	// Foundry c9d5e35:8998-9022: bare and super calls share receiver context/capture.
 	if (p_call->is_static)
 		return;
+	if (const auto *owner = get_enclosing_enum_function()) {
+		push_error(vformat(R"*(Enum function "%s()" cannot access containing class instance member "%s".)*", owner->identifier->name, p_call->function_name), p_call->callee ? p_call->callee : static_cast<BSParser::Node *>(p_call));
+		return;
+	}
 	if (get_node_is_static_context()) {
 		const BSParser::FunctionNode *owner = get_enclosing_context_function();
 		if (owner) {
@@ -4509,6 +4580,37 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				p_subscript->reduced_value = base_type.enum_values[case_name];
 				return;
 			}
+		}
+		if (tuple_base_type.kind == BSParser::DataType::ENUM && p_subscript->attribute) {
+			const auto name = p_subscript->attribute->name;
+			BSParser::DataType callable;
+			if (call_site_validation.callable_type_from_method(tuple_base_type, name, p_subscript, callable)) {
+				p_subscript->set_datatype(callable);
+				p_subscript->attribute->set_datatype(callable);
+				if (auto *function = find_enum_function(tuple_base_type, name, p_subscript)) {
+					p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
+					p_subscript->attribute->function_source = function;
+					p_subscript->attribute->function_source_is_static = function->is_static;
+				}
+				return;
+			}
+			// Foundry reduce_identifier_from_base / reduce_subscript @ c9d5e35:
+			// an enum owns member lookup, including misses and wrong receiver forms.
+			// Never let `self.member` bind to the containing class or become gradual.
+			if (tuple_base_type.is_meta_type)
+				push_error(vformat(R"(Cannot find member "%s" in base "%s".)", name, type_from_metatype(tuple_base_type).to_string()), p_subscript->attribute);
+			else if (tuple_base_type.is_tagged_union) {
+				bool is_payload_field = false;
+				for (const auto &payload : tuple_base_type.enum_case_payloads)
+					is_payload_field = is_payload_field || payload.value.field_names.has(name);
+				if (is_payload_field)
+					push_error(vformat(R"*(Cannot access payload field "%s" on tagged union "%s" directly; it belongs to a single case, so match on the case first.)*", name, tuple_base_type.enum_type), p_subscript->attribute);
+				else
+					push_error(vformat(R"*(Cannot get property "%s" from a value of tagged union "%s".)*", name, tuple_base_type.enum_type), p_subscript->attribute);
+			} else
+				push_error("Cannot get property from enum value.", p_subscript->attribute);
+			p_subscript->set_datatype(BSParser::DataType::get_variant_type());
+			return;
 		}
 		// Bind `self.<member>` and same-class `ClassName.<static>` so flow finality can see
 		// MEMBER_VARIABLE / STATIC_VARIABLE / INHERITED_VARIABLE on the attribute
@@ -4920,12 +5022,16 @@ Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_ex
 				r_reduced = true;
 				return value;
 			}
-			if (call->arguments.size() != 1)
-				return Variant();
-			bool child_reduced = false;
-			const Variant child = make_expression_reduced_value(call->arguments[0], child_reduced);
+			Vector<Variant> arguments;
+			for (auto *argument : call->arguments) {
+				bool child_reduced = false;
+				Variant child = make_expression_reduced_value(argument, child_reduced);
+				if (!child_reduced)
+					return Variant();
+				arguments.push_back(child);
+			}
 			Variant value;
-			if (!child_reduced || !BSVariantOperators::construct(carrier, child, value))
+			if (!BSVariantOperators::construct_container(carrier, arguments.ptr(), arguments.size(), value))
 				return Variant();
 			_make_constant_containers_read_only(value);
 			r_reduced = true;
@@ -8395,7 +8501,10 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			// Foundry reduce_self @ c9d5e35: expression `self` is the frame's `@Self` type parameter
 			// so RETURN-kind Self-contract admission (assign / return) matches Self-typed values.
 			BSParser::SelfNode *self_node = static_cast<BSParser::SelfNode *>(p_expression);
-			if (current_class != nullptr) {
+			const auto enum_self = enum_self_type();
+			if (enum_self.is_set()) {
+				self_node->set_datatype(enum_self);
+			} else if (current_class != nullptr) {
 				self_node->set_datatype(_self_type_parameter_for_class(current_class));
 			}
 			self_node->reduced = true;
@@ -9251,10 +9360,13 @@ void BSAnalyzer::analyze_suite(BSParser::SuiteNode *p_suite) {
 }
 
 void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {
-	if (p_enum == nullptr || p_owner == nullptr) {
+	if (p_enum == nullptr || p_owner == nullptr || resolved_enum_interfaces.has(p_enum) || resolving_enum_interfaces.has(p_enum)) {
 		return;
 	}
-	// Foundry resolve_enum_interface @ c9d5e35: signatures precede body analysis.
+	// Foundry resolve_enum_interface @ c9d5e35: one owner-scoped lifecycle for
+	// normal traversal and early lookup. Each function's conflicts, annotations,
+	// and signature are visited together so mixed diagnostics retain source order.
+	resolving_enum_interfaces.insert(p_enum);
 	BSParser::ClassNode *previous_class = current_class;
 	BSParser::FunctionNode *previous_function = current_function;
 	BSParser::EnumNode *previous_enum = current_enum;
@@ -9263,22 +9375,32 @@ void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BS
 	current_function = nullptr;
 	current_enum = p_enum;
 	current_enum_owner = p_owner;
+	Finally restore_scope([&]() {
+		current_enum_owner = previous_enum_owner;
+		current_enum = previous_enum;
+		current_function = previous_function;
+		current_class = previous_class;
+		resolving_enum_interfaces.erase(p_enum);
+		resolved_enum_interfaces.insert(p_enum);
+	});
+	const StringName enum_name = p_enum->identifier ? p_enum->identifier->name : StringName("<anonymous enum>");
+	const auto shell = p_owner->is_enum_file ? make_standalone_global_enum_type(p_owner, parser->script_path) : make_class_enum_type(enum_name, p_owner, parser->script_path, true);
+	resolve_enum_values(p_enum, shell, p_owner);
+	HashSet<StringName> function_names;
 	for (BSParser::FunctionNode *function : p_enum->functions) {
-		if (function == nullptr || function->resolved_signature) {
-			continue;
+		if (function && function->identifier) {
+			const auto name = function->identifier->name;
+			if (p_enum->get_datatype().enum_values.has(name))
+				push_error(vformat(R"*(Enum function "%s()" conflicts with enum value "%s".)*", name, name), function->identifier);
+			if (function_names.has(name))
+				push_error(vformat(R"*(Enum function "%s()" is declared more than once.)*", name), function->identifier);
+			if (function->is_static && BSCoreConstants::get_builtin_method(Variant::DICTIONARY, name))
+				push_error(vformat(R"*(Static enum function "%s" conflicts with Dictionary method "%s()".)*", name, name), function->identifier);
 		}
-		for (BSParser::AnnotationNode *annotation : function->annotations) {
-			if (annotation != nullptr) {
-				resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
-				annotation->apply(parser, function, p_owner);
-			}
-		}
+		if (function && function->identifier)
+			function_names.insert(function->identifier->name);
 		resolve_function_signature_in_class(function, p_owner);
 	}
-	current_enum_owner = previous_enum_owner;
-	current_enum = previous_enum;
-	current_function = previous_function;
-	current_class = previous_class;
 }
 
 void BSAnalyzer::analyze_enum_function_bodies(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {

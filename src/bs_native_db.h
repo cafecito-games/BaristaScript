@@ -20,6 +20,15 @@ namespace barista_script {
 
 class BSNativeDB {
 public:
+	// Stock Godot exposes constructibility, not ClassDB::is_abstract. For exposed,
+	// enabled core classes its only remaining refusal is the absent creation function.
+	// Editor and extension APIs have additional admission rules and are not classified.
+	static bool is_abstract_core_class(const StringName &p_class) {
+		return p_class != StringName() && ClassDB::class_exists(p_class) &&
+				ClassDB::is_class_enabled(p_class) && ClassDB::class_get_api_type(p_class) == ClassDB::API_CORE &&
+				!ClassDB::can_instantiate(p_class);
+	}
+
 	static StringName get_property_getter(const StringName &p_class, const StringName &p_property) {
 		return ClassDB::class_get_property_getter(p_class, p_property);
 	}
