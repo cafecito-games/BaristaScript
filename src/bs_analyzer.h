@@ -609,9 +609,10 @@ private:
 	 * Same-parser path is complete for VARIABLE/CONSTANT/FUNCTION/SIGNAL/ENUM/CLASS. External /
 	 * SCRIPT members raise via `BSCache::get_parser`, wrap `ForeignAnalyzerVisibilityScope`,
 	 * record owner member failures, and replay dependent diagnostics with dedupe.
+	 * Returns false when the selected member has a retained or newly diagnosed resolution failure.
 	 */
-	void resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source = nullptr);
-	void resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);
+	bool resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source = nullptr);
+	bool resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);
 	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
 	BSParser::TypeAliasNode *find_type_alias_in_scope(const StringName &p_name) const;

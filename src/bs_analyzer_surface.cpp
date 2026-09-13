@@ -1247,20 +1247,20 @@ BSParser::ClassNode *BSAnalyzer::find_member_in_class_or_trait_chain(BSParser::C
 	return find_trait_member_in_inheritance_chain(p_receiver, p_name, p_source);
 }
 
-void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source) {
-	ERR_FAIL_COND(p_class == nullptr || !p_class->has_member(p_name));
-	resolve_class_member(p_class, p_class->members_indices[p_name], p_source);
+bool BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source) {
+	ERR_FAIL_COND_V(p_class == nullptr || !p_class->has_member(p_name), false);
+	return resolve_class_member(p_class, p_class->members_indices[p_name], p_source);
 }
 
-void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source) {
+bool BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source) {
 	// Foundry resolve_class_member @ c9d5e35 (`fs_analyzer_surface.cpp` ~1665): lazy member datatype
 	// resolution with cyclic RESOLVING fail-stop. Hard fork FS*→BS*; external path uses
 	// retained owner delegation with ForeignAnalyzerVisibilityScope, owner member
 	// failure recording, and dependent_resolution_failure_replays dedupe. Class-phase
 	// INTERFACE/BODY foreign recording/replay is in analyze_class_interface / analyze_class_body.
-	ERR_FAIL_NULL(p_class);
-	ERR_FAIL_INDEX(p_index, p_class->members.size());
-	ERR_FAIL_NULL(parser);
+	ERR_FAIL_NULL_V(p_class, false);
+	ERR_FAIL_INDEX_V(p_index, p_class->members.size(), false);
+	ERR_FAIL_NULL_V(parser, false);
 
 	BSParser::ClassNode::Member &member = p_class->members.write[p_index];
 	if (p_source == nullptr && parser->has_class(p_class)) {
@@ -1282,38 +1282,40 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			const uint64_t source_site = p_source != nullptr ? (uint64_t(uint32_t(p_source->start_line)) << 32) | uint32_t(p_source->start_column) : 0;
 			HashSet<uint64_t> &diagnosed_sites = diagnosed_function_member_cycle_sites[member.function];
 			if (diagnosed_sites.has(source_site)) {
-				return;
+				return false;
 			}
 			diagnosed_sites.insert(source_site);
 		}
 		push_error(vformat(R"(Could not resolve member "%s": Cyclic reference.)", member.get_name()), p_source);
-		return;
+		return false;
 	}
 
 	Ref<BSParserRef> parser_ref;
 	if (!owns_class) {
 		parser_ref = ensure_external_parser(p_class, "While resolving external class member", p_source);
 		if (parser_ref.is_null()) {
-			return;
+			return false;
 		}
 	}
 	if (member.get_datatype().is_set()) {
-		if (!owns_class && parser_ref->get_analyzer()->owner_resolution_failures.has_member(p_class, p_index)) {
+		const bool failed = owns_class ? owner_resolution_failures.has_member(p_class, p_index) : parser_ref->get_analyzer()->owner_resolution_failures.has_member(p_class, p_index);
+		if (!owns_class && failed) {
 			push_external_member_failure();
 		}
-		return;
+		return !failed;
 	}
 	if (!owns_class) {
 		BSAnalyzer *other_analyzer = parser_ref->get_analyzer();
 		BSParser *other_parser = parser_ref->get_parser();
 		const int error_count = other_parser->get_errors().size();
 		ForeignAnalyzerVisibilityScope visibility_scope(other_analyzer);
-		other_analyzer->resolve_class_member(p_class, p_index);
-		if (other_parser->get_errors().size() > error_count ||
-				other_analyzer->owner_resolution_failures.has_member(p_class, p_index)) {
+		const bool resolved = other_analyzer->resolve_class_member(p_class, p_index);
+		const bool failed = !resolved || other_parser->get_errors().size() > error_count ||
+				other_analyzer->owner_resolution_failures.has_member(p_class, p_index);
+		if (failed) {
 			push_external_member_failure();
 		}
-		return;
+		return !failed;
 	}
 	if (!p_class->base_type.is_resolving()) {
 		resolve_class_inheritance(p_class);
@@ -1625,11 +1627,13 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 		} break;
 	}
 
-	if (parser->get_errors().size() > member_error_count) {
+	const bool failed = parser->get_errors().size() > member_error_count;
+	if (failed) {
 		owner_resolution_failures.record_member(p_class, p_index, member_error_count);
 	}
 
 	current_class = previous_class;
+	return !failed;
 }
 
 bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifier, BSParser::ClassNode *p_class, bool p_mark_inherited) {

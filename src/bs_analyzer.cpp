@@ -1831,9 +1831,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 			if (member.type == BSParser::ClassNode::Member::CONSTANT) {
-				const int errors = parser->get_errors().size();
-				resolve_class_member(scope, name, p_type_node);
-				if (parser->get_errors().size() > errors) {
+				if (!resolve_class_member(scope, name, p_type_node)) {
 					result.kind = BSParser::DataType::VARIANT;
 					return result;
 				}

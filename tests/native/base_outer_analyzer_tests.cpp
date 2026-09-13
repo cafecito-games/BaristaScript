@@ -228,6 +228,29 @@ TEST_SUITE("base_outer_analyzer") {
 		CHECK(fallback.get_tree()->get_member("value").get_datatype().class_type->get_global_name() == StringName("A"));
 	}
 
+	TEST_CASE("repeated_selected_inherited_preload_failure_stays_terminal_after_replay_dedupe") {
+		for (const bool install_fallback : { false, true }) {
+			CAPTURE(install_fallback);
+			StorageFixture storage;
+			if (install_fallback) {
+				install(storage, path("repeated_fallback_pick.notest"), "class_name Pick\n");
+			}
+			install(storage, path("repeated_broken_pick.notest"), "extends MissingBase\n");
+			install(storage, path("repeated_failure_base.notest"), "const Pick = preload(\"repeated_broken_pick.notest.barista\")\n");
+
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse("extends \"repeated_failure_base.notest.barista\"\nvar first: Pick\nvar second: Pick\n", path(install_fallback ? "repeated_failure_with_fallback.notest" : "repeated_failure_without_fallback.notest"), false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			MESSAGE(std::string(error_block(parser).utf8().get_data()));
+			CHECK(error_block(parser) == ">> ERROR at line 1: Could not resolve class \"repeated_failure_base.notest.barista\".\n"
+										 ">> ERROR at line 2: Could not resolve external class member \"Pick\".\n"
+										 ">> ERROR at line 1: Could not resolve class \"repeated_failure_base.notest.barista\". The class has errors, the first at line 1: Could not preload resource script \"res://tests/corpus_staging/analyzer/features/repeated_broken_pick.notest.barista\".");
+			CHECK(parser.get_tree()->get_member("first").get_datatype().is_variant());
+			CHECK(parser.get_tree()->get_member("second").get_datatype().is_variant());
+		}
+	}
+
 	TEST_CASE("inherited_outer_lookup_does_not_leak_across_siblings") {
 		StorageFixture storage;
 		install(storage, path("sibling_pick.notest"), "const SIBLING = true\n");
