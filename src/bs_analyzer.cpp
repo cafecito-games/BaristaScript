@@ -49,6 +49,10 @@
 #include "bs_utility_functions.h"
 #include "bs_warning.h"
 
+#ifdef BARISTA_TESTS
+#include "../tests/native/analyzer_self_identity_access.h"
+#endif
+
 namespace barista_script {
 
 #ifdef BARISTA_TESTS
@@ -7673,6 +7677,27 @@ bool _self_contract_admits_value_type(const BSParser::DataType &p_expected_type,
 }
 
 } // namespace
+
+#ifdef BARISTA_TESTS
+bool native_tests::SelfIdentityTestAccess::alpha_equal(const Type &expected, const Type &actual) {
+	return _datatype_alpha_equal(expected, actual);
+}
+bool native_tests::SelfIdentityTestAccess::strict_identity_equal(const Type &expected, const Type &actual) {
+	return _datatype_strict_identity_equal(expected, actual);
+}
+bool native_tests::SelfIdentityTestAccess::matches_substituted_self(const Type &expected, const Type &actual) {
+	return _datatype_matches_analyzer_substituted_self(expected, actual);
+}
+native_tests::SelfIdentityTestAccess::Type native_tests::SelfIdentityTestAccess::substitute_self(const Type &type, bool mark) {
+	return _substitute_self_type_parameter_with_bounds(type, mark);
+}
+bool native_tests::SelfIdentityTestAccess::parameter_matches(const Type &expected, const Type &actual, Type &matched) {
+	return _self_parameter_contract_matched_argument(expected, actual, nullptr, matched, _self_contract_options());
+}
+bool native_tests::SelfIdentityTestAccess::needs_receiver_identity(const Type &expected, const Type &actual) {
+	return _self_parameter_contract_match_needs_receiver_identity(expected, actual);
+}
+#endif
 
 #ifdef DEBUG_ENABLED
 Dictionary BSAnalyzer::debug_self_identity_controls() {

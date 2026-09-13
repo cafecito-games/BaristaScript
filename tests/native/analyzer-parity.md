@@ -4,12 +4,14 @@ This inventory is reconciled with `project/tests/analyzer_test.gd` at merged mai
 `4b2439fb95a4ed6069c3771ea1663ae50eeb8ac1` (PR #199), rechecked unchanged at
 `eb0e7275747f6ac585117777f17222c70b66f30e` (PR #200), and reconciled with the two
 Callable-member changes at `4c9c561c6096e020440483328c13fc0fcbd3aa71` (PR #201).
+The legacy source remains byte-identical at `a20b9fe5c8d42053b8fe9445a19a1e605817479e`
+(PR #202), integrated by normal merge `29885c269c2a823c98c9b681d55ebc27ad1fc68e`.
 The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 89 scenarios have explicit native equivalents and 1
-still require migration. No analyzer, cache, index, public, corpus, or triage adapter
+The legacy suite remains enabled: all 90 scenarios have explicit native equivalents.
+Retirement is held until #45 merges and its live consumers are reconciled. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
 
@@ -70,7 +72,7 @@ six scenarios in forward and reverse order under the ambient-state isolation ver
 
 At that historical checkpoint, `_test_complete_self_referential_enum_type` and
 `_test_local_tuple_and_literal_consumers` remained legacy-only. The former now has a typed
-`analyzer_conformance` equivalent; the latter is still pending.
+`analyzer_conformance` equivalent; the latter now has an `analyzer_tuple` equivalent.
 
 ## Historical #140 native checkpoint coverage
 
@@ -174,7 +176,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 76 | `_test_complete_self_referential_enum_type` | declarations | native `analyzer_conformance` |
 | 77 | `_test_self_contract_assign_return` | expressions/calls | native `analyzer_type_compatibility` |
 | 78 | `_test_self_contract_gradual_union` | expressions/calls | native `analyzer_type_compatibility` |
-| 79 | `_test_local_tuple_and_literal_consumers` | expressions/calls | legacy-only |
+| 79 | `_test_local_tuple_and_literal_consumers` | expressions/calls | native analyzer_tuple |
 | 80 | `_test_ordinary_assignment_and_return_consumers` | expressions/calls | native `analyzer_type_compatibility` |
 | 81 | `_test_steps_1_5_repair_regressions` | expressions/calls | native `analyzer_calls` |
 | 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | native `analyzer_calls` |
@@ -371,12 +373,25 @@ The verifier now creates its outer `StorageFixture` before changing the ambient 
 `isolation-outer-cache-green-run.log` records 8 cache cases / 3,921 assertions with zero failures,
 including preservation of the caller's original parser identity. No production code changed.
 
-- Migrate the 1 remaining legacy-only function; newly merged scenarios
-  must be added before any deletion.
-- Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
-  execution without state leakage.
-- Only then remove `analyzer_test.gd`, its UID, and analyzer-only bindings whose live corpus/public
-  consumers have independently migrated. `evaluate_corpus` remains live through the corpus cutover.
-- `analyzer_flow`, `analyzer_cache`, and `analyzer_type_compatibility` are required by
-  `tests/native_suites.json`; keep their manifest registrations while the remaining additive
-  migration proceeds.
+## Final additive parity checkpoint (90/90; retirement held)
+
+`analyzer_tuple::local_tuple_and_literal_consumers` preserves all 12 literal sources from
+the current-main legacy scenario, its derived positive union source, 12 exact ordered errors
+and starts, permissive/strict index controls, repeat diagnostics, public validation, direct
+semantic validity, script validity, and read-only declaration-index count. All 18 named
+Self-identity controls retain their exact datatype fixtures and predicates in a typed
+`SelfIdentityObservations` object. The `BARISTA_TESTS`-only `SelfIdentityTestAccess` contains
+six thin forwards to existing anonymous analyzer helpers: no semantic algorithm is duplicated,
+no Godot object is constructed at static initialization, and no script binding is added.
+
+The individually filterable case and its normal/reversed/seed-155-shuffled ambient-isolation
+case passed with `BS_NATIVE_RESULT`: 2 cases, 830 assertions, zero failures
+(`parity90-tuple-focused.log`). This pre-commit focused result identifies the integrated merge
+head with a dirty source state; final clean-head dual-build evidence is recorded externally.
+PR #202's new `declaration_cycle_analyzer` registration and all existing native suites remain
+enabled. The original three migration commits remain ancestors of the normal merge.
+
+No deletion is authorized at this checkpoint. After #45 merges, normally integrate its final
+promotion, reconcile every newly merged scenario and remaining public/smoke/corpus/triage
+consumer, then repeat full dual-build and order/isolation gates before proposing retirement.
+`analyzer_test.gd`, its UID, all legacy probes/bindings, and `evaluate_corpus` remain intact.
