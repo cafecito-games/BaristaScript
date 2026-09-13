@@ -5,7 +5,7 @@ This inventory is reconciled with `project/tests/analyzer_test.gd` at merged mai
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 46 scenarios have explicit native equivalents and 44
+The legacy suite remains enabled: 65 scenarios have explicit native equivalents and 25
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -14,9 +14,10 @@ current execution evidence is recorded separately below.
 
 The seven functions added after the issue's `71d7883a` baseline are registered as seven filterable
 cases in native suite `analyzer_flow`. They use `BSParser`, `BSAnalyzer`, `BSWarning`, typed AST
-nodes, `StorageFixture`, and fail-closed helper guards. The one non-source-reachable exhaustion
-control still calls the existing bounded debug probe for private analyzer internals; its carrier
-compatibility assertions call `BSTypeCompatibility` directly.
+nodes, `StorageFixture`, and fail-closed helper guards. The non-source-reachable exhaustion
+control uses the `BARISTA_TESTS`-only `AnalyzerMigrationTestAccess` friend and typed observations;
+its carrier compatibility assertions call `BSTypeCompatibility` directly. No #155-authored
+native case depends on the analyzer script probe; existing main-suite consumers remain intact.
 
 | Legacy function | Commit | Native case | Preserved fixture inventory |
 | --- | --- | --- | ---: |
@@ -64,8 +65,9 @@ six scenarios in forward and reverse order under the ambient-state isolation ver
 | `_test_self_contract_gradual_union` | `self_contract_gradual_union` | 8 |
 | `_test_ordinary_assignment_and_return_consumers` | `ordinary_assignment_and_return_consumers` | 8 |
 
-`_test_complete_self_referential_enum_type` and `_test_local_tuple_and_literal_consumers` remain
-legacy-only and are intentionally outside this checkpoint.
+At that historical checkpoint, `_test_complete_self_referential_enum_type` and
+`_test_local_tuple_and_literal_consumers` remained legacy-only. The former now has a typed
+`analyzer_conformance` equivalent; the latter is still pending.
 
 ## Historical #140 native checkpoint coverage
 
@@ -128,45 +130,45 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 35 | `_test_warning_settings` | diagnostics/settings | native `analyzer_diagnostics` |
 | 36 | `_test_final_local_assignment` | flow/finality | native `analyzer_finality` |
 | 37 | `_test_final_member_and_static_assignment` | flow/finality | native `analyzer_finality` |
-| 38 | `_test_final_trait_flattening` | flow/finality | legacy-only |
+| 38 | `_test_final_trait_flattening` | flow/finality | native `analyzer_finality` |
 | 39 | `_test_final_pattern_and_nested_expression_reads` | flow/finality | native `analyzer_diagnostics` |
 | 40 | `_test_noreturn_flow` | flow/finality | native `analyzer_diagnostics` |
 | 41 | `_test_unused_locals` | diagnostics/settings | native `analyzer_diagnostics` |
-| 42 | `_test_unused_class_members_and_signals` | diagnostics/settings | legacy-only |
+| 42 | `_test_unused_class_members_and_signals` | diagnostics/settings | native `analyzer_diagnostics` |
 | 43 | `_test_member_name_conflicts` | declarations | native `analyzer_declarations` |
-| 44 | `_test_trait_requirements_and_conformance_witness` | traits/conformance | legacy + #140 |
+| 44 | `_test_trait_requirements_and_conformance_witness` | traits/conformance | native `analyzer_conformance` |
 | 45 | `_test_flow_narrowing` | flow/finality | native `analyzer_finality` |
-| 46 | `_test_lambda_capture_and_compound_narrowing` | flow/finality | legacy-only |
+| 46 | `_test_lambda_capture_and_compound_narrowing` | flow/finality | native `analyzer_finality` |
 | 47 | `_test_get_operation_type` | expressions/calls | native `analyzer_operations` |
 | 48 | `_test_builtin_annotation_resolve` | declarations | native `analyzer_declarations` |
 | 49 | `_test_custom_annotation_surface` | declarations | legacy + #140 |
-| 50 | `_test_type_alias_surface` | declarations | legacy-only |
+| 50 | `_test_type_alias_surface` | declarations | native `analyzer_declarations` |
 | 51 | `_test_union_union_assignability` | expressions/calls | native `analyzer_type_compatibility` |
 | 52 | `_test_union_store_carrier_select` | expressions/calls | native `analyzer_type_compatibility` |
 | 53 | `_test_enum_case_match_and_case_binds` | expressions/calls | legacy-only |
 | 54 | `_test_contextual_case_shorthand` | expressions/calls | legacy-only |
 | 55 | `_test_tagged_union_match_exhaustiveness` | flow/finality | legacy-only |
-| 56 | `_test_callable_bind_unbind` | expressions/calls | legacy-only |
-| 57 | `_test_callable_callv_rpc` | expressions/calls | legacy-only |
-| 58 | `_test_async_callable_coroutine_wrap` | expressions/calls | legacy-only |
-| 59 | `_test_await_reduction_and_missing_await` | expressions/calls | legacy-only |
-| 60 | `_test_coroutine_annotation_decode` | declarations | legacy-only |
-| 61 | `_test_direct_async_call_wrap` | expressions/calls | legacy-only |
+| 56 | `_test_callable_bind_unbind` | expressions/calls | native `analyzer_calls` |
+| 57 | `_test_callable_callv_rpc` | expressions/calls | native `analyzer_calls` |
+| 58 | `_test_async_callable_coroutine_wrap` | expressions/calls | native `analyzer_calls` |
+| 59 | `_test_await_reduction_and_missing_await` | expressions/calls | native `analyzer_calls` |
+| 60 | `_test_coroutine_annotation_decode` | declarations | native `analyzer_calls` |
+| 61 | `_test_direct_async_call_wrap` | expressions/calls | native `analyzer_calls` |
 | 62 | `_test_surface_inheritance_member_depth` | dependency reanalysis | legacy + #140 |
 | 63 | `_test_resolve_class_member_depth` | dependency reanalysis | legacy + #140 |
 | 64 | `_test_foreign_member_failure_replay` | dependency reanalysis | legacy + #140 |
 | 65 | `_test_foreign_class_phase_failure_replay` | dependency reanalysis | legacy + #140 |
-| 66 | `_test_conformance_scoped_visibility` | traits/conformance | legacy + #140 |
-| 67 | `_test_conformance_registry_registration` | traits/conformance | legacy + #140 |
-| 68 | `_test_conformance_witness_lookup` | traits/conformance | legacy + #140 |
-| 69 | `_test_conformance_hidden_witness` | traits/conformance | legacy + #140 |
-| 70 | `_test_class_trait_binding_chain_coherence` | traits/conformance | legacy + #140 |
-| 71 | `_test_recorded_trait_arguments_query` | traits/conformance | legacy + #140 |
+| 66 | `_test_conformance_scoped_visibility` | traits/conformance | native `analyzer_conformance` |
+| 67 | `_test_conformance_registry_registration` | traits/conformance | native `analyzer_conformance` |
+| 68 | `_test_conformance_witness_lookup` | traits/conformance | native `analyzer_conformance` |
+| 69 | `_test_conformance_hidden_witness` | traits/conformance | native `analyzer_conformance` |
+| 70 | `_test_class_trait_binding_chain_coherence` | traits/conformance | native `analyzer_conformance` |
+| 71 | `_test_recorded_trait_arguments_query` | traits/conformance | native `analyzer_conformance` |
 | 72 | `_test_trait_target_assignability` | traits/conformance | legacy-only |
-| 73 | `_test_witness_collision_arbitration` | traits/conformance | legacy + #140 |
+| 73 | `_test_witness_collision_arbitration` | traits/conformance | native `analyzer_conformance` |
 | 74 | `_test_self_type_parameter_compat` | traits/conformance | legacy-only |
 | 75 | `_test_enum_self_payload_field_leg` | declarations | native `analyzer_type_compatibility` |
-| 76 | `_test_complete_self_referential_enum_type` | declarations | legacy-only |
+| 76 | `_test_complete_self_referential_enum_type` | declarations | native `analyzer_conformance` |
 | 77 | `_test_self_contract_assign_return` | expressions/calls | native `analyzer_type_compatibility` |
 | 78 | `_test_self_contract_gradual_union` | expressions/calls | native `analyzer_type_compatibility` |
 | 79 | `_test_local_tuple_and_literal_consumers` | expressions/calls | legacy-only |
@@ -216,9 +218,27 @@ The affected-group green evidence is in `simple-contracts-analyzer_*.log` under
 parity, both build systems, final public/corpus verification and post-#45 integration
 remain required before removing the legacy suite.
 
+## Typed conformance, callable, warning and finality checkpoint
+
+Nineteen more legacy scenarios have same-name cases in the inventory above. All original
+source fixtures and predicates are retained: nine conformance scenarios (including private
+visibility/registry/enum operations), six callable/async scenarios, trait-final flattening,
+lambda capture plus all 64 fresh-parser assignment repetitions, type aliases, and unused
+class members/signals. The conformance access layer replaces only the old script Dictionary
+carrier with typed C++ observations and is gated by `BARISTA_TESTS`; no public binding is added.
+Public `_validate` checks call the actual language API, not a probe serializer. The direct-async
+case explicitly enables the MISSING_AWAIT profile its legacy predecessor supplied implicitly.
+
+Each added scenario runs separately and in normal, reverse and deterministic shuffled order
+through scoped cache/index/files, conformance registry and analyzer settings. Private exhaustion
+controls now use typed fields/errors and compare two complete observations for repeatability.
+The complete SCons supervisor log `65-parity-native-full.log` records 39 required suites,
+817 executed cases and 65,637 assertions, with zero failed cases/assertions. The legacy suite
+and all adapters remain unchanged; this is progress evidence, not deletion authorization.
+
 ## Remaining gates
 
-- Migrate the 44 remaining legacy-only functions; newly merged scenarios
+- Migrate the 25 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.

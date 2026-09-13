@@ -6,8 +6,8 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+#include "analyzer_conformance_helpers.h"
 #include "analyzer_helpers.h"
-#include "bs_analyzer_probe.h"
 #include "bs_type.h"
 #include "doctest.h"
 #include "storage_fixture.h"
@@ -510,32 +510,44 @@ TEST_SUITE("analyzer_flow") {
 	}
 	TEST_CASE("internal_type_test_exhaustion") {
 		StorageFixture fixture;
-		Ref<BaristaScriptAnalyzerProbe> probe;
-		probe.instantiate();
-		BS_TEST_REQUIRE(probe.is_valid());
-		const Dictionary observed = probe->type_test_exhaustion_controls();
-		CHECK(probe->type_test_exhaustion_controls() == observed);
+		const auto observed = AnalyzerMigrationTestAccess::type_test_exhaustion_controls();
+		const auto repeated = AnalyzerMigrationTestAccess::type_test_exhaustion_controls();
+		BS_TEST_REQUIRE(observed.size() == 8);
+		BS_TEST_REQUIRE(repeated.size() == observed.size());
+		int position = 0;
 		for (const char *name : { "duplicate", "singleton", "canonical_collapse", "nullable", "empty", "unset_test", "match_scope", "nested_match_scope" }) {
 			INFO(name);
-			BS_TEST_REQUIRE(observed.has(name));
-			const Dictionary result = observed[name];
+			const auto &result = observed[position];
+			const auto &again = repeated[position++];
+			CHECK(result.name == name);
+			CHECK(again.name == result.name);
+			CHECK(again.helper == result.helper);
+			CHECK(again.alternative_set == result.alternative_set);
+			CHECK(again.scope_restored == result.scope_restored);
+			CHECK(again.subject_type_test == result.subject_type_test);
+			BS_TEST_REQUIRE(again.errors.size() == result.errors.size());
+			for (int i = 0; i < result.errors.size(); ++i) {
+				CHECK(again.errors[i].message == result.errors[i].message);
+				CHECK(again.errors[i].line == result.errors[i].line);
+				CHECK(again.errors[i].column == result.errors[i].column);
+			}
 			const bool expected_helper = String(name) == "duplicate" || String(name) == "singleton" || String(name) == "match_scope" || String(name) == "nested_match_scope";
 			const String expected_set = !expected_helper ? String() : String(name) == "singleton" ? String("int")
 																								  : String("int | int");
-			CHECK(bool(result.get("helper", false)) == expected_helper);
-			CHECK(String(result.get("alternative_set", "")) == expected_set);
-			CHECK(bool(result.get("scope_restored", false)));
-			const Array errors = result.get("errors", Array());
+			CHECK(result.helper == expected_helper);
+			CHECK(result.alternative_set == expected_set);
+			CHECK(result.scope_restored);
+			const auto &errors = result.errors;
 			const bool expects_error = String(name) == "duplicate" || String(name) == "singleton";
 			BS_TEST_REQUIRE(errors.size() == (expects_error ? 1 : 0));
 			if (expects_error) {
-				const Dictionary error = errors[0];
-				CHECK(String(error.get("message", "")) == vformat("Every alternative of \"%s\" passes \"is int\", so this test is always true and nothing reaches its false branch. Test the narrowest alternative first.", expected_set));
-				CHECK(int(error.get("line", -1)) == 11);
-				CHECK(int(error.get("column", -1)) == 7);
+				const auto &error = errors[0];
+				CHECK(error.message == vformat("Every alternative of \"%s\" passes \"is int\", so this test is always true and nothing reaches its false branch. Test the narrowest alternative first.", expected_set));
+				CHECK(error.line == 11);
+				CHECK(error.column == 7);
 			}
 			if (String(name) == "match_scope" || String(name) == "nested_match_scope") {
-				CHECK(bool(result.get("subject_type_test", false)));
+				CHECK(result.subject_type_test);
 			}
 		}
 

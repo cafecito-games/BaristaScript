@@ -254,13 +254,146 @@ void scenario_flow_narrowing() {
 	CHECK_MESSAGE(match_shadowed_classdb_report.valid() == false, "match local Node shadow stays value pattern (no ClassDB type overlay)");
 	settings.strict_null(false);
 }
+void scenario_final_trait_flattening() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	const String trait_ok = "class_name FinalTraitOk extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 42\n";
+	const auto ok_report = analyze_source(trait_ok, "res://tests/final_trait_ok.barista");
+	CHECK_MESSAGE((ok_report.valid() == true), "trait blank final assigned once in implementer _init is valid");
+	const String trait_blank = "class_name FinalTraitBlank extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tpass\n";
+	const auto blank_report = analyze_source(trait_blank, "res://tests/final_trait_blank.barista");
+	CHECK_MESSAGE((blank_report.valid() == false), "trait blank final never assigned is invalid");
+	bool saw_blank = false;
+	for (const auto &error : blank_report.parser->get_errors()) {
+		const String &message = error.message;
+		if (message.contains("must be definitely assigned")) {
+			saw_blank = true;
+		}
+	}
+	CHECK_MESSAGE((saw_blank), "trait blank final never-assigned diagnostic");
+	const String trait_twice = "class_name FinalTraitTwice extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\nfunc _init() -> void:\n\tid = 1\n\tid = 2\n";
+	const auto twice_report = analyze_source(trait_twice, "res://tests/final_trait_twice.barista");
+	CHECK_MESSAGE((twice_report.valid() == false), "trait final assigned twice in _init is invalid");
+	bool saw_twice = false;
+	for (const auto &error : twice_report.parser->get_errors()) {
+		const String &message = error.message;
+		if (message.contains("already assigned")) {
+			saw_twice = true;
+		}
+	}
+	CHECK_MESSAGE((saw_twice), "trait final double-assign diagnostic");
+	const String trait_method = "class_name FinalTraitMethod extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int = 1\n\tfunc mutate() -> void:\n\t\tid = 2\n\nfunc _ready() -> void:\n\tpass\n";
+	const auto method_report = analyze_source(trait_method, "res://tests/final_trait_method.barista");
+	CHECK_MESSAGE((method_report.valid() == false), "trait method reassigning flattened final is invalid");
+	bool saw_method = false;
+	for (const auto &error : method_report.parser->get_errors()) {
+		const String &message = error.message;
+		if (message.contains("can only be assigned")) {
+			saw_method = true;
+		}
+	}
+	CHECK_MESSAGE((saw_method), "trait method illegal-write diagnostic");
+	const String trait_init = "class_name FinalTraitInit extends Node\nuses HasId\n\ntrait HasId:\n\tfinal var id: int\n\tfunc _init() -> void:\n\t\tid = 5\n\nfunc _ready() -> void:\n\tpass\n";
+	const auto trait_init_report = analyze_source(trait_init, "res://tests/final_trait_init.barista");
+	CHECK_MESSAGE((trait_init_report.valid() == true), "trait-supplied _init assigning blank final is valid");
+	const String trait_cycle = "class_name FinalTraitCycle extends Node\nuses CycleA\n\ntrait CycleA:\n\tuses CycleB\n\ntrait CycleB:\n\tuses CycleA\n";
+	const auto cycle_report = analyze_source(trait_cycle, "res://tests/final_trait_cycle.barista");
+	CHECK_MESSAGE((cycle_report.valid() == false), "cyclic trait uses is invalid");
+	bool saw_cycle = false;
+	for (const auto &error : cycle_report.parser->get_errors()) {
+		const String &message = error.message;
+		if (message.contains("Cyclic trait use")) {
+			saw_cycle = true;
+		}
+	}
+	CHECK_MESSAGE((saw_cycle), "cyclic trait use diagnostic");
+	const String trait_static_blank = "class_name FinalTraitStaticBlank extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n";
+	const auto static_blank_report = analyze_source(trait_static_blank, "res://tests/final_trait_static_blank.barista");
+	CHECK_MESSAGE((static_blank_report.valid() == false), "trait static blank final without _static_init is invalid");
+	bool saw_static_blank = false;
+	for (const auto &error : static_blank_report.parser->get_errors()) {
+		const String &message = error.message;
+		if (message.contains("must be definitely assigned") && message.contains("_static_init()")) {
+			saw_static_blank = true;
+		}
+	}
+	CHECK_MESSAGE((saw_static_blank), "trait static blank never-assigned diagnostic");
+	const String trait_static_ok = "class_name FinalTraitStaticOk extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String\n\nstatic func _static_init() -> void:\n\tLABEL = \"ready\"\n";
+	const auto static_ok_report = analyze_source(trait_static_ok, "res://tests/final_trait_static_ok.barista");
+	CHECK_MESSAGE((static_ok_report.valid() == true), "trait static blank assigned in _static_init is valid");
+	const String trait_static_outside = "class_name FinalTraitStaticOutside extends Node\nuses HasLabel\n\ntrait HasLabel:\n\tfinal static var LABEL: String = \"ready\"\n\nfunc reset() -> void:\n\tLABEL = \"other\"\n";
+	const auto static_outside_report = analyze_source(trait_static_outside, "res://tests/final_trait_static_outside.barista");
+	CHECK_MESSAGE((static_outside_report.valid() == false), "trait static final reassigned outside _static_init is invalid");
+	bool saw_static_outside = false;
+	for (const auto &error : static_outside_report.parser->get_errors()) {
+		const String &message = error.message;
+		if (message.contains("_static_init()") && message.contains("can only be assigned")) {
+			saw_static_outside = true;
+		}
+	}
+	CHECK_MESSAGE((saw_static_outside), "trait static outside-_static_init diagnostic");
+	BSDeclarationIndex &index = fixture.index();
+	index.clear();
+	const String trait_path = "res://tests/index_has_id.barista";
+	const String trait_source = "trait_name IndexHasId\nfinal var id: int\n";
+	BaristaScriptLanguage::get_singleton()->synchronize_declaration_path_from_source(trait_path, trait_source);
+	BSCache::set_source_override(trait_path, trait_source);
+	const String consumer = "class_name FinalTraitIndexBlank extends Node\nuses IndexHasId\nfunc _init() -> void:\n\tpass\n";
+	const auto index_blank_report = analyze_source(consumer, "res://tests/final_trait_index_blank.barista");
+	CHECK_MESSAGE((index_blank_report.valid() == false), "index-backed trait blank final never assigned is invalid");
+	bool saw_index_blank = false;
+	for (const auto &error : index_blank_report.parser->get_errors()) {
+		const String &message = error.message;
+		if (message.contains("must be definitely assigned")) {
+			saw_index_blank = true;
+		}
+	}
+	CHECK_MESSAGE((saw_index_blank), "index-backed trait blank never-assigned diagnostic");
+	BSCache::clear_source_override(trait_path);
+	index.clear();
+}
+
+void scenario_lambda_capture_and_compound_narrowing() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	settings.strict_null(true);
+	const String capture_clears = "class_name LambdaCaptureClearsNarrowing extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar f := func():\n\t\t\tvar _used = n\n\t\tf.call()\n\t\tvar x: Node = n\n";
+	const auto capture_clears_report = analyze_source(capture_clears, "res://tests/lambda_capture_clears_narrowing.barista");
+	CHECK_MESSAGE((capture_clears_report.valid() == false), "captured null-narrowing cleared after call makes Node? → Node invalid");
+	const String capture_no_call = "class_name LambdaCaptureNoCallKeepsNarrowing extends Node\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar f := func():\n\t\t\tvar _used = n\n\t\tvar x: Node = n\n";
+	const auto capture_no_call_report = analyze_source(capture_no_call, "res://tests/lambda_capture_no_call_keeps_narrowing.barista");
+	CHECK_MESSAGE((capture_no_call_report.valid() == true), "captured narrowing stays until a call clears it");
+	const String member_no_capture = "class_name LambdaMemberSkipsCapture extends Node\nvar member_n: Node?\nfunc take(n: Node?) -> void:\n\tif n != null:\n\t\tvar f := func():\n\t\t\tvar _m = member_n\n\t\tf.call()\n\t\tvar x: Node = n\n";
+	const auto member_no_capture_report = analyze_source(member_no_capture, "res://tests/lambda_member_skips_capture.barista");
+	CHECK_MESSAGE((member_no_capture_report.valid() == true), "member read in lambda does not capture / clear local narrowing");
+	const String is_capture_clears = "class_name LambdaIsCaptureClearsNarrowing extends Node\nfunc take(v: int | String) -> void:\n\tif v is String:\n\t\tvar f := func():\n\t\t\tvar _used = v\n\t\tf.call()\n\t\tvar s: String = v\n";
+	const auto is_capture_clears_report = analyze_source(is_capture_clears, "res://tests/lambda_is_capture_clears_narrowing.barista");
+	CHECK_MESSAGE((is_capture_clears_report.valid() == false), "captured `is` narrowing cleared after call");
+	const String compound_clears = "class_name CompoundAssignClearsNarrowing extends Node\nfunc take(v: int | String) -> void:\n\tif v is int:\n\t\tv += 1\n\t\tvar i: int = v\n";
+	const auto compound_clears_report = analyze_source(compound_clears, "res://tests/compound_assign_clears_narrowing.barista");
+	CHECK_MESSAGE((compound_clears_report.valid() == false), "compound assignment clears prior `is` narrowing");
+	const String compound_narrow_ok = "class_name CompoundAssignNarrowedReadOk extends Node\nfunc take(v: int | String) -> void:\n\tif v is int:\n\t\tv += 1\n";
+	const auto compound_narrow_ok_report = analyze_source(compound_narrow_ok, "res://tests/compound_assign_narrowed_read_ok.barista");
+	CHECK_MESSAGE((compound_narrow_ok_report.valid() == true), "compound += inside `is int` arm is valid: %s");
+	for (int iteration = 0; iteration < 64; ++iteration) {
+		INFO(iteration);
+		const auto repeated = analyze_source(compound_narrow_ok, vformat("res://tests/compound_parameter_%d.barista", iteration));
+		CHECK_MESSAGE((repeated.valid()), "parameter assignment preserves AST on iteration %d: %s");
+	}
+	settings.strict_null(false);
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_finality") {
+	TEST_CASE("lambda_capture_and_compound_narrowing") { scenario_lambda_capture_and_compound_narrowing(); }
+	TEST_CASE("final_trait_flattening") { scenario_final_trait_flattening(); }
 	TEST_CASE("final_local_assignment") { scenario_final_local_assignment(); }
 	TEST_CASE("final_member_and_static_assignment") { scenario_final_member_and_static_assignment(); }
 	TEST_CASE("flow_narrowing") { scenario_flow_narrowing(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_final_local_assignment, scenario_final_member_and_static_assignment, scenario_flow_narrowing });
+		check_scenario_orders({ scenario_final_local_assignment, scenario_final_member_and_static_assignment, scenario_flow_narrowing, scenario_final_trait_flattening, scenario_lambda_capture_and_compound_narrowing });
 	}
 }

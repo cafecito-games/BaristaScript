@@ -19,6 +19,7 @@
     "analyzer_finality",
     "analyzer_declarations",
     "analyzer_operations",
+    "analyzer_conformance",
     "analyzer_type_compatibility",
     "source_analyzer",
     "autoload_analyzer",

@@ -7,6 +7,7 @@
 /**************************************************************************/
 
 #include "analyzer_helpers.h"
+#include "bs_conformance_registry.h"
 #include "storage_fixture.h"
 #include "test_require.h"
 #include <algorithm>
@@ -149,9 +150,115 @@ std::array<Scenario, 8> scenarios() {
 		scenario_noreturn_flow, scenario_final_pattern_and_nested_expression_reads,
 		scenario_unary_sign_constant_folding };
 }
+void scenario_unused_class_members_and_signals() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	settings.warnings_enabled(true);
+	settings.warning(BSWarning::UNUSED_PRIVATE_CLASS_VARIABLE, BSWarning::WARN);
+	settings.warning(BSWarning::UNUSED_SIGNAL, BSWarning::WARN);
+	const String unused_private = "class_name UnusedPrivateMember extends Node\nvar _orphan: int = 1\nfunc _ready() -> void:\n\tpass\n";
+	const Dictionary private_report = BaristaScriptLanguage::get_singleton()->_validate(unused_private, "res://tests/unused_private_member.barista", true, true, true, false);
+	CHECK_MESSAGE((bool(private_report.get("valid", false)) == true), "unused private member stays valid at WARN");
+	bool saw_private = false;
+	for (const Dictionary &warn : Array(private_report.get("warnings", Array()))) {
+		const String code = warn.get("string_code", "");
+		const String msg = warn.get("message", "");
+		if (code.contains("UNUSED_PRIVATE_CLASS_VARIABLE") && msg.contains("_orphan") && msg.contains("never used in the class")) {
+			saw_private = true;
+		}
+	}
+	CHECK_MESSAGE((saw_private), "unused private member produces UNUSED_PRIVATE_CLASS_VARIABLE message");
+	const String used_private = "class_name UsedPrivateMember extends Node\nvar _keep: int = 1\nfunc _ready() -> void:\n\tvar _sink: int = _keep\n";
+	const Dictionary used_private_report = BaristaScriptLanguage::get_singleton()->_validate(used_private, "res://tests/used_private_member.barista", true, true, true, false);
+	bool saw_used_private = false;
+	for (const Dictionary &warn : Array(used_private_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_PRIVATE_CLASS_VARIABLE") && String(warn.get("message", "")).contains("_keep")) {
+			saw_used_private = true;
+		}
+	}
+	CHECK_MESSAGE((!saw_used_private), "used private member does not warn as unused");
+	const String public_unused = "class_name PublicUnusedMember extends Node\nvar visible: int = 1\nfunc _ready() -> void:\n\tpass\n";
+	const Dictionary public_report = BaristaScriptLanguage::get_singleton()->_validate(public_unused, "res://tests/public_unused_member.barista", true, true, true, false);
+	bool saw_public = false;
+	for (const Dictionary &warn : Array(public_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_PRIVATE_CLASS_VARIABLE")) {
+			saw_public = true;
+		}
+	}
+	CHECK_MESSAGE((!saw_public), "public unused member does not produce UNUSED_PRIVATE_CLASS_VARIABLE");
+	const String unused_signal = "class_name UnusedSignalScript extends Node\nsignal lonely\nfunc _ready() -> void:\n\tpass\n";
+	const Dictionary signal_report = BaristaScriptLanguage::get_singleton()->_validate(unused_signal, "res://tests/unused_signal.barista", true, true, true, false);
+	CHECK_MESSAGE((bool(signal_report.get("valid", false)) == true), "unused signal stays valid at WARN");
+	bool saw_signal = false;
+	for (const Dictionary &warn : Array(signal_report.get("warnings", Array()))) {
+		const String code = warn.get("string_code", "");
+		const String msg = warn.get("message", "");
+		if (code.contains("UNUSED_SIGNAL") && msg.contains("lonely") && msg.contains("never explicitly used")) {
+			saw_signal = true;
+		}
+	}
+	CHECK_MESSAGE((saw_signal), "unused signal produces UNUSED_SIGNAL message");
+	const String used_signal = "class_name UsedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\temit_signal(\"ping\")\n";
+	const Dictionary used_signal_report = BaristaScriptLanguage::get_singleton()->_validate(used_signal, "res://tests/used_signal.barista", true, true, true, false);
+	bool saw_used_signal = false;
+	for (const Dictionary &warn : Array(used_signal_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_SIGNAL") && String(warn.get("message", "")).contains("ping")) {
+			saw_used_signal = true;
+		}
+	}
+	CHECK_MESSAGE((!saw_used_signal), "emit_signal counts as signal use");
+	const String connect_signal = "class_name ConnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tconnect(\"ping\", Callable())\n";
+	const Dictionary connect_report = BaristaScriptLanguage::get_singleton()->_validate(connect_signal, "res://tests/connect_signal.barista", true, true, true, false);
+	bool saw_connect_unused = false;
+	for (const Dictionary &warn : Array(connect_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_SIGNAL") && String(warn.get("message", "")).contains("ping")) {
+			saw_connect_unused = true;
+		}
+	}
+	CHECK_MESSAGE((!saw_connect_unused), "bare connect counts as signal use");
+	const String disconnect_signal = "class_name DisconnectSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tdisconnect(\"ping\", Callable())\n";
+	const Dictionary disconnect_report = BaristaScriptLanguage::get_singleton()->_validate(disconnect_signal, "res://tests/disconnect_signal.barista", true, true, true, false);
+	bool saw_disconnect_unused = false;
+	for (const Dictionary &warn : Array(disconnect_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_SIGNAL") && String(warn.get("message", "")).contains("ping")) {
+			saw_disconnect_unused = true;
+		}
+	}
+	CHECK_MESSAGE((!saw_disconnect_unused), "bare disconnect counts as signal use");
+	const String is_connected_signal = "class_name IsConnectedSignalScript extends Node\nsignal ping\nfunc _ready() -> void:\n\tvar _linked: bool = is_connected(\"ping\", Callable())\n";
+	const Dictionary is_connected_report = BaristaScriptLanguage::get_singleton()->_validate(is_connected_signal, "res://tests/is_connected_signal.barista", true, true, true, false);
+	bool saw_is_connected_unused = false;
+	for (const Dictionary &warn : Array(is_connected_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_SIGNAL") && String(warn.get("message", "")).contains("ping")) {
+			saw_is_connected_unused = true;
+		}
+	}
+	CHECK_MESSAGE((!saw_is_connected_unused), "bare is_connected counts as signal use");
+	const String nested = "class_name NestedUnusedOuter extends Node\nclass Inner:\n\tsignal nested_lonely\n\tfunc _ready() -> void:\n\t\tpass\nfunc _ready() -> void:\n\tpass\n";
+	const Dictionary nested_report = BaristaScriptLanguage::get_singleton()->_validate(nested, "res://tests/nested_unused_signal.barista", true, true, true, false);
+	int nested_count = 0;
+	for (const Dictionary &warn : Array(nested_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_SIGNAL") && String(warn.get("message", "")).contains("nested_lonely")) {
+			nested_count += 1;
+		}
+	}
+	CHECK_MESSAGE((nested_count == 1), "nested unused signal warns exactly once");
+	const String ignored = "class_name IgnoredSignalScript extends Node\n@warning_ignore(\"unused_signal\")\nsignal quiet\nfunc _ready() -> void:\n\tpass\n";
+	const Dictionary ignored_report = BaristaScriptLanguage::get_singleton()->_validate(ignored, "res://tests/ignored_signal.barista", true, true, true, false);
+	bool saw_ignored = false;
+	for (const Dictionary &warn : Array(ignored_report.get("warnings", Array()))) {
+		if (String(warn.get("string_code", "")).contains("UNUSED_SIGNAL") && String(warn.get("message", "")).contains("quiet")) {
+			saw_ignored = true;
+		}
+	}
+	CHECK_MESSAGE((!saw_ignored), "@warning_ignore(\"unused_signal\") suppresses UNUSED_SIGNAL via resolve_annotation");
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_diagnostics") {
+	TEST_CASE("unused_class_members_and_signals") { scenario_unused_class_members_and_signals(); }
 	TEST_CASE("semantic_errors") { scenario_semantic_errors(); }
 	TEST_CASE("undeclared_identifier_diagnostic") { scenario_undeclared_identifier_diagnostic(); }
 	TEST_CASE("warning_settings") { scenario_warning_settings(); }

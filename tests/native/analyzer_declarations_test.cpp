@@ -125,12 +125,56 @@ void scenario_builtin_annotation_resolve() {
 	const auto mismatch_report = analyze_source(mismatch, "res://tests/builtin_string_name_mismatch.barista");
 	CHECK_MESSAGE(mismatch_report.valid() == false, "int → StringName annotation assign remains invalid");
 }
+void scenario_type_alias_surface() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	const String transparent_source = "type Meters = float\n\nfunc measure(distance: Meters) -> Meters:\n\treturn distance * 2.0\n\nfunc test():\n\tvar distance: Meters = 1.5\n\tprint(measure(distance))\n";
+	const auto transparent_report = analyze_source(transparent_source, "res://tests/type_alias_resolution.barista");
+	CHECK_MESSAGE((transparent_report.valid() == true), "type alias expands transparently in signatures and locals");
+	const String cycle_source = "type Left = Right\ntype Right = Left\ntype SelfReferential = SelfReferential | int\n\n\nfunc test():\n\tvar value: Left = 1\n\tprint(value)\n";
+	const auto cycle_report = analyze_source(cycle_source, "res://tests/type_alias_cycle.barista");
+	String cycle_errors;
+	for (const auto &error : cycle_report.parser->get_errors()) {
+		cycle_errors += error.message + String("\n");
+	}
+	CHECK_MESSAGE((cycle_report.valid() == false), "cyclic type aliases invalidate analysis");
+	CHECK_MESSAGE((cycle_errors.contains("Type alias \"Left\" -> \"Right\" -> \"Left\" expands to itself")), "mutual type alias cycle names its chain");
+	CHECK_MESSAGE((cycle_errors.contains("Type alias \"SelfReferential\" -> \"SelfReferential\" expands to itself")), "self type alias cycle is diagnosed");
+	const String unknown_source = "type Mixed = int | NotAType\n\n\nfunc test():\n\tvar value: Mixed = 1\n\tprint(value)\n";
+	const auto unknown_report = analyze_source(unknown_source, "res://tests/type_alias_unknown_member.barista");
+	String unknown_errors;
+	for (const auto &error : unknown_report.parser->get_errors()) {
+		unknown_errors += error.message + String("\n");
+	}
+	CHECK_MESSAGE((unknown_report.valid() == false), "unresolvable type alias invalidates analysis");
+	CHECK_MESSAGE((unknown_errors.contains("Type alias \"Mixed\" has no expansion")), "unresolvable alias reports declaration failure");
+	CHECK_MESSAGE((unknown_errors.contains("Could not find type \"NotAType\"")), "unresolvable alias reports missing member");
+	const String expression_source = "class Holder:\n\tvar label: String = \"holder\"\n\n\ntype Only = Holder\ntype Scalar = int | String\n\n\nfunc test():\n\tvar read = Scalar\n\tvar called = Scalar()\n\tvar made = Only.new()\n\tprints(read, called, made)\n";
+	const auto expression_report = analyze_source(expression_source, "res://tests/type_alias_not_an_expression.barista");
+	String expression_errors;
+	for (const auto &error : expression_report.parser->get_errors()) {
+		expression_errors += error.message + String("\n");
+	}
+	CHECK_MESSAGE((expression_errors.contains("Type alias \"Scalar\" can only be used in a type position")), "type alias has no expression value");
+	CHECK_MESSAGE((expression_errors.contains("Type alias \"Only\" can only be used in a type position")), "class alias has no constructor handle");
+	const String conflict_source = "type int = String\ntype Label = float\n\n\nfunc test():\n\tprint(\"unreachable\")\n";
+	const auto conflict_report = analyze_source(conflict_source, "res://tests/type_alias_hides_existing_type.barista");
+	String conflict_errors;
+	for (const auto &error : conflict_report.parser->get_errors()) {
+		conflict_errors += error.message + String("\n");
+	}
+	CHECK_MESSAGE((conflict_errors.contains("Type alias \"int\" hides a built-in type")), "type alias cannot hide builtin type");
+	CHECK_MESSAGE((conflict_errors.contains("Type alias \"Label\" hides a native class")), "type alias cannot hide native class");
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_declarations") {
+	TEST_CASE("type_alias_surface") { scenario_type_alias_surface(); }
 	TEST_CASE("member_name_conflicts") { scenario_member_name_conflicts(); }
 	TEST_CASE("builtin_annotation_resolve") { scenario_builtin_annotation_resolve(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_member_name_conflicts, scenario_builtin_annotation_resolve });
+		check_scenario_orders({ scenario_member_name_conflicts, scenario_builtin_annotation_resolve, scenario_type_alias_surface });
 	}
 }
