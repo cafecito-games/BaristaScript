@@ -146,6 +146,15 @@ TEST_SUITE("declaration_cycle_analyzer") {
 		});
 	}
 
+	TEST_CASE("direct_self_extends_keeps_the_established_cycle_diagnostic") {
+		const String source = "class Foo extends Foo:\n\tpass\n";
+		original("direct_self_extends.barista", source, ">> ERROR at line 1: Could not resolve class \"Foo\": Cyclic reference.", [](const BSParser &parser) {
+			const auto member = parser.get_tree()->get_member("Foo");
+			BS_TEST_REQUIRE(member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr);
+			exact_error(parser, 0, "Could not resolve class \"Foo\": Cyclic reference.", member.m_class);
+		});
+	}
+
 	TEST_CASE("cyclic_constants_keep_only_the_pinned_failures") {
 		const String source = "func test():\n\tprint(c1)\n\nconst c1 = c2\nconst c2 = c1\n";
 		original("cyclic_ref_const.barista", source,
