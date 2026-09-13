@@ -6,7 +6,7 @@ This inventory is reconciled with `project/tests/analyzer_test.gd` at merged mai
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 76 scenarios have explicit native equivalents and 14
+The legacy suite remains enabled: 78 scenarios have explicit native equivalents and 12
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -109,7 +109,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 13 | `_test_review_resolution_regressions` | expressions/calls | legacy-only |
 | 14 | `_test_pinned_global_api_lookup` | expressions/calls | legacy-only |
 | 15 | `_test_language_utility_registry` | expressions/calls | legacy-only |
-| 16 | `_test_dictionary_literal_constant_parity` | expressions/calls | legacy-only |
+| 16 | `_test_dictionary_literal_constant_parity` | expressions/calls | native `analyzer_constants` |
 | 17 | `_test_unary_sign_constant_folding` | expressions/calls | native `analyzer_diagnostics` |
 | 18 | `_test_analyzer_declaration_commit` | dependency reanalysis | native `analyzer_dependency` |
 | 19 | `_test_declaration_head_kinds_and_conformance` | declarations | native `analyzer_dependency` |
@@ -180,7 +180,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 84 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | legacy-only |
 | 85 | `_test_pure_literal_constant_materialization` | expressions/calls | legacy-only |
 | 86 | `_test_pure_constant_review_regressions` | expressions/calls | legacy-only |
-| 87 | `_test_constant_dictionary_key_conversion` | expressions/calls | legacy-only |
+| 87 | `_test_constant_dictionary_key_conversion` | expressions/calls | native `analyzer_constants` |
 | 88 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | legacy-only |
 | 89 | `_test_folded_tuple_child_and_failed_contextual_materialization` | expressions/calls | legacy-only |
 | 90 | `_test_constant_producer_child_evidence` | expressions/calls | legacy-only |
@@ -256,13 +256,19 @@ were deleted.
 
 ## Remaining gates
 
+The first `analyzer_constants` cases preserve both dictionary-literal and typed-key conversion
+functions: exact nested key/value carriers, empty and runtime dictionaries, duplicate-key
+messages/positions, six builtin conversion positives and four exact rejected-key controls.
+`constants-stage-2.log` records three cases / 722 assertions with zero failures, including
+normal/reverse/shuffle isolation.
+
 The next additive group covers four complete same-/cross-file member lookup and owner-failure
 replay scenarios in `analyzer_members`, Self parameter compatibility in `analyzer_conformance`,
 and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payload positive
 control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
 Focused results are recorded in `members-stage-analyzer_*.log`.
 
-- Migrate the 14 remaining legacy-only functions; newly merged scenarios
+- Migrate the 12 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
