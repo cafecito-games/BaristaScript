@@ -1436,7 +1436,15 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				reduce_expression(member.constant->initializer);
 				qualify_contextual_enum_case_consumer(member.constant->initializer, type);
 				mark_coroutine_handle_capture(member.constant->initializer, type);
-				if (parser->get_errors().size() == initializer_error_count) {
+				bool initializer_has_cycle_error = false;
+				int error_index = 0;
+				for (const auto &error : parser->get_errors()) {
+					if (error_index++ >= initializer_error_count && error.message.ends_with("Cyclic reference.")) {
+						initializer_has_cycle_error = true;
+						break;
+					}
+				}
+				if (!initializer_has_cycle_error) {
 					materialize_constant_initializer(member.constant);
 				}
 				const bool constant_type_ok = update_constant_expression_type(member.constant->initializer, type, "assign");
