@@ -466,7 +466,10 @@ extend RefCounted uses Surface:
 				BS_TEST_REQUIRE(body->statements[0]->type == BSParser::Node::RETURN);
 				const auto *value = static_cast<const BSParser::ReturnNode *>(body->statements[0])->return_value;
 				BS_TEST_REQUIRE(value && value->type == BSParser::Node::CALL);
-				exact_error(parser, "Cannot call \"Span\": it is not a function.", static_cast<const BSParser::CallNode *>(value)->callee);
+				const auto *call = static_cast<const BSParser::CallNode *>(value);
+				BS_TEST_REQUIRE(parser.get_errors().size() == 2);
+				error_at(parser, 0, R"(Member "Span" is not a function.)", call);
+				error_at(parser, 1, R"(Name "Span" called as a function but is a "int".)", call->callee);
 			}
 			CHECK(WitnessScopeTestAccess::clear(analyzer));
 		}

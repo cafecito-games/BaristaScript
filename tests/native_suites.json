@@ -41,7 +41,8 @@
     "provider_phase_analyzer",
     "namespace_annotation_analyzer",
     "declaration_context_analyzer",
-    "enum_call_dispatch_analyzer"
+    "enum_call_dispatch_analyzer",
+    "call_admission_analyzer"
   ],
   "editor_import": [
     "global_class"
