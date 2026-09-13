@@ -831,9 +831,142 @@ void scenario_steps_1_5_repair2_self_signatures() {
 	}
 }
 
+void scenario_steps_1_5_repair_regressions() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	struct RepairCase {
+		const char *source;
+		const char *path;
+		bool strict_dynamic;
+		std::vector<ExpectedError> errors;
+	};
+	const std::vector<RepairCase> cases = {
+		{ "class_name SignalSelfProjectionHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tpass\nfunc test(receiver: Child, base_value: Base, child_value: Child) -> void:\n\treceiver.emit_signal(\"changed\", base_value)\n\treceiver.emit_signal(\"changed\", child_value)\n", "res://tests/review_signal_self_projection.barista", false, {
+																																																																																																			  { "Invalid argument for \"emit_signal()\" function: argument 2 should be \"Child\" but is \"Base\".", 7, 37 },
+																																																																																																	  } },
+		{ "class_name LexicalTupleHost extends Node\ntuple Pair(left: int, right: int)\nclass Inner extends Node:\n\tfunc make() -> Pair:\n\t\treturn Pair(1, 2)\n", "res://tests/review_lexical_tuple.barista", false, {} },
+		{ "class_name ReceiverTupleHost extends Node\ntuple Owned(owner: Self, value: int)\nfunc construct_on(receiver: ReceiverTupleHost) -> Owned:\n\treturn receiver.Owned(receiver, 1)\n", "res://tests/review_receiver_tuple.barista", false, {
+																																																														   { "Cannot return value of type \"Owned\" because the function return type is \"Owned\". The return type's \"Self\" stands for the exact receiver at this use; the returned value has \"ReceiverTupleHost\" as field \"owner\".", 4, 5 },
+																																																												   } },
+		{ "func read(value: Variant) -> void:\n\tprint(value.0)\n", "res://tests/review_dynamic_tuple_index.barista", false, {} },
+		{ "func read(pair: (int, String), index: int) -> Variant:\n\treturn pair[index]\n", "res://tests/review_dynamic_tuple_element.barista", false, {} },
+		{ "func read(value: Variant) -> void:\n\tprint(value.0)\n", "res://tests/review_dynamic_tuple_index.barista", true, {
+																																	{ "Cannot use tuple index access on Variant in strict dynamic mode.", 2, 11 },
+																															} },
+		{ "func read(values: Array[int]) -> int:\n\treturn values[1.0]\n", "res://tests/review_float_array_index.barista", false, {} },
+		{ "class_name LocalConstructorHost extends Node\nclass Item extends Node:\n\tfunc _init(value: int) -> void:\n\t\tpass\nfunc make() -> Item:\n\treturn Item.new(1)\n", "res://tests/review_local_constructor.barista", false, {} },
+		{ "class_name MemberConstantWriteHost extends Node\nconst TOKEN := 1\nfunc overwrite() -> void:\n\tself.TOKEN = 2\n", "res://tests/review_member_constant_write.barista", false, {
+																																																 { "Cannot assign a new value to a constant.", 4, 5 },
+																																														 } },
+		{ "class_name TupleNominalConsumers extends Node\nclass Left:\n\ttuple Point(x: int, y: int)\nclass Right:\n\ttuple Point(x: int, y: int)\nfunc assign_bad(left: Left.Point, right: Right.Point) -> void:\n\tright = left\nfunc return_bad(left: Left.Point) -> Right.Point:\n\treturn left\n", "res://tests/review_tuple_nominal_consumers.barista", false, {
+																																																																																											 { "Value of type \"Point\" cannot be assigned to a variable of type \"Point\". The value is declared by class \"Left\"; the variable's type is declared by class \"Right\".", 7, 13 },
+																																																																																											 { "Cannot return value of type \"Point\" because the function return type is \"Point\". The returned value is declared by class \"Left\"; the return type is declared by class \"Right\".", 9, 5 },
+																																																																																									 } },
+		{ "func declare(v: int) -> void:\n\tvar value: String = v\n", "res://tests/review_ordinary_declaration.barista", false, {
+																																		{ "Cannot assign a value of type int to variable \"value\" with specified type String.", 2, 25 },
+																																} },
+		{ "class_name SignalSelfMemberHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tfunc take_child(value: Child) -> void:\n\t\tpass\n\tfunc take_string(value: String) -> void:\n\t\tpass\n\tfunc check(child_value: Child, base_value: Base) -> void:\n\t\tchanged.emit(child_value)\n\t\tchanged.emit(base_value)\n\t\tself.changed.connect(take_child)\n\t\tself.changed.disconnect(take_child)\n\t\tself.changed.is_connected(take_child)\n\t\tself.changed.connect(take_string)\n", "res://tests/repair_signal_member.barista", false, {
+																																																																																																																																																				{ "Invalid argument for \"emit()\" function: argument 1 should be \"Child\" but is \"Base\".", 11, 22 },
+																																																																																																																																																				{ "Cannot connect signal \"Signal[[Child]]\" to callable \"Callable[[String], void]\": signal argument 1 of type \"Child\" cannot be passed to callable parameter of type \"String\".", 15, 30 },
+																																																																																																																																																		} },
+		{ "class_name SignalNestedHost extends Node\nclass Base extends Node:\n\tsignal nested(values: Array[Self])\nclass Child extends Base:\n\tfunc check(child_values: Array[Child], base_values: Array[Base]) -> void:\n\t\tnested.emit(child_values)\n\t\tnested.emit(base_values)\n", "res://tests/repair_signal_nested.barista", false, {
+																																																																																						{ "Invalid argument for \"emit()\" function: argument 1 should be \"Array[Child]\" but is \"Array[Base]\".", 7, 21 },
+																																																																																				} },
+		{ "class_name SignalSelfReceiverHost extends Node\nclass Base extends Node:\n\tsignal changed(value: Self)\nclass Child extends Base:\n\tpass\nfunc take_child(value: Child) -> void:\n\tpass\nfunc take_string(value: String) -> void:\n\tpass\nfunc check(receiver: Child, child_value: Child, base_value: Base) -> void:\n\treceiver.emit_signal(\"changed\", child_value)\n\treceiver.emit_signal(\"changed\", base_value)\n\treceiver.connect(\"changed\", take_child)\n\treceiver.disconnect(\"changed\", take_child)\n\treceiver.is_connected(\"changed\", take_child)\n\treceiver.connect(\"changed\", take_string)\n\tvar projected := Signal(receiver, \"changed\")\n\tprojected.emit(child_value)\n\tprojected.emit(base_value)\n", "res://tests/repair_signal_receiver.barista", false, {
+																																																																																																																																																																																																					{ "Invalid argument for \"emit_signal()\" function: argument 2 should be \"Child\" but is \"Base\".", 12, 37 },
+																																																																																																																																																																																																					{ "Cannot connect signal \"Signal[[Child]]\" to callable \"Callable[[String], void]\": signal argument 1 of type \"Child\" cannot be passed to callable parameter of type \"String\".", 16, 33 },
+																																																																																																																																																																																																					{ "Invalid argument for \"emit()\" function: argument 1 should be \"Child\" but is \"Base\".", 19, 20 },
+																																																																																																																																																																																																			} },
+		{ "class_name TupleSpellings extends Node\ntuple Owned(owner: Self, value: int)\nclass Child extends TupleSpellings:\n\tfunc make(receiver: Child) -> Owned:\n\t\tvar a := Owned(self, 1)\n\t\tvar b := self.Owned(self, 2)\n\t\tvar c := Self.Owned(self, 3)\n\t\tvar d := Child.Owned(self, 4)\n\t\tvar e := receiver.Owned(receiver, 5)\n\t\treturn e\n", "res://tests/repair_tuple_spellings.barista", false, {
+																																																																																																								  { "Cannot return value of type \"Owned\" because the function return type is \"Owned\". The return type's \"Self\" stands for the exact receiver at this use; the returned value has \"Child\" as field \"owner\".", 10, 9 },
+																																																																																																						  } },
+		{ "class_name TupleShadow extends Node\ntuple Item(left: int, right: int)\nclass Inner:\n\ttuple Item(left: String, right: String)\n\tfunc make() -> Item:\n\t\treturn Item(1, 2)\n", "res://tests/repair_tuple_shadow.barista", false, {
+																																																														{ "Invalid argument 1 for tuple \"Item\": should be \"String\" but is \"int\".", 6, 21 },
+																																																														{ "Invalid argument 2 for tuple \"Item\": should be \"String\" but is \"int\".", 6, 24 },
+																																																												} },
+		{ "class_name TupleForeign extends Node\nclass Owner:\n\ttuple Pair(left: int, right: int)\nclass Other:\n\tfunc Pair(left: int, right: int) -> String:\n\t\treturn \"method\"\nfunc bad(other: Other) -> Owner.Pair:\n\treturn other.Pair(1, 2)\n", "res://tests/repair_tuple_foreign.barista", false, {
+																																																																														{ "Cannot return value of type \"String\" because the function return type is \"Pair\".", 8, 5 },
+																																																																												} },
+		{ "func check(pair: (int, String), wrong: String) -> void:\n\tprint(pair[wrong])\n\tprint(pair[2])\n", "res://tests/repair_tuple_index.barista", false, {
+																																										{ "Only an integer can index tuple \"(int, String)\", but received \"String\".", 2, 16 },
+																																										{ "Tuple index 2 is out of range for \"(int, String)\", which has 2 element(s).", 3, 16 },
+																																								} },
+		{ "func read(pair: (int, String)?) -> int:\n\treturn pair[0]\n", "res://tests/repair_nullable_tuple.barista", false, {} },
+		{ "tuple Pair(left: int, right: int)\nfunc bad() -> void:\n\tprint(Pair.0)\n", "res://tests/repair_tuple_metatype.barista", false, {
+																																				   { "Cannot index the tuple type \"Pair\"; construct a value first.", 3, 11 },
+																																		   } },
+		{ "func check(values: Array[int], b: bool, text: String) -> void:\n\tvar a: int = values[1.0]\n\tvalues[2.0] = 3\n\tprint(values[b])\n\tvalues[text] = 4\n", "res://tests/repair_array_index.barista", false, {
+																																																							  { "Invalid index type \"bool\" for a base of type \"Array[int]\".", 4, 18 },
+																																																							  { "Invalid index type \"String\" for a base of type \"Array[int]\".", 5, 12 },
+																																																					  } },
+		{ "class_name ConstructorCases extends Node\nclass Base:\n\tfunc _init(value: int, label: String = \"x\", ...rest: Array) -> void:\n\t\tpass\nclass Child extends Base:\n\tpass\nclass Empty:\n\tpass\nfunc ok() -> Child:\n\treturn Child.new(1, \"a\", 2, 3)\nfunc bad_type() -> Child:\n\treturn Child.new(\"bad\")\nfunc bad_arity() -> Child:\n\treturn Child.new()\nfunc bad_empty() -> Empty:\n\treturn Empty.new(1)\n", "res://tests/repair_constructors.barista", false, {
+																																																																																																																								  { "Invalid argument for \"new()\" function: argument 1 should be \"int\" but is \"String\".", 12, 22 },
+																																																																																																																								  { "Too few arguments for \"new()\" call. Expected at least 1 but received 0.", 14, 12 },
+																																																																																																																								  { "Too many arguments for \"new()\" call. Expected at most 0 but received 1.", 16, 22 },
+																																																																																																																						  } },
+		{ "class_name ConstantWrites extends Node\nconst TOKEN := 1\nconst CONTAINER := [1]\nvar mutable := 1\nclass Child extends ConstantWrites:\n\tfunc writes(receiver: Child) -> void:\n\t\tTOKEN = 2\n\t\tself.TOKEN = 2\n\t\tChild.TOKEN = 2\n\t\treceiver.TOKEN = 2\n\t\treceiver.CONTAINER[0] = 2\n\t\tmutable = 2\n", "res://tests/repair_member_constants.barista", false, {
+																																																																																															  { "Cannot assign a new value to a constant.", 7, 9 },
+																																																																																															  { "Cannot assign a new value to a constant.", 8, 9 },
+																																																																																															  { "Cannot assign a new value to a constant.", 9, 9 },
+																																																																																															  { "Cannot assign a new value to a constant.", 10, 9 },
+																																																																																															  { "Cannot assign a new value to a constant.", 11, 9 },
+																																																																																													  } },
+		{ "class_name NominalSites extends Node\nclass Left:\n\ttuple Point(x: int, y: int)\nclass Right:\n\ttuple Point(x: int, y: int)\n\ttuple Wrapper(point: Point, count: int)\n\tenum Box:\n\t\tValue(value: Point)\nfunc fixed(value: Right.Point) -> void:\n\tpass\nfunc rest(...values: Array[Right.Point]) -> void:\n\tpass\nfunc sites(left: Left.Point) -> Right.Point:\n\tvar declared: Right.Point = left\n\tconst local: Right.Point = left\n\tvar assigned: Right.Point = Right.Point(1, 2)\n\tassigned = left\n\tfixed(left)\n\trest(left)\n\tvar tuple_payload := Right.Wrapper(left, 1)\n\tvar enum_payload := Right.Box.Value(left)\n\treturn left\n", "res://tests/repair_nominal_sites.barista", false, {
+																																																																																																																																																																																	  { "Cannot assign a value of type Point to variable \"declared\" with specified type Point. The value is declared by class \"Left\"; the specified type is declared by class \"Right\".", 14, 33 },
+																																																																																																																																																																																	  { "Assigned value for constant \"local\" isn't a constant expression.", 15, 32 },
+																																																																																																																																																																																	  { "Cannot assign a value of type Point to constant \"local\" with specified type Point. The value is declared by class \"Left\"; the specified type is declared by class \"Right\".", 15, 32 },
+																																																																																																																																																																																	  { "Value of type \"Point\" cannot be assigned to a variable of type \"Point\". The value is declared by class \"Left\"; the variable's type is declared by class \"Right\".", 17, 16 },
+																																																																																																																																																																																	  { "Invalid argument for \"fixed()\" function: argument 1 should be \"Point\" but is \"Point\". The parameter is declared by class \"Right\"; the argument is declared by class \"Left\".", 18, 11 },
+																																																																																																																																																																																	  { "Invalid argument for \"rest()\" function: argument 1 should be \"Point\" but is \"Point\". The parameter is declared by class \"Right\"; the argument is declared by class \"Left\".", 19, 10 },
+																																																																																																																																																																																	  { "Invalid argument 1 for tuple \"Wrapper\": should be \"Point\" but is \"Point\". The tuple field's type is declared by class \"Right\"; the argument is declared by class \"Left\".", 20, 40 },
+																																																																																																																																																																																	  { "Invalid argument 1 for enum case \"Box.Value\": should be \"Point\" but is \"Point\". The payload field's type is declared by class \"Right\"; the argument is declared by class \"Left\".", 21, 41 },
+																																																																																																																																																																																	  { "Cannot return value of type \"Point\" because the function return type is \"Point\". The returned value is declared by class \"Left\"; the return type is declared by class \"Right\".", 22, 5 },
+																																																																																																																																																																															  } },
+		{ "class_name OriginCases extends Node\nvar member: String = 1\nconst MEMBER_CONST: String = 2\nfunc bad(v: int) -> String:\n\tvar local: String = v\n\tconst local_const: String = v\n\treturn v\n", "res://tests/repair_origins.barista", false, {
+																																																																   { "Cannot assign a value of type int to variable \"member\" with specified type String.", 2, 22 },
+																																																																   { "Cannot assign a value of type \"int\" to a constant of type \"String\".", 3, 30 },
+																																																																   { "Cannot assign a value of type int to variable \"local\" with specified type String.", 5, 25 },
+																																																																   { "Assigned value for constant \"local_const\" isn't a constant expression.", 6, 33 },
+																																																																   { "Cannot assign a value of type \"int\" to a constant of type \"String\".", 6, 33 },
+																																																																   { "Cannot return value of type \"int\" because the function return type is \"String\".", 7, 5 },
+																																																														   } },
+	};
+	for (const auto &sample : cases) {
+		INFO(sample.path);
+		settings.strict_dynamic(sample.strict_dynamic);
+		const Dictionary report = BaristaScriptLanguage::get_singleton()->_validate(sample.source, sample.path, true, true, false, false);
+		CHECK(bool(report.get("valid", false)) == sample.errors.empty());
+		const Array errors = report.get("errors", Array());
+		BS_TEST_REQUIRE(size_t(errors.size()) == sample.errors.size());
+		for (int i = 0; i < errors.size(); ++i) {
+			const Dictionary actual = errors[i];
+			CHECK(String(actual.get("message", "")) == sample.errors[i].message.c_str());
+			CHECK(int(actual.get("line", -1)) == sample.errors[i].line);
+			CHECK(int(actual.get("column", -1)) == sample.errors[i].column);
+		}
+	}
+	settings.strict_dynamic(false);
+	{
+		const Dictionary report = BaristaScriptLanguage::get_singleton()->_validate("func read(value: Variant) -> void:\n\tprint(value.0)\n", "res://tests/review_dynamic_tuple_index.barista", true, true, false, true);
+		CHECK(bool(report.get("valid", false)));
+		const PackedInt32Array safe = report.get("safe_lines", PackedInt32Array());
+		CHECK(safe.has(1));
+		CHECK_FALSE(safe.has(2));
+	}
+	{
+		const Dictionary report = BaristaScriptLanguage::get_singleton()->_validate("func read(pair: (int, String), index: int) -> Variant:\n\treturn pair[index]\n", "res://tests/review_dynamic_tuple_element.barista", true, true, false, true);
+		CHECK(bool(report.get("valid", false)));
+		const PackedInt32Array safe = report.get("safe_lines", PackedInt32Array());
+		CHECK(safe.has(1));
+		CHECK_FALSE(safe.has(2));
+	}
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_calls") {
+	TEST_CASE("steps_1_5_repair_regressions") { scenario_steps_1_5_repair_regressions(); }
 	TEST_CASE("steps_1_5_repair2_self_signatures") { scenario_steps_1_5_repair2_self_signatures(); }
 	TEST_CASE("direct_async_call_wrap") { scenario_direct_async_call_wrap(); }
 	TEST_CASE("await_reduction_and_missing_await") { scenario_await_reduction_and_missing_await(); }
@@ -846,6 +979,7 @@ TEST_SUITE("analyzer_calls") {
 	TEST_CASE("named_arg_and_connect_callable") { scenario_named_arg_and_connect_callable(); }
 	TEST_CASE("callable_signal_constructor_and_typed_receiver_depth") { scenario_callable_signal_constructor_and_typed_receiver_depth(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
+		check_scenario_orders({ scenario_steps_1_5_repair_regressions, scenario_steps_1_5_repair2_self_signatures });
 		check_scenario_orders({ scenario_call_arity_and_types, scenario_call_validation_methodinfo_and_signals, scenario_named_arg_and_connect_callable, scenario_callable_signal_constructor_and_typed_receiver_depth, scenario_callable_bind_unbind, scenario_callable_callv_rpc, scenario_async_callable_coroutine_wrap, scenario_coroutine_annotation_decode, scenario_await_reduction_and_missing_await, scenario_direct_async_call_wrap, scenario_steps_1_5_repair2_self_signatures });
 	}
 }

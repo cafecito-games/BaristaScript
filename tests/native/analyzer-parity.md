@@ -8,7 +8,7 @@ The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 83 scenarios have explicit native equivalents and 7
+The legacy suite remains enabled: 84 scenarios have explicit native equivalents and 6
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -176,7 +176,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 78 | `_test_self_contract_gradual_union` | expressions/calls | native `analyzer_type_compatibility` |
 | 79 | `_test_local_tuple_and_literal_consumers` | expressions/calls | legacy-only |
 | 80 | `_test_ordinary_assignment_and_return_consumers` | expressions/calls | native `analyzer_type_compatibility` |
-| 81 | `_test_steps_1_5_repair_regressions` | expressions/calls | legacy-only |
+| 81 | `_test_steps_1_5_repair_regressions` | expressions/calls | native `analyzer_calls` |
 | 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | native `analyzer_calls` |
 | 83 | `_test_local_enum_value_cycles` | declarations | native `analyzer_declarations` |
 | 84 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | legacy-only |
@@ -315,7 +315,11 @@ Both supervisors pass 19 tests. The public/corpus runner retains all eight invoc
 Current ordinary identity/surface, editor import, CI, global API, language utilities, format,
 license, and diff checks also pass. Final integration must repeat these gates after #45 merges.
 
-- Migrate the 7 remaining legacy-only functions; newly merged scenarios
+The preceding repair-regressions scenario additionally preserves 25 public validations,
+45 ordered exact diagnostics, the strict-dynamic toggle, and both gradual tuple safe-line
+observations. It joins the normal/reverse/shuffle isolation runner without changing semantics.
+
+- Migrate the 6 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
