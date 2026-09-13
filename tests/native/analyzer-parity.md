@@ -8,7 +8,7 @@ The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 81 scenarios have explicit native equivalents and 9
+The legacy suite remains enabled: 82 scenarios have explicit native equivalents and 8
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -110,7 +110,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 12 | `_test_undeclared_identifier_diagnostic` | diagnostics/settings | native `analyzer_diagnostics` |
 | 13 | `_test_review_resolution_regressions` | expressions/calls | native `analyzer_resolution` |
 | 14 | `_test_pinned_global_api_lookup` | expressions/calls | native `analyzer_resolution` |
-| 15 | `_test_language_utility_registry` | expressions/calls | legacy-only |
+| 15 | `_test_language_utility_registry` | expressions/calls | native `analyzer_resolution` |
 | 16 | `_test_dictionary_literal_constant_parity` | expressions/calls | native `analyzer_constants` |
 | 17 | `_test_unary_sign_constant_folding` | expressions/calls | native `analyzer_diagnostics` |
 | 18 | `_test_analyzer_declaration_commit` | dependency reanalysis | native `analyzer_dependency` |
@@ -258,6 +258,14 @@ were deleted.
 
 ## Remaining gates
 
+`language_utility_registry` now checks all eleven utility signatures across their original
+contexts, public MethodInfo round-trip fields, non-executable private callable identities,
+constant flags and results, overload/context failures, and exact unknown-name diagnostics.
+It preserves the PR #201 `len.call` member-positive fixture. Utility-bearing constant
+exportability is observed directly through typed AST/Variant carriers without a script probe.
+`language-utility-stage-1.log` records four cases / 13,561 assertions with zero failures,
+including normal/reverse/shuffle runs; no semantic production repair was required.
+
 The native `pinned_global_api_lookup` case reads the exact selected pinned producer JSON from
 the legacy `res://../godot-cpp/gdextension` location. Build configuration selects only its filename;
 no generated analyzer metadata supplies expected names or values. Every global constant/enum
@@ -294,7 +302,7 @@ and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payl
 control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
 Focused results are recorded in `members-stage-analyzer_*.log`.
 
-- Migrate the 9 remaining legacy-only functions; newly merged scenarios
+- Migrate the 8 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
