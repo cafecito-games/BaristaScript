@@ -11,6 +11,7 @@
 #include "barista_script_language.h"
 #include "storage_fixture.h"
 #include "test_require.h"
+#include <godot_cpp/classes/project_settings.hpp>
 
 using namespace godot;
 using namespace barista_script;
@@ -168,9 +169,80 @@ void scenario_validate_and_is_valid_agree() {
 	CHECK_FALSE(source_analyzes(bad_source, bad_path));
 	CHECK_FALSE(script_is_valid(bad_source, bad_path));
 }
+void scenario_settings_scope_neutralizes_and_restores_ambient_profile() {
+	StorageFixture fixture;
+	ProjectSettings *project = ProjectSettings::get_singleton();
+	const String enable = "debug/barista_script/warnings/enable";
+	const String rules_path = "debug/barista_script/warnings/directory_rules";
+	const String warning_path = BSWarning::get_setting_path_from_code(BSWarning::UNUSED_VARIABLE);
+	const String feature_warning = warning_path + String(".debug");
+	const String feature_strict = "debug/barista_script/analysis/strict_dynamic_checks.debug";
+	struct RestoreSettings {
+		ProjectSettings *project;
+		Dictionary values;
+		PackedStringArray absent;
+		~RestoreSettings() {
+			for (const Variant &key : values.keys()) {
+				project->set_setting(key, values[key]);
+			}
+			for (const String &path : absent) {
+				if (project->has_setting(path)) {
+					project->clear(path);
+				}
+			}
+			BSParser::update_project_settings();
+			for (const String &path : absent) {
+				if (project->has_setting(path)) {
+					project->clear(path);
+				}
+			}
+		}
+	} restore{ project, {}, {} };
+	for (const String &path : { enable, rules_path, warning_path, feature_warning, feature_strict }) {
+		if (project->has_setting(path)) {
+			restore.values[path] = project->get_setting(path);
+		} else {
+			restore.absent.push_back(path);
+		}
+	}
+	Dictionary rules;
+	Array nested;
+	nested.push_back(1);
+	rules["nested"] = nested;
+	const Dictionary original_rules = rules.duplicate(true);
+	project->set_setting(enable, true);
+	project->set_setting(rules_path, rules);
+	project->set_setting(feature_warning, int(BSWarning::ERROR));
+	project->set_setting(feature_strict, true);
+	if (project->has_setting(warning_path)) {
+		project->clear(warning_path);
+	}
+	{
+		AnalyzerSettings settings;
+		CHECK_FALSE(bool(project->get_setting(enable)));
+		CHECK(Dictionary(project->get_setting(rules_path)).is_empty());
+		CHECK_FALSE(project->has_setting(feature_warning));
+		CHECK_FALSE(project->has_setting(feature_strict));
+		CHECK(int(project->get_setting(warning_path)) == int(BSWarning::IGNORE));
+		// A caller retaining an aliased nested Array cannot mutate the saved snapshot.
+		nested.push_back(2);
+	}
+	CHECK(bool(project->get_setting(enable)));
+	CHECK(Dictionary(project->get_setting(rules_path)) == original_rules);
+	CHECK(int(project->get_setting(feature_warning)) == int(BSWarning::ERROR));
+	CHECK(bool(project->get_setting(feature_strict)));
+	CHECK_FALSE(project->has_setting(warning_path));
+	project->clear(enable);
+	{
+		AnalyzerSettings settings;
+		CHECK(project->has_setting(enable));
+	}
+	CHECK_FALSE(project->has_setting(enable));
+}
 } // namespace
 
 TEST_SUITE("analyzer_cache") {
+	TEST_CASE("settings_scope_neutralizes_and_restores_ambient_profile") { scenario_settings_scope_neutralizes_and_restores_ambient_profile(); }
 	TEST_CASE("parser_lifecycle") { scenario_parser_lifecycle(); }
 	TEST_CASE("missing_and_self") { scenario_missing_and_self(); }
 	TEST_CASE("strict_settings") { scenario_strict_settings(); }
@@ -178,6 +250,7 @@ TEST_SUITE("analyzer_cache") {
 	TEST_CASE("validate_and_is_valid_agree") { scenario_validate_and_is_valid_agree(); }
 
 	TEST_CASE("repeated_and_reversed_cases_restore_ambient_state") {
+		check_scenario_orders({ scenario_parser_lifecycle, scenario_missing_and_self, scenario_strict_settings, scenario_can_reference, scenario_validate_and_is_valid_agree, scenario_settings_scope_neutralizes_and_restores_ambient_profile });
 		void (*scenarios[])() = {
 			scenario_parser_lifecycle,
 			scenario_missing_and_self,

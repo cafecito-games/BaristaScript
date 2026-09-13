@@ -351,6 +351,20 @@ and IGNORE/ERROR warning controls. The removed probe-availability assertion is r
 compile-time typed helper use. `concrete-reduction-stage-1.log` records 9 cases / 13,294 assertions,
 zero failures, including normal/reverse/shuffle execution.
 
+The original flow cases now retain their seven names while sharing callable scenario bodies with
+the normal/reverse/shuffle verifier; all 260 ordered source literals are unchanged. Cache and type
+compatibility preserve their earlier repeated/reversed runs and additionally exercise all three
+orders. Every shared order run checks complete warning/strict-setting presence and values plus
+an ambient conformance's identity, witness, recorded argument, and loaded-file evidence, in
+addition to the existing cache/index/filesystem isolation checks.
+
+A new settings-scope regression first failed four assertions for retained feature overrides,
+directory rules, and aliased nested snapshots (`isolation-red-run.log`). The test-only helper now
+deep-copies, neutralizes, and restores that ambient profile, including originally absent settings.
+The order verifier establishes a scoped profile before its own bootstrap parse, so lazy warning
+default creation is not misclassified as a scenario leak. `isolation-final-full.log` records all
+44 suites / 863 cases / 144,490 assertions with zero failures before the isolation commit.
+
 - Migrate the 1 remaining legacy-only function; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled

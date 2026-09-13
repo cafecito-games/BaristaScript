@@ -48,6 +48,7 @@ class AnalyzerSettings {
 	};
 	Vector<SavedSetting> saved;
 
+	void remember(const String &path);
 	void set(const String &path, const Variant &value);
 
 public:

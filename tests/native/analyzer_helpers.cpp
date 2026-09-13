@@ -10,6 +10,7 @@
 
 #include "barista_script.h"
 #include "bs_cache.h"
+#include "bs_conformance_registry.h"
 #include "doctest.h"
 #include "storage_fixture.h"
 #include "test_require.h"
@@ -29,6 +30,26 @@ constexpr const char *strict_dynamic_setting = "debug/barista_script/analysis/st
 } // namespace
 
 AnalyzerSettings::AnalyzerSettings() {
+	Vector<String> profile_paths;
+	profile_paths.push_back(warning_enable);
+	profile_paths.push_back("debug/barista_script/warnings/directory_rules");
+	profile_paths.push_back(strict_null_setting);
+	profile_paths.push_back(strict_dynamic_setting);
+	for (int code = 0; code < BSWarning::WARNING_MAX; ++code) {
+		profile_paths.push_back(BSWarning::get_setting_path_from_code(static_cast<BSWarning::Code>(code)));
+	}
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	for (const Dictionary &property : Array(settings->get_property_list())) {
+		const String path = property["name"];
+		for (const String &base : profile_paths) {
+			if (path.begins_with(base + String("."))) {
+				remember(path);
+				settings->clear(path);
+				break;
+			}
+		}
+	}
+	set("debug/barista_script/warnings/directory_rules", Dictionary());
 	warnings_enabled(false);
 	strict_null(false);
 	strict_dynamic(false);
@@ -41,20 +62,24 @@ AnalyzerSettings::~AnalyzerSettings() {
 	ProjectSettings *settings = ProjectSettings::get_singleton();
 	for (int i = saved.size() - 1; i >= 0; --i) {
 		const SavedSetting &setting = saved[i];
-		settings->set_setting(setting.path, setting.present ? setting.value : Variant());
+		if (setting.present) {
+			settings->set_setting(setting.path, setting.value);
+		} else if (settings->has_setting(setting.path)) {
+			settings->clear(setting.path);
+		}
 	}
 	BSParser::invalidate_analysis_on_strict_settings_change();
 	BSParser::update_project_settings();
 	// Refresh declares absent warning defaults. Restore absence after updating the
 	// parser's cached profile, matching the production corpus profile's restoration.
 	for (const SavedSetting &setting : saved) {
-		if (!setting.present) {
+		if (!setting.present && settings->has_setting(setting.path)) {
 			settings->clear(setting.path);
 		}
 	}
 }
 
-void AnalyzerSettings::set(const String &path, const Variant &value) {
+void AnalyzerSettings::remember(const String &path) {
 	ProjectSettings *settings = ProjectSettings::get_singleton();
 	bool remembered = false;
 	for (const SavedSetting &setting : saved) {
@@ -65,9 +90,18 @@ void AnalyzerSettings::set(const String &path, const Variant &value) {
 		setting.path = path;
 		setting.present = settings->has_setting(path);
 		setting.value = setting.present ? settings->get_setting(path) : Variant();
+		if (setting.value.get_type() == Variant::ARRAY) {
+			setting.value = Array(setting.value).duplicate(true);
+		} else if (setting.value.get_type() == Variant::DICTIONARY) {
+			setting.value = Dictionary(setting.value).duplicate(true);
+		}
 		saved.push_back(setting);
 	}
-	settings->set_setting(path, value);
+}
+
+void AnalyzerSettings::set(const String &path, const Variant &value) {
+	remember(path);
+	ProjectSettings::get_singleton()->set_setting(path, value);
 	BSParser::invalidate_analysis_on_strict_settings_change();
 }
 
@@ -224,18 +258,82 @@ bool errors_contain(const AnalysisResult &result, const String &needle) {
 }
 
 void check_scenario_orders(std::initializer_list<void (*)()> scenarios) {
+	const auto setting_snapshot = []() {
+		ProjectSettings *project = ProjectSettings::get_singleton();
+		Dictionary snapshot;
+		for (const Dictionary &property : Array(project->get_property_list())) {
+			const String path = property["name"];
+			if (path.begins_with("debug/barista_script/warnings/") ||
+					path.begins_with(strict_null_setting) || path.begins_with(strict_dynamic_setting)) {
+				snapshot[path] = project->get_setting(path);
+			}
+		}
+		return snapshot.duplicate(true);
+	};
+	const auto run = [&](void (*scenario)()) {
+		// The storage verifier performs a bootstrap parse before calling the scenario.
+		// Establish its lazy warning defaults inside a restorable scope first, so the
+		// snapshot measures scenario changes rather than verifier initialization.
+		AnalyzerSettings ambient_settings;
+		ambient_settings.warning(BSWarning::UNSAFE_CAST, BSWarning::ERROR);
+		const Dictionary before = setting_snapshot();
+		BSConformanceRegistry::ScopedCorpusState ambient_registry;
+		BSConformanceRegistry *registry = BSConformanceRegistry::get_singleton();
+		const String source = "res://native_ambient_conformance.barista";
+		const String target = "res://native_ambient_target.barista";
+		BSConformanceRegistry::Conformance conformance;
+		conformance.target_keys.push_back(target);
+		conformance.target_fqcn = target;
+		conformance.target_script_path = target;
+		conformance.trait_name = SNAME("NativeAmbientTrait");
+		conformance.source_file = source;
+		conformance.conformance_index = 7;
+		conformance.witnesses[SNAME("native_ambient_witness")] = true;
+		BSConformanceRegistry::RecordedTypeArgument argument;
+		argument.kind = BSConformanceRegistry::RecordedTypeArgument::BUILTIN;
+		argument.builtin_type = Variant::INT;
+		conformance.trait_type_arguments.push_back(argument);
+		Vector<BSConformanceRegistry::Conformance> entries;
+		entries.push_back(conformance);
+		HashSet<String> loaded;
+		loaded.insert(target);
+		registry->try_replace_file_conformances(source, entries, {}, loaded);
+		BS_TEST_REQUIRE(registry->has_conformance(target, conformance.trait_name));
+		CHECK(verify_case_isolation(scenario));
+		const Dictionary after_settings = setting_snapshot();
+		for (const Variant &key : before.keys()) {
+			CHECK_MESSAGE((after_settings.has(key) && after_settings[key] == before[key]), "ambient setting changed: ", std::string(String(key).utf8().get_data()));
+		}
+		for (const Variant &key : after_settings.keys()) {
+			CHECK_MESSAGE(before.has(key), "ambient setting added: ", std::string(String(key).utf8().get_data()));
+		}
+		CHECK(BSConformanceRegistry::get_singleton() == registry);
+		CHECK(registry->has_conformance(target, conformance.trait_name));
+		CHECK(registry->get_conformance_source(target, conformance.trait_name) == source);
+		const auto after = registry->get_file_conformances(source);
+		BS_TEST_REQUIRE(after.size() == 1);
+		CHECK(after[0].conformance_index == 7);
+		CHECK(after[0].target_script_path == target);
+		CHECK(after[0].witnesses.has(SNAME("native_ambient_witness")));
+		BS_TEST_REQUIRE(after[0].trait_type_arguments.size() == 1);
+		CHECK(after[0].trait_type_arguments[0].kind == BSConformanceRegistry::RecordedTypeArgument::BUILTIN);
+		CHECK(after[0].trait_type_arguments[0].builtin_type == Variant::INT);
+		const auto after_loaded = registry->debug_get_loaded_files(source);
+		CHECK(after_loaded.size() == 1);
+		CHECK(after_loaded.has(target));
+	};
 	std::vector<void (*)()> order(scenarios);
 	for (auto scenario : order) {
-		CHECK(verify_case_isolation(scenario));
+		run(scenario);
 	}
 	std::reverse(order.begin(), order.end());
 	for (auto scenario : order) {
-		CHECK(verify_case_isolation(scenario));
+		run(scenario);
 	}
 	std::mt19937 random(155);
 	std::shuffle(order.begin(), order.end(), random);
 	for (auto scenario : order) {
-		CHECK(verify_case_isolation(scenario));
+		run(scenario);
 	}
 }
 

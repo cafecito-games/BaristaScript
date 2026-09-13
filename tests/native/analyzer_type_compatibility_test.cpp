@@ -248,6 +248,7 @@ TEST_SUITE("analyzer_type_compatibility") {
 	TEST_CASE("ordinary_assignment_and_return_consumers") { scenario_ordinary_assignment_and_return_consumers(); }
 
 	TEST_CASE("repeated_and_reversed_cases_restore_ambient_state") {
+		check_scenario_orders({ scenario_union_union_assignability, scenario_union_store_carrier_select, scenario_enum_self_payload_field_leg, scenario_self_contract_assign_return, scenario_self_contract_gradual_union, scenario_ordinary_assignment_and_return_consumers });
 		void (*scenarios[])() = {
 			scenario_union_union_assignability,
 			scenario_union_store_carrier_select,
