@@ -91,6 +91,10 @@ void check_analysis(const AnalysisResult &result,
 		const std::vector<ExpectedWarning> &warnings,
 		BSAnalyzer::AnalyzerPhase phase);
 const BSParser::FunctionNode *find_function(const AnalysisResult &result, const StringName &name);
+const BSParser::ExpressionNode *find_expression(const AnalysisResult &result, const StringName &name = "probe_expression");
+bool expression_has_unary_sign(const BSParser::ExpressionNode *expression);
+bool errors_contain(const AnalysisResult &result, const String &needle);
+void check_scenario_orders(std::initializer_list<void (*)()> scenarios);
 const BSParser::Node *find_statement_node(const BSParser::FunctionNode *function, const String &path);
 
 } // namespace barista_script::native_tests

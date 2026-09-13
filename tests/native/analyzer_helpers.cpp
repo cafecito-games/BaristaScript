@@ -11,8 +11,11 @@
 #include "barista_script.h"
 #include "bs_cache.h"
 #include "doctest.h"
+#include "storage_fixture.h"
 #include "test_require.h"
+#include <algorithm>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <random>
 #include <string>
 
 using namespace godot;
@@ -41,6 +44,14 @@ AnalyzerSettings::~AnalyzerSettings() {
 		settings->set_setting(setting.path, setting.present ? setting.value : Variant());
 	}
 	BSParser::invalidate_analysis_on_strict_settings_change();
+	BSParser::update_project_settings();
+	// Refresh declares absent warning defaults. Restore absence after updating the
+	// parser's cached profile, matching the production corpus profile's restoration.
+	for (const SavedSetting &setting : saved) {
+		if (!setting.present) {
+			settings->clear(setting.path);
+		}
+	}
 }
 
 void AnalyzerSettings::set(const String &path, const Variant &value) {
@@ -174,6 +185,58 @@ const BSParser::FunctionNode *find_function(const AnalysisResult &result, const 
 	}
 	const BSParser::ClassNode::Member member = result.parser->get_tree()->get_member(name);
 	return member.type == BSParser::ClassNode::Member::FUNCTION ? member.function : nullptr;
+}
+
+const BSParser::ExpressionNode *find_expression(const AnalysisResult &result, const StringName &name) {
+	if (result.parser == nullptr || result.parser->get_tree() == nullptr || !result.parser->get_tree()->has_member(name)) {
+		return nullptr;
+	}
+	const BSParser::ClassNode::Member member = result.parser->get_tree()->get_member(name);
+	return member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr ? member.variable->initializer : nullptr;
+}
+
+// Extracted from the legacy fold probe: observes parser shape without recomputing types.
+bool expression_has_unary_sign(const BSParser::ExpressionNode *expression) {
+	if (expression == nullptr) {
+		return false;
+	}
+	if (expression->type == BSParser::Node::UNARY_OPERATOR) {
+		const auto *unary = static_cast<const BSParser::UnaryOpNode *>(expression);
+		return unary->operation == BSParser::UnaryOpNode::OP_NEGATIVE || unary->operation == BSParser::UnaryOpNode::OP_POSITIVE || expression_has_unary_sign(unary->operand);
+	}
+	if (expression->type == BSParser::Node::BINARY_OPERATOR) {
+		const auto *binary = static_cast<const BSParser::BinaryOpNode *>(expression);
+		return expression_has_unary_sign(binary->left_operand) || expression_has_unary_sign(binary->right_operand);
+	}
+	return false;
+}
+
+bool errors_contain(const AnalysisResult &result, const String &needle) {
+	if (result.parser == nullptr) {
+		return false;
+	}
+	for (const auto &error : result.parser->get_errors()) {
+		if (error.message.contains(needle)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void check_scenario_orders(std::initializer_list<void (*)()> scenarios) {
+	std::vector<void (*)()> order(scenarios);
+	for (auto scenario : order) {
+		CHECK(verify_case_isolation(scenario));
+	}
+	std::reverse(order.begin(), order.end());
+	for (auto scenario : order) {
+		CHECK(verify_case_isolation(scenario));
+	}
+	std::mt19937 random(155);
+	std::shuffle(order.begin(), order.end(), random);
+	for (auto scenario : order) {
+		CHECK(verify_case_isolation(scenario));
+	}
 }
 
 const BSParser::Node *find_statement_node(const BSParser::FunctionNode *function, const String &path) {
