@@ -20,6 +20,7 @@
     "analyzer_declarations",
     "analyzer_operations",
     "analyzer_conformance",
+    "analyzer_members",
     "analyzer_type_compatibility",
     "source_analyzer",
     "autoload_analyzer",

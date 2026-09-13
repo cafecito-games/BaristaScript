@@ -5,7 +5,7 @@ This inventory is reconciled with `project/tests/analyzer_test.gd` at merged mai
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 65 scenarios have explicit native equivalents and 25
+The legacy suite remains enabled: 71 scenarios have explicit native equivalents and 19
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -154,10 +154,10 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 59 | `_test_await_reduction_and_missing_await` | expressions/calls | native `analyzer_calls` |
 | 60 | `_test_coroutine_annotation_decode` | declarations | native `analyzer_calls` |
 | 61 | `_test_direct_async_call_wrap` | expressions/calls | native `analyzer_calls` |
-| 62 | `_test_surface_inheritance_member_depth` | dependency reanalysis | legacy + #140 |
-| 63 | `_test_resolve_class_member_depth` | dependency reanalysis | legacy + #140 |
-| 64 | `_test_foreign_member_failure_replay` | dependency reanalysis | legacy + #140 |
-| 65 | `_test_foreign_class_phase_failure_replay` | dependency reanalysis | legacy + #140 |
+| 62 | `_test_surface_inheritance_member_depth` | dependency reanalysis | native `analyzer_members` |
+| 63 | `_test_resolve_class_member_depth` | dependency reanalysis | native `analyzer_members` |
+| 64 | `_test_foreign_member_failure_replay` | dependency reanalysis | native `analyzer_members` |
+| 65 | `_test_foreign_class_phase_failure_replay` | dependency reanalysis | native `analyzer_members` |
 | 66 | `_test_conformance_scoped_visibility` | traits/conformance | native `analyzer_conformance` |
 | 67 | `_test_conformance_registry_registration` | traits/conformance | native `analyzer_conformance` |
 | 68 | `_test_conformance_witness_lookup` | traits/conformance | native `analyzer_conformance` |
@@ -166,7 +166,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 71 | `_test_recorded_trait_arguments_query` | traits/conformance | native `analyzer_conformance` |
 | 72 | `_test_trait_target_assignability` | traits/conformance | legacy-only |
 | 73 | `_test_witness_collision_arbitration` | traits/conformance | native `analyzer_conformance` |
-| 74 | `_test_self_type_parameter_compat` | traits/conformance | legacy-only |
+| 74 | `_test_self_type_parameter_compat` | traits/conformance | native `analyzer_conformance` |
 | 75 | `_test_enum_self_payload_field_leg` | declarations | native `analyzer_type_compatibility` |
 | 76 | `_test_complete_self_referential_enum_type` | declarations | native `analyzer_conformance` |
 | 77 | `_test_self_contract_assign_return` | expressions/calls | native `analyzer_type_compatibility` |
@@ -175,7 +175,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 80 | `_test_ordinary_assignment_and_return_consumers` | expressions/calls | native `analyzer_type_compatibility` |
 | 81 | `_test_steps_1_5_repair_regressions` | expressions/calls | legacy-only |
 | 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | legacy-only |
-| 83 | `_test_local_enum_value_cycles` | declarations | legacy-only |
+| 83 | `_test_local_enum_value_cycles` | declarations | native `analyzer_declarations` |
 | 84 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | legacy-only |
 | 85 | `_test_pure_literal_constant_materialization` | expressions/calls | legacy-only |
 | 86 | `_test_pure_constant_review_regressions` | expressions/calls | legacy-only |
@@ -238,7 +238,13 @@ and all adapters remain unchanged; this is progress evidence, not deletion autho
 
 ## Remaining gates
 
-- Migrate the 25 remaining legacy-only functions; newly merged scenarios
+The next additive group covers four complete same-/cross-file member lookup and owner-failure
+replay scenarios in `analyzer_members`, Self parameter compatibility in `analyzer_conformance`,
+and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payload positive
+control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
+Focused results are recorded in `members-stage-analyzer_*.log`.
+
+- Migrate the 19 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.

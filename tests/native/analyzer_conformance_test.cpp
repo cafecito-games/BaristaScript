@@ -466,9 +466,33 @@ void scenario_trait_requirements_and_conformance_witness() {
 	CHECK_MESSAGE((saw_native_sig), "native MethodInfo signature mismatch diagnostic");
 }
 
+void scenario_self_type_parameter_compat() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	const String self_echo = "class_name SelfEchoOk extends Node\nfunc echo(value: Self) -> Self:\n\tvar tmp: Self = value\n\treturn tmp\n";
+	const auto self_echo_report = analyze_source(self_echo, "res://tests/self_echo_ok.barista");
+	CHECK_MESSAGE((self_echo_report.valid() == true), "same-class Self↔Self parameter/return/local is valid");
+	const String self_widen = "class_name SelfWidenOk extends Node\nfunc widen(value: Self) -> Self?:\n\treturn value\n";
+	const auto self_widen_report = analyze_source(self_widen, "res://tests/self_widen_ok.barista");
+	CHECK_MESSAGE((self_widen_report.valid() == true), "Self widens to Self? via TYPE_PARAMETER identity");
+	const String self_ok = "class_name CompatTraitSelfOk extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> Self:\n\treturn CompatTraitSelfOk.new()\n";
+	const auto self_ok_report = analyze_source(self_ok, "res://tests/compat_trait_self_ok.barista");
+	CHECK_MESSAGE((self_ok_report.valid() == true), "trait Self return matching implementer still valid");
+	const String self_bad = "class_name CompatTraitSelfBad extends Node\nuses Creatable\n\ntrait Creatable:\n\tabstract static func create() -> Self\n\nstatic func create() -> String:\n\treturn \"x\"\n";
+	const auto self_bad_report = analyze_source(self_bad, "res://tests/compat_trait_self_bad.barista");
+	CHECK_MESSAGE((self_bad_report.valid() == false), "trait Self return mismatched to String still invalid");
+	BSDeclarationIndex &index = fixture.index();
+	const int before = index.get_record_count();
+	const auto _ignored = analyze_source("class_name SelfCompatIndexGuard extends Node\n", "res://tests/self_compat_index_guard.barista");
+	CHECK_MESSAGE((index.get_record_count() == before), "Self TYPE_PARAMETER compat probes must not mutate declaration index");
+	BSCache::clear_source_overrides();
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_conformance") {
+	TEST_CASE("self_type_parameter_compat") { scenario_self_type_parameter_compat(); }
 	TEST_CASE("conformance_scoped_visibility") { scenario_conformance_scoped_visibility(); }
 	TEST_CASE("trait_requirements_and_conformance_witness") { scenario_trait_requirements_and_conformance_witness(); }
 	TEST_CASE("conformance_registry_registration") { scenario_conformance_registry_registration(); }
@@ -479,6 +503,6 @@ TEST_SUITE("analyzer_conformance") {
 	TEST_CASE("witness_collision_arbitration") { scenario_witness_collision_arbitration(); }
 	TEST_CASE("complete_self_referential_enum_type") { scenario_complete_self_referential_enum_type(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_conformance_registry_registration, scenario_conformance_witness_lookup, scenario_conformance_hidden_witness, scenario_class_trait_binding_chain_coherence, scenario_recorded_trait_arguments_query, scenario_witness_collision_arbitration, scenario_complete_self_referential_enum_type, scenario_trait_requirements_and_conformance_witness, scenario_conformance_scoped_visibility });
+		check_scenario_orders({ scenario_conformance_registry_registration, scenario_conformance_witness_lookup, scenario_conformance_hidden_witness, scenario_class_trait_binding_chain_coherence, scenario_recorded_trait_arguments_query, scenario_witness_collision_arbitration, scenario_complete_self_referential_enum_type, scenario_trait_requirements_and_conformance_witness, scenario_conformance_scoped_visibility, scenario_self_type_parameter_compat });
 	}
 }

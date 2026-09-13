@@ -9,6 +9,7 @@
 #include "analyzer_helpers.h"
 #include "bs_conformance_registry.h"
 #include "storage_fixture.h"
+#include "test_require.h"
 
 using namespace godot;
 using namespace barista_script;
@@ -16,6 +17,34 @@ using namespace barista_script::native_tests;
 
 // Sources and every condition migrated from analyzer_test.gd at 4b2439f (PR #199).
 namespace {
+void scenario_local_enum_value_cycles() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	struct Sample {
+		const char *source;
+		const char *path;
+		const char *member;
+		int line;
+	};
+	for (const auto &sample : std::vector<Sample>{
+				 { "func test():\n\tprint(E1.V)\n\nenum E1:\n\tV = E2.V\nenum E2:\n\tV = E1.V\n", "res://tests/cyclic_ref_enum.barista", "E1", 7 },
+				 { "enum Bad:\n\tA = Bad.B\n\tB = 1\n\nfunc test():\n\tprint(Bad.A)\n", "res://tests/enum_int_backed_self_referential_value.barista", "Bad", 2 },
+		 }) {
+		const auto result = analyze_source(sample.source, sample.path);
+		BS_TEST_REQUIRE(result.parser->get_errors().size() == 2);
+		const auto &first = result.parser->get_errors().front()->get();
+		const auto &second = result.parser->get_errors().front()->next()->get();
+		CHECK(first.message == vformat("Could not resolve member \"%s\": Cyclic reference.", sample.member));
+		CHECK(first.line == sample.line);
+		CHECK(first.column == 9);
+		CHECK(second.message == "Enum values must be constant.");
+		CHECK(second.line == sample.line);
+		CHECK(second.column == 9);
+	}
+	CHECK(analyze_source("class_name LegalRecursiveTagged extends Node\nenum Chain:\n\tEnd\n\tLink(next: Chain)\nfunc make() -> Chain:\n\treturn Chain.Link(Chain.End)\n", "res://tests/legal_recursive_tagged.barista").valid());
+}
+
 void scenario_member_name_conflicts() {
 	StorageFixture fixture;
 	BSConformanceRegistry::ScopedCorpusState registry;
@@ -171,10 +200,11 @@ void scenario_type_alias_surface() {
 } // namespace
 
 TEST_SUITE("analyzer_declarations") {
+	TEST_CASE("local_enum_value_cycles") { scenario_local_enum_value_cycles(); }
 	TEST_CASE("type_alias_surface") { scenario_type_alias_surface(); }
 	TEST_CASE("member_name_conflicts") { scenario_member_name_conflicts(); }
 	TEST_CASE("builtin_annotation_resolve") { scenario_builtin_annotation_resolve(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_member_name_conflicts, scenario_builtin_annotation_resolve, scenario_type_alias_surface });
+		check_scenario_orders({ scenario_member_name_conflicts, scenario_builtin_annotation_resolve, scenario_type_alias_surface, scenario_local_enum_value_cycles });
 	}
 }
