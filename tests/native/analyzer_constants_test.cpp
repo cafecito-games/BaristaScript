@@ -616,15 +616,166 @@ void scenario_nested_constant_evidence_and_contextual_casts() {
 	check_public_success(public_validate(runtime_source, runtime_path));
 }
 
+void scenario_folded_tuple_child_and_failed_contextual_materialization() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	struct MaterializationCase {
+		const char *source;
+		const char *path;
+		const char *datatype;
+		bool valid;
+		bool constant;
+		bool require_hard;
+		Variant expected;
+		std::vector<ExpectedError> errors;
+	};
+	const std::vector<MaterializationCase> cases = {
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "res://tests/folded_tuple_child.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst PAIR = Pair(KEYS, 0)\nvar probe_expression = PAIR.0[1]\n", "res://tests/folded_tuple_child.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "const KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "res://tests/folded_tuple_child.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "tuple Pair(data: Dictionary[float, int], count: int)\nconst KEYS: Dictionary[float, int] = {1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][1]\n", "res://tests/folded_tuple_child.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0]\n", "res://tests/folded_tuple_child.barista", "Dictionary[float?, int?]", true, true, true, dictionary_value({ { Variant(), Variant() }, { Variant(double(1)), Variant(int64_t(2)) } }), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)]\nvar probe_expression = BOX[0][0][null]\n", "res://tests/folded_tuple_child.barista", "null", true, true, true, Variant(), {} },
+		{ "var probe_expression = [1, \"x\"] as Array[int]\n", "res://tests/failed_contextual_materialization.barista", nullptr, false, false, false, Variant(), {
+																																										 { "Cannot include a value of type \"String\" as \"int\".", 1, 28 },
+																																										 { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 28 },
+																																								 } },
+		{ "var probe_expression = {\"x\": \"bad\"} as Dictionary[String, int]\n", "res://tests/failed_contextual_materialization.barista", nullptr, false, false, false, Variant(), {
+																																															{ "Cannot include a value of type \"String\" as \"int\".", 1, 30 },
+																																															{ "Cannot have a value of type \"String\" in a dictionary of type \"Dictionary[String, int]\".", 1, 30 },
+																																													} },
+		{ "const VALUE = [1, \"x\"] as Array[int]\nvar probe_expression = VALUE\n", "res://tests/failed_contextual_materialization.barista", nullptr, false, false, false, Variant(), {
+																																															  { "Assigned value for constant \"VALUE\" isn't a constant expression.", 1, 15 },
+																																															  { "Cannot include a value of type \"String\" as \"int\".", 1, 19 },
+																																															  { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 19 },
+																																													  } },
+		{ "var probe_expression = [[1, \"x\"] as Array[int]]\n", "res://tests/failed_contextual_materialization.barista", nullptr, false, false, false, Variant(), {
+																																										   { "Cannot include a value of type \"String\" as \"int\".", 1, 29 },
+																																										   { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 29 },
+																																								   } },
+		{ "const VALUE: Array[int] = [1, \"x\"]\nvar probe_expression = VALUE\n", "res://tests/failed_contextual_materialization.barista", nullptr, false, false, false, Variant(), {
+																																															{ "Cannot include a value of type \"String\" as \"int\".", 1, 31 },
+																																															{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 31 },
+																																													} },
+		{ "tuple Pair(data: Array[int?], count: int)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0]\n", "res://tests/repair3_named_array_nullable.barista", "Array[int?]", true, true, true, array_value({ Variant(), Variant(int64_t(1)) }), {} },
+		{ "tuple Pair(data: Array[int?], count: int)\nconst VALUES: Array[int?] = [null, 1]\nconst BOX: Array[Variant] = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0][0]\n", "res://tests/repair3_named_array_null.barista", "null", true, true, true, Variant(), {} },
+		{ "tuple Pair(data: Dictionary[String, Array[int?]], count: int)\nconst VALUES: Dictionary[String, Array[int?]] = {\"values\": [null, 1]}\nconst BOX = [Pair(VALUES, 0)]\nvar probe_expression = BOX[0][0][\"values\"]\n", "res://tests/repair3_named_nested_child.barista", "Array[int?]", true, true, true, array_value({ Variant(), Variant(int64_t(1)) }), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\ntuple Outer(pair: Pair, count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Outer(Pair(KEYS, 0), 1)]\nvar probe_expression = BOX[0][0][0][1]\n", "res://tests/repair3_named_nested_tuple.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = Pair(KEYS, 0)\nconst BOX = {\"values\": [VALUE]}\nvar probe_expression = BOX[\"values\"][0][0][1]\n", "res://tests/repair3_named_broad_alias.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst VALUE: Variant = Pair(KEYS, 0)\nvar probe_expression = VALUE\n", "res://tests/repair3_named_direct_variant.barista", "Variant", true, true, true, array_value({ dictionary_value({ { Variant(), Variant() }, { Variant(1.0), Variant(int64_t(2)) } }), Variant(int64_t(0)) }), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)] + []\nvar probe_expression = BOX[0][0][1]\n", "res://tests/repair3_named_concat.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "tuple Pair(data: Dictionary[float?, int?], count: int)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, 0)] if true else []\nvar probe_expression = BOX[0][0][1]\n", "res://tests/repair3_named_ternary.barista", "int", true, true, true, Variant(int64_t(2)), {} },
+		{ "tuple Pair(data: Variant, raw: Variant)\nconst KEYS: Dictionary[float?, int?] = {null: null, 1.0: 2}\nconst RAW = {null: null, 1.0: 2}\nconst BOX = [Pair(KEYS, RAW)]\nvar probe_expression = BOX[0][1][1]\n", "res://tests/repair3_named_equal_raw.barista", "Variant", false, false, false, Variant(), {
+																																																																															{ "Cannot get index \"1\" from \"{ <null>: <null>, 1.0: 2 }\".", 5, 34 },
+																																																																													} },
+		{ "var probe_expression = ([1, \"x\"] as Array[int], 0)\n", "res://tests/repair3_failed_tuple_parent.barista", "(Array[int], int)", false, false, false, Variant(), {
+																																													{ "Cannot include a value of type \"String\" as \"int\".", 1, 29 },
+																																													{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 29 },
+																																											} },
+		{ "var probe_expression = {\"outer\": [1, \"x\"] as Array[int]}\n", "res://tests/repair3_failed_dictionary_parent.barista", "Dictionary", false, false, false, Variant(), {
+																																														  { "Cannot include a value of type \"String\" as \"int\".", 1, 38 },
+																																														  { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 38 },
+																																												  } },
+		{ "var probe_expression = {([1, \"x\"] as Array[int]): 0}\n", "res://tests/repair3_failed_dictionary_key_parent.barista", "Dictionary", false, false, false, Variant(), {
+																																														{ "Cannot include a value of type \"String\" as \"int\".", 1, 30 },
+																																														{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 30 },
+																																												} },
+		{ "var probe_expression = [[1, \"x\"]] as Array[Array[int]]\n", "res://tests/repair3_failed_nested_array.barista", "Array[Array[int]]", false, false, false, Variant(), {
+																																														{ "Cannot include a value of type \"String\" as \"int\".", 1, 29 },
+																																														{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 29 },
+																																												} },
+		{ "var probe_expression = ([1, \"x\"] as Array[int]) as Array\n", "res://tests/repair3_failed_wrapped_cast.barista", "Array", false, false, false, Variant(), {
+																																											  { "Cannot include a value of type \"String\" as \"int\".", 1, 29 },
+																																											  { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 29 },
+																																									  } },
+		{ "var probe_expression = {\"bad\": 1} as Dictionary[int, int]\n", "res://tests/repair3_failed_key_conversion.barista", "Dictionary[int, int]", false, false, false, Variant(), {
+																																																{ "Cannot include a value of type \"String\" as \"int\".", 1, 25 },
+																																																{ "Cannot have a key of type \"String\" in a dictionary of type \"Dictionary[int, int]\".", 1, 25 },
+																																														} },
+		{ "var probe_expression: Array[int] = [1, \"x\"]\n", "res://tests/repair3_failed_variable_annotation.barista", "Array", false, false, false, Variant(), {
+																																										{ "Cannot include a value of type \"String\" as \"int\".", 1, 40 },
+																																										{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 40 },
+																																								} },
+		{ "tuple Pair(data: Array[int], count: int)\nconst VALUE = Pair([1, \"x\"], 0)\nvar probe_expression = VALUE\n", "res://tests/repair3_failed_named_argument.barista", "Pair", false, false, false, Variant(), {
+																																																							  { "Assigned value for constant \"VALUE\" isn't a constant expression.", 2, 15 },
+																																																							  { "Cannot include a value of type \"String\" as \"int\".", 2, 24 },
+																																																							  { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 2, 24 },
+																																																					  } },
+		{ "const BAD = [1, \"x\"] as Array[int]\nconst VALUE = BAD\nvar probe_expression = VALUE\n", "res://tests/repair3_failed_constant_alias.barista", "Array[int]", false, false, false, Variant(), {
+																																																				{ "Assigned value for constant \"BAD\" isn't a constant expression.", 1, 13 },
+																																																				{ "Cannot include a value of type \"String\" as \"int\".", 1, 17 },
+																																																				{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 17 },
+																																																				{ "Assigned value for constant \"VALUE\" isn't a constant expression.", 2, 15 },
+																																																		} },
+		{ "var rejected = [1, \"x\"] as Array[int]\nvar probe_expression = [1, 2] as Array[float]\n", "res://tests/repair3_independent_after_failure.barista", "Array[float]", false, true, true, array_value({ Variant(1.0), Variant(2.0) }), {
+																																																													   { "Cannot include a value of type \"String\" as \"int\".", 1, 20 },
+																																																													   { "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 1, 20 },
+																																																											   } },
+		{ "var probe_expression = [1, 2] as Array[float]\nvar rejected = [1, \"x\"] as Array[int]\n", "res://tests/repair3_independent_before_failure.barista", "Array[float]", false, true, true, array_value({ Variant(1.0), Variant(2.0) }), {
+																																																														{ "Cannot include a value of type \"String\" as \"int\".", 2, 20 },
+																																																														{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 2, 20 },
+																																																												} },
+		{ "func test():\n\tconst VALUE = [1, \"x\"] as Array[int]\n\treturn VALUE\nvar probe_expression = [1, 2] as Array[float]\n", "res://tests/repair3_local_const_and_independent.barista", "Array[float]", false, true, true, array_value({ Variant(1.0), Variant(2.0) }), {
+																																																																						{ "Assigned value for constant \"VALUE\" isn't a constant expression.", 2, 19 },
+																																																																						{ "Cannot include a value of type \"String\" as \"int\".", 2, 23 },
+																																																																						{ "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", 2, 23 },
+																																																																				} },
+		{ "const VALUE: (int, int) = (1, \"x\")\nvar probe_expression = VALUE\n", "res://tests/repair3_failed_tuple_annotation.barista", "(int, int)", false, false, false, Variant(), {
+																																															   { "Cannot assign a value of type (int, String) to constant \"VALUE\" with specified type (int, int).", 1, 27 },
+																																															   { "Cannot include a value of type \"String\" as \"int\".", 1, 31 },
+																																													   } },
+		{ "const VALUE: (float, int) = (1, 2)\nvar probe_expression = VALUE\n", "res://tests/repair3_valid_tuple_conversion.barista", "(float, int)", true, true, true, array_value({ Variant(1.0), Variant(int64_t(2)) }), {} },
+		{ "var probe_expression = (1, 2) as (int, int, int)\n", "res://tests/repair3_cast_wrong_arity.barista", "(int, int, int)", false, false, true, Variant(), {
+																																										  { "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\".", 1, 31 },
+																																								  } },
+		{ "const VALUE: (int, int, int) = (1, 2)\nvar probe_expression = VALUE\n", "res://tests/repair3_const_wrong_arity.barista", "(int, int, int)", false, true, true, array_value({ Variant(int64_t(1)), Variant(int64_t(2)) }), {
+																																																											 { "Cannot assign a value of type (int, int) to constant \"VALUE\" with specified type (int, int, int).", 1, 32 },
+																																																									 } },
+		{ "const VALUE = (1, 2) as (int, int, int)\nvar probe_expression = VALUE\n", "res://tests/repair3_cast_alias_wrong_arity.barista", "(int, int, int)", false, false, true, Variant(), {
+																																																	 { "Assigned value for constant \"VALUE\" isn't a constant expression.", 1, 15 },
+																																																	 { "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\".", 1, 22 },
+																																															 } },
+		{ "const VALUE: (int, int) = (1, 2)\nvar probe_expression = VALUE\n", "res://tests/repair3_const_correct_arity.barista", "(int, int)", true, true, true, array_value({ Variant(int64_t(1)), Variant(int64_t(2)) }), {} },
+	};
+	for (const auto &sample : cases) {
+		INFO(sample.path);
+		INFO(sample.source);
+		const auto observed = analyze_source(sample.source, sample.path);
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(observed.valid() == sample.valid);
+		CHECK(expression->is_constant == sample.constant);
+		if (sample.datatype != nullptr) {
+			CHECK(expression->get_datatype().to_string() == sample.datatype);
+		}
+		if (sample.require_hard) {
+			CHECK(expression->get_datatype().is_hard_type());
+		}
+		check_readonly_carrier(expression->is_constant ? expression->reduced_value : Variant(), sample.expected);
+		const Dictionary report = public_validate(sample.source, sample.path);
+		CHECK(bool(report.get("valid", false)) == sample.valid);
+		CHECK(Array(report.get("warnings", Array())).is_empty());
+		check_public_errors(report, sample.errors);
+		for (const Dictionary &error : Array(report.get("errors", Array()))) {
+			CHECK(error.size() == 4);
+			CHECK(String(error.get("path", "")) == sample.path);
+		}
+		CHECK(source_analyzes(sample.source, sample.path) == sample.valid);
+		CHECK(public_validate(sample.source, sample.path) == report);
+	}
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_constants") {
+	TEST_CASE("folded_tuple_child_and_failed_contextual_materialization") { scenario_folded_tuple_child_and_failed_contextual_materialization(); }
 	TEST_CASE("nested_constant_evidence_and_contextual_casts") { scenario_nested_constant_evidence_and_contextual_casts(); }
 	TEST_CASE("constant_producer_child_evidence") { scenario_constant_producer_child_evidence(); }
 	TEST_CASE("pure_constant_review_regressions") { scenario_pure_constant_review_regressions(); }
 	TEST_CASE("dictionary_literal_constant_parity") { scenario_dictionary_literal_constant_parity(); }
 	TEST_CASE("constant_dictionary_key_conversion") { scenario_constant_dictionary_key_conversion(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence, scenario_nested_constant_evidence_and_contextual_casts });
+		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence, scenario_nested_constant_evidence_and_contextual_casts, scenario_folded_tuple_child_and_failed_contextual_materialization });
 	}
 }
