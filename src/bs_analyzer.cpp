@@ -10861,7 +10861,9 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 	const bool trait_body_pending = p_symbol_kind == "trait" && result.record.kind == BSDeclarationKind::TRAIT &&
 			provider.is_valid() && provider->get_status() == BSParserRef::FULLY_SOLVED &&
 			provider->get_result_for_status(BSParserRef::INTERFACE_SOLVED) == OK;
-	const bool provider_parse_failed = provider.is_valid() && provider->get_result_for_status(BSParserRef::PARSED) != OK;
+	const bool class_type_lookup = p_symbol_kind == "type" && result.record.kind == BSDeclarationKind::CLASS;
+	const bool provider_parse_failed = class_type_lookup ? provider.is_valid() && provider->get_result_for_status(BSParserRef::PARSED) != OK
+														 : error != OK || provider.is_valid() && !provider->get_parser()->get_errors().is_empty();
 	if (provider.is_null() || provider->get_parser() == nullptr ||
 			(!trait_body_pending && provider_parse_failed)) {
 		push_error(vformat(R"(Could not resolve %s "%s": provider "%s" could not be parsed.)", p_symbol_kind, p_name, result.record.path), p_source);
