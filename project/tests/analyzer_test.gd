@@ -239,7 +239,7 @@ func _test_language_utility_registry(failures: PackedStringArray) -> void:
 		"local_shadow": 'func test(len: Callable[[String], String]) -> String:\n\treturn len("abc")\n',
 		"local_over_member": 'func len(value: int) -> int:\n\treturn value\nfunc test(len: Callable[[String], String]) -> String:\n\treturn len("abc")\n',
 		"member_shadow": 'func len(value: String) -> String:\n\treturn value\nfunc test() -> String:\n\treturn len("abc")\n',
-		"member_value_shadow": 'var len: Callable[[String], String]\nfunc test() -> String:\n\treturn len("abc")\n',
+		"member_value_shadow": 'var len: Callable[[String], String]\nfunc test() -> String:\n\treturn len.call("abc")\n',
 		"constants": 'const COUNT = len("abc")\nconst CHARACTER = char(65)\nconst CODE = ord(CHARACTER)\nconst EXISTS = type_exists("Node")\nconst MATCHES = is_instance_of(CODE, TYPE_INT)\n',
 		"annotation": 'annotation number(value: int = len("abc")) targets METHOD\n@number(ord("A"))\nfunc test(value: String = char(65)):\n\tpass\n',
 		"utility_annotation": 'annotation callback(value: Callable = len) targets METHOD\n@callback(ord)\nfunc test(cb: Callable = char):\n\tpass\n',
@@ -363,6 +363,9 @@ func _test_review_resolution_regressions(failures: PackedStringArray) -> void:
 	for label in valid_cases:
 		var report: Dictionary = probe.analyze_source(valid_cases[label], "res://tests/review_%s.barista" % label)
 		_expect(failures, report.get("valid", false), "%s must resolve: %s" % [label, report.get("errors")])
+	var callable_member_report: Dictionary = probe.analyze_source('var len: Callable[[String], String]\nfunc test() -> String:\n\treturn len("abc")\n', "res://tests/review_member_value_call.barista")
+	var callable_member_errors: PackedStringArray = callable_member_report.get("errors", PackedStringArray())
+	_expect(failures, not callable_member_report.get("valid", true) and callable_member_errors.size() == 1 and callable_member_errors[0] == 'Name "len" is a Callable. You can call it with "len.call()" instead.', "Callable member direct call requires .call(): %s" % [callable_member_errors])
 	for callee in ["missing_ident", "Only"]:
 		for expression in ["%s()", "var value = %s()", "return %s()", "print(%s())"]:
 			var prefix := "type Only = int\n" if callee == "Only" else ""

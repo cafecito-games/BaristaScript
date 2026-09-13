@@ -4045,7 +4045,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (owner != nullptr && owner->has_member(fname)) {
 					const BSParser::ClassNode::Member member = owner->get_member(fname);
 					const BSParser::DataType member_type = member.get_datatype();
-					if (member.type != BSParser::ClassNode::Member::FUNCTION &&
+					if (member.type == BSParser::ClassNode::Member::CONSTANT &&
 							!(member_type.kind == BSParser::DataType::BUILTIN && member_type.builtin_type == Variant::CALLABLE)) {
 						push_error(vformat(R"(Member "%s" is not a function.)", fname), p_call);
 					}
@@ -4452,9 +4452,19 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 		}
 		return;
 	}
+	bool engine_enum_base = false;
 	if (p_subscript->base->type == BSParser::Node::SUBSCRIPT) {
-		reduce_subscript(static_cast<BSParser::SubscriptNode *>(p_subscript->base), true);
-	} else {
+		auto *base_subscript = static_cast<BSParser::SubscriptNode *>(p_subscript->base);
+		if (base_subscript->is_attribute && base_subscript->base != nullptr &&
+				base_subscript->base->type == BSParser::Node::IDENTIFIER && base_subscript->attribute != nullptr) {
+			const auto *owner = static_cast<BSParser::IdentifierNode *>(base_subscript->base);
+			engine_enum_base = _engine_enum_type(String(owner->name) + "." + String(base_subscript->attribute->name)).kind == BSParser::DataType::ENUM;
+		}
+		if (engine_enum_base) {
+			reduce_subscript(base_subscript, true);
+		}
+	}
+	if (!engine_enum_base) {
 		reduce_expression(p_subscript->base);
 	}
 	const BSParser::DataType tuple_base_type = p_subscript->base->get_datatype();
