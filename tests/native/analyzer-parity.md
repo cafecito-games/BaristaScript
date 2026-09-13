@@ -365,6 +365,12 @@ The order verifier establishes a scoped profile before its own bootstrap parse, 
 default creation is not misclassified as a scenario leak. `isolation-final-full.log` records all
 44 suites / 863 cases / 144,490 assertions with zero failures before the isolation commit.
 
+An additional non-default-strict-profile regression exposed the order verifier invalidating a
+caller's existing parser before entering its storage scope (two expected RED assertions).
+The verifier now creates its outer `StorageFixture` before changing the ambient profile;
+`isolation-outer-cache-green-run.log` records 8 cache cases / 3,921 assertions with zero failures,
+including preservation of the caller's original parser identity. No production code changed.
+
 - Migrate the 1 remaining legacy-only function; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled

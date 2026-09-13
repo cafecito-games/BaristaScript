@@ -271,6 +271,9 @@ void check_scenario_orders(std::initializer_list<void (*)()> scenarios) {
 		return snapshot.duplicate(true);
 	};
 	const auto run = [&](void (*scenario)()) {
+		// Strict-profile changes must invalidate only this verifier's cache, never
+		// a caller's previously parsed resources outside the order run.
+		StorageFixture outer_storage;
 		// The storage verifier performs a bootstrap parse before calling the scenario.
 		// Establish its lazy warning defaults inside a restorable scope first, so the
 		// snapshot measures scenario changes rather than verifier initialization.

@@ -239,9 +239,25 @@ void scenario_settings_scope_neutralizes_and_restores_ambient_profile() {
 	}
 	CHECK_FALSE(project->has_setting(enable));
 }
+void scenario_order_verifier_preserves_nondefault_outer_cache() {
+	StorageFixture fixture;
+	StrictAnalyzerSettingsScope settings;
+	settings.strict_dynamic(true);
+	BSParser::invalidate_analysis_on_strict_settings_change();
+	Error error = ERR_BUG;
+	const Ref<BSParserRef> before = BSCache::get_parser(SCRIPT_A, BSParserRef::PARSED, error);
+	BS_TEST_REQUIRE(error == OK && before.is_valid());
+	check_scenario_orders({ +[]() {} });
+	CHECK(bool(ProjectSettings::get_singleton()->get_setting("debug/barista_script/analysis/strict_dynamic_checks")));
+	CHECK(BSCache::has_parser(SCRIPT_A));
+	const Ref<BSParserRef> after = BSCache::get_parser(SCRIPT_A, BSParserRef::PARSED, error);
+	CHECK(error == OK);
+	CHECK(after == before);
+}
 } // namespace
 
 TEST_SUITE("analyzer_cache") {
+	TEST_CASE("order_verifier_preserves_nondefault_outer_cache") { scenario_order_verifier_preserves_nondefault_outer_cache(); }
 	TEST_CASE("settings_scope_neutralizes_and_restores_ambient_profile") { scenario_settings_scope_neutralizes_and_restores_ambient_profile(); }
 	TEST_CASE("parser_lifecycle") { scenario_parser_lifecycle(); }
 	TEST_CASE("missing_and_self") { scenario_missing_and_self(); }
