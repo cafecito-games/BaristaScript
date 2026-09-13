@@ -265,6 +265,7 @@ static BSParser::DataType _engine_enum_type(const String &qualified) {
 		result.enum_type = qualified;
 		result.native_type = qualified;
 		result.is_meta_type = true;
+		result.is_pseudo_type = true;
 		result.is_constant = true;
 		result.enum_values = values;
 	}
@@ -1224,6 +1225,12 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 
 		// D7: native names remain flat — only a single-identifier extends can be a native class.
 		if (!found && p_class->extends.size() == 1 && ClassDB::class_exists(first)) {
+			Engine *engine = Engine::get_singleton();
+			if (engine != nullptr && engine->has_singleton(first)) {
+				push_error(vformat(R"(Cannot inherit native class "%s" because it is an engine singleton.)", first), first_id);
+				p_class->base_type = BSParser::DataType();
+				return;
+			}
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = first;
 			result.builtin_type = Variant::OBJECT;
@@ -2262,7 +2269,13 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
 				check_outer_class_member_name_conflict(p_class, name, member.get_source_node());
 			} else if (member.type != BSParser::ClassNode::Member::TYPE_ALIAS) {
-				check_class_member_name_conflict(p_class, name, member.get_source_node());
+				if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr &&
+						member.m_class->identifier != nullptr &&
+						(BSParser::is_builtin_data_type(name) || name == SNAME("AsyncCallable"))) {
+					push_error(vformat(R"(Class "%s" hides a built-in type.)", name), member.m_class->identifier);
+				} else {
+					check_class_member_name_conflict(p_class, name, member.get_source_node());
+				}
 			}
 		}
 		if (member.type == BSParser::ClassNode::Member::CLASS) {
@@ -3278,6 +3291,36 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	(void)p_is_root;
 #endif
 
+	// Foundry @ c9d5e35: an index result is never directly callable. Brackets on a
+	// resolved generic method remain available as use-site type arguments; a Callable
+	// parameter/local/member is still a value, not an M5 application candidate.
+	if (p_call->callee != nullptr && p_call->callee->type == BSParser::Node::SUBSCRIPT) {
+		auto *indexed = static_cast<BSParser::SubscriptNode *>(p_call->callee);
+		if (!indexed->is_attribute && indexed->base != nullptr) {
+			reduce_expression(indexed->base);
+			BSParser::FunctionNode *generic_method = nullptr;
+			if (indexed->base->type == BSParser::Node::IDENTIFIER) {
+				auto *identifier = static_cast<BSParser::IdentifierNode *>(indexed->base);
+				if (identifier->source == BSParser::IdentifierNode::MEMBER_FUNCTION) {
+					generic_method = identifier->function_source;
+				}
+			} else if (indexed->base->type == BSParser::Node::SUBSCRIPT) {
+				auto *method_access = static_cast<BSParser::SubscriptNode *>(indexed->base);
+				if (method_access->is_attribute && method_access->attribute != nullptr &&
+						method_access->attribute->source == BSParser::IdentifierNode::MEMBER_FUNCTION) {
+					generic_method = method_access->attribute->function_source;
+				}
+			}
+			if (generic_method == nullptr || generic_method->type_parameters.is_empty()) {
+				push_error(R"*(Cannot call on an expression. Use ".call()" if it's a Callable.)*", p_call);
+				BSParser::DataType unresolved;
+				unresolved.kind = BSParser::DataType::VARIANT;
+				p_call->set_datatype(unresolved);
+				return;
+			}
+		}
+	}
+
 	// Foundry c9d5e35:8608-8616: both super forms start at the actual parent.
 	// Never retry a missing parent method against the current override or its witnesses.
 	if (p_call->is_super && current_class != nullptr) {
@@ -3500,6 +3543,17 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			if (subscript->base != nullptr && p_call->function_name == SNAME("new")) {
 				const BSParser::DataType class_meta_type = subscript->base->get_datatype();
 				if ((class_meta_type.kind == BSParser::DataType::CLASS || class_meta_type.kind == BSParser::DataType::NATIVE) && class_meta_type.is_meta_type) {
+					Engine *engine = Engine::get_singleton();
+					if (engine != nullptr && engine->has_singleton(class_meta_type.native_type)) {
+						push_error(vformat(R"(Cannot construct native class "%s" because it is an engine singleton.)", class_meta_type.native_type), p_call);
+						BSParser::DataType unresolved;
+						unresolved.kind = BSParser::DataType::VARIANT;
+						p_call->set_datatype(unresolved);
+						return;
+					}
+					if (class_meta_type.kind == BSParser::DataType::CLASS && class_meta_type.class_type != nullptr && class_meta_type.class_type->is_abstract) {
+						push_error(vformat(R"(Cannot construct abstract class "%s".)", class_meta_type.to_string()), p_call);
+					}
 					if (BSNativeDB::is_abstract_core_class(class_meta_type.native_type)) {
 						if (class_meta_type.kind == BSParser::DataType::CLASS)
 							push_error(vformat(R"(Class "%s" cannot be constructed as it is based on abstract native class "%s".)", bs_class_or_trait_diagnostic_name(class_meta_type.class_type), class_meta_type.native_type), p_call);
@@ -3710,6 +3764,18 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 							return;
 						}
 					}
+				}
+				if (!p_call->is_super && !is_self && base_type.kind == BSParser::DataType::CLASS &&
+						base_type.is_hard_type() && !base_type.is_meta_type && base_type.class_type != nullptr &&
+						base_type.class_type->is_final &&
+						!reachable_conformance_supplies_method(base_type, p_call->function_name)) {
+					push_error(vformat(R"*(Cannot call "%s()" on "%s": the method does not exist, and the class is final, so no subtype can supply it.)*",
+									   p_call->function_name, base_type.to_string()),
+							p_call->callee);
+					BSParser::DataType unresolved;
+					unresolved.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(unresolved);
+					return;
 				}
 				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.is_hard_type()) {
 					const auto *member = BSCoreConstants::get_builtin_member(base_type.builtin_type, p_call->function_name);
@@ -3980,6 +4046,31 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				p_call->is_noreturn = callee->is_noreturn;
 				p_call->is_static = callee->is_static;
 				check_self_call(p_call);
+				return;
+			}
+			if (member_claimed && identifier != nullptr) {
+				BSParser::ClassNode *owner = find_member_in_class_or_trait_chain(current_class, fname, p_call->callee);
+				if (owner != nullptr && owner->has_member(fname)) {
+					const BSParser::ClassNode::Member member = owner->get_member(fname);
+					const BSParser::DataType member_type = member.get_datatype();
+					if (member.type == BSParser::ClassNode::Member::CONSTANT &&
+							!(member_type.kind == BSParser::DataType::BUILTIN && member_type.builtin_type == Variant::CALLABLE)) {
+						push_error(vformat(R"(Member "%s" is not a function.)", fname), p_call);
+					}
+				}
+				const int previous_errors = parser->get_errors().size();
+				reduce_identifier(const_cast<BSParser::IdentifierNode *>(identifier));
+				const BSParser::DataType callee_type = identifier->get_datatype();
+				if (parser->get_errors().size() == previous_errors && callee_type.is_set() && !callee_type.is_variant()) {
+					if (callee_type.kind == BSParser::DataType::BUILTIN && callee_type.builtin_type == Variant::CALLABLE) {
+						push_error(vformat(R"*(Name "%s" is a Callable. You can call it with "%s.call()" instead.)*", fname, fname), p_call->callee);
+					} else {
+						push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", fname, callee_type.to_string()), p_call->callee);
+					}
+				}
+				BSParser::DataType unresolved;
+				unresolved.kind = BSParser::DataType::VARIANT;
+				p_call->set_datatype(unresolved);
 				return;
 			}
 			// Preserve ordinary name claims through both native and witness fallback.
@@ -4358,7 +4449,7 @@ void BSAnalyzer::resolve_pending_lambda_bodies() {
 	get_node_declaration = previous_declaration;
 }
 
-void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
+void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_can_be_pseudo_type) {
 	if (p_subscript == nullptr) {
 		return;
 	}
@@ -4369,7 +4460,21 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 		}
 		return;
 	}
-	reduce_expression(p_subscript->base);
+	bool engine_enum_base = false;
+	if (p_subscript->base->type == BSParser::Node::SUBSCRIPT) {
+		auto *base_subscript = static_cast<BSParser::SubscriptNode *>(p_subscript->base);
+		if (base_subscript->is_attribute && base_subscript->base != nullptr &&
+				base_subscript->base->type == BSParser::Node::IDENTIFIER && base_subscript->attribute != nullptr) {
+			const auto *owner = static_cast<BSParser::IdentifierNode *>(base_subscript->base);
+			engine_enum_base = _engine_enum_type(String(owner->name) + "." + String(base_subscript->attribute->name)).kind == BSParser::DataType::ENUM;
+		}
+		if (engine_enum_base) {
+			reduce_subscript(base_subscript, true);
+		}
+	}
+	if (!engine_enum_base) {
+		reduce_expression(p_subscript->base);
+	}
 	const BSParser::DataType tuple_base_type = p_subscript->base->get_datatype();
 	if (p_subscript->is_attribute && p_subscript->attribute) {
 		const auto receiver = tuple_base_type;
@@ -4379,6 +4484,14 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 			if (receiver.is_meta_type) {
 				auto e = _engine_enum_type(owner + String(".") + String(name));
 				if (e.kind == BSParser::DataType::ENUM) {
+					p_subscript->attribute->set_datatype(e);
+					if (!p_can_be_pseudo_type) {
+						push_error(vformat(R"(Type "%s" in base "%s" cannot be used on its own.)", name, owner), p_subscript->attribute);
+						BSParser::DataType unresolved;
+						unresolved.kind = BSParser::DataType::VARIANT;
+						p_subscript->set_datatype(unresolved);
+						return;
+					}
 					p_subscript->set_datatype(e);
 					return;
 				}
