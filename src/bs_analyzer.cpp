@@ -9364,8 +9364,8 @@ void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BS
 		return;
 	}
 	// Foundry resolve_enum_interface @ c9d5e35: one owner-scoped lifecycle for
-	// normal traversal and early lookup. Finish declaration checks before defaults
-	// can re-enter this enum through another function's signature.
+	// normal traversal and early lookup. Each function's conflicts, annotations,
+	// and signature are visited together so mixed diagnostics retain source order.
 	resolving_enum_interfaces.insert(p_enum);
 	BSParser::ClassNode *previous_class = current_class;
 	BSParser::FunctionNode *previous_function = current_function;
@@ -9399,8 +9399,6 @@ void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BS
 		}
 		if (function && function->identifier)
 			function_names.insert(function->identifier->name);
-	}
-	for (BSParser::FunctionNode *function : p_enum->functions) {
 		resolve_function_signature_in_class(function, p_owner);
 	}
 }

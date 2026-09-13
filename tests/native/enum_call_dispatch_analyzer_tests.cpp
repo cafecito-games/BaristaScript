@@ -36,8 +36,47 @@ void check_source(const String &source, const String &expected) {
 		actual = "BS_TEST_OK";
 	CHECK(std::string(actual.utf8().get_data()) == std::string(expected.utf8().get_data()));
 }
+void check_mixed_enum_error_order(const String &source, bool annotation_error) {
+	StorageFixture storage;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	BSParser parser;
+	BS_TEST_REQUIRE(parser.parse(source, storage.path("enum_error_order.barista"), false) == OK);
+	BSAnalyzer analyzer(&parser);
+	CHECK(analyzer.analyze() != OK);
+	BS_TEST_REQUIRE(parser.get_errors().size() == 2);
+	const auto *declaration = parser.get_tree()->get_member("Status").m_enum;
+	BS_TEST_REQUIRE(declaration && declaration->functions.size() == 2);
+	const auto *first = declaration->functions[0];
+	const BSParser::Node *origins[2] = {
+		annotation_error ? static_cast<const BSParser::Node *>(first->annotations.front()->get()) : first->parameters[0]->datatype_specifier->type_chain[0],
+		declaration->functions[1]->identifier,
+	};
+	const char *messages[2] = {
+		annotation_error ? "Unknown annotation \"@missing\". Custom annotations must be declared in the current namespace or an imported namespace." : "Could not find type \"Missing\" in the current scope.",
+		"Static enum function \"keys\" conflicts with Dictionary method \"keys()\".",
+	};
+	int index = 0;
+	for (const auto &error : parser.get_errors()) {
+		CHECK(std::string(error.message.utf8().get_data()) == std::string(messages[index]));
+		CHECK(error.line == origins[index]->start_line);
+		CHECK(error.column == origins[index]->start_column);
+		CHECK(error.end_line == origins[index]->end_line);
+		CHECK(error.end_column == origins[index]->end_column);
+		++index;
+	}
+}
 } //namespace
 TEST_SUITE("enum_call_dispatch_analyzer") {
+	TEST_CASE("repair2_earlier_signature_error_precedes_later_enum_conflict") {
+		const String source = "enum Status:\n\tREADY = 1\n\tfunc first(value: Missing) -> void:\n\t\tpass\n\tstatic func keys() -> Array:\n\t\treturn []\n";
+		check_mixed_enum_error_order(source, false);
+		check_mixed_enum_error_order(String("static var selected = Status.READY.first\n") + source, false);
+	}
+	TEST_CASE("repair2_earlier_annotation_error_precedes_later_enum_conflict") {
+		const String source = "enum Status:\n\tREADY = 1\n\t@missing\n\tfunc first() -> void:\n\t\tpass\n\tstatic func keys() -> Array:\n\t\treturn []\n";
+		check_mixed_enum_error_order(source, true);
+		check_mixed_enum_error_order(String("static var selected = Status.READY.first\n") + source, true);
+	}
 	TEST_CASE("repair_enum_expression_Self_is_not_a_class_handle_even_in_nested_lambdas") {
 		check_source("enum Status:\n\tREADY = 1\n\tfunc keys() -> Array:\n\t\treturn Self.keys()\n",
 				">> ERROR at line 4: Identifier \"Self\" not declared in the current scope.");
