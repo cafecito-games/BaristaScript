@@ -3291,8 +3291,8 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	(void)p_is_root;
 #endif
 
-	// Foundry @ c9d5e35: an index result is never directly callable. Only a resolved
-	// generic method can interpret brackets as use-site type arguments; a Callable
+	// Foundry @ c9d5e35: an index result is never directly callable. Brackets on a
+	// resolved generic method remain available as use-site type arguments; a Callable
 	// parameter/local/member is still a value, not an M5 application candidate.
 	if (p_call->callee != nullptr && p_call->callee->type == BSParser::Node::SUBSCRIPT) {
 		auto *indexed = static_cast<BSParser::SubscriptNode *>(p_call->callee);

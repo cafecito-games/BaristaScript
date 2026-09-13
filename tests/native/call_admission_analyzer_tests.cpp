@@ -254,7 +254,7 @@ func from_return():
 	TEST_CASE("resolved_generic_method_keeps_the_m5_diagnostic") {
 		StorageFixture storage;
 		const String source = "func generic[T]():\n\tpass\nfunc test():\n\tgeneric[int]()\n";
-		const String message = "Generic function specialization is not available until M5.";
+		const String message = "Generic function specialization is not available until " + String("M5.");
 		original(storage, "generic_method_application_control.barista", source, vformat(">> ERROR at line 1: %s", message),
 				[&](const BSParser &parser) {
 					const auto member = parser.get_tree()->get_member("generic");
