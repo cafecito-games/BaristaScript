@@ -6,7 +6,7 @@ This inventory is reconciled with `project/tests/analyzer_test.gd` at merged mai
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 78 scenarios have explicit native equivalents and 12
+The legacy suite remains enabled: 79 scenarios have explicit native equivalents and 11
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -179,7 +179,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 83 | `_test_local_enum_value_cycles` | declarations | native `analyzer_declarations` |
 | 84 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | legacy-only |
 | 85 | `_test_pure_literal_constant_materialization` | expressions/calls | legacy-only |
-| 86 | `_test_pure_constant_review_regressions` | expressions/calls | legacy-only |
+| 86 | `_test_pure_constant_review_regressions` | expressions/calls | native `analyzer_constants` |
 | 87 | `_test_constant_dictionary_key_conversion` | expressions/calls | native `analyzer_constants` |
 | 88 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | legacy-only |
 | 89 | `_test_folded_tuple_child_and_failed_contextual_materialization` | expressions/calls | legacy-only |
@@ -262,13 +262,18 @@ messages/positions, six builtin conversion positives and four exact rejected-key
 `constants-stage-2.log` records three cases / 722 assertions with zero failures, including
 normal/reverse/shuffle isolation.
 
+The third constants scenario preserves all 27 pure-constant review fixtures: read-only converted
+carriers, typed selections, exact public consumer/subscript diagnostics, packed selections, and
+runtime-child refusal. `constants-stage-3.log` records four cases / 1,617 assertions with zero
+failures, including normal/reverse/shuffle isolation.
+
 The next additive group covers four complete same-/cross-file member lookup and owner-failure
 replay scenarios in `analyzer_members`, Self parameter compatibility in `analyzer_conformance`,
 and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payload positive
 control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
 Focused results are recorded in `members-stage-analyzer_*.log`.
 
-- Migrate the 12 remaining legacy-only functions; newly merged scenarios
+- Migrate the 11 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.
