@@ -8,6 +8,9 @@
 
 #include "bs_parser.h"
 #include "storage_fixture.h"
+#include "test_require.h"
+
+#include <godot_cpp/classes/project_settings.hpp>
 
 using namespace barista_script;
 using namespace barista_script::native_tests;
@@ -182,6 +185,136 @@ TEST_SUITE("declaration_index") {
 	}
 	TEST_CASE("atomic_write_faults") { scenario_atomic_write_faults(); }
 
+	static void scenario_failed_promotion_preserves_store_and_memory_then_retries() {
+		StorageFixture fixture;
+		auto &index = fixture.index();
+		const String store = fixture.path("promotion.bsi");
+		const auto original = record("res://tests/original.barista", "Original", 7);
+		BS_TEST_REQUIRE(commit(index, original));
+		BS_TEST_REQUIRE(index.flush(store) == OK);
+		const auto previous = read_bytes(store);
+		BS_TEST_REQUIRE(!previous.is_empty());
+		index.clear();
+		auto replacement = record("res://tests/replacement.barista", "game.Replacement", 42, "game");
+		replacement.is_abstract = true;
+		replacement.is_tool = true;
+		replacement.icon_path = "res://icon.svg";
+		replacement.global_annotations.push_back("game.Mark");
+		replacement.declares_retroactive_conformances = true;
+		BS_TEST_REQUIRE(commit(index, replacement));
+		const String expected_store = fixture.path("expected.bsi");
+		BS_TEST_REQUIRE(index.flush(expected_store) == OK);
+		const auto expected = read_bytes(expected_store);
+		BS_TEST_REQUIRE(expected != previous);
+		const String unrelated = store + String(".unrelated.tmp");
+		const auto sentinel = bytes("keep-me");
+		BS_TEST_REQUIRE(write_bytes(unrelated, sentinel));
+
+		CHECK(index.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(store) == previous);
+		CHECK(read_bytes(unrelated) == sentinel);
+		CHECK(temporary_files(store).size() == 1);
+		BSDeclarationIndex reader;
+		CHECK(reader.load(store) == Status::OK);
+		CHECK(reader.get_record_count() == 1);
+		CHECK(reader.has_path(original.path));
+		CHECK_FALSE(reader.has_path(replacement.path));
+		CHECK(index.get_record_count() == 1);
+		CHECK(index.has_path(replacement.path));
+		CHECK_FALSE(index.has_path(original.path));
+		BS_TEST_REQUIRE(index.flush(store) == OK);
+		CHECK(read_bytes(store) == expected);
+		CHECK(reader.load(store) == Status::OK);
+		CHECK(reader.has_path(replacement.path));
+		CHECK_FALSE(reader.has_path(original.path));
+		CHECK(reader.get_annotation_declaring_paths("game.Mark").size() == 1);
+		CHECK(reader.get_conformance_files_in_namespace("game").size() == 1);
+		CHECK(read_bytes(unrelated) == sentinel);
+		CHECK(temporary_files(store).size() == 1);
+	}
+	TEST_CASE("failed_promotion_preserves_store_and_memory_then_retries") {
+		scenario_failed_promotion_preserves_store_and_memory_then_retries();
+	}
+
+	static void scenario_failed_first_publication_leaves_destination_absent() {
+		StorageFixture fixture;
+		auto &index = fixture.index();
+		const auto value = record("res://tests/first.barista", "First", 17);
+		BS_TEST_REQUIRE(commit(index, value));
+		const String store = fixture.path("first.bsi");
+		BS_TEST_REQUIRE(!FileAccess::file_exists(store));
+		CHECK(index.flush(store, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK_FALSE(FileAccess::file_exists(store));
+		CHECK(temporary_files(store).is_empty());
+		CHECK(index.has_path(value.path));
+		BS_TEST_REQUIRE(index.flush(store) == OK);
+		BSDeclarationIndex reader;
+		CHECK(reader.load(store) == Status::OK);
+		CHECK(reader.has_path(value.path));
+		const auto first = read_bytes(store);
+		BS_TEST_REQUIRE(index.flush(store) == OK);
+		CHECK(read_bytes(store) == first);
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("failed_first_publication_leaves_destination_absent") { scenario_failed_first_publication_leaves_destination_absent(); }
+
+	static void scenario_directory_destination_preserves_sentinel_and_cleans_owned_temp() {
+		StorageFixture fixture;
+		auto &index = fixture.index();
+		const auto value = record("res://tests/directory.barista", "Directory", 23);
+		BS_TEST_REQUIRE(commit(index, value));
+		const String store = fixture.path("directory.bsi");
+		BS_TEST_REQUIRE(DirAccess::make_dir_recursive_absolute(store) == OK);
+		const String sentinel_path = store.path_join("sentinel.txt");
+		const auto sentinel = bytes("keep-directory");
+		BS_TEST_REQUIRE(write_bytes(sentinel_path, sentinel));
+		const String unrelated = store + String(".unrelated.tmp");
+		BS_TEST_REQUIRE(write_bytes(unrelated, sentinel));
+		CHECK(index.flush(store) == ERR_FILE_CANT_WRITE);
+		CHECK(DirAccess::dir_exists_absolute(store));
+		CHECK(read_bytes(sentinel_path) == sentinel);
+		CHECK(read_bytes(unrelated) == sentinel);
+		CHECK(temporary_files(store).size() == 1);
+		CHECK(index.has_path(value.path));
+	}
+	TEST_CASE("directory_destination_preserves_sentinel_and_cleans_owned_temp") {
+		scenario_directory_destination_preserves_sentinel_and_cleans_owned_temp();
+	}
+
+	static void scenario_unicode_absolute_and_backslash_paths_preserve_publication() {
+		StorageFixture fixture;
+		auto &index = fixture.index();
+		const String store = fixture.path(String::utf8("path with spaces/caf\xc3\xa9.bsi"));
+		const auto original = record("res://tests/path_original.barista", "Original", 29);
+		BS_TEST_REQUIRE(commit(index, original));
+		BS_TEST_REQUIRE(index.flush(store) == OK);
+		const auto previous = read_bytes(store);
+		BS_TEST_REQUIRE(!previous.is_empty());
+		const String absolute = ProjectSettings::get_singleton()->globalize_path(store);
+		BS_TEST_REQUIRE(index.flush(absolute) == OK);
+		CHECK(read_bytes(store) == previous);
+		const String backslash = absolute.replace("/", "\\");
+		BS_TEST_REQUIRE(index.flush(backslash) == OK);
+		CHECK(read_bytes(store) == previous);
+		const auto replacement = record("res://tests/path_replacement.barista", "Replacement", 31);
+		BS_TEST_REQUIRE(commit(index, replacement));
+		CHECK(index.flush(backslash, Fault::REMOVE_TEMP_BEFORE_PROMOTION) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(store) == previous);
+		CHECK(temporary_files(store).is_empty());
+		CHECK(index.flush(backslash, Fault::TRUNCATE_TEMP_AFTER_WRITE) == ERR_FILE_CANT_WRITE);
+		CHECK(read_bytes(store) == previous);
+		CHECK(temporary_files(store).is_empty());
+		BS_TEST_REQUIRE(index.flush(backslash) == OK);
+		BSDeclarationIndex reader;
+		CHECK(reader.load(store) == Status::OK);
+		CHECK(reader.has_path(original.path));
+		CHECK(reader.has_path(replacement.path));
+		CHECK(temporary_files(store).is_empty());
+	}
+	TEST_CASE("unicode_absolute_and_backslash_paths_preserve_publication") {
+		scenario_unicode_absolute_and_backslash_paths_preserve_publication();
+	}
+
 	static void scenario_host_conformance() {
 		StorageFixture fixture;
 		auto value = record("res://tests/host_conform.barista", "", 9, "hostns");
@@ -207,6 +340,10 @@ TEST_SUITE("declaration_index") {
 			scenario_commit_rejects_noncanonical,
 			scenario_corrupt_fixtures,
 			scenario_atomic_write_faults,
+			scenario_failed_promotion_preserves_store_and_memory_then_retries,
+			scenario_failed_first_publication_leaves_destination_absent,
+			scenario_directory_destination_preserves_sentinel_and_cleans_owned_temp,
+			scenario_unicode_absolute_and_backslash_paths_preserve_publication,
 			scenario_host_conformance,
 		};
 		const int count = int(sizeof(scenarios) / sizeof(scenarios[0]));
