@@ -527,6 +527,9 @@ private:
 	bool get_node_is_static_context() const;
 	const BSParser::FunctionNode *get_enclosing_context_function() const;
 	void check_self_call(BSParser::CallNode *p_call);
+	const BSParser::FunctionNode *get_enclosing_enum_function() const;
+	BSParser::DataType enum_self_type() const;
+	BSParser::FunctionNode *find_enum_function(const BSParser::DataType &p_receiver, const StringName &p_name, const BSParser::Node *p_source);
 	void check_named_property_accessors(BSParser::VariableNode *p_variable, BSParser::ClassNode *p_class);
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
 	BSParser::EnumNode *current_enum = nullptr;

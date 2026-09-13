@@ -25,6 +25,24 @@ bool BSVariantOperators::construct(Variant::Type p_type, const Variant &p_source
 	return true;
 }
 
+bool BSVariantOperators::construct_container(Variant::Type p_type, const Variant *p_arguments, int p_count, Variant &r_value) {
+	// Only the pinned Array/Dictionary overloads enter this pure-value adapter.
+	if ((p_type != Variant::ARRAY && p_type != Variant::DICTIONARY) ||
+			(p_count != 1 && p_count != (p_type == Variant::ARRAY ? 4 : 7)) || !p_arguments)
+		return false;
+	GDExtensionConstVariantPtr arguments[7]{};
+	for (int i = 0; i < p_count; ++i)
+		arguments[i] = p_arguments[i]._native_ptr();
+	alignas(8) uint8_t storage[GODOT_CPP_VARIANT_SIZE]{};
+	GDExtensionCallError error{};
+	gdextension_interface::variant_construct((GDExtensionVariantType)p_type,
+			(GDExtensionUninitializedVariantPtr)storage, arguments, p_count, &error);
+	if (error.error == GDEXTENSION_CALL_OK)
+		r_value = Variant((GDExtensionConstVariantPtr)storage);
+	gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
+	return error.error == GDEXTENSION_CALL_OK;
+}
+
 bool BSVariantOperators::has_validated_evaluator(Variant::Operator p_op, Variant::Type p_a, Variant::Type p_b) {
 	if (p_op < 0 || p_op >= Variant::OP_MAX || p_a < 0 || p_a >= Variant::VARIANT_MAX || p_b < 0 || p_b >= Variant::VARIANT_MAX) {
 		return false;

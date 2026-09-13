@@ -300,6 +300,75 @@ TEST_SUITE("builtin_metadata_analyzer") {
 		error_tuple(parser, 0, "Cannot get return value of call to \"reverse()\" because it returns \"void\".", 3, 11, 3, 28);
 		CHECK(parser.get_warnings().is_empty());
 	}
+	TEST_CASE("multiargument_container_null_native_class_slots_do_not_construct_objects") {
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(R"BS(const A = Array([null], TYPE_OBJECT, &"Node", null)
+const D = Dictionary({1: null}, TYPE_INT, &"", null, TYPE_OBJECT, &"Node", null)
+)BS",
+								"res://null_class_fold.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() == OK);
+		diagnostics(parser);
+		const auto *a = parser.get_tree()->get_member("A").constant->initializer;
+		const auto *d = parser.get_tree()->get_member("D").constant->initializer;
+		BS_TEST_REQUIRE(a->is_constant && a->reduced_value.get_type() == Variant::ARRAY);
+		BS_TEST_REQUIRE(d->is_constant && d->reduced_value.get_type() == Variant::DICTIONARY);
+		const Array array = a->reduced_value;
+		CHECK(array.is_read_only());
+		CHECK(array.get_typed_builtin() == Variant::OBJECT);
+		CHECK(array.get_typed_class_name() == StringName("Node"));
+		CHECK(array.get_typed_script() == Variant(static_cast<Object *>(nullptr)));
+		BS_TEST_REQUIRE(array.size() == 1);
+		CHECK(static_cast<Object *>(array[0]) == nullptr);
+		const Dictionary dictionary = d->reduced_value;
+		CHECK(dictionary.is_read_only());
+		CHECK(dictionary.get_typed_value_builtin() == Variant::OBJECT);
+		CHECK(dictionary.get_typed_value_class_name() == StringName("Node"));
+		CHECK(dictionary.get_typed_value_script() == Variant(static_cast<Object *>(nullptr)));
+		CHECK(static_cast<Object *>(dictionary[1]) == nullptr);
+	}
+
+	TEST_CASE("multiargument_container_constants_preserve_typed_metadata_and_nested_readonly_values") {
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(R"BS(const A = Array([1], TYPE_INT, &"", null)
+const D = Dictionary({1: 2}, TYPE_INT, &"", null, TYPE_INT, &"", null)
+const N = Array([Dictionary({1: Array([2], TYPE_INT, &"", null)})])
+)BS",
+								"res://multiargument_fold.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() == OK);
+		diagnostics(parser);
+		const auto *a = parser.get_tree()->get_member("A").constant->initializer;
+		const auto *d = parser.get_tree()->get_member("D").constant->initializer;
+		const auto *n = parser.get_tree()->get_member("N").constant->initializer;
+		BS_TEST_REQUIRE(a->is_constant && a->reduced_value.get_type() == Variant::ARRAY);
+		BS_TEST_REQUIRE(d->is_constant && d->reduced_value.get_type() == Variant::DICTIONARY);
+		BS_TEST_REQUIRE(n->is_constant && n->reduced_value.get_type() == Variant::ARRAY);
+		const Array array = a->reduced_value;
+		CHECK(array.is_read_only());
+		CHECK(array.get_typed_builtin() == Variant::INT);
+		CHECK(array.get_typed_class_name() == StringName());
+		CHECK(array.get_typed_script() == Variant(static_cast<Object *>(nullptr)));
+		BS_TEST_REQUIRE(array.size() == 1);
+		CHECK(array[0] == Variant(1));
+		const Dictionary dictionary = d->reduced_value;
+		CHECK(dictionary.is_read_only());
+		CHECK(dictionary.get_typed_key_builtin() == Variant::INT);
+		CHECK(dictionary.get_typed_value_builtin() == Variant::INT);
+		CHECK(dictionary.get_typed_key_script() == Variant(static_cast<Object *>(nullptr)));
+		CHECK(dictionary.get_typed_value_script() == Variant(static_cast<Object *>(nullptr)));
+		CHECK(dictionary[1] == Variant(2));
+		const Array outer = n->reduced_value;
+		BS_TEST_REQUIRE(outer.size() == 1 && outer[0].get_type() == Variant::DICTIONARY);
+		const Dictionary nested = outer[0];
+		CHECK(outer.is_read_only());
+		CHECK(nested.is_read_only());
+		BS_TEST_REQUIRE(nested.has(1) && nested[1].get_type() == Variant::ARRAY);
+		const Array inner = nested[1];
+		CHECK(inner.is_read_only());
+		CHECK(inner.get_typed_builtin() == Variant::INT);
+	}
+
 	TEST_CASE("array_dictionary_constructor_constants") {
 		for (const char *expression : { "Array()", "Array([1, 2])", "Dictionary()", "Dictionary({\"x\": 1})" }) {
 			BSParser parser;

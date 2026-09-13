@@ -843,6 +843,20 @@ BSParser::DataType BSAnalyzer::CallSiteValidationContext::explicit_callable_type
 
 bool BSAnalyzer::CallSiteValidationContext::callable_type_from_method(const BSParser::DataType &p_receiver_type, const StringName &p_method_name, BSParser::Node *p_source, BSParser::DataType &r_callable_type) {
 	BSParser::DataType receiver_type = p_receiver_type;
+	if (receiver_type.kind == BSParser::DataType::ENUM) {
+		if (auto *function = analyzer->find_enum_function(receiver_type, p_method_name, p_source)) {
+			if (function->is_static != receiver_type.is_meta_type)
+				return false;
+			r_callable_type = callable_type_from_function(function);
+			r_callable_type.has_explicit_method_signature = true;
+			return true;
+		}
+		if (!receiver_type.is_meta_type || receiver_type.builtin_type != Variant::DICTIONARY)
+			return false;
+		receiver_type.kind = BSParser::DataType::BUILTIN;
+		receiver_type.builtin_type = Variant::DICTIONARY;
+		receiver_type.is_meta_type = false;
+	}
 	if (receiver_type.kind == BSParser::DataType::TYPE_PARAMETER &&
 			receiver_type.type_parameter_name == SNAME("@Self") &&
 			!receiver_type.type_parameter_bound.is_empty()) {
