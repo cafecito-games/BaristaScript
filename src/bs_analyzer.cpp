@@ -1830,6 +1830,19 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				result.is_nullable = p_type_node->is_nullable;
 				return result;
 			}
+			if (member.type == BSParser::ClassNode::Member::CONSTANT) {
+				const int errors = parser->get_errors().size();
+				resolve_class_member(scope, name, p_type_node);
+				if (parser->get_errors().size() > errors) {
+					result.kind = BSParser::DataType::VARIANT;
+					return result;
+				}
+				if (member.get_datatype().is_meta_type) {
+					result = type_from_metatype(member.get_datatype());
+					result.is_nullable = result.is_nullable || p_type_node->is_nullable;
+					return result;
+				}
+			}
 			break;
 		}
 		// Same-file/inherited named tuple declarations resolve to their value type in annotations.
