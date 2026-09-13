@@ -513,13 +513,12 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	resolving_datatype.kind = BSParser::DataType::RESOLVING;
 	p_function->set_datatype(resolving_datatype);
 
+	BSParser::DataType function_return_type;
 	if (p_function->return_type != nullptr) {
-		p_function->set_datatype(datatype_from_type_node(p_function->return_type));
+		function_return_type = datatype_from_type_node(p_function->return_type);
 	} else {
-		BSParser::DataType return_type;
-		return_type.type_source = BSParser::DataType::INFERRED;
-		return_type.kind = BSParser::DataType::VARIANT;
-		p_function->set_datatype(return_type);
+		function_return_type.type_source = BSParser::DataType::INFERRED;
+		function_return_type.kind = BSParser::DataType::VARIANT;
 	}
 
 	MethodInfo method_info;
@@ -597,6 +596,10 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->datatype_specifier != nullptr) {
 		p_function->rest_parameter->set_datatype(datatype_from_type_node(p_function->rest_parameter->datatype_specifier));
 	}
+	// Keep the declaration visibly RESOLVING through every default expression. A default
+	// that reaches this member again must take resolve_class_member's pinned cycle path;
+	// publishing the return early disguises the recursion as a completed signature.
+	p_function->set_datatype(function_return_type);
 	// Foundry c9d5e35:4809-4995. Ordinary overrides share one retained parent
 	// selection. The extension's static analyzer runs in every build (there is no
 	// TOOLS_ENABLED); only the native override warning remains debug-only.

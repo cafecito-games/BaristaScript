@@ -1275,6 +1275,17 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 	};
 
 	if (member.get_datatype().is_resolving()) {
+		if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
+			// A single call may reach member resolution through both its CallNode and
+			// callee IdentifierNode, which share a start position. Distinct back-edge
+			// calls need independent diagnostics even when they target the same member.
+			const uint64_t source_site = p_source != nullptr ? (uint64_t(uint32_t(p_source->start_line)) << 32) | uint32_t(p_source->start_column) : 0;
+			HashSet<uint64_t> &diagnosed_sites = diagnosed_function_member_cycle_sites[member.function];
+			if (diagnosed_sites.has(source_site)) {
+				return;
+			}
+			diagnosed_sites.insert(source_site);
+		}
 		push_error(vformat(R"(Could not resolve member "%s": Cyclic reference.)", member.get_name()), p_source);
 		return;
 	}
@@ -1426,10 +1437,21 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			}
 
 			if (member.constant->initializer != nullptr) {
+				const int initializer_error_count = parser->get_errors().size();
 				reduce_expression(member.constant->initializer);
 				qualify_contextual_enum_case_consumer(member.constant->initializer, type);
 				mark_coroutine_handle_capture(member.constant->initializer, type);
-				materialize_constant_initializer(member.constant);
+				bool initializer_has_cycle_error = false;
+				int error_index = 0;
+				for (const auto &error : parser->get_errors()) {
+					if (error_index++ >= initializer_error_count && error.message.ends_with("Cyclic reference.")) {
+						initializer_has_cycle_error = true;
+						break;
+					}
+				}
+				if (!initializer_has_cycle_error) {
+					materialize_constant_initializer(member.constant);
+				}
 				const bool constant_type_ok = update_constant_expression_type(member.constant->initializer, type, "assign");
 				check_assignable_inference(member.constant, "constant");
 				const BSParser::DataType initializer_type = member.constant->initializer->get_datatype();
