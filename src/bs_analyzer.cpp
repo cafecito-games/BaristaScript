@@ -3291,18 +3291,27 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	(void)p_is_root;
 #endif
 
-	// Foundry @ c9d5e35: an index result is never directly callable. Brackets on a
-	// Callable identifier remain available to the separately guarded M5 generic-method
-	// path; a concrete indexed value or any expression result is unambiguous here.
+	// Foundry @ c9d5e35: an index result is never directly callable. Only a resolved
+	// generic method can interpret brackets as use-site type arguments; a Callable
+	// parameter/local/member is still a value, not an M5 application candidate.
 	if (p_call->callee != nullptr && p_call->callee->type == BSParser::Node::SUBSCRIPT) {
 		auto *indexed = static_cast<BSParser::SubscriptNode *>(p_call->callee);
 		if (!indexed->is_attribute && indexed->base != nullptr) {
 			reduce_expression(indexed->base);
-			const BSParser::DataType base_type = indexed->base->get_datatype();
-			const bool expression_base = indexed->base->type != BSParser::Node::IDENTIFIER;
-			const bool concrete_index_base = base_type.is_set() && !base_type.is_meta_type &&
-					!(base_type.kind == BSParser::DataType::BUILTIN && base_type.builtin_type == Variant::CALLABLE);
-			if (expression_base || concrete_index_base) {
+			BSParser::FunctionNode *generic_method = nullptr;
+			if (indexed->base->type == BSParser::Node::IDENTIFIER) {
+				auto *identifier = static_cast<BSParser::IdentifierNode *>(indexed->base);
+				if (identifier->source == BSParser::IdentifierNode::MEMBER_FUNCTION) {
+					generic_method = identifier->function_source;
+				}
+			} else if (indexed->base->type == BSParser::Node::SUBSCRIPT) {
+				auto *method_access = static_cast<BSParser::SubscriptNode *>(indexed->base);
+				if (method_access->is_attribute && method_access->attribute != nullptr &&
+						method_access->attribute->source == BSParser::IdentifierNode::MEMBER_FUNCTION) {
+					generic_method = method_access->attribute->function_source;
+				}
+			}
+			if (generic_method == nullptr || generic_method->type_parameters.is_empty()) {
 				reduce_expression(indexed->index);
 				push_error(R"*(Cannot call on an expression. Use ".call()" if it's a Callable.)*", p_call);
 				BSParser::DataType unresolved;

@@ -220,6 +220,49 @@ func from_return():
 				});
 	}
 
+	TEST_CASE("callable_value_index_results_are_not_callable") {
+		const struct {
+			const char *name;
+			const char *source;
+			int line;
+			int statement_index;
+			BSParser::IdentifierNode::Source binding;
+		} cases[] = {
+			{ "callable_parameter_index_call.barista", "func test(callback: Callable):\n\tcallback[0]()\n", 2, 0, BSParser::IdentifierNode::FUNCTION_PARAMETER },
+			{ "callable_local_index_call.barista", "func test(callback: Callable):\n\tvar local: Callable = callback\n\tlocal[0]()\n", 3, 1, BSParser::IdentifierNode::LOCAL_VARIABLE },
+			{ "callable_member_index_call.barista", "var callback: Callable\n\nfunc test():\n\tcallback[0]()\n", 4, 0, BSParser::IdentifierNode::MEMBER_VARIABLE },
+		};
+		for (const auto &entry : cases) {
+			StorageFixture storage;
+			CAPTURE(std::string(entry.name));
+			const String message = R"BS(Cannot call on an expression. Use ".call()" if it's a Callable.)BS";
+			original(storage, entry.name, entry.source, vformat(">> ERROR at line %d: %s", entry.line, message),
+					[&](const BSParser &parser) {
+						auto *function = test_function(parser);
+						BS_TEST_REQUIRE(function != nullptr && function->body && entry.statement_index < function->body->statements.size());
+						auto *call = static_cast<BSParser::CallNode *>(function->body->statements[entry.statement_index]);
+						BS_TEST_REQUIRE(call->callee != nullptr && call->callee->type == BSParser::Node::SUBSCRIPT);
+						auto *indexed = static_cast<BSParser::SubscriptNode *>(call->callee);
+						BS_TEST_REQUIRE(indexed->base != nullptr && indexed->base->type == BSParser::Node::IDENTIFIER);
+						auto *base = static_cast<BSParser::IdentifierNode *>(indexed->base);
+						CHECK(base->source == entry.binding);
+						exact_error(parser, 0, message, call);
+					});
+		}
+	}
+
+	TEST_CASE("resolved_generic_method_keeps_the_m5_diagnostic") {
+		StorageFixture storage;
+		const String source = "func generic[T]():\n\tpass\nfunc test():\n\tgeneric[int]()\n";
+		const String message = "Generic function specialization is not available until M5.";
+		original(storage, "generic_method_application_control.barista", source, vformat(">> ERROR at line 1: %s", message),
+				[&](const BSParser &parser) {
+					const auto member = parser.get_tree()->get_member("generic");
+					BS_TEST_REQUIRE(member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr);
+					exact_error(parser, 0, message, member.function);
+				});
+	}
+
 	TEST_CASE("original_constant_used_as_function") {
 		StorageFixture storage;
 		const String source = "const CONSTANT = 25\n\n\nfunc test():\n\tCONSTANT(123)\n";
@@ -339,6 +382,7 @@ func from_return():
 
 	TEST_CASE("legal_adjacent_call_and_admission_controls") {
 		legal("call_controls.barista", "var callback: Callable = func():\n\tpass\nfunc test():\n\tcallback.call()\n\tvar callbacks: Array[Callable] = [callback]\n\tcallbacks[0].call()\n");
+		legal("callable_local_controls.barista", "var member_callback: Callable\nfunc test(parameter_callback: Callable):\n\tparameter_callback()\n\tvar local_callback: Callable = parameter_callback\n\tlocal_callback()\n\tparameter_callback.call()\n\tlocal_callback.call()\n\tmember_callback.call()\n");
 		legal("construction_controls.barista", "class Concrete:\n\tpass\nfunc test():\n\tvar value := Concrete.new()\n");
 		legal("inheritance_control.barista", "extends Node\nfunc test():\n\tpass\n");
 		legal("enum_member_controls.barista", "func test():\n\tvar a: int = Vector3.Axis.AXIS_X\n\tvar b: int = Variant.Operator.OP_ADD\n\tvar c: int = Node.ProcessMode.PROCESS_MODE_INHERIT\n");
