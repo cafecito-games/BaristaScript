@@ -8,7 +8,7 @@ The suite still invokes exactly
 90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
 preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: 82 scenarios have explicit native equivalents and 8
+The legacy suite remains enabled: 83 scenarios have explicit native equivalents and 7
 still require migration. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -177,7 +177,7 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 79 | `_test_local_tuple_and_literal_consumers` | expressions/calls | legacy-only |
 | 80 | `_test_ordinary_assignment_and_return_consumers` | expressions/calls | native `analyzer_type_compatibility` |
 | 81 | `_test_steps_1_5_repair_regressions` | expressions/calls | legacy-only |
-| 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | legacy-only |
+| 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | native `analyzer_calls` |
 | 83 | `_test_local_enum_value_cycles` | declarations | native `analyzer_declarations` |
 | 84 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | legacy-only |
 | 85 | `_test_pure_literal_constant_materialization` | expressions/calls | legacy-only |
@@ -302,7 +302,20 @@ and both exact local enum-cycle diagnostic blocks plus the recursive tagged-payl
 control in `analyzer_declarations`. All six join the normal/reverse/shuffle isolation runs.
 Focused results are recorded in `members-stage-analyzer_*.log`.
 
-- Migrate the 8 remaining legacy-only functions; newly merged scenarios
+The Self-signature repair scenario preserves all 12 public source validations and all 20 ordered
+message/line/column diagnostics, including fixed/rest receiver identity, inherited constructors,
+Callable fixed/return/rest slots, and typed-tail positive/negative consumer controls.
+`self-signatures-stage-1.log` records `analyzer_calls`: 12 cases / 1,733 assertions, zero failures,
+including normal/reverse/shuffle execution. No private probe carrier is used.
+
+At clean `5234637` (82 scenarios), `parity82-scons-full.log` and `parity82-cmake-full.log` each
+record 44 suites / 854 cases / 86,317 assertions with zero failures and actual completion records.
+Both supervisors pass 19 tests. The public/corpus runner retains all eight invocations, including
+`BS_SUITE_OK analyzer_test`, parser 340/340 (2 skipped), and tokenizer 24/24 (0 skipped).
+Current ordinary identity/surface, editor import, CI, global API, language utilities, format,
+license, and diff checks also pass. Final integration must repeat these gates after #45 merges.
+
+- Migrate the 7 remaining legacy-only functions; newly merged scenarios
   must be added before any deletion.
 - Give every remaining scenario a named native equivalent and verify normal plus reversed/shuffled
   execution without state leakage.

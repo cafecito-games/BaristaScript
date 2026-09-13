@@ -9,6 +9,7 @@
 #include "analyzer_helpers.h"
 #include "bs_conformance_registry.h"
 #include "storage_fixture.h"
+#include "test_require.h"
 
 using namespace godot;
 using namespace barista_script;
@@ -763,9 +764,77 @@ void scenario_direct_async_call_wrap() {
 	CHECK_MESSAGE((index.get_record_count() == before), "analyze/validate/is_valid must not mutate declaration index for direct async-call wrap");
 }
 
+// Exact public diagnostics and sources from the merged #201 legacy scenario.
+void scenario_steps_1_5_repair2_self_signatures() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	struct SignatureCase {
+		const char *source;
+		const char *path;
+		std::vector<ExpectedError> errors;
+	};
+	const std::vector<SignatureCase> cases = {
+		{ "class_name Repair2Static extends Node\nstatic func fixed(value: Self) -> void:\n\tpass\nstatic func rest(...values: Array[Self]) -> void:\n\tpass\nstatic func check(good: Repair2Static, bad: String) -> void:\n\tfixed(good)\n\trest(good)\n\tfixed(bad)\n\trest(bad)\n\tfixed()\n", "res://tests/repair2_static_self.barista", {
+																																																																																					 { "Invalid argument for \"fixed()\" function: argument 1 should be \"Repair2Static\" but is \"String\".", 9, 11 },
+																																																																																					 { "Invalid argument for \"rest()\" function: argument 1 should be \"Repair2Static\" but is \"String\".", 10, 10 },
+																																																																																					 { "Too few arguments for \"fixed()\" call. Expected at least 1 but received 0.", 11, 5 },
+																																																																																			 } },
+		{ "class_name Repair2Constructor extends Node\nclass Base:\n\tfunc _init(first: Self, ...rest: Array[Self]) -> void:\n\t\tpass\nclass Child extends Base:\n\tpass\nfunc check(a: Child, b: Child, base: Base) -> void:\n\tvar direct := Base.new(base, base)\n\tvar inherited := Child.new(a, b)\n\tChild.new(base, b)\n\tChild.new(a, base)\n", "res://tests/repair2_constructor_self.barista", {
+																																																																																																				 { "Invalid argument for \"new()\" function: argument 1 should be \"Child\" but is \"Base\".", 10, 15 },
+																																																																																																				 { "Invalid argument for \"new()\" function: argument 2 should be \"Child\" but is \"Base\".", 11, 18 },
+																																																																																																		 } },
+		{ "class_name Repair2InstanceRest extends Node\nfunc take(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2InstanceRest) -> void:\n\ttake(self)\n\tother.take(self)\n", "res://tests/repair2_instance_rest_self.barista", {
+																																																															{ "Invalid argument for \"take()\" function: argument 1 should be \"Self\" but is \"Self\". The parameter's \"Self\" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 6, 16 },
+																																																													} },
+		{ "class_name Repair2CallableDirect extends Node\nfunc fixed(value: Callable[[Self], void]) -> void:\n\tpass\nfunc returns(value: Callable[[], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self) -> void:\n\tpass\nfunc cb_return() -> Self:\n\treturn self\nfunc cb_rest(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableDirect) -> void:\n\tfixed(cb_fixed)\n\treturns(cb_return)\n\trests(cb_rest)\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n", "res://tests/repair2_callable_direct_self.barista", {
+																																																																																																																																																															  { "Invalid argument for \"fixed()\" function: argument 1 should be \"Callable[[Self], void]\" but is \"Callable\". The parameter's \"Self\" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 18, 17 },
+																																																																																																																																																															  { "Invalid argument for \"returns()\" function: argument 1 should be \"Callable[[], Self]\" but is \"Callable\". The parameter's \"Self\" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 19, 19 },
+																																																																																																																																																															  { "Invalid argument for \"rests()\" function: argument 1 should be \"Callable[[...Array[Self]], void]\" but is \"Callable\". The parameter's \"Self\" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 20, 17 },
+																																																																																																																																																													  } },
+		{ "class_name Repair2CallableCurrent extends Node\nfunc take(value: Callable[[Self], void]) -> void:\n\tpass\nfunc cb(value: Self) -> void:\n\tpass\nfunc through_self() -> void:\n\tself.take(cb)\nclass Child extends Repair2CallableCurrent:\n\tfunc through_super() -> void:\n\t\tsuper.take(cb)\n", "res://tests/repair2_callable_current_self.barista", {} },
+		{ "class_name Repair2CallableSibling extends Node\nfunc fixed(value: Callable[[Self, int], void]) -> void:\n\tpass\nfunc returns(value: Callable[[int], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self, sibling: String) -> void:\n\tpass\nfunc cb_return(sibling: String) -> Self:\n\treturn self\nfunc cb_rest(sibling: String, ...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableSibling) -> void:\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n", "res://tests/repair2_callable_sibling_self.barista", {
+																																																																																																																																																																	{ "Invalid argument for \"fixed()\" function: argument 1 should be \"Callable[[Self, int], void]\" but is \"Callable\". The parameter's \"Self\" at callable parameter 1 is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 15, 17 },
+																																																																																																																																																																	{ "Invalid argument for \"returns()\" function: argument 1 should be \"Callable[[int], Self]\" but is \"Callable\". The parameter's \"Self\" at the callable return type is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 16, 19 },
+																																																																																																																																																																	{ "Invalid argument for \"rests()\" function: argument 1 should be \"Callable[[int, ...Array[Self]], void]\" but is \"Callable\". The parameter's \"Self\" at the callable rest parameter is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 17, 17 },
+																																																																																																																																																															} },
+		{ "class_name Repair2ComparableCallable extends Node\nfunc fixed(callback: Callable[[Self], void]) -> void:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc with_tail(owner: Self, ...rest: Array) -> void:\n\tpass\nfunc sink(...values: Array) -> void:\n\tpass\nfunc check(other: Repair2ComparableCallable) -> void:\n\tvar variadic: Callable[[Self, ...Array], void] = with_tail\n\tvar gradual: Callable[[...Array], void] = sink\n\tfixed(variadic)\n\tfan(gradual)\n\tother.fan(gradual)\n", "res://tests/repair2_callable_comparable.barista", {} },
+		{ "class_name Repair3TailParameter extends Node\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc fan_nested(callback: Callable[[...Array[Array[Self]]], void]) -> void:\n\tpass\nfunc take_bound(...values: Array[Repair3TailParameter]) -> void:\n\tpass\nfunc take_super(...values: Array[Node]) -> void:\n\tpass\nfunc take_nested(...values: Array[Array[Repair3TailParameter]]) -> void:\n\tpass\nfunc check(other: Repair3TailParameter) -> void:\n\tfan(take_bound)\n\tother.fan(take_super)\n\tfan_nested(take_nested)\n", "res://tests/repair3_typed_tail_parameter.barista", {} },
+		{ "class Super:\n\tpass\nclass Cell extends Super:\n\tfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\t\tpass\n\tfunc take_super(...values: Array[Super]) -> void:\n\t\tpass\n\tfunc check(other: Cell) -> void:\n\t\tother.fan(take_super)\n", "res://tests/repair3_typed_tail_declared_super.barista", {} },
+		{ "class_name Repair3TailValue extends Node\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc take_bound(...values: Array[Repair3TailValue]) -> void:\n\tpass\nfunc take_super(...values: Array[Node]) -> void:\n\tpass\nfunc stored() -> Callable[[...Array[Self]], void]:\n\tvar bound: Callable[[...Array[Repair3TailValue]], void] = take_bound\n\treturn bound\nfunc check() -> void:\n\tvar declared: Callable[[...Array[Self]], void] = take_bound\n\tvar assigned: Callable[[...Array[Self]], void] = take_bound\n\tassigned = take_super\n\tfan(declared)\n\tfan(assigned)\n\tfan(stored())\n", "res://tests/repair3_typed_tail_values.barista", {} },
+		{ "class_name Repair3TailNegative extends Node\nclass Leaf extends Repair3TailNegative:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc fixed(callback: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc returns(callback: Callable[[...Array[Self]], int]) -> void:\n\tpass\nfunc take_narrow(...values: Array[Leaf]) -> void:\n\tpass\nfunc bad_fixed(value: String, ...values: Array[Node]) -> void:\n\tpass\nfunc bad_return(...values: Array[Node]) -> String:\n\treturn \"bad\"\nfunc self_tail(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair3TailNegative) -> void:\n\tfan(take_narrow)\n\tfixed(bad_fixed)\n\treturns(bad_return)\n\tother.fan(self_tail)\n", "res://tests/repair3_typed_tail_negatives.barista", {
+																																																																																																																																																																																																				 { "Invalid argument for \"fan()\" function: argument 1 should be \"Callable[[...Array[Self]], void]\" but is \"Callable\".", 19, 9 },
+																																																																																																																																																																																																				 { "Invalid argument for \"fixed()\" function: argument 1 should be \"Callable[[int, ...Array[Self]], void]\" but is \"Callable\".", 20, 11 },
+																																																																																																																																																																																																				 { "Invalid argument for \"returns()\" function: argument 1 should be \"Callable[[...Array[Self]], int]\" but is \"Callable\".", 21, 13 },
+																																																																																																																																																																																																				 { "Invalid argument for \"fan()\" function: argument 1 should be \"Callable[[...Array[Self]], void]\" but is \"Callable\". The parameter's \"Self\" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.", 22, 15 },
+																																																																																																																																																																																																		 } },
+		{ "class_name Repair3TailValueNegative extends Node\nclass Leaf extends Repair3TailValueNegative:\n\tpass\nfunc bad(wrong: Callable[[...Array[String]], void], narrow: Callable[[...Array[Leaf]], void]) -> Callable[[...Array[Self]], void]:\n\tvar declared: Callable[[...Array[Self]], void] = wrong\n\tvar slot: Callable[[...Array[Self]], void] = wrong\n\tslot = narrow\n\treturn wrong\n", "res://tests/repair3_typed_tail_value_negatives.barista", {
+																																																																																																																			 { "Cannot assign a value of type Callable[[...Array[String]], void] to variable \"declared\" with specified type Callable[[...Array[Self]], void].", 5, 54 },
+																																																																																																																			 { "Cannot assign a value of type Callable[[...Array[String]], void] to variable \"slot\" with specified type Callable[[...Array[Self]], void].", 6, 50 },
+																																																																																																																			 { "Value of type \"Callable[[...Array[Leaf]], void]\" cannot be assigned to a variable of type \"Callable[[...Array[Self]], void]\".", 7, 12 },
+																																																																																																																			 { "Cannot return value of type \"Callable[[...Array[String]], void]\" because the function return type is \"Callable[[...Array[Self]], void]\".", 8, 5 },
+																																																																																																																	 } },
+	};
+	for (const auto &sample : cases) {
+		INFO(sample.path);
+		// The Dictionary is the real public language contract, not the retired probe carrier.
+		const Dictionary report = BaristaScriptLanguage::get_singleton()->_validate(sample.source, sample.path, true, true, false, false);
+		CHECK(bool(report.get("valid", false)) == sample.errors.empty());
+		const Array errors = report.get("errors", Array());
+		BS_TEST_REQUIRE(size_t(errors.size()) == sample.errors.size());
+		for (int i = 0; i < errors.size(); ++i) {
+			const Dictionary actual = errors[i];
+			CHECK(String(actual.get("message", "")) == sample.errors[i].message.c_str());
+			CHECK(int(actual.get("line", -1)) == sample.errors[i].line);
+			CHECK(int(actual.get("column", -1)) == sample.errors[i].column);
+		}
+	}
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_calls") {
+	TEST_CASE("steps_1_5_repair2_self_signatures") { scenario_steps_1_5_repair2_self_signatures(); }
 	TEST_CASE("direct_async_call_wrap") { scenario_direct_async_call_wrap(); }
 	TEST_CASE("await_reduction_and_missing_await") { scenario_await_reduction_and_missing_await(); }
 	TEST_CASE("callable_bind_unbind") { scenario_callable_bind_unbind(); }
@@ -777,6 +846,6 @@ TEST_SUITE("analyzer_calls") {
 	TEST_CASE("named_arg_and_connect_callable") { scenario_named_arg_and_connect_callable(); }
 	TEST_CASE("callable_signal_constructor_and_typed_receiver_depth") { scenario_callable_signal_constructor_and_typed_receiver_depth(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
-		check_scenario_orders({ scenario_call_arity_and_types, scenario_call_validation_methodinfo_and_signals, scenario_named_arg_and_connect_callable, scenario_callable_signal_constructor_and_typed_receiver_depth, scenario_callable_bind_unbind, scenario_callable_callv_rpc, scenario_async_callable_coroutine_wrap, scenario_coroutine_annotation_decode, scenario_await_reduction_and_missing_await, scenario_direct_async_call_wrap });
+		check_scenario_orders({ scenario_call_arity_and_types, scenario_call_validation_methodinfo_and_signals, scenario_named_arg_and_connect_callable, scenario_callable_signal_constructor_and_typed_receiver_depth, scenario_callable_bind_unbind, scenario_callable_callv_rpc, scenario_async_callable_coroutine_wrap, scenario_coroutine_annotation_decode, scenario_await_reduction_and_missing_await, scenario_direct_async_call_wrap, scenario_steps_1_5_repair2_self_signatures });
 	}
 }
