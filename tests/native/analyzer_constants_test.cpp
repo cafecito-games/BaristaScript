@@ -913,9 +913,255 @@ void scenario_pure_literal_constant_materialization() {
 	}
 }
 
+void check_public_warning_ranges(const Dictionary &report, const std::vector<ExpectedWarning> &expected) {
+	const Array warnings = report.get("warnings", Array());
+	BS_TEST_REQUIRE(size_t(warnings.size()) == expected.size());
+	for (int i = 0; i < warnings.size(); ++i) {
+		const Dictionary warning = warnings[i];
+		CHECK(String(warning.get("string_code", "")) == BSWarning::get_name_from_code(expected[i].code));
+		CHECK(String(warning.get("message", "")) == expected[i].message.c_str());
+		CHECK(int(warning.get("start_line", -1)) == expected[i].start_line);
+		CHECK(int(warning.get("start_column", -1)) == expected[i].start_column);
+		CHECK(int(warning.get("end_line", -1)) == expected[i].end_line);
+		CHECK(int(warning.get("end_column", -1)) == expected[i].end_column);
+	}
+}
+
+void scenario_concrete_cast_ternary_and_type_test_reduction() {
+	StorageFixture fixture;
+	BSConformanceRegistry::ScopedCorpusState registry;
+	AnalyzerSettings settings;
+	settings.warnings_enabled(true);
+	for (BSWarning::Code code : { BSWarning::UNSAFE_CAST, BSWarning::INT_AS_ENUM_WITHOUT_MATCH, BSWarning::INCOMPATIBLE_TERNARY, BSWarning::NARROWING_CONVERSION, BSWarning::STANDALONE_TERNARY, BSWarning::MISSING_AWAIT }) {
+		settings.warning(code, BSWarning::WARN);
+	}
+	// Match the legacy stock Variant formatting seam, not an analyzer-generated oracle.
+	const std::string out_of_range_message = vformat("Cannot convert %s to \"int\": the value is outside its range -9223372036854775808 to 9223372036854775807.", Variant(1e30).stringify()).utf8().get_data();
+	struct ReductionCase {
+		const char *source;
+		const char *path;
+		bool strict_dynamic;
+		bool collect_warnings;
+		std::vector<ExpectedError> errors;
+		std::vector<ExpectedWarning> warnings;
+	};
+	const std::vector<ReductionCase> cases = {
+		{ "func test():\n\tvar integer := 1\n\tprint(integer as Array)\n", "res://tests/cast_int_to_array.barista", false, false, {
+																																		  { "Invalid cast. Cannot convert from \"int\" to \"Array\".", 3, 22 },
+																																  },
+				{} },
+		{ "func test():\n\tvar integer := 1\n\tprint(integer as Node)\n", "res://tests/cast_int_to_object.barista", false, false, {
+																																		  { "Invalid cast. Cannot convert from \"int\" to \"Node\".", 3, 22 },
+																																  },
+				{} },
+		{ "func test(object: RefCounted):\n\t# Typed parameter avoids the native-constructor metadata owned by #141.\n\tprint(object as int)\n", "res://tests/cast_object_to_int.barista", false, false, {
+																																																				 { "Invalid cast. Cannot convert from \"RefCounted\" to \"int\".", 3, 21 },
+																																																		 },
+				{} },
+		{ "# The runtime has no union carrier.\ntype Scalar = int | String\n\n\nfunc test():\n\tvar value: Scalar = 1\n\tprint(value is Scalar)\n\tprint(value as Scalar)\n", "res://tests/type_union_runtime_type_operations.barista", false, false, {
+																																																															  { "Cannot test against the type union \"String | int\", because it has no runtime type. Test one of its alternatives instead.", 7, 20 },
+																																																															  { "Cannot cast to the type union \"String | int\", because it has no runtime type. Cast to one of its alternatives instead.", 8, 20 },
+																																																													  },
+				{} },
+		{ "enum Command:\n\tQuit\n\tMove(x: int, y: int)\n\nfunc test():\n\tvar message: Command = Command.Quit\n\tvar as_int: int = message\n\tprint(message + 1)\n\tprint(message as int)\n", "res://tests/tagged_union_in_int_context.barista", false, false, {
+																																																																		 { "Cannot assign a value of type tagged_union_in_int_context.barista.Command to variable \"as_int\" with specified type int.", 7, 23 },
+																																																																		 { "Operator \"+\" is not available on tagged union \"Command\"; its cases carry payloads, so its values are not integers. Match on the case first.", 8, 11 },
+																																																																		 { "Tagged union \"Command\" is not int-backed, because its cases carry payloads; it cannot be converted to or from \"int\".", 9, 22 },
+																																																																 },
+				{} },
+		{ "# Analyze only.\nfunc no_exec_test():\n\tvar weak_int = 1\n\tprint(weak_int as Variant)\n\tprint(weak_int as int)\n\tprint(weak_int as Node)\n\n\tvar weak_node = Node.new()\n\tprint(weak_node as Variant)\n\tprint(weak_node as int)\n\tprint(weak_node as Node)\n\n\tvar weak_variant = null\n\tprint(weak_variant as Variant)\n\tprint(weak_variant as int)\n\tprint(weak_variant as Node)\n\n\tvar hard_variant: Variant = null\n\tprint(hard_variant as Variant)\n\tprint(hard_variant as int)\n\tprint(hard_variant as Node)\n\nfunc test():\n\tpass\n", "res://tests/unsafe_cast.barista", false, true, {}, {
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"int\" is unsafe.", 5, 11, 5, 26 },
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"Node\" is unsafe.", 6, 11, 6, 27 },
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"int\" is unsafe.", 10, 11, 10, 27 },
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"Node\" is unsafe.", 11, 11, 11, 28 },
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"int\" is unsafe.", 15, 11, 15, 30 },
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"Node\" is unsafe.", 16, 11, 16, 31 },
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"int\" is unsafe.", 20, 11, 20, 30 },
+																																																																																																																																																									   { BSWarning::UNSAFE_CAST, "Casting \"Variant\" to \"Node\" is unsafe.", 21, 11, 21, 31 },
+																																																																																																																																																							   } },
+		{ "enum MyEnum:\n\tENUM_VALUE_1 = 0\n\tENUM_VALUE_2 = ENUM_VALUE_1 + 1\n\nfunc test():\n\tprint(2 as MyEnum)\n", "res://tests/cast_enum_bad_int.barista", false, true, {}, {
+																																														   { BSWarning::INT_AS_ENUM_WITHOUT_MATCH, "Cannot cast 2 as Enum \"cast_enum_bad_int.barista.MyEnum\": no enum member has matching value.", 6, 11, 6, 12 },
+																																												   } },
+		{ "enum Foo:\n\tA = 0\n\tB = A + 1\n\tC = B + 1\nfunc test():\n\tvar as_int: int = Foo.A as int\n\tvar as_enum: Foo = 1 as Foo\n", "res://tests/plain_enum_casts.barista", false, true, {}, {} },
+		{ "func test():\n\t# The ternary operator below returns values of different types and the\n\t# result is assigned to a typed variable. This will cause a run-time error\n\t# if the branch with the incompatible type is picked. Here, it won't happen\n\t# since the `false` condition never evaluates to `true`. Instead, a warning\n\t# will be emitted.\n\tvar __: int = 25\n\t__ = \"hello\" if false else -2\n", "res://tests/incompatible_ternary.barista", false, true, {}, {
+																																																																																																																									{ BSWarning::INCOMPATIBLE_TERNARY, "Values of the ternary operator are not mutually compatible.", 8, 10, 8, 34 },
+																																																																																																																							} },
+		{ "func choose(flag: bool, left: String, right: String) -> String:\n\treturn left if flag else right\nfunc nullable(flag: bool, value: String) -> String?:\n\treturn value if flag else null\n", "res://tests/ternary_concrete_types.barista", false, true, {}, {} },
+		{ "enum Message:\n\tQuit\n\tMove(value: int)\n\nfunc take(message: Message) -> void:\n\tprint(message)\nfunc choose(flag: bool) -> Message:\n\treturn .Quit if flag else .Move(1)\nfunc test(flag: bool) -> void:\n\tvar declared: Message = .Quit if flag else .Move(2)\n\tdeclared = .Move(3) if flag else .Quit\n\ttake(.Quit if flag else .Move(4))\n\tvar nested: Array[Message] = [.Quit if flag else .Move(5)]\n\tprint(nested, declared, (.Quit if flag else .Move(6)) as Message)\n", "res://tests/contextual_ternary_consumers.barista", false, true, {}, {} },
+		{ "enum Message:\n\tQuit\n\tMove(value: int)\n\nfunc test():\n\tvar result := .Quit if true else .Move(1)\n", "res://tests/contextual_ternary_unqualified.barista", false, false, {
+																																																  { "Contextual shorthand \".Quit\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .Quit\".", 6, 19 },
+																																																  { "Contextual shorthand \".Move\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .Move(...)\".", 6, 38 },
+																																														  },
+				{} },
+		{ "const BOXED: Variant = 1\nvar probe_expression = BOXED as float\n", "res://tests/boxed_constant_float_validate.barista", false, true, {}, {} },
+		{ "const BOXED: Variant = 1.5\nfunc test() -> void:\n\tprint(1.5 as int)\n\tprint(BOXED as int)\n", "res://tests/fractional_constant_cast_validate.barista", false, true, {}, {
+																																															  { BSWarning::NARROWING_CONVERSION, "Narrowing conversion (float is converted to int and loses precision).", 3, 11, 3, 14 },
+																																															  { BSWarning::NARROWING_CONVERSION, "Narrowing conversion (float is converted to int and loses precision).", 4, 11, 4, 16 },
+																																													  } },
+		{ "const BOXED_INF: Variant = 1e309\nconst BOXED_LARGE: Variant = 1e30\nfunc test() -> void:\n\tprint(1e309 as int)\n\tprint(1e30 as int)\n\tprint(BOXED_INF as int)\n\tprint(BOXED_LARGE as int)\n", "res://tests/checked_numeric_constant_cast.barista", false, false, {
+																																																																						 { "Cannot convert inf to \"int\": it is not a finite number.", 4, 11 },
+																																																																						 { out_of_range_message, 5, 11 },
+																																																																						 { "Cannot convert inf to \"int\": it is not a finite number.", 6, 11 },
+																																																																						 { out_of_range_message, 7, 11 },
+																																																																				 },
+				{} },
+		{ "const BOXED: Variant = 1\nfunc return_boxed() -> float:\n\treturn BOXED\nfunc test() -> void:\n\tvar declared: float = BOXED\n\tvar assigned: float = 0.0\n\tassigned = BOXED\n\tvar tupled: (float, float) = (BOXED, BOXED)\n\tvar arrayed: Array[float] = [BOXED]\n\tvar mapped: Dictionary[String, float] = {\"one\": BOXED}\n\tprint(declared, assigned, tupled, arrayed, mapped, return_boxed())\n", "res://tests/boxed_constant_shared_consumers.barista", false, true, {}, {} },
+		{ "const BOXED: Variant = 1\nfunc test() -> void:\n\tvar probe_expression: float = BOXED\n\tprint(probe_expression)\n", "res://tests/boxed_constant_strict_dynamic.barista", true, false, {
+																																																		  { "Cannot assign Variant value to variable \"probe_expression\" in strict dynamic mode; expected \"float\".", 3, 35 },
+																																																  },
+				{} },
+		{ "const BOXED: Variant = \"bad\"\nfunc test() -> void:\n\tvar probe_expression: int = BOXED\n\tprint(probe_expression)\n", "res://tests/boxed_constant_incompatible.barista", false, false, {
+																																																			 { "Cannot assign a value of type \"String\" as \"int\".", 3, 33 },
+																																																	 },
+				{} },
+		{ "const BOXED: Variant = 1.5\nfunc test() -> void:\n\tvar probe_expression: int = BOXED\n\tprint(probe_expression)\n", "res://tests/boxed_constant_failed_conversion.barista", false, false, {
+																																																			  { "Cannot assign a value of type \"float\" as \"int\".", 3, 33 },
+																																																	  },
+				{} },
+		{ "func test() -> void:\n\tvar probe_expression: int = 1.5\n\tprint(probe_expression)\n", "res://tests/direct_fractional_constant.barista", false, false, {
+																																										  { "Cannot assign a value of type float to variable \"probe_expression\" with specified type int.", 2, 33 },
+																																								  },
+				{} },
+		{ "const BOXED: Variant = 1\nvar MEMBER: float = BOXED\nconst MEMBER_CONST: float = BOXED\n", "res://tests/boxed_constant_class_consumers.barista", false, true, {}, {} },
+		{ "const BOXED: Variant = 1.5\nvar MEMBER: int = BOXED\nconst MEMBER_CONST: int = BOXED\n", "res://tests/boxed_constant_class_refusals.barista", false, false, {
+																																											   { "Cannot assign a value of type \"float\" as \"int\".", 2, 19 },
+																																											   { "Cannot assign a value of type \"float\" as \"int\".", 3, 27 },
+																																									   },
+				{} },
+		{ "async func fetch() -> int:\n\treturn 1\nfunc test(flag: bool) -> void:\n\tfetch() if flag else fetch()\n", "res://tests/root_async_ternary.barista", false, true, {}, {
+																																														 { BSWarning::STANDALONE_TERNARY, "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 33 },
+																																														 { BSWarning::MISSING_AWAIT, "The call returns a \"Coroutine[int]\" whose result is discarded. Use \"await\", or store or pass the handle if it is awaited elsewhere.", 4, 5, 4, 12 },
+																																														 { BSWarning::MISSING_AWAIT, "The call returns a \"Coroutine[int]\" whose result is discarded. Use \"await\", or store or pass the handle if it is awaited elsewhere.", 4, 26, 4, 33 },
+																																												 } },
+		{ "async func fetch() -> int:\n\treturn 1\nfunc test(outer: bool, inner: bool) -> void:\n\tfetch() if outer else (fetch() if inner else fetch())\n", "res://tests/nested_root_async_ternary.barista", false, true, {}, {
+																																																									   { BSWarning::STANDALONE_TERNARY, "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 58 },
+																																																									   { BSWarning::MISSING_AWAIT, "The call returns a \"Coroutine[int]\" whose result is discarded. Use \"await\", or store or pass the handle if it is awaited elsewhere.", 4, 5, 4, 12 },
+																																																									   { BSWarning::MISSING_AWAIT, "The call returns a \"Coroutine[int]\" whose result is discarded. Use \"await\", or store or pass the handle if it is awaited elsewhere.", 4, 28, 4, 35 },
+																																																									   { BSWarning::MISSING_AWAIT, "The call returns a \"Coroutine[int]\" whose result is discarded. Use \"await\", or store or pass the handle if it is awaited elsewhere.", 4, 50, 4, 57 },
+																																																							   } },
+		{ "async func fetch() -> int:\n\treturn 1\nfunc test(flag: bool) -> void:\n\tvar work: Coroutine[int] = fetch() if flag else fetch()\n\tprint(work)\n", "res://tests/held_async_ternary.barista", false, true, {}, {} },
+		{ "async func fire() -> void:\n\tpass\nfunc test(flag: bool) -> void:\n\tfire() if flag else fire()\n", "res://tests/void_async_ternary.barista", false, true, {}, {
+																																												   { BSWarning::STANDALONE_TERNARY, "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 31 },
+																																										   } },
+		{ "async func decide() -> bool:\n\treturn true\nfunc test() -> void:\n\t1 if decide() else 2\n", "res://tests/condition_async_ternary.barista", false, true, {}, {
+																																												 { BSWarning::STANDALONE_TERNARY, "Standalone ternary operator (the return value is being discarded).", 4, 5, 4, 25 },
+																																										 } },
+		{ "async func fetch() -> int:\n\treturn 1\nfunc test(flag: bool) -> void:\n\tvar result: int = await (fetch() if flag else fetch())\n\tprint(result)\n", "res://tests/awaited_async_ternary.barista", false, true, {}, {} },
+		{ "func test():\n\tvar left_hard_int := 1\n\tvar right_weak_int = 2\n\tvar result_hm_int := left_hard_int if true else right_weak_int\n\n\tprint('not ok')\n", "res://tests/ternary_weak_infer.barista", false, false, {
+																																																									   { "Cannot infer the type of \"result_hm_int\" variable because the value doesn't have a set type.", 4, 26 },
+																																																							   },
+				{} },
+		{ "var right_weak = 2\nvar result := 1 if true else right_weak\n", "res://tests/ternary_class_weak_infer.barista", false, false, {
+																																				 { "Cannot infer the type of \"result\" variable because the value doesn't have a set type.", 2, 15 },
+																																		 },
+				{} },
+		{ "var right_weak = 2\nconst result := 1 if true else right_weak\n", "res://tests/ternary_class_constant_weak.barista", false, false, {
+																																					  { "Assigned value for constant \"result\" isn't a constant expression.", 2, 17 },
+																																					  { "Cannot infer the type of \"result\" constant because the value doesn't have a set type.", 2, 17 },
+																																			  },
+				{} },
+		{ "func test():\n\tvar right_weak = 2\n\tconst result := 1 if true else right_weak\n", "res://tests/ternary_local_constant_weak.barista", false, false, {
+																																										{ "Assigned value for constant \"result\" isn't a constant expression.", 3, 21 },
+																																										{ "Cannot infer the type of \"result\" constant because the value doesn't have a set type.", 3, 21 },
+																																								},
+				{} },
+		{ "const base := [0]\n\nfunc test():\n\tvar sub := 1\n\tif sub is String: pass\n", "res://tests/constant_subscript_type.barista", false, false, {
+																																								{ "Expression is of type \"int\" so it can't be of type \"String\".", 5, 8 },
+																																						},
+				{} },
+		{ "class A:\n\tfunc _init():\n\t\tpass\n\nclass B extends A: pass\nclass C extends A: pass\n\nfunc test():\n\tvar x := B.new()\n\tprint(x is C)\n", "res://tests/constructor_call_type.barista", false, false, {
+																																																							   { "Expression is of type \"B\" so it can't be of type \"C\".", 10, 11 },
+																																																					   },
+				{} },
+		{ "enum TernaryCaseMessage:\n\tQuit\n\tMove(x: int, y: int)\n\nfunc test():\n\tvar message: TernaryCaseMessage = TernaryCaseMessage.Quit\n\tprint(1 if message is TernaryCaseMessage.Move(x, y) else 0)\n", "res://tests/tagged_union_case_test_binds_in_ternary.barista", false, false, {
+																																																																										 { "Case payload binds are only allowed in the condition of \"if\", \"elif\", \"while\" or \"assert\", directly or as an \"and\" operand.", 7, 16 },
+																																																																								 },
+				{} },
+	};
+	for (const auto &sample : cases) {
+		INFO(sample.path);
+		settings.strict_dynamic(sample.strict_dynamic);
+		const Dictionary report = public_validate(sample.source, sample.path, sample.collect_warnings);
+		CHECK(bool(report.get("valid", false)) == sample.errors.empty());
+		check_public_errors(report, sample.errors);
+		check_public_warning_ranges(report, sample.warnings);
+	}
+	settings.strict_dynamic(false);
+	PackedInt32Array packed_zero;
+	packed_zero.push_back(0);
+	struct ObservationCase {
+		const char *source;
+		const char *path;
+		const char *datatype;
+		bool valid;
+		int constant;
+		bool require_hard;
+		bool check_value;
+		Variant expected;
+	};
+	const std::vector<ObservationCase> observations = {
+		{ "var probe_expression = \"left\" if true else \"right\"\n", "res://tests/ternary_string_probe.barista", "String", true, 1, false, true, Variant("left") },
+		{ "var probe_expression = \"left\" if false else null\n", "res://tests/ternary_nullable_probe.barista", "String?", true, 1, false, true, Variant() },
+		{ "enum Message:\n\tQuit\n\tMove(value: int)\n\nvar probe_expression: Message = .Quit if true else (.Move(1) if false else .Quit)\n", "res://tests/contextual_ternary_type.barista", "contextual_ternary_type.barista.Message", true, -1, true, false, Variant() },
+		{ "const BOXED: Variant = 1\nvar probe_expression = BOXED as float\n", "res://tests/boxed_constant_float.barista", "float", true, 1, true, true, Variant(1.0) },
+		{ "var probe_expression = 1 as float\n", "res://tests/direct_constant_float.barista", "float", true, 1, true, true, Variant(1.0) },
+		{ "var probe_expression = 1.5 as int\n", "res://tests/direct_fractional_cast.barista", "int", true, 1, true, true, Variant(1) },
+		{ "const BOXED: Variant = 1.5\nvar probe_expression = BOXED as int\n", "res://tests/boxed_fractional_cast.barista", "int", true, 1, true, true, Variant(1) },
+		{ "const BOXED: Variant = null\nvar probe_expression = BOXED as String?\n", "res://tests/boxed_constant_nullable.barista", "String?", true, 1, false, true, Variant() },
+		{ "const BOXED: Variant = [\"bad\"]\nvar probe_expression = BOXED as PackedInt32Array\n", "res://tests/boxed_constant_packed_array.barista", "PackedInt32Array", true, 1, false, true, Variant(packed_zero) },
+		{ "var broken: int = \"wrong\"\nvar probe_expression = \"left\" if true else \"right\"\n", "res://tests/invalid_positive_observation.barista", "String", false, 1, false, false, Variant() },
+		{ "const base := [0]\nvar probe_expression = base[0]\n", "res://tests/constant_subscript_producer_probe.barista", "int", true, 1, true, false, Variant() },
+		{ "enum E:\n\tA = 0\nvar probe_expression = E.A is E\n", "res://tests/enum_membership_probe.barista", "bool", true, 0, false, false, Variant() },
+	};
+	for (const auto &sample : observations) {
+		INFO(sample.path);
+		const auto observed = analyze_source(sample.source, sample.path);
+		const auto *expression = find_expression(observed);
+		BS_TEST_REQUIRE(expression != nullptr);
+		CHECK(observed.valid() == sample.valid);
+		CHECK(expression->get_datatype().to_string() == sample.datatype);
+		if (sample.constant >= 0) {
+			CHECK(expression->is_constant == bool(sample.constant));
+		}
+		if (sample.require_hard) {
+			CHECK(expression->get_datatype().is_hard_type());
+		}
+		if (sample.check_value) {
+			CHECK(expression->reduced_value == sample.expected);
+		}
+		if (!sample.valid) {
+			BS_TEST_REQUIRE(observed.parser->get_errors().size() == 1);
+			CHECK(observed.parser->get_errors().front()->get().message == "Cannot assign a value of type String to variable \"broken\" with specified type int.");
+		}
+	}
+	check_folded_value("1 is int", Variant(true));
+	const int index_before = fixture.index().get_record_count();
+	const auto invalid_first = analyze_source("func test():\n\tvar integer := 1\n\tprint(integer as Array)\n", "res://tests/cast_int_to_array.barista");
+	const auto invalid_second = analyze_source("func test():\n\tvar integer := 1\n\tprint(integer as Array)\n", "res://tests/cast_int_to_array.barista");
+	BS_TEST_REQUIRE(invalid_first.parser->get_errors().size() == 1);
+	BS_TEST_REQUIRE(invalid_second.parser->get_errors().size() == 1);
+	CHECK(invalid_first.parser->get_errors().front()->get().message == invalid_second.parser->get_errors().front()->get().message);
+	CHECK_FALSE(bool(public_validate("func test():\n\tvar integer := 1\n\tprint(integer as Array)\n", "res://tests/cast_int_to_array.barista", false).get("valid", true)));
+	CHECK_FALSE(source_analyzes("func test():\n\tvar integer := 1\n\tprint(integer as Array)\n", "res://tests/cast_int_to_array.barista"));
+	const String ternary_source = "func choose(flag: bool, left: String, right: String) -> String:\n\treturn left if flag else right\nfunc nullable(flag: bool, value: String) -> String?:\n\treturn value if flag else null\n";
+	const String repeat_path = "res://tests/ternary_concrete_repeat.barista";
+	CHECK(analyze_source(ternary_source, repeat_path).valid());
+	CHECK(analyze_source(ternary_source, repeat_path).valid());
+	CHECK(bool(public_validate(ternary_source, repeat_path, false).get("valid", false)));
+	CHECK(source_analyzes(ternary_source, repeat_path));
+	CHECK(fixture.index().get_record_count() == index_before);
+	const String incompatible_source = "func test():\n\t# The ternary operator below returns values of different types and the\n\t# result is assigned to a typed variable. This will cause a run-time error\n\t# if the branch with the incompatible type is picked. Here, it won't happen\n\t# since the `false` condition never evaluates to `true`. Instead, a warning\n\t# will be emitted.\n\tvar __: int = 25\n\t__ = \"hello\" if false else -2\n";
+	settings.warning(BSWarning::INCOMPATIBLE_TERNARY, BSWarning::IGNORE);
+	CHECK(Array(public_validate(incompatible_source, "res://tests/incompatible_ternary.barista").get("warnings", Array())).is_empty());
+	settings.warning(BSWarning::INCOMPATIBLE_TERNARY, BSWarning::ERROR);
+	CHECK_FALSE(bool(public_validate(incompatible_source, "res://tests/incompatible_ternary.barista").get("valid", true)));
+	settings.warning(BSWarning::INCOMPATIBLE_TERNARY, BSWarning::WARN);
+}
+
 } // namespace
 
 TEST_SUITE("analyzer_constants") {
+	TEST_CASE("concrete_cast_ternary_and_type_test_reduction") { scenario_concrete_cast_ternary_and_type_test_reduction(); }
 	TEST_CASE("pure_literal_constant_materialization") { scenario_pure_literal_constant_materialization(); }
 	TEST_CASE("folded_tuple_child_and_failed_contextual_materialization") { scenario_folded_tuple_child_and_failed_contextual_materialization(); }
 	TEST_CASE("nested_constant_evidence_and_contextual_casts") { scenario_nested_constant_evidence_and_contextual_casts(); }
@@ -924,6 +1170,7 @@ TEST_SUITE("analyzer_constants") {
 	TEST_CASE("dictionary_literal_constant_parity") { scenario_dictionary_literal_constant_parity(); }
 	TEST_CASE("constant_dictionary_key_conversion") { scenario_constant_dictionary_key_conversion(); }
 	TEST_CASE("normal_reversed_shuffled_cases_restore_ambient_state") {
+		check_scenario_orders({ scenario_concrete_cast_ternary_and_type_test_reduction, scenario_pure_literal_constant_materialization });
 		check_scenario_orders({ scenario_constant_dictionary_key_conversion, scenario_dictionary_literal_constant_parity, scenario_pure_constant_review_regressions, scenario_constant_producer_child_evidence, scenario_nested_constant_evidence_and_contextual_casts, scenario_folded_tuple_child_and_failed_contextual_materialization, scenario_pure_literal_constant_materialization });
 	}
 }
