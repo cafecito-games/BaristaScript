@@ -522,16 +522,23 @@ private:
 		}
 	};
 	BSParser::FunctionNode *current_function = nullptr;
-	// GET_NODE follows the innermost member initializer or parameter-default declaration.
+	// Receiver checks follow the enclosing member initializer or function, including delayed lambdas.
 	const BSParser::Node *get_node_declaration = nullptr;
 	bool get_node_is_static_context() const;
+	const BSParser::FunctionNode *get_enclosing_context_function() const;
+	void check_self_call(BSParser::CallNode *p_call);
+	void check_named_property_accessors(BSParser::VariableNode *p_variable, BSParser::ClassNode *p_class);
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
 	BSParser::EnumNode *current_enum = nullptr;
 	BSParser::ClassNode *current_enum_owner = nullptr;
 	/** Foundry `current_lambda` (@ c9d5e35): set while reducing a lambda body for capture marking. */
 	BSParser::LambdaNode *current_lambda = nullptr;
 	/** Foundry pending_body_resolution_lambdas (@ c9d5e35): flush after each suite statement. */
-	Vector<BSParser::LambdaNode *> pending_lambda_bodies;
+	struct PendingLambdaBody {
+		BSParser::LambdaNode *lambda = nullptr;
+		const BSParser::Node *declaration = nullptr;
+	};
+	Vector<PendingLambdaBody> pending_lambda_bodies;
 	Vector<BSParser::FunctionNode *> pending_function_flow_checks;
 	CallSiteValidationContext call_site_validation;
 	FlowFinalityContext flow_finality;

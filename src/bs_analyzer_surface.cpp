@@ -30,6 +30,22 @@
 
 namespace barista_script {
 
+// Foundry surface c9d5e35:126-145: first rejected leaf determines the diagnostic family.
+static bool _export_type_contains_tuple_or_tagged_union(const BSParser::DataType &p_type, BSParser::DataType &r_found_type) {
+	if (p_type.is_tuple() || (p_type.is_tagged_union_type() && !p_type.is_meta_type)) {
+		r_found_type = p_type;
+		return true;
+	}
+	if (p_type.kind == BSParser::DataType::BUILTIN && p_type.builtin_type == Variant::ARRAY && p_type.has_container_element_type(0)) {
+		return _export_type_contains_tuple_or_tagged_union(p_type.get_container_element_type(0), r_found_type);
+	}
+	if (p_type.kind == BSParser::DataType::BUILTIN && p_type.builtin_type == Variant::DICTIONARY) {
+		return _export_type_contains_tuple_or_tagged_union(p_type.get_container_element_type_or_variant(0), r_found_type) ||
+				_export_type_contains_tuple_or_tagged_union(p_type.get_container_element_type_or_variant(1), r_found_type);
+	}
+	return false;
+}
+
 // Use the engine's complete conversion surface after Foundry's strict-admission gate
 // (core/variant/variant_utility.cpp:853 @ c9d5e35), including Array/packed-array conversions.
 static bool _convert_annotation_argument(Variant &r_value, Variant::Type p_expected_type) {
@@ -1268,6 +1284,9 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			if (member.variable == nullptr) {
 				break;
 			}
+			const BSParser::Node *previous_declaration = get_node_declaration;
+			get_node_declaration = member.variable;
+			Finally restore_declaration([&]() { get_node_declaration = previous_declaration; });
 			member.variable->set_datatype(resolving_datatype);
 			auto is_builtin_export = [](const BSParser::AnnotationNode *annotation) {
 				return annotation && annotation->info && !annotation->is_custom && String(annotation->name).begins_with("@export");
@@ -1288,11 +1307,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			}
 
 			if (member.variable->initializer != nullptr) {
-				// S6: Foundry surface:1758-1820 scopes static member initializer context.
-				const BSParser::Node *previous_initializer = get_node_declaration;
-				get_node_declaration = member.variable;
 				reduce_expression(member.variable->initializer);
-				get_node_declaration = previous_initializer;
 				qualify_contextual_enum_case_consumer(member.variable->initializer, type);
 				mark_coroutine_handle_capture(member.variable->initializer, type);
 				const bool constant_type_ok = update_constant_expression_type(member.variable->initializer, type, "assign");
@@ -1333,10 +1348,26 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			type.is_constant = false;
 			type.is_read_only = false;
 			member.variable->set_datatype(type);
-			// The existing export callback consumes the completed datatype (parser export_annotations).
+			// Foundry surface c9d5e35:1758-1765: initializer lambdas drain after
+			// publication while the variable's owning class and static context are active.
+			resolve_pending_lambda_bodies();
+			// Foundry surface c9d5e35:1766-1817: guard the completed property/Variant
+			// initializer type before the existing export callback can erase its identity.
+			auto export_type = type;
+			if (export_type.is_variant() && member.variable->initializer && member.variable->initializer->get_datatype().is_set())
+				export_type = member.variable->initializer->get_datatype();
+			BSParser::DataType rejected_type;
+			const bool rejects_export = _export_type_contains_tuple_or_tagged_union(export_type, rejected_type);
 			for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
-				if (is_builtin_export(annotation))
-					annotation->apply(parser, member.variable, p_class);
+				if (!is_builtin_export(annotation))
+					continue;
+				const bool direct_tagged_value = export_type.is_tagged_union_type() && !export_type.is_meta_type;
+				const bool exempt = annotation->name == SNAME("@export_storage") || (annotation->name == SNAME("@export_custom") && !direct_tagged_value);
+				if (rejects_export && !exempt) {
+					push_error(vformat(R"(Cannot export a %s-typed property: "%s" has type "%s".)", rejected_type.is_tuple() ? "tuple" : "tagged-union", member.variable->identifier->name, export_type.to_string()), annotation);
+					continue;
+				}
+				annotation->apply(parser, member.variable, p_class);
 			}
 		} break;
 		case BSParser::ClassNode::Member::CONSTANT: {
@@ -1666,12 +1697,13 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 		MethodInfo info;
 		if (BSNativeDB::get_method_info(native, p_identifier->name, &info)) {
 			p_identifier->set_datatype(call_site_validation.explicit_callable_type_from_info(info));
-			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
+			p_identifier->function_source_is_static = info.flags & METHOD_FLAG_STATIC;
 			return true;
 		}
 		if (ClassDB::class_has_signal(native, p_identifier->name) && BSNativeDB::get_signal(native, p_identifier->name, &info)) {
 			p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_info(info));
-			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
 			return true;
 		}
 		if (ClassDB::class_has_integer_constant(native, p_identifier->name)) {

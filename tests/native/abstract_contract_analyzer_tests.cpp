@@ -550,9 +550,10 @@ TEST_SUITE("abstract_contract_analyzer") {
 				call = lambda->function->body->statements[0];
 				CHECK_FALSE(lambda->use_self);
 			}
-			// Pin5344/3824 drains pending lambdas under Base before Child's body;
-			// no creation-class field exists in the pinned lambda queue.
-			const String expected = mode == 1 || mode == 3 ? R"*(Function "read()" not found in base RefCounted.)*" : mode == 0 ? R"*(Cannot call non-static function "read()" from a static variable initializer.)*"
+			// Pin surface1758-1765 drains variable initializer lambdas immediately under Child.
+			// Parameter-default lambdas remain pending until Base's body (pin5344/3824);
+			// the queue carries no creation-class field. Preserve that distinct mode3 result.
+			const String expected = mode == 3 ? R"*(Function "read()" not found in base RefCounted.)*" : mode == 0 || mode == 1 ? R"*(Cannot call non-static function "read()" from a static variable initializer.)*"
 																																: R"*(Cannot call non-static function "read()" from the static function "test()".)*";
 			error_at(parser, 0, expected, call);
 			public_block(source, path, parser);
