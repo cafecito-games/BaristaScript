@@ -119,7 +119,7 @@ TEST_SUITE("cross_file_analyzer") {
 		names.add("b", "namespace b\nclass_name Item\n");
 		for (const String &imports : { String("import a\nimport b\n"), String("import b\nimport a\n") }) {
 			error_is(analyze(imports + String("var x: Item\n")),
-					"Could not resolve type \"Item\": imported declarations \"a.Item\" and \"b.Item\" are ambiguous.", 3, 6, 3, 12);
+					"Could not resolve type \"Item\": imported namespaces \"a\" and \"b\" are ambiguous.", 3, 6, 3, 12);
 		}
 		valid("import a\nimport a\nvar x: Item\n");
 		valid("import a\nimport b\nvar x: a.Item\n");
@@ -139,7 +139,7 @@ TEST_SUITE("cross_file_analyzer") {
 		names.add("a", "namespace a\ntrait_name T\n");
 		names.add("b", "namespace b\ntrait_name T\n");
 		for (const String &imports : { String("import a\nimport b\n"), String("import b\nimport a\n") }) {
-			const String message = "Could not resolve trait \"T\": imported declarations \"a.T\" and \"b.T\" are ambiguous.";
+			const String message = "Could not resolve trait \"T\": imported namespaces \"a\" and \"b\" are ambiguous.";
 			error_is(analyze(imports + String("uses T\n")), message, 3, 6, 3, 7);
 			error_is(analyze(imports + String("extend Node uses T:\n\tpass\n")), message, 3, 18, 3, 19);
 		}
@@ -160,7 +160,7 @@ TEST_SUITE("cross_file_analyzer") {
 		valid("namespace a\nimport b\nextends Base\n");
 		valid("import a\nimport b\nextends a.Base\n");
 		error_is(analyze("import b\nimport a\nextends Base\n"),
-				"Could not resolve base class \"Base\": imported declarations \"a.Base\" and \"b.Base\" are ambiguous.", 3, 9, 3, 13);
+				"Could not resolve base class \"Base\": imported namespaces \"a\" and \"b\" are ambiguous.", 3, 9, 3, 13);
 	}
 	TEST_CASE("selected_stale_or_broken_provider_blocks_global_and_native_fallback") {
 		Names names;
@@ -176,8 +176,18 @@ TEST_SUITE("cross_file_analyzer") {
 		}
 		const String native = names.add("native", "namespace own\nclass_name Node\n");
 		BSCache::set_source_override(native, "namespace own\nclass_name ChangedNode\n");
-		error_is(analyze("namespace own\nvar x: Node\n"), "Could not resolve type \"Node\": declaration \"own.Node\" from \"res://tests/x1/native.barista\" is stale or invalid.", 2, 6, 2, 12);
-		error_is(analyze("namespace own\nfunc test():\n\tvar x = Node\n"), "Could not resolve type \"Node\": declaration \"own.Node\" from \"res://tests/x1/native.barista\" is stale or invalid.", 3, 13, 3, 17);
+		// Pin c9d5e35:2944 and reduce_identifier native class handles select flat Node
+		// before namespace lookup; an explicitly qualified stale head still fails.
+		for (const String &source : { String("namespace own\nvar x: Node\n"), String("namespace own\nvar x = Node\n") }) {
+			const Result result = analyze(source);
+			CHECK(result.status == OK);
+			CHECK(result.errors.is_empty());
+			CHECK(result.type.kind == BSParser::DataType::NATIVE);
+			CHECK(result.type.native_type == StringName("Node"));
+			CHECK(result.type.is_meta_type == source.contains("= Node"));
+		}
+		valid("namespace own\nfunc test():\n\tvar x = Node\n");
+		error_is(analyze("namespace own\nvar x: own.Node\n"), "Could not resolve type \"own.Node\": declaration \"own.Node\" from \"res://tests/x1/native.barista\" is stale or invalid.", 2, 6, 2, 16);
 		names.add("broken", "namespace broken\nclass_name Item\nfunc invalid():\n\tvar x = )\n");
 		error_is(analyze("import broken\nvar x: Item\n"), "Could not resolve type \"Item\": provider \"res://tests/x1/broken.barista\" could not be parsed.", 2, 6, 2, 12);
 	}
@@ -218,7 +228,7 @@ TEST_SUITE("cross_file_analyzer") {
 			names.add(ns, String("namespace ") + ns + String("\nclass_name Item\n"));
 		}
 		for (const String &imports : { String("import c\nimport a\nimport b\n"), String("import b\nimport c\nimport a\n") }) {
-			error_is(analyze(imports + String("var x: Item\n")), "Could not resolve type \"Item\": imported declarations \"a.Item\", \"b.Item\" and \"c.Item\" are ambiguous.", 4, 6, 4, 12);
+			error_is(analyze(imports + String("var x: Item\n")), "Could not resolve type \"Item\": imported namespaces \"a\", \"b\" and \"c\" are ambiguous.", 4, 6, 4, 12);
 		}
 		error_is(analyze("import a\nvar x: missing.Item\n"), "Could not find type \"missing.Item\".", 2, 8, 2, 15);
 		error_is(analyze("import missing\nimport missing\n"), "Could not find imported namespace \"missing\".", 1, 1, 4, 1);
@@ -236,7 +246,7 @@ TEST_SUITE("cross_file_analyzer") {
 		CHECK_FALSE(before.is_empty());
 		const String source = "import a\nimport b\nuses T\n";
 		for (int repeat = 0; repeat < 2; repeat++) {
-			error_is(analyze(source), "Could not resolve trait \"T\": imported declarations \"a.T\" and \"b.T\" are ambiguous.", 3, 6, 3, 7);
+			error_is(analyze(source), "Could not resolve trait \"T\": imported namespaces \"a\" and \"b\" are ambiguous.", 3, 6, 3, 7);
 			const Dictionary result = names.language->_validate(source, "res://tests/x1/consumer.barista", true, true, false, false);
 			CHECK_FALSE(bool(result["valid"]));
 			Ref<BaristaScript> script;
@@ -272,7 +282,7 @@ TEST_SUITE("cross_file_analyzer") {
 			Result one;
 			one.status = result.status;
 			one.errors.push_back(result.errors[i]);
-			error_is(one, "Could not resolve type \"Item\": imported declarations \"a.Item\" and \"b.Item\" are ambiguous.", 3 + i, 6, 3 + i, 12);
+			error_is(one, "Could not resolve type \"Item\": imported namespaces \"a\" and \"b\" are ambiguous.", 3 + i, 6, 3 + i, 12);
 		}
 	}
 	TEST_CASE("public_validity_matches_typed_lookup_results") {

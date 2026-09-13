@@ -4,7 +4,7 @@
 `tests/native/cache_test.cpp` digests their bytes and stores a parse payload derived from them.
 
 The binary fixtures were produced from `BSParseCache::flush` output by the legacy generator
-in `project/tests/cache_test.gd` at immutable commit
+in the retired GDScript cache suite at immutable commit
 `1fe5964cd78150651a9d9a4890586ee6a5245aa2`. The native migration preserves those bytes and
 compares newly written disposable stores to the golden. Validate without rewriting fixtures:
 

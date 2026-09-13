@@ -3,12 +3,12 @@
 # expected tagged-union type, including the ones nested in a container literal or in the branches of
 # a conditional expression. A shorthand in a position that supplies no type at all is reported once
 # every body is resolved, which is why the container elements are reported after the conditional.
-enum Result[T, E]:
+enum Result:
 	Ok(value: int)
 	Err(error: String)
 
 
-enum Option[T]:
+enum Option:
 	None
 	Some(value: int)
 

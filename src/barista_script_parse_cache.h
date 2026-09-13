@@ -55,10 +55,12 @@ public:
 			const godot::PackedByteArray &p_payload);
 
 	/**
-	 * Writes the buffered entries atomically. p_fault is a BSParseCache::WriteFault value (0 NONE,
-	 * 1 BEFORE_WRITE, 2 AFTER_WRITE_BEFORE_RENAME) injected for the atomic-write tests;
-	 * p_version_tag is the entry version tag, CACHE_FORMAT_VERSION unless a test is deliberately
-	 * writing under another one. Returns a Godot Error code.
+	 * Writes the buffered entries with store-or-previous publication. p_fault is a
+	 * BSParseCache::WriteFault value (0 NONE, 1 BEFORE_WRITE, 2 AFTER_WRITE_BEFORE_RENAME,
+	 * 3 TRUNCATE_TEMP_AFTER_WRITE, 4 REMOVE_TEMP_BEFORE_PROMOTION) injected for the write-path
+	 * tests; p_version_tag is the entry version tag, CACHE_FORMAT_VERSION unless a test is
+	 * deliberately writing under another one. Returns a Godot Error code. Ordinary rejected
+	 * promotion preserves previous loadable bytes and leaves in-memory entries unchanged.
 	 */
 	int flush(const godot::String &p_store_path, int p_fault, int p_version_tag);
 

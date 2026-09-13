@@ -27,8 +27,8 @@
 /*  reduce_call member-miss / hidden-witness fallback;                    */
 /*  reduce_await + MISSING_AWAIT / REDUNDANT_AWAIT for AsyncCallable→     */
 /*  coroutine wrap; Coroutine[T] annotation decode; direct async-call wrap*/
-/*  + mark_coroutine_handle_capture (#60 residual); Self-contract RETURN  */
-/*  assign/return/assignment + receiver-contract stamp (#60 residual).    */
+/*  + mark_coroutine_handle_capture (R02); Self-contract RETURN  */
+/*  assign/return/assignment + receiver-contract stamp (R03, #138).    */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
@@ -76,7 +76,7 @@ public:
 	public:
 		explicit CallSiteValidationContext(BSAnalyzer *p_analyzer);
 
-		void validate_call_arg(const MethodInfo &p_method, const BSParser::CallNode *p_call);
+		void validate_call_arg(const MethodInfo &p_method, const BSParser::CallNode *p_call, const BSParser::DataType *p_receiver = nullptr);
 		void validate_call_arg(const List<BSParser::DataType> &p_par_types, int p_default_args_count, bool p_is_vararg, const BSParser::CallNode *p_call, const Vector<int> &p_extra_allowed_argument_counts = Vector<int>(), int p_trailing_unbound_argument_count = 0, const BSParser::DataType *p_rest_parameter_type = nullptr, int p_extra_allowed_argument_offset = 0);
 		void validate_argument_against_type(const BSParser::DataType &p_expected_type, BSParser::ExpressionNode *p_argument, int p_argument_number, const StringName &p_function, const BSParser::CallNode *p_call);
 		static const BSParser::DataType *rest_element_type(const BSParser::DataType *p_rest_parameter_type);
@@ -248,7 +248,7 @@ public:
 	 * BSCache, so owner-local failures must be memoized alongside them. Records only
 	 * errors added by the exact class phase/member so a later foreign caller never
 	 * infers failure from unrelated errors already in the owner parser.
-	 * Wired for member path (#118) and class-phase INTERFACE/BODY (#60 residual slice).
+	 * R01/X3: member and class INTERFACE/BODY failures retain their declaring owner (#140).
 	 */
 	class OwnerResolutionFailures {
 	public:
@@ -450,6 +450,8 @@ public:
 
 #ifdef BARISTA_TESTS
 	friend struct ProviderTestAccess;
+	friend struct ProviderPhaseTestAccess;
+	friend struct WitnessScopeTestAccess;
 #endif
 
 	BSParser *get_parser() const { return parser; }
@@ -494,14 +496,56 @@ private:
 
 	bool reducing_match_pattern_expression = false;
 	BSParser::ClassNode *current_class = nullptr;
+	BSParser::ClassNode *witness_target_class = nullptr;
+	BSParser::ClassNode *witness_declaration_scope = nullptr;
+	class ScopedCurrentClass {
+		BSAnalyzer *analyzer;
+		BSParser::ClassNode *previous;
+
+	public:
+		ScopedCurrentClass(BSAnalyzer *p_analyzer, BSParser::ClassNode *p_class) : analyzer(p_analyzer), previous(p_analyzer->current_class) { analyzer->current_class = p_class; }
+		~ScopedCurrentClass() { analyzer->current_class = previous; }
+	};
+	class ScopedWitnessScope {
+		BSAnalyzer *analyzer;
+		BSParser::ClassNode *previous_target;
+		BSParser::ClassNode *previous_declaration;
+
+	public:
+		ScopedWitnessScope(BSAnalyzer *p_analyzer, BSParser::ClassNode *p_target, BSParser::ClassNode *p_declaration) : analyzer(p_analyzer), previous_target(p_analyzer->witness_target_class), previous_declaration(p_analyzer->witness_declaration_scope) {
+			analyzer->witness_target_class = p_target;
+			analyzer->witness_declaration_scope = p_declaration;
+		}
+		~ScopedWitnessScope() {
+			analyzer->witness_target_class = previous_target;
+			analyzer->witness_declaration_scope = previous_declaration;
+		}
+	};
 	BSParser::FunctionNode *current_function = nullptr;
+	// Receiver checks follow the enclosing member initializer or function, including delayed lambdas.
+	const BSParser::Node *get_node_declaration = nullptr;
+	bool get_node_is_static_context() const;
+	const BSParser::FunctionNode *get_enclosing_context_function() const;
+	void check_self_call(BSParser::CallNode *p_call);
+	const BSParser::FunctionNode *get_enclosing_enum_function() const;
+	BSParser::DataType enum_self_type() const;
+	BSParser::FunctionNode *find_enum_function(const BSParser::DataType &p_receiver, const StringName &p_name, const BSParser::Node *p_source);
+	void check_named_property_accessors(BSParser::VariableNode *p_variable, BSParser::ClassNode *p_class);
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
 	BSParser::EnumNode *current_enum = nullptr;
 	BSParser::ClassNode *current_enum_owner = nullptr;
+	// Enum interface admission is declaration-owned, not inferred from a function's
+	// resolved_signature flag (early initializers can request a signature first).
+	HashSet<const BSParser::EnumNode *> resolving_enum_interfaces;
+	HashSet<const BSParser::EnumNode *> resolved_enum_interfaces;
 	/** Foundry `current_lambda` (@ c9d5e35): set while reducing a lambda body for capture marking. */
 	BSParser::LambdaNode *current_lambda = nullptr;
 	/** Foundry pending_body_resolution_lambdas (@ c9d5e35): flush after each suite statement. */
-	Vector<BSParser::LambdaNode *> pending_lambda_bodies;
+	struct PendingLambdaBody {
+		BSParser::LambdaNode *lambda = nullptr;
+		const BSParser::Node *declaration = nullptr;
+	};
+	Vector<PendingLambdaBody> pending_lambda_bodies;
 	Vector<BSParser::FunctionNode *> pending_function_flow_checks;
 	CallSiteValidationContext call_site_validation;
 	FlowFinalityContext flow_finality;
@@ -512,12 +556,13 @@ private:
 	HashSet<const BSParser::ExpressionNode *> resolved_contextual_enum_cases;
 	// Parser-owned nodes rejected by subscript/contextual analysis; never retry their carriers.
 	HashSet<const BSParser::ExpressionNode *> failed_constant_expressions;
+	HashSet<const BSParser::ExpressionNode *> diagnosed_constant_literal_failures;
 	/** Foundry transparent type-alias expansion cache / failure and cycle guards. */
 	HashMap<const BSParser::TypeAliasNode *, BSParser::DataType> resolved_type_aliases;
 	HashSet<const BSParser::TypeAliasNode *> failed_type_aliases;
 	Vector<BSParser::TypeAliasNode *> type_alias_resolution_stack;
 
-	Error run_phase_preflight();
+	Error run_phase_preflight(bool p_validate_annotations = true);
 	Error run_phase_inheritance_resolution();
 	Error run_phase_interface_and_member_surface();
 	Error run_phase_body_expression_callable_signal();
@@ -542,6 +587,12 @@ private:
 	 * walk base CLASS chain then outer for same-file extends / member lookup.
 	 */
 	void get_class_node_current_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, BSParser::Node *p_source);
+	void get_effective_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list, const BSParser::Node *p_source, HashSet<BSParser::ClassNode *> *r_declarations = nullptr);
+	bool is_type_bearing_member(const BSParser::ClassNode::Member &p_member) const;
+	bool witness_target_scope_declares_name(const StringName &p_name, const BSParser::Node *p_source);
+	BSParser::ClassNode *find_witness_declaration_type(const StringName &p_name, const BSParser::Node *p_source);
+	bool reduce_identifier_from_witness_declaration_scope(BSParser::IdentifierNode *p_identifier);
+
 	bool has_member_name_conflict_in_script_class(const StringName &p_member_name, const BSParser::ClassNode *p_class, const BSParser::Node *p_member) const;
 	bool has_member_name_conflict_in_native_type(const StringName &p_member_name, const StringName &p_native_type) const;
 	Error check_native_member_name_conflict(const StringName &p_member_name, const BSParser::Node *p_member_node, const StringName &p_native_type);
@@ -587,7 +638,12 @@ private:
 	void decide_suite_type(BSParser::Node *p_suite, BSParser::Node *p_statement);
 	void resolve_for(BSParser::ForNode *p_for);
 	void resolve_assert(BSParser::AssertNode *p_assert);
+	static String make_type_handle_assignment_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name, bool p_specified);
+	static String make_type_handle_argument_error(const StringName &p_function, int p_argument, const BSParser::DataType &p_target, const BSParser::DataType &p_source);
+	String make_declaration_type_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name);
+	void resolve_variable_destructure(BSParser::VariableDestructureNode *p_destructure);
 	void analyze_statement(BSParser::Node *p_node);
+	void warn_shadowed_local(BSParser::IdentifierNode *p_identifier, const String &p_context);
 	void warn_unused_locals(BSParser::SuiteNode *p_suite);
 	void warn_unused_parameters(BSParser::FunctionNode *p_function);
 	/** Foundry resolve_class_body unused pass: UNUSED_PRIVATE_CLASS_VARIABLE + UNUSED_SIGNAL. */
@@ -682,12 +738,14 @@ private:
 	std::atomic<bool> indexed_conformance_files_probed{ false };
 	/** Foundry reduce_lambda (@ c9d5e35): Callable type + body under `current_lambda`. */
 	void reduce_lambda(BSParser::LambdaNode *p_lambda);
+	void reduce_get_node(BSParser::GetNodeNode *p_get_node);
 	void reduce_subscript(BSParser::SubscriptNode *p_subscript);
 	void reduce_tuple_literal(BSParser::TupleLiteralNode *p_tuple);
 	void reject_constant_materialization(BSParser::ExpressionNode *p_expression);
 	Variant make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced);
 	bool reduce_semantic_constant_subscript(BSParser::SubscriptNode *p_subscript);
 	void publish_constant_subscript(BSParser::SubscriptNode *p_subscript, const Variant &p_value);
+	BSParser::DataType type_from_native_property(const StringName &p_native, const PropertyInfo &p_property);
 	void materialize_constant_initializer(BSParser::ConstantNode *p_constant);
 	void check_assignable_inference(BSParser::AssignableNode *p_assignable, const char *p_kind);
 	void reduce_array(BSParser::ArrayNode *p_array);
@@ -764,13 +822,15 @@ private:
 	 * Foundry update_container_literal_element_types @ c9d5e35: select a unique concrete literal
 	 * target, patch Array/Dictionary/tuple elements, and preserve contextual Self provenance.
 	 */
-	bool update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
+	bool update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract = false);
 	/** Value-aware constant retyping/reporting shared by assign/return/pass consumers. */
-	bool update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage);
-	void update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type);
-	void update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type);
+	void warn_plain_enum_conversion(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const BSParser::Node *p_origin);
+	void downgrade_assignment_source(BSParser::ExpressionNode *p_assignee);
+	bool update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage, bool p_builtin_constructor = false);
+	void update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type, bool p_self_parameter_contract = false);
+	void update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type, bool p_self_parameter_contract = false);
 	/** resolve_contextual_enum_case + container-literal element descent for one consumer site. */
-	void qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type);
+	void qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract = false);
 	/**
 	 * Foundry reduce_call_enum_case_construction @ c9d5e35 (SelfFieldLeg + self-ref completion):
 	 * arity + payload field compatibility with Self spelling legs + constant bake +
@@ -802,7 +862,7 @@ private:
 	bool self_parameter_contract_admits_argument_type(const BSParser::DataType &p_expected_type, const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const BSParser::ExpressionNode *p_argument) const;
 	bool self_parameter_satisfied_by_receiver_identity(const BSParser::DataType &p_expected_type, const BSParser::ExpressionNode *p_argument, const BSParser::CallNode *p_call) const;
 	String self_parameter_receiver_identity_clause(const BSParser::DataType &p_expected_type,
-			const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call) const;
+			const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const String &p_expected_role = "parameter", const String &p_actual_role = "argument") const;
 
 	void validate_bootstrap_namespace_imports();
 	bool validate_bootstrap_namespace_import(const String &p_import);
@@ -827,6 +887,8 @@ private:
 	void resolve_used_traits(BSParser::ClassNode *p_class);
 	/** Foundry validate_trait_requirements @ c9d5e35: abstract methods from used traits. */
 	void validate_trait_requirements(BSParser::ClassNode *p_class);
+	void validate_trait_conflicts(BSParser::ClassNode *p_class);
+	bool class_satisfies_trait_base(BSParser::ClassNode *p_class, BSParser::ClassNode *p_trait);
 	bool find_trait_implementation(BSParser::ClassNode *p_class, const StringName &p_function_name,
 			TraitMethodImplementation &r_implementation);
 	/**
@@ -873,11 +935,13 @@ private:
 	BSParser::ClassNode *resolve_builtin_conformance_shim(BSParser::ConformanceNode *p_conformance, const BSParser::DataType &p_builtin_type);
 	BSParser::ClassNode *resolve_trait_reference(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source);
 	BSParser::ClassNode *resolve_conformance_trait_use(BSParser::ClassNode *p_scope, BSParser::ClassNode::TraitUse &p_trait_use, const BSParser::Node *p_source);
-	bool validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target, BSParser::ClassNode *p_trait);
+	bool validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target, BSParser::ClassNode *p_trait, BSParser::ClassNode *p_declaration_scope);
 	/** Foundry resolve_conformance_bodies: analyze witness methods against the target. */
 	void resolve_conformance_bodies(BSParser::ClassNode *p_class);
 	/** Own members then `base_type.class_type` chain (Foundry inherited method surface @ c9d5e35). */
-	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const;
+	BSParser::ClassNode *find_trait_member_in_inheritance_chain(BSParser::ClassNode *p_receiver, const StringName &p_name, const BSParser::Node *p_source);
+	BSParser::ClassNode *find_member_in_class_or_trait_chain(BSParser::ClassNode *p_receiver, const StringName &p_name, const BSParser::Node *p_source);
+	BSParser::FunctionNode *find_class_function(BSParser::ClassNode *p_class, const StringName &p_name, bool *r_found_member = nullptr, const BSParser::Node *p_source = nullptr) const;
 	enum class NameLookupStatus { MISSING,
 		FOUND,
 		ERROR };

@@ -46,6 +46,8 @@ class BSTypeCompatibility {
 public:
 	struct Options {
 		bool allow_implicit_conversion = false;
+		// Ordinary override domains cannot rely on a downcast at invocation.
+		bool allow_runtime_narrowing = true;
 		bool strict_dynamic = false;
 		bool strict_null = false;
 		const Variant *constant_source_value = nullptr;
@@ -99,9 +101,9 @@ public:
 	/** Foundry FSTypeCompatibility rest-tail helpers @ c9d5e35 (trait signature matching). */
 	static bool rest_parameter_type_is_narrowing(const BSParser::DataType &p_rest_parameter_type);
 	static bool rest_parameter_accepts_required_arguments(const BSParser::DataType *p_implementation_rest_array,
-			const BSParser::DataType *p_required_rest_array, bool p_strict_null);
+			const BSParser::DataType *p_required_rest_array, bool p_strict_null, bool p_allow_runtime_narrowing = true);
 	static bool rest_parameter_accepts_required_argument(const BSParser::DataType *p_implementation_rest_array,
-			const BSParser::DataType &p_required_argument_type, bool p_strict_null);
+			const BSParser::DataType &p_required_argument_type, bool p_strict_null, bool p_allow_runtime_narrowing = true);
 
 	// Invariant live projection evidence; UNKNOWN is never proof of conformance.
 	enum class ArgumentEvidence {

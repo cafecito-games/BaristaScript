@@ -8272,7 +8272,6 @@ bool BSParser::export_custom_annotation(AnnotationNode *p_annotation, Node *p_ta
 }
 
 bool BSParser::export_tool_button_annotation(AnnotationNode *p_annotation, Node *p_target, ClassNode *p_class) {
-#ifdef TOOLS_ENABLED
 	ERR_FAIL_COND_V_MSG(p_target->type != Node::VARIABLE, false, vformat(R"("%s" annotation can only be applied to variables.)", p_annotation->name));
 	ERR_FAIL_COND_V(p_annotation->resolved_arguments.is_empty(), false);
 
@@ -8302,6 +8301,8 @@ bool BSParser::export_tool_button_annotation(AnnotationNode *p_annotation, Node 
 
 	variable->exported = true;
 
+	// Static annotation admission also applies to extension/template builds.
+#ifdef TOOLS_ENABLED
 	// Build the hint string (format: `<text>[,<icon>]`).
 	String hint_string = p_annotation->resolved_arguments[0].operator String(); // Button text.
 	if (p_annotation->resolved_arguments.size() > 1) {
@@ -8314,7 +8315,7 @@ bool BSParser::export_tool_button_annotation(AnnotationNode *p_annotation, Node 
 	variable->export_info.usage = PROPERTY_USAGE_EDITOR;
 #endif // TOOLS_ENABLED
 
-	return true; // Only available in editor.
+	return true;
 }
 
 bool BSParser::keep_name_annotation(AnnotationNode *, Node *, ClassNode *) {

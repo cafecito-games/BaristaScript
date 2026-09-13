@@ -471,6 +471,7 @@ func _assign_stages(corpus_root: String, cases: Array, update: bool) -> String:
 		owned.merge(validated.stages)
 		fixture_paths = _fixture_source_paths(staging_root)
 		fixture_paths.append_array(_fixture_source_paths("res://tests/corpus/parser"))
+		fixture_paths.append_array(_fixture_source_paths("res://tests/corpus_support/parser"))
 		fixture_paths.sort()
 
 	for case in cases:

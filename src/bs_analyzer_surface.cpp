@@ -19,6 +19,7 @@
 /**************************************************************************/
 
 #include "bs_analyzer.h"
+#include "bs_core_constants.h"
 
 #include "barista_script.h"
 #include "barista_script_language.h"
@@ -29,6 +30,22 @@
 #include "bs_type.h"
 
 namespace barista_script {
+
+// Foundry surface c9d5e35:126-145: first rejected leaf determines the diagnostic family.
+static bool _export_type_contains_tuple_or_tagged_union(const BSParser::DataType &p_type, BSParser::DataType &r_found_type) {
+	if (p_type.is_tuple() || (p_type.is_tagged_union_type() && !p_type.is_meta_type)) {
+		r_found_type = p_type;
+		return true;
+	}
+	if (p_type.kind == BSParser::DataType::BUILTIN && p_type.builtin_type == Variant::ARRAY && p_type.has_container_element_type(0)) {
+		return _export_type_contains_tuple_or_tagged_union(p_type.get_container_element_type(0), r_found_type);
+	}
+	if (p_type.kind == BSParser::DataType::BUILTIN && p_type.builtin_type == Variant::DICTIONARY) {
+		return _export_type_contains_tuple_or_tagged_union(p_type.get_container_element_type_or_variant(0), r_found_type) ||
+				_export_type_contains_tuple_or_tagged_union(p_type.get_container_element_type_or_variant(1), r_found_type);
+	}
+	return false;
+}
 
 // Use the engine's complete conversion surface after Foundry's strict-admission gate
 // (core/variant/variant_utility.cpp:853 @ c9d5e35), including Array/packed-array conversions.
@@ -173,7 +190,9 @@ BSParser::AnnotationDeclarationNode *BSAnalyzer::load_external_annotation_declar
 		return nullptr;
 	}
 	const Error err = ref->raise_status(BSParserRef::INTERFACE_SOLVED);
-	if (err != OK || ref->get_status() < BSParserRef::INTERFACE_SOLVED) {
+	// A later body failure does not invalidate an already successful signature phase.
+	if ((err != OK && ref->get_result_for_status(BSParserRef::INTERFACE_SOLVED) != OK) ||
+			ref->get_status() < BSParserRef::INTERFACE_SOLVED) {
 		return nullptr;
 	}
 	BSParser *external_parser = ref->get_parser();
@@ -690,6 +709,41 @@ BSParser::DataType BSAnalyzer::type_from_metatype(const BSParser::DataType &p_me
 	return result;
 }
 
+const BSParser::FunctionNode *BSAnalyzer::get_enclosing_enum_function() const {
+	for (const auto *function = current_function; function; function = function->source_lambda ? function->source_lambda->parent_function : nullptr)
+		if (function->owner_enum)
+			return function;
+	return nullptr;
+}
+
+BSParser::DataType BSAnalyzer::enum_self_type() const {
+	const auto *function = get_enclosing_enum_function();
+	return function ? type_from_metatype(function->owner_enum->get_datatype()) : BSParser::DataType();
+}
+
+BSParser::FunctionNode *BSAnalyzer::find_enum_function(const BSParser::DataType &p_receiver, const StringName &p_name, const BSParser::Node *p_source) {
+	if (p_receiver.kind != BSParser::DataType::ENUM || !p_receiver.class_type)
+		return nullptr;
+	auto *owner = p_receiver.class_type;
+	analyze_class_interface(owner, p_source);
+	BSParser::EnumNode *declaration = owner->is_enum_file ? owner->enum_file_decl : nullptr;
+	if (!declaration && owner->has_member(p_receiver.enum_type)) {
+		const auto &member = owner->get_member(p_receiver.enum_type);
+		if (member.type == BSParser::ClassNode::Member::ENUM)
+			declaration = member.m_enum;
+	}
+	const int *index = declaration ? declaration->functions_indices.getptr(p_name) : nullptr;
+	if (!index || *index < 0 || *index >= declaration->functions.size())
+		return nullptr;
+	auto *function = declaration->functions[*index];
+	if (function && p_receiver.is_meta_type && !function->is_static &&
+			p_receiver.builtin_type == Variant::DICTIONARY && BSCoreConstants::get_builtin_method(Variant::DICTIONARY, p_name))
+		return nullptr;
+	if (function)
+		resolve_function_signature_in_class(function, owner);
+	return function;
+}
+
 BSParser::DataType BSAnalyzer::resolve_enum_values(BSParser::EnumNode *p_enum, const BSParser::DataType &p_enum_type, BSParser::ClassNode *p_owner) {
 	if (p_enum == nullptr || p_owner == nullptr) {
 		return p_enum_type;
@@ -1048,6 +1102,151 @@ void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_nod
 	}
 }
 
+// The declaration fallback belongs only to lookups starting at this witness target.
+void BSAnalyzer::get_effective_scope_classes(BSParser::ClassNode *p_node, List<BSParser::ClassNode *> *p_list,
+		const BSParser::Node *p_source, HashSet<BSParser::ClassNode *> *r_declarations) {
+	if (p_node == nullptr)
+		return;
+	get_class_node_current_scope_classes(p_node, p_list, const_cast<BSParser::Node *>(p_source));
+	if (witness_declaration_scope == nullptr || p_node != witness_target_class)
+		return;
+	List<BSParser::ClassNode *> declarations;
+	get_class_node_current_scope_classes(witness_declaration_scope, &declarations, const_cast<BSParser::Node *>(p_source));
+	for (BSParser::ClassNode *scope : declarations) {
+		if (p_list->find(scope) != nullptr)
+			continue;
+		p_list->push_back(scope);
+		if (r_declarations != nullptr)
+			r_declarations->insert(scope);
+	}
+}
+
+bool BSAnalyzer::is_type_bearing_member(const BSParser::ClassNode::Member &p_member) const {
+	switch (p_member.type) {
+		case BSParser::ClassNode::Member::CLASS:
+		case BSParser::ClassNode::Member::ENUM:
+		case BSParser::ClassNode::Member::TUPLE:
+		case BSParser::ClassNode::Member::TYPE_ALIAS:
+			return true;
+		case BSParser::ClassNode::Member::CONSTANT:
+			// #140 semantic class/preload handles carry their authoritative metatype without
+			// materializing a runtime Script object.
+			return p_member.get_datatype().is_meta_type;
+		default:
+			return false;
+	}
+}
+
+BSParser::ClassNode *BSAnalyzer::find_witness_declaration_type(const StringName &p_name, const BSParser::Node *p_source) {
+	if (current_class != witness_target_class || witness_declaration_scope == nullptr || witness_target_scope_declares_name(p_name, p_source))
+		return nullptr;
+	List<BSParser::ClassNode *> scopes;
+	HashSet<BSParser::ClassNode *> declarations;
+	get_effective_scope_classes(current_class, &scopes, p_source, &declarations);
+	for (BSParser::ClassNode *scope : scopes) {
+		if (!declarations.has(scope))
+			continue;
+		if (scope->identifier != nullptr && scope->identifier->name == p_name)
+			return scope;
+		if (!scope->has_member(p_name))
+			continue;
+		resolve_class_member(scope, p_name, p_source);
+		if (is_type_bearing_member(scope->get_member(p_name)))
+			return scope;
+	}
+	return nullptr;
+}
+
+bool BSAnalyzer::reduce_identifier_from_witness_declaration_scope(BSParser::IdentifierNode *p_identifier) {
+	BSParser::ClassNode *scope = find_witness_declaration_type(p_identifier->name, p_identifier);
+	if (scope == nullptr)
+		return false;
+	if (scope->identifier != nullptr && scope->identifier->name == p_identifier->name) {
+		BSParser::DataType type = scope->get_datatype();
+		type.is_meta_type = true;
+		if (!scope->is_trait) {
+			p_identifier->is_constant = true;
+			p_identifier->is_unmaterialized_constant = true;
+		}
+		p_identifier->set_datatype(type);
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
+	} else if (scope->get_member(p_identifier->name).type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+		push_error(vformat(R"(Type alias "%s" can only be used in a type position. It declares no value, so it cannot be called, constructed, or read.)", p_identifier->name), p_identifier);
+		BSParser::DataType type;
+		type.kind = BSParser::DataType::VARIANT;
+		p_identifier->set_datatype(type);
+	} else if (!try_bind_identifier_member(p_identifier, scope, false)) {
+		return false;
+	}
+	p_identifier->resolved_from_conformance_declaration_scope = true;
+	return true;
+}
+
+// Foundry surface:1302-1361: only the compiler's flattened surface is reachable.
+// Abstract receivers additionally expose requirements; lexical outers are never donors.
+BSParser::ClassNode *BSAnalyzer::find_trait_member_in_inheritance_chain(BSParser::ClassNode *p_receiver,
+		const StringName &p_name, const BSParser::Node *p_source) {
+	HashSet<BSParser::ClassNode *> seen_owners;
+	HashSet<BSParser::ClassNode *> seen_traits;
+	const bool allow_abstract = p_receiver != nullptr && (p_receiver->is_trait || p_receiver->is_abstract);
+	for (BSParser::ClassNode *owner = p_receiver; owner != nullptr; owner = owner->base_type.class_type) {
+		if (seen_owners.has(owner)) {
+			break;
+		}
+		seen_owners.insert(owner);
+		if (owner->resolving_trait_uses) {
+			continue;
+		}
+		resolve_used_traits(owner);
+		if (!owner->resolved_trait_uses || owner->failed_trait_uses) {
+			continue;
+		}
+		for (BSParser::ClassNode *trait : owner->resolved_traits) {
+			if (trait == nullptr || seen_traits.has(trait)) {
+				continue;
+			}
+			seen_traits.insert(trait);
+			if (!trait->has_member(p_name)) {
+				continue;
+			}
+			const auto &member = trait->get_member(p_name);
+			switch (member.type) {
+				case BSParser::ClassNode::Member::VARIABLE:
+				case BSParser::ClassNode::Member::CONSTANT:
+				case BSParser::ClassNode::Member::ENUM:
+				case BSParser::ClassNode::Member::ENUM_VALUE:
+				case BSParser::ClassNode::Member::SIGNAL:
+					break;
+				case BSParser::ClassNode::Member::FUNCTION:
+					if (member.function == nullptr || (!allow_abstract && member.function->is_abstract)) {
+						continue;
+					}
+					break;
+				default:
+					continue;
+			}
+			resolve_class_member(trait, p_name, p_source);
+			return trait;
+		}
+	}
+	return nullptr;
+}
+
+BSParser::ClassNode *BSAnalyzer::find_member_in_class_or_trait_chain(BSParser::ClassNode *p_receiver,
+		const StringName &p_name, const BSParser::Node *p_source) {
+	HashSet<BSParser::ClassNode *> visited;
+	for (BSParser::ClassNode *owner = p_receiver; owner != nullptr; owner = owner->base_type.class_type) {
+		if (visited.has(owner)) {
+			break;
+		}
+		visited.insert(owner);
+		if (owner->has_member(p_name)) {
+			return owner;
+		}
+	}
+	return find_trait_member_in_inheritance_chain(p_receiver, p_name, p_source);
+}
+
 void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source) {
 	ERR_FAIL_COND(p_class == nullptr || !p_class->has_member(p_name));
 	resolve_class_member(p_class, p_class->members_indices[p_name], p_source);
@@ -1121,12 +1320,19 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			if (member.variable == nullptr) {
 				break;
 			}
+			const BSParser::Node *previous_declaration = get_node_declaration;
+			get_node_declaration = member.variable;
+			Finally restore_declaration([&]() { get_node_declaration = previous_declaration; });
 			member.variable->set_datatype(resolving_datatype);
+			auto is_builtin_export = [](const BSParser::AnnotationNode *annotation) {
+				return annotation && annotation->info && !annotation->is_custom && String(annotation->name).begins_with("@export");
+			};
 
 			for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
 				if (annotation != nullptr && annotation->name != SNAME("@warning_ignore")) {
 					resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_VARIABLE);
-					annotation->apply(parser, member.variable, p_class);
+					if (!is_builtin_export(annotation))
+						annotation->apply(parser, member.variable, p_class);
 				}
 			}
 
@@ -1157,6 +1363,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 						type.type_source = BSParser::DataType::INFERRED;
 					}
 				} else if (constant_type_ok && type.is_set() && !type.is_variant() && initializer_type.is_set()) {
+					warn_plain_enum_conversion(type, initializer_type, member.variable->initializer);
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
@@ -1165,10 +1372,7 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 						options.constant_source_value = &member.variable->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-										   initializer_type.to_string(), type.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
-								member.variable->initializer);
+						push_error(make_declaration_type_error(type, initializer_type, "variable", member.variable->identifier != nullptr ? member.variable->identifier->name : StringName("<unknown>")), member.variable->initializer);
 					}
 				}
 			}
@@ -1177,7 +1381,30 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 				type.kind = BSParser::DataType::VARIANT;
 				type.type_source = BSParser::DataType::UNDETECTED;
 			}
+			type.is_constant = false;
+			type.is_read_only = false;
 			member.variable->set_datatype(type);
+			// Foundry surface c9d5e35:1758-1765: initializer lambdas drain after
+			// publication while the variable's owning class and static context are active.
+			resolve_pending_lambda_bodies();
+			// Foundry surface c9d5e35:1766-1817: guard the completed property/Variant
+			// initializer type before the existing export callback can erase its identity.
+			auto export_type = type;
+			if (export_type.is_variant() && member.variable->initializer && member.variable->initializer->get_datatype().is_set())
+				export_type = member.variable->initializer->get_datatype();
+			BSParser::DataType rejected_type;
+			const bool rejects_export = _export_type_contains_tuple_or_tagged_union(export_type, rejected_type);
+			for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
+				if (!is_builtin_export(annotation))
+					continue;
+				const bool direct_tagged_value = export_type.is_tagged_union_type() && !export_type.is_meta_type;
+				const bool exempt = annotation->name == SNAME("@export_storage") || (annotation->name == SNAME("@export_custom") && !direct_tagged_value);
+				if (rejects_export && !exempt) {
+					push_error(vformat(R"(Cannot export a %s-typed property: "%s" has type "%s".)", rejected_type.is_tuple() ? "tuple" : "tagged-union", member.variable->identifier->name, export_type.to_string()), annotation);
+					continue;
+				}
+				annotation->apply(parser, member.variable, p_class);
+			}
 		} break;
 		case BSParser::ClassNode::Member::CONSTANT: {
 			if (member.constant == nullptr) {
@@ -1225,10 +1452,14 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 						options.constant_source_value = &member.constant->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(type, initializer_type, options).compatible) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), type.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
-								member.constant->initializer);
+						if (type.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(type, initializer_type, "constant", member.constant->identifier != nullptr ? member.constant->identifier->name : StringName("<unknown>")), member.constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), type.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", type, "specified type"),
+									member.constant->initializer);
+						}
 					}
 				}
 			}
@@ -1327,7 +1558,32 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			member.m_tuple->set_datatype(make_tuple_type(member.m_tuple->identifier->name, p_class->fqcn,
 					parser->script_path, element_types, field_names, true));
 		} break;
-		case BSParser::ClassNode::Member::ENUM_VALUE:
+		case BSParser::ClassNode::Member::ENUM_VALUE: {
+			// Foundry surface:1928: unnamed enum values are ordinary flattened members.
+			member.enum_value.identifier->set_datatype(resolving_datatype);
+			if (member.enum_value.custom_value != nullptr) {
+				check_class_member_name_conflict(p_class, member.enum_value.identifier->name, member.enum_value.custom_value);
+				BSParser::EnumNode *previous_enum = current_enum;
+				current_enum = member.enum_value.parent_enum;
+				reduce_expression(member.enum_value.custom_value);
+				current_enum = previous_enum;
+				if (!member.enum_value.custom_value->is_constant) {
+					push_error(R"(Enum values must be constant.)", member.enum_value.custom_value);
+				} else if (!has_materialized_constant_value(member.enum_value.custom_value) || member.enum_value.custom_value->reduced_value.get_type() != Variant::INT) {
+					push_error(R"(Enum values must be integers.)", member.enum_value.custom_value);
+				} else {
+					member.enum_value.value = member.enum_value.custom_value->reduced_value;
+					member.enum_value.resolved = true;
+				}
+			} else {
+				check_class_member_name_conflict(p_class, member.enum_value.identifier->name, member.enum_value.parent_enum);
+				push_error(R"(Enum values must have an explicit integer value.)", member.enum_value.identifier);
+			}
+			if (member.enum_value.parent_enum != nullptr) {
+				member.enum_value.parent_enum->values.set(member.enum_value.index, member.enum_value);
+			}
+			member.enum_value.identifier->set_datatype(make_class_enum_type("<anonymous enum>", p_class, parser->script_path, false));
+		} break;
 		case BSParser::ClassNode::Member::GROUP:
 		case BSParser::ClassNode::Member::UNDEFINED:
 			break;
@@ -1366,6 +1622,10 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		BSParser::DataType class_type = member.m_class->get_datatype();
 		class_type.is_meta_type = true;
 		p_identifier->source = BSParser::IdentifierNode::MEMBER_CLASS;
+		if (!member.m_class->is_trait) {
+			p_identifier->is_constant = true;
+			p_identifier->is_unmaterialized_constant = true;
+		}
 		p_identifier->set_datatype(class_type);
 		return true;
 	}
@@ -1414,6 +1674,13 @@ bool BSAnalyzer::try_bind_identifier_member(BSParser::IdentifierNode *p_identifi
 		p_identifier->set_datatype(call_site_validation.callable_type_from_function(member.function));
 		return true;
 	}
+	if (member.type == BSParser::ClassNode::Member::ENUM_VALUE) {
+		p_identifier->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+		p_identifier->set_datatype(member.get_datatype());
+		p_identifier->is_constant = true;
+		p_identifier->reduced_value = member.enum_value.value;
+		return true;
+	}
 	if (member.type == BSParser::ClassNode::Member::ENUM && member.m_enum != nullptr) {
 		BSParser::DataType enum_meta = member.m_enum->get_datatype();
 		if (!enum_meta.is_set() && !enum_meta.is_resolving()) {
@@ -1458,7 +1725,7 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 		for (int i = 0; i < properties.size(); i++) {
 			const Dictionary property = properties[i];
 			if (StringName(property.get("name", String())) == p_identifier->name) {
-				p_identifier->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+				p_identifier->set_datatype(type_from_native_property(native, PropertyInfo::from_dict(property)));
 				p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
 				return true;
 			}
@@ -1466,12 +1733,13 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 		MethodInfo info;
 		if (BSNativeDB::get_method_info(native, p_identifier->name, &info)) {
 			p_identifier->set_datatype(call_site_validation.explicit_callable_type_from_info(info));
-			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
+			p_identifier->function_source_is_static = info.flags & METHOD_FLAG_STATIC;
 			return true;
 		}
 		if (ClassDB::class_has_signal(native, p_identifier->name) && BSNativeDB::get_signal(native, p_identifier->name, &info)) {
 			p_identifier->set_datatype(call_site_validation.explicit_signal_type_from_info(info));
-			p_identifier->source = BSParser::IdentifierNode::INHERITED_VARIABLE;
+			p_identifier->source = BSParser::IdentifierNode::MEMBER_SIGNAL;
 			return true;
 		}
 		if (ClassDB::class_has_integer_constant(native, p_identifier->name)) {

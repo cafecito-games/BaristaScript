@@ -30,6 +30,6 @@ def validate_stages(document: dict, cases: set[str], helpers: set[str], revision
 
 def write_stages(destination, cases, helpers, revision, stage='parser'):
     document = {'schema_version': 1, 'foundry_revision': revision,
-                'cases': {path: stage for path in sorted(cases)}}
+                'cases': dict(sorted(stage.items())) if isinstance(stage, dict) else {path: stage for path in sorted(cases)}}
     validate_stages(document, set(cases), set(helpers), revision)
     (destination / 'case_stages.json').write_text(json.dumps(document, indent=2) + '\n', encoding='utf-8')

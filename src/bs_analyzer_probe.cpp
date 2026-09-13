@@ -2,7 +2,7 @@
 /*  bs_analyzer_probe.cpp                                                 */
 /*                                                                        */
 /*  Debug-only analyzer probe for #43/#49/#52 GDScript suites.            */
-/*  Includes complete_self_referential_enum_type (#60 residual).          */
+/*  Includes complete_self_referential_enum_type (R04, #138/#140).          */
 /*  Copyright (c) 2026-present Cafecito Games LLC.                        */
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */

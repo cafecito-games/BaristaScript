@@ -56,6 +56,9 @@ BSParseCache::WriteFault write_fault_from_int(int p_fault) {
 	if (p_fault == (int)BSParseCache::WriteFault::TRUNCATE_TEMP_AFTER_WRITE) {
 		return BSParseCache::WriteFault::TRUNCATE_TEMP_AFTER_WRITE;
 	}
+	if (p_fault == (int)BSParseCache::WriteFault::REMOVE_TEMP_BEFORE_PROMOTION) {
+		return BSParseCache::WriteFault::REMOVE_TEMP_BEFORE_PROMOTION;
+	}
 	return BSParseCache::WriteFault::NONE;
 }
 

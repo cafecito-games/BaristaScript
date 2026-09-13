@@ -27,10 +27,13 @@
         "rewritten": {
           "errors/type_alias_duplicate_name.barista": "The case asserts that a type alias may not reuse a constant's name; its union members are incidental. Two non-numeric members keep the union arity and the alias name the expectation quotes, so the .out is untouched.",
           "errors/type_alias_union_missing_member.barista": "The case asserts `Expected a type after \"|\".` for a union with a trailing bar. Only the member before the bar has to be a legal type; substituting it changes nothing the case tests, and the .out is untouched.",
+          "features/contextual_tagged_union_shorthand.norun.barista": "M3 removes only unused declaration parameter lists; concrete payload types, line layout and all six original contextual shorthand diagnostics remain unchanged.",
           "features/enum_host_functions.norun.barista": "The case asserts that an enum may host methods, static methods, an async static method and a nested enum. One of the five host functions returns `long`; the body returns `p_name.length()`, which is an `int` in Foundry too, so `int` is the return type the case already had in everything but spelling.",
           "features/enum_name_host_functions.norun.barista": "The `enum_name` sibling of the case above, with the same single `long` return type and the same `p_name.length()` body.",
           "features/fixed_width_integer_literals.barista": "Upstream asserted that `uint`/`long`/`ulong` literals parse; D1 removes them. Kept as the removal's own golden file rather than deleted, so the corpus proves the rejection happens where the feature used to be tested.",
           "features/type_alias_declarations.barista": "The case asserts that `type` is a contextual keyword across file, class and expression scope. Line 3 is one of five alias declarations and the only one spelling a removed type; the other four (`float`, `String? | int`, `int | float`) already survive D1 unchanged.",
+          "warnings/return_value_discarded.barista": "Relocate the original preload to the real adapted auxiliary .barista helper outside aggregate corpus discovery; preserve the line layout and original warning block.",
+          "warnings/standalone_expression.barista": "Relocate the original preload to the real adapted auxiliary .barista helper outside aggregate corpus discovery; preserve the line layout and original warning block.",
           "warnings/static_called_on_instance.barista": "The case asserts the STATIC_CALLED_ON_INSTANCE warning. The `UL` suffix on lines 11 and 13 is reserved under D1; the literal fits the one signed 64-bit carrier, so dropping the suffix preserves the value exactly and the call sites the warning is about are unchanged."
         },
         "expectation_overrides": {
@@ -38,15 +41,10 @@
           "errors/fixed_width_integer_suffix_mixed_case.barista": "Same delta as the case above: upstream's replacement text `1UL` is itself removed by D1.",
           "errors/fixed_width_integer_suffix_order.barista": "Same delta again: there is no canonical order to name when no suffix exists.",
           "errors/fixed_width_integer_unsuffixed_overflow.barista": "The one D1 case no grep finds: the source is the plain decimal 9223372036854775808. Upstream's diagnostic offers `ulong` as the type that would hold it; D1 removes both that type and the suffix that would select it, so the range is final. Pinned by project/tests/corpus_fixtures/tokenizer/integer_above_range.",
-          "errors/identifier_similar_to_keyword.barista": "Not a language delta: the diagnostic names the language, and the hard fork renamed it. The confusable-identifier rule, the Cyrillic source and the keyword it collides with are all unchanged."
+          "errors/identifier_similar_to_keyword.barista": "Not a language delta: the diagnostic names the language, and the hard fork renamed it. The confusable-identifier rule, the Cyrillic source and the keyword it collides with are all unchanged.",
+          "warnings/narrowing_conversion.barista": "D1 (docs/GRAMMAR.md implicit numeric conversions) requires an explicit cast for the fractional 12.345 argument. The positional call validator rejects it at argument line 5; preserve the pinned warning block in source provenance instead of relaxing hard conversion."
         },
         "deferred": {}
-      },
-      "analyzer_deferred": {
-        "errors/export_enum_wrong_array_type.barista": ">> ERROR at line 1: \"@export_enum\" annotation requires a variable of type \"int\", \"Array[int]\", \"PackedByteArray\", \"PackedInt32Array\", \"PackedInt64Array\", \"String\", \"Array[String]\", or \"PackedStringArray\", but type \"Array[Color]\" was given instead.",
-        "errors/export_enum_wrong_type.barista": ">> ERROR at line 1: \"@export_enum\" annotation requires a variable of type \"int\", \"Array[int]\", \"PackedByteArray\", \"PackedInt32Array\", \"PackedInt64Array\", \"String\", \"Array[String]\", or \"PackedStringArray\", but type \"Color\" was given instead.",
-        "errors/export_tool_button_requires_tool_mode.barista": ">> ERROR at line 1: Tool buttons can only be used in tool scripts (add \"@tool\" to the top of the script).",
-        "features/contextual_tagged_union_shorthand.norun.barista": ">> ERROR at line 17: Contextual shorthand \".Ok\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .Ok(...)\".\n>> ERROR at line 18: Contextual shorthand \".None\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .None\".\n>> ERROR at line 19: Contextual shorthand \".Ok\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .Ok(...)\".\n>> ERROR at line 19: Contextual shorthand \".Err\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .Err(...)\".\n>> ERROR at line 20: Contextual shorthand \".Ok\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .Ok(...)\".\n>> ERROR at line 20: Contextual shorthand \".Err\" needs an expected tagged-union type; annotate the target, e.g. \"var x: Result[int, String] = .Err(...)\"."
       }
     },
     "analyzer": {

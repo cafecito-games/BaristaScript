@@ -195,18 +195,11 @@ class ImportedTree(unittest.TestCase):
                     surviving.append(f"{path.relative_to(self.root)}: {word}")
         self.assertEqual(surviving, [])
 
-    def test_expectations_are_one_line_with_a_trailing_newline(self):
-        """The harness reads the first line; anything after it is unread text.
-
-        An expectation carrying a second line would be an assertion nothing
-        checks, which is how a corpus grows expectations that are quietly false.
-        """
-        malformed = []
+    def test_expectations_are_complete_blocks_with_one_trailing_newline(self):
+        from corpus_expectations import decode_expectation
         for path in self.root.rglob("*.out"):
-            text = path.read_text(encoding="utf-8")
-            if not text.endswith("\n") or "\n" in text[:-1]:
-                malformed.append(path.relative_to(self.root).as_posix())
-        self.assertEqual(malformed, [])
+            with self.subTest(path=path):
+                self.assertTrue(decode_expectation(path.read_bytes(), str(path)))
 
     def test_the_success_sentinel_is_never_spelled_a_second_way(self):
         """Every success expectation is byte-identical to the C++ definition."""
@@ -234,7 +227,7 @@ class ImportedTree(unittest.TestCase):
         # Grep hit count is not the disposition count and not the population.
         triage = self.baseline["triage"]
         disposition_count = sum(len(triage[key]) for key in triage)
-        self.assertEqual(disposition_count, 16)
+        self.assertEqual(disposition_count, 20)
         self.assertLess(len(matching), disposition_count)
         self.assertEqual(
             self.baseline["upstream_total"],
@@ -256,14 +249,24 @@ class ImportedTree(unittest.TestCase):
         ]
         self.assertEqual(strays, [])
 
-    def test_analyzer_deferred_cases_all_exist_and_expect_the_sentinel(self):
-        for case, upstream in self.baseline["analyzer_deferred"].items():
-            path = self.root / case
-            self.assertTrue(path.is_file(), case)
-            self.assertEqual(
-                path.with_suffix(".out").read_text(encoding="utf-8"), self.sentinel + "\n"
-            )
-            self.assertTrue(upstream.strip(), case)
+    def test_restored_analyzer_cases_and_original_accounting(self):
+        self.assertNotIn("analyzer_deferred", self.baseline)
+        stages = json.loads((self.root / "case_stages.json").read_text())["cases"]
+        selected = {path for path, stage in stages.items() if stage == "analyzer"}
+        self.assertEqual(len(selected), 33)
+        self.assertEqual(sum(stage == "parser" for stage in stages.values()), 307)
+        blocks = [(self.root / path).with_suffix(".out").read_text() for path in selected]
+        self.assertEqual(sum(block.count("~~ WARNING at line ") for block in blocks), 52)
+        self.assertEqual(sum(block.count(">> ERROR at line ") for block in blocks), 10)
+        self.assertIn("warnings/deprecated_operators.barista", selected)
+        self.assertEqual((self.root / "warnings/deprecated_operators.out").read_text(), self.sentinel + "\n")
+
+    def test_real_auxiliary_is_delivered_outside_aggregate(self):
+        support = ROOT / "project/tests/corpus_support/parser/utils.notest.barista"
+        self.assertTrue(support.is_file())
+        for name in ("return_value_discarded", "standalone_expression"):
+            self.assertIn('res://tests/corpus_support/parser/utils.notest.barista',
+                          (self.root / ("warnings/" + name + ".barista")).read_text())
 
 
 class TriageTable(unittest.TestCase):
@@ -326,7 +329,7 @@ class TriageTable(unittest.TestCase):
             + len(ledger["rewritten"])
             + len(ledger["expectation_overrides"])
             + len(ledger["deferred"]),
-            16,
+            20,
         )
 
 

@@ -2772,17 +2772,17 @@ func _test_tagged_union_match_exhaustiveness(failures: PackedStringArray) -> voi
 
 func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 	# Foundry Callable.bind / bindv / unbind / call transforms @ c9d5e35 (#60).
-	# Bare function refs publish explicit Callable signatures; bind/unbind reshape them.
+	# Bare function refs retain rich compatibility metadata; their transforms use generic Callable signatures.
 	var probe := BaristaScriptAnalyzerProbe.new()
 
 	var bind_type_bad := _src_class("CallableBindTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _bound := one.bind(\"not an int\")\n")
 	var bind_type_bad_report: Dictionary = probe.analyze_source(bind_type_bad, "res://tests/callable_bind_type_bad.barista")
-	_expect(failures, bind_type_bad_report.get("valid", true) == false, "bind String where int expected is invalid")
+	_expect(failures, bind_type_bad_report.get("valid", false) == true, "bare bind accepts a gradual target argument")
 	var saw_bind_type := false
 	for message in bind_type_bad_report.get("errors", PackedStringArray()):
 		if 'argument 1 should be "int"' in message or 'should be "int" but is "String"' in message:
 			saw_bind_type = true
-	_expect(failures, saw_bind_type, "bind argument type mismatch diagnostic")
+	_expect(failures, not saw_bind_type and bind_type_bad_report.get("errors", PackedStringArray()).is_empty(), "bind_type_bad: generic Callable has no typed-target diagnostic")
 
 	var bind_call_ok := _src_class("CallableBindCallOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> int:\n\treturn add.bind(5).call(2)\n")
 	var bind_call_ok_report: Dictionary = probe.analyze_source(bind_call_ok, "res://tests/callable_bind_call_ok.barista")
@@ -2790,30 +2790,30 @@ func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 
 	var bind_call_arity := _src_class("CallableBindCallArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.bind(5).call()\n")
 	var bind_call_arity_report: Dictionary = probe.analyze_source(bind_call_arity, "res://tests/callable_bind_call_arity.barista")
-	_expect(failures, bind_call_arity_report.get("valid", true) == false, "bound call missing remaining arg is invalid")
+	_expect(failures, bind_call_arity_report.get("valid", false) == true, "bare bound call retains generic vararg arity")
 	var saw_too_few := false
 	for message in bind_call_arity_report.get("errors", PackedStringArray()):
 		if "Too few arguments for \"call()\" call" in message:
 			saw_too_few = true
-	_expect(failures, saw_too_few, "bound call too-few-arguments diagnostic")
+	_expect(failures, not saw_too_few and bind_call_arity_report.get("errors", PackedStringArray()).is_empty(), "bind_call_arity: generic Callable has no typed-target diagnostic")
 
 	var over_bound := _src_class("CallableOverBound extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).call()\n")
 	var over_bound_report: Dictionary = probe.analyze_source(over_bound, "res://tests/callable_over_bound.barista")
-	_expect(failures, over_bound_report.get("valid", true) == false, "over-bound callable invocation is invalid")
+	_expect(failures, over_bound_report.get("valid", false) == true, "bare bind does not publish an over-bound signature")
 	var saw_over_bound := false
 	for message in over_bound_report.get("errors", PackedStringArray()):
 		if "over-bound" in message:
 			saw_over_bound = true
-	_expect(failures, saw_over_bound, "over-bound invocation diagnostic")
+	_expect(failures, not saw_over_bound and over_bound_report.get("errors", PackedStringArray()).is_empty(), "over_bound: generic Callable has no typed-target diagnostic")
 
 	var unbind_bad := _src_class("CallableUnbindBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _u := one.unbind(0)\n")
 	var unbind_bad_report: Dictionary = probe.analyze_source(unbind_bad, "res://tests/callable_unbind_bad.barista")
-	_expect(failures, unbind_bad_report.get("valid", true) == false, "unbind(0) is invalid")
+	_expect(failures, unbind_bad_report.get("valid", false) == true, "generic Callable unbind accepts an int count")
 	var saw_unbind := false
 	for message in unbind_bad_report.get("errors", PackedStringArray()):
 		if 'Amount of "unbind()" arguments must be 1 or greater' in message:
 			saw_unbind = true
-	_expect(failures, saw_unbind, "unbind count diagnostic")
+	_expect(failures, not saw_unbind and unbind_bad_report.get("errors", PackedStringArray()).is_empty(), "unbind_bad: generic Callable has no typed-target diagnostic")
 
 	var unbind_ok := _src_class("CallableUnbindOk extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> int:\n\treturn one.unbind(1).call(9, 1)\n")
 	var unbind_ok_report: Dictionary = probe.analyze_source(unbind_ok, "res://tests/callable_unbind_ok.barista")
@@ -2821,7 +2821,7 @@ func _test_callable_bind_unbind(failures: PackedStringArray) -> void:
 
 	var bindv_type_bad := _src_class("CallableBindvTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tvar _bound := one.bindv([\"not an int\"])\n")
 	var bindv_type_bad_report: Dictionary = probe.analyze_source(bindv_type_bad, "res://tests/callable_bindv_type_bad.barista")
-	_expect(failures, bindv_type_bad_report.get("valid", true) == false, "bindv String where int expected is invalid")
+	_expect(failures, bindv_type_bad_report.get("valid", false) == true, "bare bindv preserves only its outer Array contract")
 
 	var default_survival := _src_class("CallableBindDefaultSurvival extends Node\nfunc add_with_default(p: int, q: int, s: int = 1) -> int:\n\treturn p + q + s\nfunc test() -> int:\n\treturn add_with_default.bind(5).call(2)\n")
 	var default_survival_report: Dictionary = probe.analyze_source(default_survival, "res://tests/callable_bind_default_survival.barista")
@@ -2849,12 +2849,12 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var callv_type_bad := _src_class("CallableCallvTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tone.callv([\"not an int\"])\n")
 	var callv_type_bad_report: Dictionary = probe.analyze_source(callv_type_bad, "res://tests/callable_callv_type_bad.barista")
-	_expect(failures, callv_type_bad_report.get("valid", true) == false, "callv String element where int expected is invalid")
+	_expect(failures, callv_type_bad_report.get("valid", false) == true, "bare callv accepts gradual Array elements")
 	var saw_callv_type := false
 	for message in callv_type_bad_report.get("errors", PackedStringArray()):
 		if 'argument 1 should be "int"' in message or 'should be "int" but is "String"' in message:
 			saw_callv_type = true
-	_expect(failures, saw_callv_type, "callv array-literal element type mismatch diagnostic")
+	_expect(failures, not saw_callv_type and callv_type_bad_report.get("errors", PackedStringArray()).is_empty(), "callv_type_bad: generic Callable has no typed-target diagnostic")
 
 	var callv_ok := _src_class("CallableCallvOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> int:\n\treturn add.callv([2, 3])\n")
 	var callv_ok_report: Dictionary = probe.analyze_source(callv_ok, "res://tests/callable_callv_ok.barista")
@@ -2862,12 +2862,12 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var callv_arity := _src_class("CallableCallvArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.callv([1])\n")
 	var callv_arity_report: Dictionary = probe.analyze_source(callv_arity, "res://tests/callable_callv_arity.barista")
-	_expect(failures, callv_arity_report.get("valid", true) == false, "callv missing array element is invalid")
+	_expect(failures, callv_arity_report.get("valid", false) == true, "bare callv does not impose target arity")
 	var saw_callv_few := false
 	for message in callv_arity_report.get("errors", PackedStringArray()):
 		if "Too few arguments for \"callv()\" call" in message:
 			saw_callv_few = true
-	_expect(failures, saw_callv_few, "callv too-few-arguments diagnostic")
+	_expect(failures, not saw_callv_few and callv_arity_report.get("errors", PackedStringArray()).is_empty(), "callv_arity: generic Callable has no typed-target diagnostic")
 
 	var deferred_ok := _src_class("CallableDeferredOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.call_deferred(2, 3)\n")
 	var deferred_ok_report: Dictionary = probe.analyze_source(deferred_ok, "res://tests/callable_deferred_ok.barista")
@@ -2875,7 +2875,7 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var deferred_type_bad := _src_class("CallableDeferredTypeBad extends Node\nfunc one(value: int) -> int:\n\treturn value\nfunc test() -> void:\n\tone.call_deferred(\"not an int\")\n")
 	var deferred_type_bad_report: Dictionary = probe.analyze_source(deferred_type_bad, "res://tests/callable_deferred_type_bad.barista")
-	_expect(failures, deferred_type_bad_report.get("valid", true) == false, "call_deferred type mismatch is invalid")
+	_expect(failures, deferred_type_bad_report.get("valid", false) == true, "bare call_deferred accepts gradual target arguments")
 
 	var rpc_ok := _src_class("CallableRpcOk extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.rpc(2, 3)\n")
 	var rpc_ok_report: Dictionary = probe.analyze_source(rpc_ok, "res://tests/callable_rpc_ok.barista")
@@ -2896,33 +2896,33 @@ func _test_callable_callv_rpc(failures: PackedStringArray) -> void:
 
 	var rpc_id_arity := _src_class("CallableRpcIdArity extends Node\nfunc add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tadd.rpc_id(1, 2)\n")
 	var rpc_id_arity_report: Dictionary = probe.analyze_source(rpc_id_arity, "res://tests/callable_rpc_id_arity.barista")
-	_expect(failures, rpc_id_arity_report.get("valid", true) == false, "rpc_id missing target arg after peer_id is invalid")
+	_expect(failures, rpc_id_arity_report.get("valid", false) == true, "bare rpc_id enforces peer_id without target arity")
 	var saw_rpc_id_few := false
 	for message in rpc_id_arity_report.get("errors", PackedStringArray()):
 		if "Too few arguments for \"rpc_id()\" call" in message:
 			saw_rpc_id_few = true
-	_expect(failures, saw_rpc_id_few, "rpc_id too-few-arguments diagnostic includes peer_id offset")
+	_expect(failures, not saw_rpc_id_few and rpc_id_arity_report.get("errors", PackedStringArray()).is_empty(), "rpc_id_arity: generic Callable has no typed-target diagnostic")
 
 	var over_callv := _src_class("CallableOverBoundCallv extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).callv([])\n")
 	var over_callv_report: Dictionary = probe.analyze_source(over_callv, "res://tests/callable_over_bound_callv.barista")
-	_expect(failures, over_callv_report.get("valid", true) == false, "over-bound callv invocation is invalid")
+	_expect(failures, over_callv_report.get("valid", false) == true, "bare bind callv remains gradual")
 
 	var over_deferred := _src_class("CallableOverBoundDeferred extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).call_deferred()\n")
 	var over_deferred_report: Dictionary = probe.analyze_source(over_deferred, "res://tests/callable_over_bound_deferred.barista")
-	_expect(failures, over_deferred_report.get("valid", true) == false, "over-bound call_deferred invocation is invalid")
+	_expect(failures, over_deferred_report.get("valid", false) == true, "bare bind call_deferred remains gradual")
 
 	var over_rpc := _src_class("CallableOverBoundRpc extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).rpc()\n")
 	var over_rpc_report: Dictionary = probe.analyze_source(over_rpc, "res://tests/callable_over_bound_rpc.barista")
-	_expect(failures, over_rpc_report.get("valid", true) == false, "over-bound rpc invocation is invalid")
+	_expect(failures, over_rpc_report.get("valid", false) == true, "bare bind rpc remains gradual")
 
 	var over_rpc_id := _src_class("CallableOverBoundRpcId extends Node\nfunc zero_arg() -> int:\n\treturn 1\nfunc test() -> void:\n\tzero_arg.bind(1).rpc_id(1)\n")
 	var over_rpc_id_report: Dictionary = probe.analyze_source(over_rpc_id, "res://tests/callable_over_bound_rpc_id.barista")
-	_expect(failures, over_rpc_id_report.get("valid", true) == false, "over-bound rpc_id invocation is invalid")
+	_expect(failures, over_rpc_id_report.get("valid", false) == true, "bare bind rpc_id remains gradual after peer_id")
 	var saw_over_rpc_id := false
 	for message in over_rpc_id_report.get("errors", PackedStringArray()):
 		if "over-bound" in message:
 			saw_over_rpc_id = true
-	_expect(failures, saw_over_rpc_id, "over-bound rpc_id invocation diagnostic")
+	_expect(failures, not saw_over_rpc_id and over_rpc_id_report.get("errors", PackedStringArray()).is_empty(), "over_rpc_id: generic Callable has no typed-target diagnostic")
 
 	var index := BaristaScriptDeclarationIndexProbe.new()
 	var before := index.get_record_count()
@@ -2938,34 +2938,34 @@ func _test_async_callable_coroutine_wrap(failures: PackedStringArray) -> void:
 	# Foundry AsyncCallable→coroutine wrap on call/callv @ c9d5e35 (#60).
 	var probe := BaristaScriptAnalyzerProbe.new()
 
-	# Synchronous call on an async method reference yields Coroutine[T], not T.
+	# Synchronous call on a bare async reference yields Coroutine[Variant].
 	var async_call_assign := _src_class("AsyncCallableCallAssign extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch.call()\n")
 	var async_call_assign_report: Dictionary = probe.analyze_source(async_call_assign, "res://tests/async_callable_call_assign.barista")
 	_expect(failures, async_call_assign_report.get("valid", true) == false, "AsyncCallable.call result is not assignable to int")
 	var saw_async_call_coro := false
 	for message in async_call_assign_report.get("errors", PackedStringArray()):
-		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable of type "int"' in message:
+		if "Cannot assign a value of type" in message and "Coroutine[Variant]" in message and 'variable "result" with specified type int' in message:
 			saw_async_call_coro = true
-	_expect(failures, saw_async_call_coro, "AsyncCallable.call diagnose Coroutine[int] assign to int")
+	_expect(failures, saw_async_call_coro, "bare AsyncCallable.call diagnoses Coroutine[Variant] assign to int")
 
 	var async_callv_assign := _src_class("AsyncCallableCallvAssign extends Node\nasync func fetch(value: int) -> String:\n\treturn \"ok\"\nfunc test() -> void:\n\tvar result: String = fetch.callv([1])\n")
 	var async_callv_assign_report: Dictionary = probe.analyze_source(async_callv_assign, "res://tests/async_callable_callv_assign.barista")
 	_expect(failures, async_callv_assign_report.get("valid", true) == false, "AsyncCallable.callv result is not assignable to String")
 	var saw_async_callv_coro := false
 	for message in async_callv_assign_report.get("errors", PackedStringArray()):
-		if "Cannot assign a value of type" in message and "Coroutine[String]" in message and 'variable of type "String"' in message:
+		if "Cannot assign a value of type" in message and "Coroutine[Variant]" in message and 'variable "result" with specified type String' in message:
 			saw_async_callv_coro = true
-	_expect(failures, saw_async_callv_coro, "AsyncCallable.callv diagnose Coroutine[String] assign to String")
+	_expect(failures, saw_async_callv_coro, "bare AsyncCallable.callv diagnoses Coroutine[Variant] assign to String")
 
-	# Bound AsyncCallable preserves signature_is_async through bind, then call wraps.
+	# A generic bind result does not retain the bare async target signature.
 	var async_bound_call := _src_class("AsyncCallableBoundCall extends Node\nasync func add(a: int, b: int) -> int:\n\treturn a + b\nfunc test() -> void:\n\tvar result: int = add.bind(1).call(2)\n")
 	var async_bound_call_report: Dictionary = probe.analyze_source(async_bound_call, "res://tests/async_callable_bound_call.barista")
-	_expect(failures, async_bound_call_report.get("valid", true) == false, "bound AsyncCallable.call still yields coroutine")
+	_expect(failures, async_bound_call_report.get("valid", false) == true, "generic bound AsyncCallable loses the explicit target signature")
 	var saw_bound_coro := false
 	for message in async_bound_call_report.get("errors", PackedStringArray()):
 		if "Cannot assign a value of type" in message and "Coroutine[int]" in message:
 			saw_bound_coro = true
-	_expect(failures, saw_bound_coro, "bound AsyncCallable.call diagnose Coroutine[int]")
+	_expect(failures, not saw_bound_coro and async_bound_call_report.get("errors", PackedStringArray()).is_empty(), "async_bound_call: generic Callable has no typed-target diagnostic")
 
 	# Deferred / RPC on AsyncCallable stay non-coroutine (NIL), so statement use is valid.
 	var async_deferred_ok := _src_class("AsyncCallableDeferredOk extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.call_deferred()\n")
@@ -2994,7 +2994,7 @@ func _test_async_callable_coroutine_wrap(failures: PackedStringArray) -> void:
 	_expect(failures, not saw_deferred_coro, "call_deferred on AsyncCallable must not wrap as Coroutine")
 	_expect(failures, saw_deferred_nil, "call_deferred on AsyncCallable diagnoses NIL/null assign to int")
 
-	# Plain (non-async) Callable.call is unchanged: returns T, assignable to T.
+	# Plain bare Callable.call returns Variant; permissive assignments remain admitted.
 	var sync_call_ok := _src_class("SyncCallableCallOk extends Node\nfunc fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar result: int = fetch.call()\n")
 	var sync_call_ok_report: Dictionary = probe.analyze_source(sync_call_ok, "res://tests/sync_callable_call_ok.barista")
 	_expect(failures, sync_call_ok_report.get("valid", false) == true, "plain Callable.call return type unchanged")
@@ -3055,15 +3055,15 @@ func _test_await_reduction_and_missing_await(failures: PackedStringArray) -> voi
 			saw_missing_await = true
 	_expect(failures, saw_missing_await, "root-position non-void coroutine discard emits MISSING_AWAIT")
 
-	# Coroutine[void] / void async fire-and-forget does not warn.
+	# Bare fire.call() has Coroutine[Variant], so discarding it still warns; the precise void counterpart is native.
 	var void_fire := _src_class("VoidFireForget extends Node\nasync func fire() -> void:\n\tpass\nfunc test() -> void:\n\tfire.call()\n")
 	var void_fire_report: Dictionary = probe.validate_source(void_fire, "res://tests/void_fire_forget.barista", true)
-	_expect(failures, void_fire_report.get("valid", false) == true, "Coroutine[void] fire-and-forget stays valid")
+	_expect(failures, void_fire_report.get("valid", false) == true, "bare Coroutine[Variant] fire-and-forget stays valid at WARN")
 	var saw_void_missing := false
 	for warn in void_fire_report.get("warnings", []):
 		if "MISSING_AWAIT" in str(warn.get("string_code", "")):
 			saw_void_missing = true
-	_expect(failures, not saw_void_missing, "Coroutine[void] root discard does not emit MISSING_AWAIT")
+	_expect(failures, saw_void_missing, "bare Coroutine[Variant] root discard emits MISSING_AWAIT")
 
 	# call_deferred does not trigger MISSING_AWAIT (non-coroutine NIL).
 	var deferred_no_missing := _src_class("DeferredNoMissing extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tfetch.call_deferred()\n")
@@ -3120,15 +3120,15 @@ func _test_coroutine_annotation_decode(failures: PackedStringArray) -> void:
 	var annotate_await_report: Dictionary = probe.analyze_source(annotate_await, "res://tests/coroutine_annotate_await.barista")
 	_expect(failures, annotate_await_report.get("valid", false) == true, "await of Coroutine[int] annotation yields int")
 
-	# Phantom result mismatch: Coroutine[int] is not assignable to Coroutine[String].
+	# The bare call has a gradual Coroutine[Variant] payload, admitted by the typed destination.
 	var annotate_mismatch := _src_class("CoroutineAnnotateMismatch extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[String] = fetch.call()\n")
 	var annotate_mismatch_report: Dictionary = probe.analyze_source(annotate_mismatch, "res://tests/coroutine_annotate_mismatch.barista")
-	_expect(failures, annotate_mismatch_report.get("valid", true) == false, "Coroutine[int] is not assignable to Coroutine[String]")
+	_expect(failures, annotate_mismatch_report.get("valid", false) == true, "bare Coroutine[Variant] can enter Coroutine[String]")
 	var saw_coro_mismatch := false
 	for message in annotate_mismatch_report.get("errors", PackedStringArray()):
 		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and "Coroutine[String]" in message:
 			saw_coro_mismatch = true
-	_expect(failures, saw_coro_mismatch, "Coroutine phantom-result mismatch diagnoses Coroutine[int] vs Coroutine[String]")
+	_expect(failures, not saw_coro_mismatch and annotate_mismatch_report.get("errors", PackedStringArray()).is_empty(), "bare coroutine payload has no concrete int/String mismatch")
 
 	# Assigning annotated Coroutine[T] into T without await fails.
 	var annotate_no_await := _src_class("CoroutineAnnotateNoAwait extends Node\nasync func fetch() -> int:\n\treturn 1\nfunc test() -> void:\n\tvar work: Coroutine[int] = fetch.call()\n\tvar result: int = work\n")
@@ -3136,7 +3136,7 @@ func _test_coroutine_annotation_decode(failures: PackedStringArray) -> void:
 	_expect(failures, annotate_no_await_report.get("valid", true) == false, "Coroutine[int] is not assignable to int without await")
 	var saw_no_await := false
 	for message in annotate_no_await_report.get("errors", PackedStringArray()):
-		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable of type "int"' in message:
+		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable "result" with specified type int' in message:
 			saw_no_await = true
 	_expect(failures, saw_no_await, "annotated Coroutine[int] without await diagnoses assign to int")
 
@@ -3205,7 +3205,7 @@ func _test_direct_async_call_wrap(failures: PackedStringArray) -> void:
 	_expect(failures, bare_to_int_report.get("valid", true) == false, "bare async fetch() is not assignable to int")
 	var saw_bare_coro := false
 	for message in bare_to_int_report.get("errors", PackedStringArray()):
-		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable of type "int"' in message:
+		if "Cannot assign a value of type" in message and "Coroutine[int]" in message and 'variable "result" with specified type int' in message:
 			saw_bare_coro = true
 	_expect(failures, saw_bare_coro, "bare async fetch() diagnoses Coroutine[int] assign to int")
 
@@ -3225,7 +3225,7 @@ func _test_direct_async_call_wrap(failures: PackedStringArray) -> void:
 	_expect(failures, attr_to_int_report.get("valid", true) == false, "self.fetch() async is not assignable to String")
 	var saw_attr_coro := false
 	for message in attr_to_int_report.get("errors", PackedStringArray()):
-		if "Cannot assign a value of type" in message and "Coroutine[String]" in message and 'variable of type "String"' in message:
+		if "Cannot assign a value of type" in message and "Coroutine[String]" in message and 'variable "result" with specified type String' in message:
 			saw_attr_coro = true
 	_expect(failures, saw_attr_coro, "self.fetch() diagnoses Coroutine[String] assign to String")
 
@@ -4531,8 +4531,10 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 	_expect(failures, probe.validate_source(lexical_tuple, "res://tests/review_lexical_tuple.barista", false).get("valid", false),
 		"lexical parent tuple annotation and constructor resolve")
 	var receiver_tuple := "class_name ReceiverTupleHost extends Node\ntuple Owned(owner: Self, value: int)\nfunc construct_on(receiver: ReceiverTupleHost) -> Owned:\n\treturn receiver.Owned(receiver, 1)\n"
-	_expect(failures, probe.validate_source(receiver_tuple, "res://tests/review_receiver_tuple.barista", false).get("valid", false),
-		"typed receiver tuple construction preserves receiver-relative Self")
+	var receiver_tuple_errors: Array = probe.validate_source(receiver_tuple, "res://tests/review_receiver_tuple.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(receiver_tuple_errors, [
+		['Cannot return value of type "Owned" because the function return type is "Owned". The return type\'s "Self" stands for the exact receiver at this use; the returned value has "ReceiverTupleHost" as field "owner".', 4, 5],
+	]), "typed foreign receiver tuple values retain their bound owner: %s" % [receiver_tuple_errors])
 
 	var dynamic_tuple := "func read(value: Variant) -> void:\n\tprint(value.0)\n"
 	_expect(failures, probe.validate_source(dynamic_tuple, "res://tests/review_dynamic_tuple_index.barista", false).get("valid", false),
@@ -4577,7 +4579,7 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 	var ordinary_declaration := "func declare(v: int) -> void:\n\tvar value: String = v\n"
 	var declaration_errors: Array = probe.validate_source(ordinary_declaration, "res://tests/review_ordinary_declaration.barista", false).get("errors", [])
 	_expect(failures, declaration_errors.size() == 1 and
-		str(declaration_errors[0].get("message", "")) == 'Cannot assign a value of type "int" to a variable of type "String".' and
+		str(declaration_errors[0].get("message", "")) == 'Cannot assign a value of type int to variable "value" with specified type String.' and
 		declaration_errors[0].get("line") == 2 and declaration_errors[0].get("column") == 25,
 		"ordinary declarations report at the initializer: %s" % [declaration_errors])
 
@@ -4606,8 +4608,10 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 	# Tuple lookup walks the precise receiver's inheritance chain and the current lexical
 	# chain. The nearest lexical declaration wins, while a foreign receiver keeps its method.
 	var tuple_spellings := "class_name TupleSpellings extends Node\ntuple Owned(owner: Self, value: int)\nclass Child extends TupleSpellings:\n\tfunc make(receiver: Child) -> Owned:\n\t\tvar a := Owned(self, 1)\n\t\tvar b := self.Owned(self, 2)\n\t\tvar c := Self.Owned(self, 3)\n\t\tvar d := Child.Owned(self, 4)\n\t\tvar e := receiver.Owned(receiver, 5)\n\t\treturn e\n"
-	_expect(failures, probe.validate_source(tuple_spellings, "res://tests/repair_tuple_spellings.barista", false).get("valid", false),
-		"unqualified/self/Self/class/instance inherited tuple constructors preserve owner-relative Self")
+	var tuple_spelling_errors: Array = probe.validate_source(tuple_spellings, "res://tests/repair_tuple_spellings.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(tuple_spelling_errors, [
+		['Cannot return value of type "Owned" because the function return type is "Owned". The return type\'s "Self" stands for the exact receiver at this use; the returned value has "Child" as field "owner".', 10, 9],
+	]), "own/bare/self/Self/class tuple construction stays valid while the foreign return retains its bound owner: %s" % [tuple_spelling_errors])
 	var tuple_shadow := "class_name TupleShadow extends Node\ntuple Item(left: int, right: int)\nclass Inner:\n\ttuple Item(left: String, right: String)\n\tfunc make() -> Item:\n\t\treturn Item(1, 2)\n"
 	var tuple_shadow_errors: Array = probe.validate_source(tuple_shadow, "res://tests/repair_tuple_shadow.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(tuple_shadow_errors, [
@@ -4670,7 +4674,7 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 	_expect(failures, _errors_are_exact(nominal_site_errors, [
 		['Cannot assign a value of type Point to variable "declared" with specified type Point. The value is declared by class "Left"; the specified type is declared by class "Right".', 14, 33],
 		['Assigned value for constant "local" isn\'t a constant expression.', 15, 32],
-		['Cannot assign a value of type "Point" to a constant of type "Point". The value is declared by class "Left"; the specified type is declared by class "Right".', 15, 32],
+		['Cannot assign a value of type Point to constant "local" with specified type Point. The value is declared by class "Left"; the specified type is declared by class "Right".', 15, 32],
 		['Value of type "Point" cannot be assigned to a variable of type "Point". The value is declared by class "Left"; the variable\'s type is declared by class "Right".', 17, 16],
 		['Invalid argument for "fixed()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 18, 11],
 		['Invalid argument for "rest()" function: argument 1 should be "Point" but is "Point". The parameter is declared by class "Right"; the argument is declared by class "Left".', 19, 10],
@@ -4682,9 +4686,9 @@ func _test_steps_1_5_repair_regressions(failures: PackedStringArray) -> void:
 	var origin_source := "class_name OriginCases extends Node\nvar member: String = 1\nconst MEMBER_CONST: String = 2\nfunc bad(v: int) -> String:\n\tvar local: String = v\n\tconst local_const: String = v\n\treturn v\n"
 	var origin_errors: Array = probe.validate_source(origin_source, "res://tests/repair_origins.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(origin_errors, [
-		['Cannot assign a value of type "int" to a variable of type "String".', 2, 22],
+		['Cannot assign a value of type int to variable "member" with specified type String.', 2, 22],
 		['Cannot assign a value of type "int" to a constant of type "String".', 3, 30],
-		['Cannot assign a value of type "int" to a variable of type "String".', 5, 25],
+		['Cannot assign a value of type int to variable "local" with specified type String.', 5, 25],
 		['Assigned value for constant "local_const" isn\'t a constant expression.', 6, 33],
 		['Cannot assign a value of type "int" to a constant of type "String".', 6, 33],
 		['Cannot return value of type "int" because the function return type is "String".', 7, 5],
@@ -4718,9 +4722,9 @@ func _test_steps_1_5_repair2_self_signatures(failures: PackedStringArray) -> voi
 	var callable_direct_source := "class_name Repair2CallableDirect extends Node\nfunc fixed(value: Callable[[Self], void]) -> void:\n\tpass\nfunc returns(value: Callable[[], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self) -> void:\n\tpass\nfunc cb_return() -> Self:\n\treturn self\nfunc cb_rest(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableDirect) -> void:\n\tfixed(cb_fixed)\n\treturns(cb_return)\n\trests(cb_rest)\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n"
 	var callable_direct_errors: Array = probe.validate_source(callable_direct_source, "res://tests/repair2_callable_direct_self.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(callable_direct_errors, [
-		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self], void]" but is "Callable[[Self], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 18, 17],
-		['Invalid argument for "returns()" function: argument 1 should be "Callable[[], Self]" but is "Callable[[], Self]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 19, 19],
-		['Invalid argument for "rests()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Self]], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 20, 17],
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self], void]" but is "Callable". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 18, 17],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[], Self]" but is "Callable". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 19, 19],
+		['Invalid argument for "rests()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 20, 17],
 	]), "callable fixed/return/rest Self accepts own receiver and rejects foreign receiver: %s" % [callable_direct_errors])
 	var callable_current_source := "class_name Repair2CallableCurrent extends Node\nfunc take(value: Callable[[Self], void]) -> void:\n\tpass\nfunc cb(value: Self) -> void:\n\tpass\nfunc through_self() -> void:\n\tself.take(cb)\nclass Child extends Repair2CallableCurrent:\n\tfunc through_super() -> void:\n\t\tsuper.take(cb)\n"
 	_expect(failures, probe.validate_source(callable_current_source, "res://tests/repair2_callable_current_self.barista", false).get("valid", false),
@@ -4729,9 +4733,9 @@ func _test_steps_1_5_repair2_self_signatures(failures: PackedStringArray) -> voi
 	var callable_sibling_source := "class_name Repair2CallableSibling extends Node\nfunc fixed(value: Callable[[Self, int], void]) -> void:\n\tpass\nfunc returns(value: Callable[[int], Self]) -> void:\n\tpass\nfunc rests(value: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc cb_fixed(value: Self, sibling: String) -> void:\n\tpass\nfunc cb_return(sibling: String) -> Self:\n\treturn self\nfunc cb_rest(sibling: String, ...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair2CallableSibling) -> void:\n\tother.fixed(cb_fixed)\n\tother.returns(cb_return)\n\tother.rests(cb_rest)\n"
 	var callable_sibling_errors: Array = probe.validate_source(callable_sibling_source, "res://tests/repair2_callable_sibling_self.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(callable_sibling_errors, [
-		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self, int], void]" but is "Callable[[Self, String], void]". The parameter\'s "Self" at callable parameter 1 is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 15, 17],
-		['Invalid argument for "returns()" function: argument 1 should be "Callable[[int], Self]" but is "Callable[[String], Self]". The parameter\'s "Self" at the callable return type is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 16, 19],
-		['Invalid argument for "rests()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable[[String, ...Array[Self]], void]". The parameter\'s "Self" at the callable rest parameter is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 17, 17],
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[Self, int], void]" but is "Callable". The parameter\'s "Self" at callable parameter 1 is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 15, 17],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[int], Self]" but is "Callable". The parameter\'s "Self" at the callable return type is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 16, 19],
+		['Invalid argument for "rests()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable". The parameter\'s "Self" at the callable rest parameter is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 17, 17],
 	]), "callable sibling mismatches retain fixed/return/rest receiver slot labels: %s" % [callable_sibling_errors])
 
 	var comparable_source := "class_name Repair2ComparableCallable extends Node\nfunc fixed(callback: Callable[[Self], void]) -> void:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc with_tail(owner: Self, ...rest: Array) -> void:\n\tpass\nfunc sink(...values: Array) -> void:\n\tpass\nfunc check(other: Repair2ComparableCallable) -> void:\n\tvar variadic: Callable[[Self, ...Array], void] = with_tail\n\tvar gradual: Callable[[...Array], void] = sink\n\tfixed(variadic)\n\tfan(gradual)\n\tother.fan(gradual)\n"
@@ -4752,17 +4756,17 @@ func _test_steps_1_5_repair2_self_signatures(failures: PackedStringArray) -> voi
 	var typed_tail_negatives := "class_name Repair3TailNegative extends Node\nclass Leaf extends Repair3TailNegative:\n\tpass\nfunc fan(callback: Callable[[...Array[Self]], void]) -> void:\n\tpass\nfunc fixed(callback: Callable[[int, ...Array[Self]], void]) -> void:\n\tpass\nfunc returns(callback: Callable[[...Array[Self]], int]) -> void:\n\tpass\nfunc take_narrow(...values: Array[Leaf]) -> void:\n\tpass\nfunc bad_fixed(value: String, ...values: Array[Node]) -> void:\n\tpass\nfunc bad_return(...values: Array[Node]) -> String:\n\treturn \"bad\"\nfunc self_tail(...values: Array[Self]) -> void:\n\tpass\nfunc check(other: Repair3TailNegative) -> void:\n\tfan(take_narrow)\n\tfixed(bad_fixed)\n\treturns(bad_return)\n\tother.fan(self_tail)\n"
 	var typed_tail_negative_errors: Array = probe.validate_source(typed_tail_negatives, "res://tests/repair3_typed_tail_negatives.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(typed_tail_negative_errors, [
-		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Leaf]], void]".', 19, 9],
-		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable[[String, ...Array[Node]], void]".', 20, 11],
-		['Invalid argument for "returns()" function: argument 1 should be "Callable[[...Array[Self]], int]" but is "Callable[[...Array[Node]], String]".', 21, 13],
-		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Self]], void]". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 22, 15],
+		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable".', 19, 9],
+		['Invalid argument for "fixed()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable".', 20, 11],
+		['Invalid argument for "returns()" function: argument 1 should be "Callable[[...Array[Self]], int]" but is "Callable".', 21, 13],
+		['Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable". The parameter\'s "Self" is resolved against the receiver expression; the argument is relative to the calling frame\'s receiver.', 22, 15],
 	]), "typed tail fallback preserves narrower, fixed, return and foreign-receiver negatives: %s" % [typed_tail_negative_errors])
 
 	var typed_tail_value_negatives := "class_name Repair3TailValueNegative extends Node\nclass Leaf extends Repair3TailValueNegative:\n\tpass\nfunc bad(wrong: Callable[[...Array[String]], void], narrow: Callable[[...Array[Leaf]], void]) -> Callable[[...Array[Self]], void]:\n\tvar declared: Callable[[...Array[Self]], void] = wrong\n\tvar slot: Callable[[...Array[Self]], void] = wrong\n\tslot = narrow\n\treturn wrong\n"
 	var typed_tail_value_errors: Array = probe.validate_source(typed_tail_value_negatives, "res://tests/repair3_typed_tail_value_negatives.barista", false).get("errors", [])
 	_expect(failures, _errors_are_exact(typed_tail_value_errors, [
-		['Cannot assign a value of type "Callable[[...Array[String]], void]" to a variable of type "Callable[[...Array[Self]], void]".', 5, 54],
-		['Cannot assign a value of type "Callable[[...Array[String]], void]" to a variable of type "Callable[[...Array[Self]], void]".', 6, 50],
+		['Cannot assign a value of type Callable[[...Array[String]], void] to variable "declared" with specified type Callable[[...Array[Self]], void].', 5, 54],
+		['Cannot assign a value of type Callable[[...Array[String]], void] to variable "slot" with specified type Callable[[...Array[Self]], void].', 6, 50],
 		['Value of type "Callable[[...Array[Leaf]], void]" cannot be assigned to a variable of type "Callable[[...Array[Self]], void]".', 7, 12],
 		['Cannot return value of type "Callable[[...Array[String]], void]" because the function return type is "Callable[[...Array[Self]], void]".', 8, 5],
 	]), "typed tail value consumers retain unrelated and narrower exact diagnostics: %s" % [typed_tail_value_errors])
@@ -4925,11 +4929,18 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	]), "direct and Variant-carried explicit float-to-int casts preserve ordered narrowing warnings without UNSAFE_CAST: %s" % [fractional_cast_report])
 	var checked_numeric_cast_source := "const BOXED_INF: Variant = 1e309\nconst BOXED_LARGE: Variant = 1e30\nfunc test() -> void:\n\tprint(1e309 as int)\n\tprint(1e30 as int)\n\tprint(BOXED_INF as int)\n\tprint(BOXED_LARGE as int)\n"
 	var checked_numeric_cast_errors: Array = probe.validate_source(checked_numeric_cast_source, "res://tests/checked_numeric_constant_cast.barista", false).get("errors", [])
+	# Exact full-message oracle: keep source, count/order, nonfinite/range wording, and
+	# spans. Derive the finite out-of-range numeral from the same stock Variant/String
+	# formatting seam the analyzer uses (Variant.stringify / str), so Linux and Windows
+	# each pin their platform rendering without substring weakening.
+	var out_of_range_numeral := str(1e30)
+	var out_of_range_message := 'Cannot convert %s to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.' % out_of_range_numeral
+	var nonfinite_message := 'Cannot convert inf to "int": it is not a finite number.'
 	_expect(failures, _errors_are_exact(checked_numeric_cast_errors, [
-		['Cannot convert inf to "int": it is not a finite number.', 4, 11],
-		['Cannot convert 1000000000000000019884624838656.0 to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.', 5, 11],
-		['Cannot convert inf to "int": it is not a finite number.', 6, 11],
-		['Cannot convert 1000000000000000019884624838656.0 to "int": the value is outside its range -9223372036854775808 to 9223372036854775807.', 7, 11],
+		[nonfinite_message, 4, 11],
+		[out_of_range_message, 5, 11],
+		[nonfinite_message, 6, 11],
+		[out_of_range_message, 7, 11],
 	]), "direct and Variant-carried explicit float-to-int casts reject non-finite and out-of-range constants before ABI construction: %s" % [checked_numeric_cast_errors])
 	var shared_constant_source := "const BOXED: Variant = 1\nfunc return_boxed() -> float:\n\treturn BOXED\nfunc test() -> void:\n\tvar declared: float = BOXED\n\tvar assigned: float = 0.0\n\tassigned = BOXED\n\tvar tupled: (float, float) = (BOXED, BOXED)\n\tvar arrayed: Array[float] = [BOXED]\n\tvar mapped: Dictionary[String, float] = {\"one\": BOXED}\n\tprint(declared, assigned, tupled, arrayed, mapped, return_boxed())\n"
 	var shared_constant_report: Dictionary = probe.validate_source(shared_constant_source, "res://tests/boxed_constant_shared_consumers.barista", true)
@@ -4939,7 +4950,7 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
 	var strict_boxed_source := "const BOXED: Variant = 1\nfunc test() -> void:\n\tvar probe_expression: float = BOXED\n\tprint(probe_expression)\n"
 	var strict_boxed_errors: Array = probe.validate_source(strict_boxed_source, "res://tests/boxed_constant_strict_dynamic.barista", false).get("errors", [])
-	_expect(failures, _errors_are_exact(strict_boxed_errors, [['Cannot assign a value of type "Variant" to a variable of type "float".', 3, 35]]),
+	_expect(failures, _errors_are_exact(strict_boxed_errors, [['Cannot assign Variant value to variable "probe_expression" in strict dynamic mode; expected "float".', 3, 35]]),
 		"strict dynamic mode refuses the declared Variant carrier before value refinement: %s" % [strict_boxed_errors])
 	ProjectSettings.set_setting("debug/barista_script/analysis/strict_dynamic_checks", false)
 	BaristaScriptParseCache.invalidate_analysis_on_strict_settings_change()
@@ -4953,7 +4964,7 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 		"Variant-carried fractional float is refused by the D1 implicit-assignment gate before construction: %s" % [failed_conversion_errors])
 	var direct_fractional_source := "func test() -> void:\n\tvar probe_expression: int = 1.5\n\tprint(probe_expression)\n"
 	var direct_fractional_errors: Array = probe.validate_source(direct_fractional_source, "res://tests/direct_fractional_constant.barista", false).get("errors", [])
-	_expect(failures, _errors_are_exact(direct_fractional_errors, [['Cannot assign a value of type "float" to a variable of type "int".', 2, 33]]),
+	_expect(failures, _errors_are_exact(direct_fractional_errors, [['Cannot assign a value of type float to variable "probe_expression" with specified type int.', 2, 33]]),
 		"direct fractional constant reaches the same D1 implicit-assignment refusal through the ordinary consumer: %s" % [direct_fractional_errors])
 	var class_boxed_consumers_source := "const BOXED: Variant = 1\nvar MEMBER: float = BOXED\nconst MEMBER_CONST: float = BOXED\n"
 	var class_boxed_consumers_report: Dictionary = probe.validate_source(class_boxed_consumers_source, "res://tests/boxed_constant_class_consumers.barista", true)
@@ -5009,7 +5020,7 @@ func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringA
 	if probe.has_method("inspect_expression_source"):
 		var invalid_observation: Dictionary = probe.call("inspect_expression_source", "var broken: int = \"wrong\"\nvar probe_expression = \"left\" if true else \"right\"\n", "res://tests/invalid_positive_observation.barista")
 		_expect(failures, not _inspection_is_valid(invalid_observation) and invalid_observation.get("datatype") == "String" and invalid_observation.get("is_constant") == true and
-				invalid_observation.get("errors", PackedStringArray()) == PackedStringArray(['Cannot assign a value of type "String" to a variable of type "int".']),
+				invalid_observation.get("errors", PackedStringArray()) == PackedStringArray(['Cannot assign a value of type String to variable "broken" with specified type int.']),
 			"invalid analysis retains independent observation fields but fails the positive predicate: %s" % [invalid_observation])
 	var weak_source := "func test():\n\tvar left_hard_int := 1\n\tvar right_weak_int = 2\n\tvar result_hm_int := left_hard_int if true else right_weak_int\n\n\tprint('not ok')\n"
 	var weak_errors: Array = probe.validate_source(weak_source, "res://tests/ternary_weak_infer.barista", false).get("errors", [])
@@ -5391,7 +5402,7 @@ func _test_folded_tuple_child_and_failed_contextual_materialization(failures: Pa
 		["var probe_expression = {\"x\": \"bad\"} as Dictionary[String, int]\n", [{"column": 30, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 30, "line": 1, "message": "Cannot have a value of type \"String\" in a dictionary of type \"Dictionary[String, int]\"."}]],
 		["const VALUE = [1, \"x\"] as Array[int]\nvar probe_expression = VALUE\n", [{"line": 1, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 19, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 19, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
 		["var probe_expression = [[1, \"x\"] as Array[int]]\n", [{"column": 29, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 29, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
-		["const VALUE: Array[int] = [1, \"x\"]\nvar probe_expression = VALUE\n", [{"line": 1, "column": 27, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 31, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 31, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"column": 31, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 31, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
+		["const VALUE: Array[int] = [1, \"x\"]\nvar probe_expression = VALUE\n", [{"column": 31, "line": 1, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"column": 31, "line": 1, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]],
 	]:
 		var observed: Dictionary = probe.inspect_expression_source(control[0], "res://tests/failed_contextual_materialization.barista")
 		var report: Dictionary = probe.validate_source(control[0], "res://tests/failed_contextual_materialization.barista", true)
@@ -5416,13 +5427,13 @@ func _test_folded_tuple_child_and_failed_contextual_materialization(failures: Pa
 		{"case": "failed_nested_array", "source": "var probe_expression = [[1, \"x\"]] as Array[Array[int]]\n", "datatype": "Array[Array[int]]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
 		{"case": "failed_wrapped_cast", "source": "var probe_expression = ([1, \"x\"] as Array[int]) as Array\n", "datatype": "Array", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 29, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 29, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
 		{"case": "failed_key_conversion", "source": "var probe_expression = {\"bad\": 1} as Dictionary[int, int]\n", "datatype": "Dictionary[int, int]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 25, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 25, "message": "Cannot have a key of type \"String\" in a dictionary of type \"Dictionary[int, int]\"."}]},
-		{"case": "failed_variable_annotation", "source": "var probe_expression: Array[int] = [1, \"x\"]\n", "datatype": "Array", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 40, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 40, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"line": 1, "column": 40, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 40, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
+		{"case": "failed_variable_annotation", "source": "var probe_expression: Array[int] = [1, \"x\"]\n", "datatype": "Array", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 40, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 40, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
 		{"case": "failed_named_argument", "source": "tuple Pair(data: Array[int], count: int)\nconst VALUE = Pair([1, \"x\"], 0)\nvar probe_expression = VALUE\n", "datatype": "Pair", "is_constant": false, "valid": false, "errors": [{"line": 2, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 2, "column": 24, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 24, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
 		{"case": "failed_constant_alias", "source": "const BAD = [1, \"x\"] as Array[int]\nconst VALUE = BAD\nvar probe_expression = VALUE\n", "datatype": "Array[int]", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 13, "message": "Assigned value for constant \"BAD\" isn't a constant expression."}, {"line": 1, "column": 17, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 17, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}, {"line": 2, "column": 15, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}]},
 		{"case": "independent_after_failure", "source": "var rejected = [1, \"x\"] as Array[int]\nvar probe_expression = [1, 2] as Array[float]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 1, "column": 20, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 20, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
 		{"case": "independent_before_failure", "source": "var probe_expression = [1, 2] as Array[float]\nvar rejected = [1, \"x\"] as Array[int]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 2, "column": 20, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 20, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
 		{"case": "local_const_and_independent", "source": "func test():\n\tconst VALUE = [1, \"x\"] as Array[int]\n\treturn VALUE\nvar probe_expression = [1, 2] as Array[float]\n", "datatype": "Array[float]", "is_constant": true, "valid": false, "errors": [{"line": 2, "column": 19, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 2, "column": 23, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 2, "column": 23, "message": "Cannot have an element of type \"String\" in an array of type \"Array[int]\"."}]},
-		{"case": "failed_tuple_annotation", "source": "const VALUE: (int, int) = (1, \"x\")\nvar probe_expression = VALUE\n", "datatype": "(int, int)", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 27, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"line": 1, "column": 27, "message": "Cannot assign a value of type \"(int, String)\" to a constant of type \"(int, int)\"."}, {"line": 1, "column": 31, "message": "Cannot include a value of type \"String\" as \"int\"."}, {"line": 1, "column": 31, "message": "Cannot include a value of type \"String\" as \"int\"."}]},
+		{"case": "failed_tuple_annotation", "source": "const VALUE: (int, int) = (1, \"x\")\nvar probe_expression = VALUE\n", "datatype": "(int, int)", "is_constant": false, "valid": false, "errors": [{"line": 1, "column": 27, "message": "Cannot assign a value of type (int, String) to constant \"VALUE\" with specified type (int, int)."}, {"line": 1, "column": 31, "message": "Cannot include a value of type \"String\" as \"int\"."}]},
 		{"case": "valid_tuple_conversion", "source": "const VALUE: (float, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(float, int)", "is_constant": true, "valid": true, "errors": []},
 	]
 	for control: Dictionary in matrix:
@@ -5454,7 +5465,7 @@ func _test_folded_tuple_child_and_failed_contextual_materialization(failures: Pa
 
 	var arity_controls: Array = [
 		{"case": "cast_wrong_arity", "source": "var probe_expression = (1, 2) as (int, int, int)\n", "datatype": "(int, int, int)", "valid": false, "is_constant": false, "errors": [{"column": 31, "line": 1, "message": "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\"."}]},
-		{"case": "const_wrong_arity", "source": "const VALUE: (int, int, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(int, int, int)", "valid": false, "is_constant": true, "errors": [{"column": 32, "line": 1, "message": "Cannot assign a value of type \"(int, int)\" to a constant of type \"(int, int, int)\"."}]},
+		{"case": "const_wrong_arity", "source": "const VALUE: (int, int, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(int, int, int)", "valid": false, "is_constant": true, "errors": [{"column": 32, "line": 1, "message": "Cannot assign a value of type (int, int) to constant \"VALUE\" with specified type (int, int, int)."}]},
 		{"case": "cast_alias_wrong_arity", "source": "const VALUE = (1, 2) as (int, int, int)\nvar probe_expression = VALUE\n", "datatype": "(int, int, int)", "valid": false, "is_constant": false, "errors": [{"column": 15, "line": 1, "message": "Assigned value for constant \"VALUE\" isn't a constant expression."}, {"column": 22, "line": 1, "message": "Invalid cast. Cannot convert from \"(int, int)\" to \"(int, int, int)\"."}]},
 		{"case": "const_correct_arity", "source": "const VALUE: (int, int) = (1, 2)\nvar probe_expression = VALUE\n", "datatype": "(int, int)", "valid": true, "is_constant": true, "errors": []},
 	]
@@ -5602,8 +5613,8 @@ func _test_pinned_suite_exit_summary(failures: PackedStringArray) -> void:
 		["original_noreturn_function_return", "@noreturn\nfunc invalid_return() -> void:\n\treturn\n", [["A \"@noreturn\" function cannot return.", 2, 1]], [], 8],
 		["original_noreturn_function_fallthrough", "@noreturn\nfunc invalid_fallthrough() -> void:\n\tprint(\"fallthrough\")\n", [["A \"@noreturn\" function cannot complete normally.", 2, 1]], [], 8],
 		["original_noreturn_unreachable_norun", "@noreturn\nfunc abort_user() -> void:\n\tpush_fatal(\"abort\")\n\nfunc unreachable_after_noreturn() -> void:\n\tabort_user()\n\tprint(\"unreachable\")\n", [], [["UNREACHABLE_CODE", "Unreachable code (statement after return) in function \"unreachable_after_noreturn()\".", 7, 5, 7, 25]], 8],
-		["body_unknown_call", "func f() -> int:\n\tunknown_abort()\n", [["Identifier \"unknown_abort\" not declared in the current scope.", 2, 5]], [], 5],
-		["body_failure_before_flow", "func f() -> int:\n\tmissing_name\n", [["Identifier \"missing_name\" not declared in the current scope.", 2, 5]], [], 5],
+		["body_unknown_call", "func f() -> int:\n\tunknown_abort()\n", [["Not all code paths return a value.", 1, 1], ["Identifier \"unknown_abort\" not declared in the current scope.", 2, 5]], [], 5, ["Identifier \"unknown_abort\" not declared in the current scope.", "Not all code paths return a value."]],
+		["body_failure_before_flow", "func f() -> int:\n\tmissing_name\n", [["Not all code paths return a value.", 1, 1], ["Identifier \"missing_name\" not declared in the current scope.", 2, 5]], [], 5, ["Identifier \"missing_name\" not declared in the current scope.", "Not all code paths return a value."]],
 		["parse_failure_before_flow", "func f(\n", [["Expected closing \")\" after function parameters.", 1, 7]], [], -1],
 		["lambda_missing_return", "func f() -> void:\n\tvar _callback := func() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 2, 22]], [], 8],
 		["nested_class_missing_return", "class C:\n\tfunc f() -> int:\n\t\tpass\n", [["Not all code paths return a value.", 2, 5]], [], 8],
@@ -5631,8 +5642,11 @@ func _test_pinned_suite_exit_summary(failures: PackedStringArray) -> void:
 		_expect(failures, report.get("valid") == expected_valid and _errors_are_exact(report.get("errors", []), fixture[2]), fixture[0] + " exact flow errors: " + str(report))
 		_expect(failures, _warnings_are_exact(report.get("warnings", []), fixture[3]), fixture[0] + " exact flow warnings: " + str(report))
 		var expected_messages: PackedStringArray = []
-		for error in fixture[2]:
-			expected_messages.append(error[0])
+		if fixture.size() > 5:
+			expected_messages = PackedStringArray(fixture[5])
+		else:
+			for error in fixture[2]:
+				expected_messages.append(error[0])
 		_expect(failures, analysis.get("valid") == expected_valid and analysis.get("phase") == fixture[4] and analysis.get("errors") == expected_messages and not analysis.has("warnings"), fixture[0] + " exact phase/error boundary: " + str(analysis))
 		_expect(failures, probe.is_semantically_valid(fixture[1], path) == expected_valid, fixture[0] + " semantic validity agrees")
 		_expect(failures, probe.validate_source(fixture[1], path, true) == report and probe.analyze_source(fixture[1], path) == analysis, fixture[0] + " repeated analysis is stable")
@@ -5839,7 +5853,7 @@ func _test_pinned_match_domain_and_narrowing_audit(failures: PackedStringArray) 
 		["narrow_2931_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc do_nothing() -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tvar read_node := func() -> void:\n\t\tprint(node)\n\tif node != null:\n\t\tdo_nothing()\n\t\taccept_node(node)\n", [["Cannot pass nullable value of type \"Node?\" as argument 1 of \"accept_node()\"; expected non-nullable \"Node\".", 10, 21]], [], 5, true, false],
 		["narrow_2937_assert_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tassert(node != null)\n\taccept_node(node)\n", [], [], 8, true, false],
 		["narrow_2937_null_not_equal_source", "func accept_node(node: Node) -> void:\n\tpass\nfunc test(node: Node?) -> void:\n\tassert(null != node)\n\taccept_node(node)\n", [], [], 8, true, false],
-		["narrow_2948_assignment_source", "func test(maybe: Node?) -> void:\n\tvar node: Node = maybe\n", [["Cannot assign a value of type \"Node?\" to a variable of type \"Node\".", 2, 22]], [], 5, true, false],
+		["narrow_2948_assignment_source", "func test(maybe: Node?) -> void:\n\tvar node: Node = maybe\n", [["Cannot assign nullable value of type \"Node?\" to variable \"node\"; expected non-nullable \"Node\".", 2, 22]], [], 5, true, false],
 		["narrow_2948_narrowed_assignment_source", "func test(maybe: Node?) -> void:\n\tif maybe != null:\n\t\tvar node: Node = maybe\n", [], [], 8, true, false],
 		["narrow_2948_return_source", "func get_node(maybe: Node?) -> Node:\n\treturn maybe\n", [["Cannot return value of type \"Node?\" because the function return type is \"Node\".", 2, 5]], [], 5, true, false],
 		["narrow_2948_narrowed_return_source", "func get_node(maybe: Node?) -> Node:\n\tassert(maybe != null)\n\treturn maybe\n", [], [], 8, true, false],

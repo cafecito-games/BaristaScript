@@ -20,20 +20,21 @@ namespace barista_script {
 
 class BSNativeDB {
 public:
+	// Stock Godot exposes constructibility, not ClassDB::is_abstract. For exposed,
+	// enabled core classes its only remaining refusal is the absent creation function.
+	// Editor and extension APIs have additional admission rules and are not classified.
+	static bool is_abstract_core_class(const StringName &p_class) {
+		return p_class != StringName() && ClassDB::class_exists(p_class) &&
+				ClassDB::is_class_enabled(p_class) && ClassDB::class_get_api_type(p_class) == ClassDB::API_CORE &&
+				!ClassDB::can_instantiate(p_class);
+	}
+
 	static StringName get_property_getter(const StringName &p_class, const StringName &p_property) {
 		return ClassDB::class_get_property_getter(p_class, p_property);
 	}
 
 	static StringName get_property_setter(const StringName &p_class, const StringName &p_property) {
-		// godot-cpp exposes getter; setter is recovered from the property list when needed.
-		const TypedArray<Dictionary> props = ClassDB::class_get_property_list(p_class, false);
-		for (int i = 0; i < props.size(); i++) {
-			const Dictionary entry = props[i];
-			if (StringName(entry.get("name", String())) == p_property) {
-				return StringName(entry.get("setter", String()));
-			}
-		}
-		return StringName();
+		return ClassDB::class_get_property_setter(p_class, p_property);
 	}
 
 	/** Engine MethodBinds are not exposed; always nullptr (callers tolerate null). */
@@ -43,9 +44,7 @@ public:
 
 	static bool get_method_info(const StringName &p_class, const StringName &p_method, MethodInfo *r_info) {
 		ERR_FAIL_NULL_V(r_info, false);
-		if (!ClassDB::class_has_method(p_class, p_method, false)) {
-			return false;
-		}
+		// Virtual entries such as Object.free appear in the list but not class_has_method.
 		const TypedArray<Dictionary> methods = ClassDB::class_get_method_list(p_class, false);
 		for (int i = 0; i < methods.size(); i++) {
 			const Dictionary entry = methods[i];

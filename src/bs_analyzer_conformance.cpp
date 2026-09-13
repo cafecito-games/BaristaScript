@@ -37,6 +37,7 @@
 #include "barista_script_language.h"
 #include "bs_cache.h"
 #include "bs_conformance_registry.h"
+#include "bs_core_constants.h"
 #include "bs_native_db.h"
 #include "bs_platform.h"
 #include "bs_trait_utils.h"
@@ -48,6 +49,54 @@ namespace {
 
 // Mirrors Variant::MAX_RECURSION_DEPTH (1024).
 static constexpr int TYPE_WALK_MAX_DEPTH = 1024;
+
+static bool _trait_member_is_state(const BSParser::ClassNode::Member &p_member) {
+	switch (p_member.type) {
+		case BSParser::ClassNode::Member::VARIABLE:
+		case BSParser::ClassNode::Member::CONSTANT:
+		case BSParser::ClassNode::Member::ENUM:
+		case BSParser::ClassNode::Member::ENUM_VALUE:
+		case BSParser::ClassNode::Member::SIGNAL:
+			return true;
+		default:
+			return false;
+	}
+}
+
+struct TraitMemberSource {
+	BSParser::ClassNode *trait = nullptr;
+	BSParser::ClassNode::Member member;
+};
+
+// Compares the declared types of a class member and a trait member it redeclares, ignoring
+// `type_source`. DataType::operator== treats INFERRED/UNDETECTED operands as equal for parsing
+// purposes, which would let an inferred-but-incompatible redeclaration (e.g. `var health = "x"`
+// against a trait's `var health: int`) slip through, so the structural identity is compared here.
+static bool _trait_state_type_is_compatible(const BSParser::DataType &p_trait_type, const BSParser::DataType &p_class_type) {
+	// A genuinely untyped redeclaration can hold the trait's value, so it is not a conflict.
+	if (p_trait_type.kind == BSParser::DataType::VARIANT || p_class_type.kind == BSParser::DataType::VARIANT) {
+		return true;
+	}
+	if (p_trait_type.kind != p_class_type.kind) {
+		return false;
+	}
+	switch (p_class_type.kind) {
+		case BSParser::DataType::BUILTIN:
+			return p_trait_type.builtin_type == p_class_type.builtin_type &&
+					p_trait_type.container_element_types == p_class_type.container_element_types;
+		case BSParser::DataType::NATIVE:
+		case BSParser::DataType::ENUM:
+			return p_trait_type.native_type == p_class_type.native_type;
+		case BSParser::DataType::SCRIPT:
+			return p_trait_type.script_type == p_class_type.script_type;
+		case BSParser::DataType::CLASS:
+			return p_trait_type.class_type == p_class_type.class_type ||
+					(p_trait_type.class_type != nullptr && p_class_type.class_type != nullptr &&
+							p_trait_type.class_type->fqcn == p_class_type.class_type->fqcn);
+		default:
+			return true;
+	}
+}
 
 const BSParser::Node *_trait_use_source(const BSParser::ClassNode::TraitUse &p_trait_use,
 		const BSParser::ClassNode *p_owner) {
@@ -393,7 +442,16 @@ void BSAnalyzer::raise_declared_conformance_dependencies() {
 }
 
 void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_function, BSParser::ClassNode *p_class) {
-	if (p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
+	bool local_witness = false;
+	if (p_class == witness_target_class && witness_declaration_scope != nullptr && parser->has_class(witness_declaration_scope)) {
+		for (const BSParser::ConformanceNode *conformance : witness_declaration_scope->conformances) {
+			if (conformance != nullptr && conformance->witnesses.has(p_function)) {
+				local_witness = true;
+				break;
+			}
+		}
+	}
+	if (!local_witness && p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
 		Ref<BSParserRef> owner = ensure_external_parser(p_class, "While resolving function signature", p_function);
 		if (owner.is_valid()) {
 			ForeignAnalyzerVisibilityScope visibility(owner->get_analyzer());
@@ -405,6 +463,36 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	if (p_function == nullptr) {
 		return;
 	}
+	if (p_function->owner_enum && !resolving_enum_interfaces.has(p_function->owner_enum)) {
+		analyze_enum_function_signatures(p_function->owner_enum, p_class);
+		return;
+	}
+	// Reentrant enum signature requests retain the selected declaration's scope,
+	// even when reached from another enum's default or an early class initializer.
+	const auto previous_enum = current_enum;
+	const auto previous_enum_owner = current_enum_owner;
+	Finally restore_enum([&]() {
+		current_enum = previous_enum;
+		current_enum_owner = previous_enum_owner;
+	});
+	if (p_function->owner_enum) {
+		current_enum = p_function->owner_enum;
+		current_enum_owner = p_class;
+		const auto annotation_class = current_class;
+		const auto annotation_function = current_function;
+		current_class = p_class;
+		current_function = nullptr;
+		Finally restore_annotation_scope([&]() {
+			current_class = annotation_class;
+			current_function = annotation_function;
+		});
+		for (BSParser::AnnotationNode *annotation : p_function->annotations) {
+			if (annotation) {
+				resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
+				annotation->apply(parser, p_function, p_class);
+			}
+		}
+	}
 	const StringName function_name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
 	if (p_function->get_datatype().is_resolving()) {
 		push_error(vformat(R"(Could not resolve function "%s": Cyclic reference.)", function_name), p_function);
@@ -415,6 +503,9 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	}
 	p_function->resolved_signature = true;
 
+	BSParser::FunctionNode *previous_function = current_function;
+	current_function = p_function;
+	Finally restore_function([&]() { current_function = previous_function; });
 	BSParser::ClassNode *previous_class = current_class;
 	current_class = p_class;
 
@@ -451,22 +542,253 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 			parameter->set_datatype(datatype_from_type_node(parameter->datatype_specifier));
 		}
 		const StringName parameter_name = parameter->identifier != nullptr ? parameter->identifier->name : StringName();
-		method_info.arguments.push_back(parameter->get_datatype().to_property_info(parameter_name));
 		if (parameter->initializer != nullptr) {
+			// Foundry fs_analyzer.cpp:4677-4730: defaults use their declaring function's static context.
+			const BSParser::Node *previous_declaration = get_node_declaration;
+			if (p_function->source_lambda == nullptr)
+				get_node_declaration = p_function;
+			const int previous_errors = parser->get_errors().size();
 			reduce_expression(parameter->initializer);
+			get_node_declaration = previous_declaration;
 			// Foundry assignable path: parameter defaults qualify contextual `.Case` against the
 			// parameter's declared type (during signature resolve, before the body sweep).
 			qualify_contextual_enum_case_consumer(parameter->initializer, parameter->get_datatype());
 			mark_coroutine_handle_capture(parameter->initializer, parameter->get_datatype());
-			if (parameter->initializer->is_constant) {
+			const bool constant_type_ok = update_constant_expression_type(parameter->initializer, parameter->get_datatype(), "assign");
+			check_assignable_inference(parameter, "parameter");
+			// Foundry resolve_parameter -> resolve_assignable: the shared converter leaves
+			// concrete refusals to the named declaration reporter at the initializer.
+			const auto target_type = parameter->get_datatype();
+			const auto source_type = parameter->initializer->get_datatype();
+			if (parameter->datatype_specifier == nullptr) {
+				auto inferred = source_type;
+				if (!inferred.is_set() || (inferred.kind == BSParser::DataType::BUILTIN && inferred.builtin_type == Variant::NIL))
+					inferred = BSParser::DataType::get_variant_type();
+				inferred.type_source = parameter->infer_datatype ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
+				parameter->set_datatype(inferred);
+			}
+			if (constant_type_ok && parameter->datatype_specifier != nullptr && target_type.is_set() && !target_type.is_variant() && source_type.is_set()) {
+				BSTypeCompatibility::Options options;
+				options.allow_implicit_conversion = true;
+				options.strict_dynamic = strict_dynamic_checks;
+				options.strict_null = strict_null_checks;
+				if (has_materialized_constant_value(parameter->initializer)) {
+					options.constant_source_value = &parameter->initializer->reduced_value;
+				}
+				if (!BSTypeCompatibility::check(target_type, source_type, options).compatible) {
+					push_error(make_declaration_type_error(target_type, source_type, "parameter", parameter_name), parameter->initializer);
+				}
+			}
+			// Recovery keeps each default's slot without trusting an unavailable or failed value.
+			if (constant_type_ok && parser->get_errors().size() == previous_errors && has_materialized_constant_value(parameter->initializer)) {
 				p_function->default_arg_values.push_back(parameter->initializer->reduced_value);
 			} else {
 				p_function->default_arg_values.push_back(Variant());
 			}
 		}
+		// Foundry resolve_assignable c9d5e35:5583-5585: a parameter is a mutable
+		// binding even when its default expression is constant or read-only.
+		auto parameter_type = parameter->get_datatype();
+		parameter_type.is_constant = false;
+		parameter_type.is_read_only = false;
+		parameter->set_datatype(parameter_type);
+		method_info.arguments.push_back(parameter_type.to_property_info(parameter_name));
 	}
 	if (p_function->rest_parameter != nullptr && p_function->rest_parameter->datatype_specifier != nullptr) {
 		p_function->rest_parameter->set_datatype(datatype_from_type_node(p_function->rest_parameter->datatype_specifier));
+	}
+	// Foundry c9d5e35:4809-4995. Ordinary overrides share one retained parent
+	// selection. The extension's static analyzer runs in every build (there is no
+	// TOOLS_ENABLED); only the native override warning remains debug-only.
+	const bool is_enum_function = p_function->owner_enum != nullptr;
+	if (p_class != nullptr && p_function->source_lambda == nullptr && !is_enum_function &&
+			function_name != SNAME("_init") && function_name != SNAME("_static_init")) {
+		BSParser::DataType base_type = p_class->base_type;
+		base_type.is_meta_type = false;
+		BSParser::FunctionNode *parent_function = nullptr;
+		BSParser::ClassNode *parent_class = nullptr;
+		List<BSParser::DataType> parent_parameters;
+		BSParser::DataType parent_return, parent_rest;
+		int parent_defaults = 0;
+		bool parent_static = false, parent_async = false, parent_variadic = false;
+		bool has_parent = false;
+		StringName native_owner;
+		const int parent_errors_before = parser->get_errors().size();
+		parent_class = find_member_in_class_or_trait_chain(base_type.class_type, function_name, p_function);
+		if (parent_class != nullptr) {
+			resolve_class_member(parent_class, function_name, p_function);
+			const auto &member = parent_class->get_member(function_name);
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				parent_function = member.function;
+			} else if (parser->get_errors().size() == parent_errors_before) {
+				const auto member_type = member.get_datatype();
+				if (!(member_type.kind == BSParser::DataType::BUILTIN && member_type.builtin_type == Variant::CALLABLE)) {
+					if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+						push_error(vformat(R"(Type alias "%s" cannot be called. It names a type without declaring one, so it has no constructor; call the aliased type instead.)", function_name), p_function);
+					} else {
+						push_error(vformat(R"(Member "%s" is not a function.)", function_name), p_function);
+					}
+				}
+			}
+		} else if (parser->get_errors().size() == parent_errors_before) {
+			MethodInfo parent_info;
+			if (base_type.native_type != StringName() && BSNativeDB::get_method_info(base_type.native_type, function_name, &parent_info)) {
+				has_parent = true;
+				parent_return = type_from_property(parent_info.return_val);
+				for (const auto &parameter : parent_info.arguments) {
+					parent_parameters.push_back(type_from_property(parameter, true));
+				}
+				parent_defaults = parent_info.default_arguments.size();
+				parent_static = (parent_info.flags & METHOD_FLAG_STATIC) != 0;
+				parent_variadic = (parent_info.flags & METHOD_FLAG_VARARG) != 0;
+#ifdef DEBUG_ENABLED
+				// Stock ClassDB exposes declaration-local lists rather than MethodBind owners.
+				// Virtual entries have no native implementation to shadow (pin17059-17062).
+				if (!(parent_info.flags & METHOD_FLAG_VIRTUAL) && ClassDB::class_has_method(base_type.native_type, function_name)) {
+					for (StringName owner = base_type.native_type; owner != StringName(); owner = ClassDB::get_parent_class(owner)) {
+						const TypedArray<Dictionary> methods = ClassDB::class_get_method_list(owner, true);
+						for (int i = 0; i < methods.size(); ++i) {
+							const Dictionary method = methods[i];
+							if (StringName(method.get("name", String())) == function_name) {
+								native_owner = owner;
+								break;
+							}
+						}
+						if (native_owner != StringName()) {
+							break;
+						}
+					}
+				}
+#endif
+			} else {
+				parent_function = find_conformance_witness(base_type, function_name);
+				// Witness lookup retains the declaring parser and its resolved signature.
+				parent_class = parent_function != nullptr ? base_type.class_type : nullptr;
+			}
+		}
+		const auto self_type = _self_type_for_class(p_class);
+		auto substitute_self = [&](const BSParser::DataType &type) {
+			return _substitute_type_parameters_and_self(type, HashMap<StringName, BSParser::DataType>(), self_type);
+		};
+		if (parent_function != nullptr && parser->get_errors().size() == parent_errors_before) {
+			has_parent = true;
+			parent_return = substitute_self(parent_function->get_datatype());
+			parent_static = parent_function->is_static;
+			parent_async = parent_function->is_coroutine;
+			parent_variadic = parent_function->is_vararg();
+			parent_defaults = parent_function->default_arg_values.size();
+			for (const auto *parameter : parent_function->parameters) {
+				parent_parameters.push_back(substitute_self(parameter->get_datatype()));
+			}
+			if (parent_variadic) {
+				parent_rest = substitute_self(parent_function->rest_parameter->get_datatype());
+			}
+		}
+		if (has_parent) {
+			// Pin16815-16830/15940-15961 wraps an async invocation before4824-4829
+			// peels it. We copied the raw FunctionNode result, so that pair is already
+			// cancelled: retain every declared Coroutine layer for async parents.
+			// A synchronous Coroutine result still takes the pin's one-level peel.
+			if (!parent_async && parent_return.is_coroutine && parent_return.has_container_element_type(0)) {
+				parent_return = parent_return.get_container_element_type(0);
+			}
+			if (parent_function != nullptr && parent_function->is_final) {
+				push_error(vformat(R"*(Cannot override final function "%s()" declared in "%s".)*", function_name, bs_class_or_trait_diagnostic_name(parent_class)), p_function);
+			}
+			const bool async_valid = parent_async == p_function->is_coroutine;
+			bool valid = async_valid && parent_static == p_function->is_static;
+			BSTypeCompatibility::Options options;
+			options.strict_null = strict_null_checks;
+			options.allow_runtime_narrowing = false;
+			options.strict_dynamic = strict_dynamic_checks;
+			if (p_function->return_type != nullptr) {
+				const auto result = substitute_self(p_function->get_datatype());
+				if (result.is_variant()) {
+					valid = valid && parent_return.is_variant();
+				} else if (result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
+					if (parent_return.is_hard_type() && !(parent_return.kind == BSParser::DataType::BUILTIN && parent_return.builtin_type == Variant::NIL)) {
+						valid = false;
+					}
+				} else if (parent_return.is_set() && result.is_set()) {
+					valid = valid && BSTypeCompatibility::check(parent_return, result, options).compatible;
+				}
+			}
+			const int parent_min = parent_parameters.size() - parent_defaults;
+			const int parent_max = parent_variadic ? INT_MAX : parent_parameters.size();
+			const int child_min = p_function->parameters.size() - p_function->default_arg_values.size();
+			const int child_max = p_function->is_vararg() ? INT_MAX : p_function->parameters.size();
+			valid = valid && child_min <= parent_min && parent_max <= child_max;
+			if (valid) {
+				int i = 0;
+				for (const auto &parent_parameter : parent_parameters) {
+					if (i >= p_function->parameters.size()) {
+						break;
+					}
+					const auto child_parameter = substitute_self(p_function->parameters[i++]->get_datatype());
+					if (parent_parameter.is_variant() && parent_parameter.is_hard_type()) {
+						valid = valid && child_parameter.is_variant();
+					} else if (child_parameter.is_set() && parent_parameter.is_set()) {
+						valid = valid && BSTypeCompatibility::check(child_parameter, parent_parameter, options).compatible;
+					}
+				}
+			}
+			const auto child_rest = p_function->is_vararg() ? substitute_self(p_function->rest_parameter->get_datatype()) : BSParser::DataType();
+			const bool rest_valid = BSTypeCompatibility::rest_parameter_accepts_required_arguments(p_function->is_vararg() ? &child_rest : nullptr, parent_variadic ? &parent_rest : nullptr, strict_null_checks, false);
+			bool absorbed_valid = true;
+			BSParser::DataType unabsorbed;
+			if (valid && p_function->is_vararg()) {
+				int i = 0;
+				for (const auto &parent_parameter : parent_parameters) {
+					if (i++ < p_function->parameters.size()) {
+						continue;
+					}
+					if (!BSTypeCompatibility::rest_parameter_accepts_required_argument(&child_rest, parent_parameter, strict_null_checks, false)) {
+						absorbed_valid = false;
+						unabsorbed = parent_parameter;
+						break;
+					}
+				}
+			}
+			auto rest_text = [](const BSParser::DataType *type) { return type == nullptr ? String("<none>") : BSTypeCompatibility::rest_parameter_type_is_narrowing(*type) ? type->to_string()
+																																										   : String("Array"); };
+			if (!async_valid) {
+				push_error(vformat(parent_async ? R"*(The function "%s()" must be async because it overrides an async parent function.)*" : R"*(The function "%s()" cannot be async because it overrides a synchronous parent function.)*", function_name), p_function);
+			} else if (!valid) {
+				String signature = String(function_name) + "(";
+				int i = 0;
+				for (const auto &parameter : parent_parameters) {
+					if (i > 0) {
+						signature += ", ";
+					}
+					const String type = parameter.to_string();
+					signature += type == "null" ? String("Variant") : type;
+					if (i++ >= parent_parameters.size() - parent_defaults) {
+						signature += " = <default>";
+					}
+				}
+				if (parent_variadic) {
+					if (!parent_parameters.is_empty()) {
+						signature += ", ";
+					}
+					signature += "...";
+					if (BSTypeCompatibility::rest_parameter_type_is_narrowing(parent_rest)) {
+						signature += ": " + parent_rest.to_string();
+					}
+				}
+				const String result = parent_return.to_string_strict();
+				signature += ") -> " + (result == "null" ? String("void") : result);
+				push_error(vformat(R"(The function signature doesn't match the parent. Parent signature is "%s".)", signature), p_function);
+			} else if (!rest_valid) {
+				push_error(vformat(R"(The rest parameter type "%s" does not accept every trailing argument allowed by the parent rest parameter type "%s".)", rest_text(p_function->is_vararg() ? &child_rest : nullptr), rest_text(parent_variadic ? &parent_rest : nullptr)), p_function->is_vararg() ? static_cast<const BSParser::Node *>(p_function->rest_parameter) : p_function);
+			} else if (!absorbed_valid) {
+				push_error(vformat(R"(The rest parameter type "%s" does not accept the parent parameter of type "%s".)", rest_text(&child_rest), unabsorbed.to_string()), p_function->rest_parameter);
+			}
+#ifdef DEBUG_ENABLED
+			if (native_owner != StringName() && !(p_class->is_trait && p_function->is_abstract)) {
+				push_warning(p_function, BSWarning::NATIVE_METHOD_OVERRIDE, { String(function_name), String(native_owner) });
+			}
+#endif
+		}
 	}
 	method_info.default_arguments.clear();
 	for (int i = 0; i < p_function->default_arg_values.size(); i++) {
@@ -489,10 +811,18 @@ bool BSAnalyzer::find_trait_implementation(BSParser::ClassNode *p_class, const S
 		visited_classes.insert(current_class);
 
 		if (current_class->is_builtin_conformance_shim) {
-			// Builtin MethodInfo surface remains follow-up under #60 when godot-cpp exposes it.
-			return false;
+			const auto *method = BSCoreConstants::get_builtin_method(current_class->get_datatype().builtin_type, p_function_name);
+			if (!method)
+				return false;
+			r_implementation.method_info = method->info;
+			r_implementation.method_info_source = vformat(R"(Implementation comes from builtin type "%s".)", current_class->fqcn);
+			r_implementation.has_method_info = true;
+			return true;
 		}
 
+		if (current_class->has_member(p_function_name) && !current_class->has_function(p_function_name)) {
+			return false;
+		}
 		if (current_class->has_function(p_function_name)) {
 			BSParser::FunctionNode *function = current_class->get_member(p_function_name).function;
 			if (function != nullptr && !function->is_abstract) {
@@ -533,6 +863,166 @@ bool BSAnalyzer::find_trait_implementation(BSParser::ClassNode *p_class, const S
 	}
 
 	return false;
+}
+
+void BSAnalyzer::validate_trait_conflicts(BSParser::ClassNode *p_class) {
+	if (p_class == nullptr) {
+		return;
+	}
+	// The local flow phase visits the root once; retain per-class pin scheduling.
+	for (const auto &member : p_class->members) {
+		if (member.type == BSParser::ClassNode::Member::CLASS) {
+			validate_trait_conflicts(member.m_class);
+		}
+	}
+	if (p_class->resolved_traits.is_empty()) {
+		return;
+	}
+
+	// Traits and abstract classes are allowed to defer implementation and disambiguation to a
+	// concrete subclass, mirroring validate_trait_requirements, so they must not raise conflicts.
+	if (p_class->is_trait || p_class->is_abstract) {
+		return;
+	}
+
+	HashMap<StringName, TraitMemberSource> trait_methods;
+	HashMap<StringName, TraitMemberSource> trait_state;
+
+	for (BSParser::ClassNode *trait : p_class->resolved_traits) {
+		analyze_class_interface(trait, p_class);
+
+		for (const BSParser::ClassNode::Member &member : trait->members) {
+			if (member.type != BSParser::ClassNode::Member::FUNCTION && !_trait_member_is_state(member)) {
+				continue;
+			}
+
+			const StringName member_name = StringName(member.get_name());
+			if (member_name == StringName()) {
+				continue;
+			}
+
+			// A trait member that the class does not itself redeclare will be flattened
+			// in, so it must not collide with a member of the implementer's base classes
+			// or native base — the same diagnostic the class's own members would raise.
+			// (A method overriding a base method is allowed, as for normal classes.)
+			if (!p_class->has_member(member_name) &&
+					check_class_member_name_conflict(p_class, member_name, member.get_source_node()) != OK) {
+				continue;
+			}
+
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				if (member.function == nullptr) {
+					continue;
+				}
+
+				if (p_class->has_member(member_name)) {
+					const BSParser::ClassNode::Member class_member = p_class->get_member(member_name);
+					if (class_member.type != BSParser::ClassNode::Member::FUNCTION) {
+						push_error(vformat(R"*(Class "%s" redeclares trait method "%s()" from "%s" with a %s member.)*",
+										   bs_class_or_trait_diagnostic_name(p_class), member_name, bs_class_or_trait_diagnostic_name(trait),
+										   class_member.get_type_name()),
+								class_member.get_source_node());
+						continue;
+					}
+
+					if (!member.function->is_abstract) {
+						TraitMethodImplementation implementation;
+						implementation.function = class_member.function;
+						implementation.owner_class = p_class;
+						validate_trait_method_signature(trait, p_class, member.function, implementation,
+								HashMap<StringName, BSParser::DataType>());
+					}
+					continue;
+				}
+
+				if (member.function->is_abstract) {
+					continue;
+				}
+
+				bool inherited_method_shadows_trait = false;
+				HashSet<BSParser::ClassNode *> visited_bases;
+				for (BSParser::DataType *base_type = &p_class->base_type;
+						base_type != nullptr && base_type->kind == BSParser::DataType::CLASS;) {
+					BSParser::ClassNode *base_class = base_type->class_type;
+					if (base_class == nullptr || visited_bases.has(base_class)) {
+						break;
+					}
+
+					visited_bases.insert(base_class);
+
+					if (base_class->has_function(member_name)) {
+						BSParser::ClassNode::Member base_member = base_class->get_member(member_name);
+						if (base_member.function != nullptr && !base_member.function->is_abstract) {
+							TraitMethodImplementation implementation;
+							implementation.function = base_member.function;
+							implementation.owner_class = base_class;
+							validate_trait_method_signature(trait, p_class, member.function, implementation,
+									HashMap<StringName, BSParser::DataType>());
+							inherited_method_shadows_trait = true;
+							break;
+						}
+					}
+
+					resolve_class_inheritance(base_class);
+					base_type = &base_class->base_type;
+				}
+				if (inherited_method_shadows_trait) {
+					continue;
+				}
+
+				HashMap<StringName, TraitMemberSource>::Iterator previous = trait_methods.find(member_name);
+				if (previous) {
+					push_error(vformat(R"*(Trait method "%s()" from "%s" conflicts with trait method "%s()" from "%s"; override it in "%s" to disambiguate.)*",
+									   member_name, bs_class_or_trait_diagnostic_name(previous->value.trait), member_name,
+									   bs_class_or_trait_diagnostic_name(trait), bs_class_or_trait_diagnostic_name(p_class)),
+							_trait_requirement_source(p_class, trait));
+					continue;
+				}
+
+				TraitMemberSource source;
+				source.trait = trait;
+				source.member = member;
+				trait_methods.insert(member_name, source);
+				continue;
+			}
+
+			if (p_class->has_member(member_name)) {
+				const BSParser::ClassNode::Member class_member = p_class->get_member(member_name);
+				if (class_member.type == BSParser::ClassNode::Member::FUNCTION) {
+					push_error(vformat(R"(Class "%s" redeclares trait member "%s" from "%s" with a function.)",
+									   bs_class_or_trait_diagnostic_name(p_class), member_name, bs_class_or_trait_diagnostic_name(trait)),
+							class_member.get_source_node());
+					continue;
+				}
+
+				const BSParser::DataType trait_type = _substitute_type_parameters_and_self(
+						member.get_datatype(), HashMap<StringName, BSParser::DataType>(), _self_type_for_class(p_class));
+				const BSParser::DataType class_type = class_member.get_datatype();
+				if (!_trait_state_type_is_compatible(trait_type, class_type)) {
+					push_error(vformat(R"(Class "%s" redeclares trait member "%s" from "%s" with incompatible type. Expected "%s", got "%s".)",
+									   bs_class_or_trait_diagnostic_name(p_class), member_name, bs_class_or_trait_diagnostic_name(trait),
+									   trait_type.to_string(), class_type.to_string()),
+							class_member.get_source_node());
+				}
+				continue;
+			}
+
+			HashMap<StringName, TraitMemberSource>::Iterator previous = trait_state.find(member_name);
+			if (previous) {
+				push_error(vformat(R"(Trait member "%s" from "%s" conflicts with trait member "%s" from "%s"; redeclare it in "%s" with type "%s" to disambiguate.)",
+								   member_name, bs_class_or_trait_diagnostic_name(previous->value.trait), member_name,
+								   bs_class_or_trait_diagnostic_name(trait), bs_class_or_trait_diagnostic_name(p_class),
+								   previous->value.member.get_datatype().to_string()),
+						_trait_requirement_source(p_class, trait));
+				continue;
+			}
+
+			TraitMemberSource source;
+			source.trait = trait;
+			source.member = member;
+			trait_state.insert(member_name, source);
+		}
+	}
 }
 
 void BSAnalyzer::validate_trait_requirements(BSParser::ClassNode *p_class) {
@@ -933,6 +1423,57 @@ BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_
 			break;
 		}
 	}
+	if (trait == nullptr && name.contains(".")) {
+		// Foundry c9d5e35:10051: a found local/inherited root, including a
+		// non-class value or a failed member, terminates trait lookup.
+		List<BSParser::ClassNode *> scopes;
+		get_class_node_current_scope_classes(p_scope, &scopes, p_trait_use.name[0]);
+		for (BSParser::ClassNode *scope : scopes) {
+			BSParser::ClassNode *candidate = nullptr;
+			if (scope->identifier != nullptr && scope->identifier->name == p_trait_use.name[0]->name) {
+				candidate = scope;
+			} else if (scope->has_member(p_trait_use.name[0]->name)) {
+				const int errors = parser->get_errors().size();
+				resolve_class_member(scope, p_trait_use.name[0]->name, p_trait_use.name[0]);
+				if (parser->get_errors().size() > errors) {
+					return nullptr;
+				}
+				const auto member = scope->get_member(p_trait_use.name[0]->name);
+				if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr) {
+					push_error(vformat(R"(Cannot use %s "%s" as a trait.)", member.get_type_name(), p_trait_use.name[0]->name), p_trait_use.name[0]);
+					return nullptr;
+				}
+				candidate = member.m_class;
+			}
+			if (candidate == nullptr) {
+				continue;
+			}
+			for (int i = 1; i < p_trait_use.name.size(); ++i) {
+				const auto *part = p_trait_use.name[i];
+				if (!candidate->has_member(part->name)) {
+					push_error(vformat(R"(Could not resolve trait "%s".)", name), p_trait_use.name[0]);
+					return nullptr;
+				}
+				const int errors = parser->get_errors().size();
+				resolve_class_member(candidate, part->name, part);
+				if (parser->get_errors().size() > errors) {
+					return nullptr;
+				}
+				const auto member = candidate->get_member(part->name);
+				if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr) {
+					push_error(vformat(R"(Cannot use %s "%s" as a trait.)", member.get_type_name(), part->name), part);
+					return nullptr;
+				}
+				candidate = member.m_class;
+			}
+			if (!candidate->is_trait) {
+				push_error(vformat(R"(Class "%s" cannot be used as a trait.)", bs_class_or_trait_diagnostic_name(candidate)), p_trait_use.name[0]);
+				return nullptr;
+			}
+			trait = candidate;
+			break;
+		}
+	}
 	if (trait == nullptr) {
 		const BSParser::Node *source = _trait_use_source(p_trait_use, p_scope);
 		const NameLookup lookup = lookup_declaration(name, p_scope, source, "trait");
@@ -940,7 +1481,7 @@ BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_
 			return nullptr;
 		}
 		if (lookup.status == NameLookupStatus::MISSING) {
-			push_error(vformat(R"(Could not find trait "%s".)", name), source);
+			push_error(vformat(R"(Could not resolve trait "%s".)", name), source);
 			return nullptr;
 		}
 		const BSDeclarationRecord &record = lookup.record;
@@ -950,7 +1491,11 @@ BSParser::ClassNode *BSAnalyzer::resolve_trait_reference(BSParser::ClassNode *p_
 		}
 		Error err = OK;
 		Ref<BSParserRef> trait_ref = get_depended_parser(record.path, BSParserRef::INTERFACE_SOLVED, err);
-		if (trait_ref.is_null() || err != OK || trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
+		// A previous consumer may already have latched a BODY failure. Keep the
+		// completed interface available; analyze_class_body replays the body failure
+		// for this applying class using the retained declaration owner.
+		if (trait_ref.is_null() || (err != OK && trait_ref->get_result_for_status(BSParserRef::INTERFACE_SOLVED) != OK) ||
+				trait_ref->get_parser() == nullptr || trait_ref->get_parser()->get_tree() == nullptr) {
 			push_error(vformat(R"(Could not resolve trait "%s".)", name), p_source);
 			return nullptr;
 		}
@@ -976,7 +1521,7 @@ BSParser::ClassNode *BSAnalyzer::resolve_conformance_trait_use(BSParser::ClassNo
 }
 
 bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, BSParser::ClassNode *p_target,
-		BSParser::ClassNode *p_trait) {
+		BSParser::ClassNode *p_trait, BSParser::ClassNode *p_declaration_scope) {
 	if (p_conformance == nullptr || p_target == nullptr || p_trait == nullptr) {
 		return false;
 	}
@@ -1027,6 +1572,7 @@ bool BSAnalyzer::validate_conformance(BSParser::ConformanceNode *p_conformance, 
 			}
 
 			if (witnesses_by_name.has(function_name)) {
+				ScopedWitnessScope witness_scope(this, p_target, p_declaration_scope);
 				TraitMethodImplementation implementation;
 				implementation.function = witnesses_by_name.get(function_name);
 				implementation.owner_class = p_target;
@@ -1177,6 +1723,14 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				continue;
 			}
 
+			// Foundry conformance:1308: a trait base constrains the retroactive target.
+			if (!class_satisfies_trait_base(target, trait)) {
+				push_error(vformat(R"(Class "%s" cannot conform to trait "%s" because it does not inherit from "%s".)",
+								   bs_class_or_trait_diagnostic_name(target), bs_class_or_trait_diagnostic_name(trait), trait->base_type.to_string()),
+						conformance);
+				continue;
+			}
+
 			// Coherence: a conformance redundant with the target's own `uses` is rejected.
 			bool redundant = false;
 			for (int t = 0; t < target->resolved_traits.size(); t++) {
@@ -1273,7 +1827,7 @@ void BSAnalyzer::resolve_conformances(BSParser::ClassNode *p_class) {
 				continue;
 			}
 
-			if (!validate_conformance(conformance, target, trait)) {
+			if (!validate_conformance(conformance, target, trait, p_class)) {
 				continue;
 			}
 
@@ -1635,8 +2189,8 @@ void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {
 			continue;
 		}
 
-		BSParser::ClassNode *previous_class = current_class;
-		current_class = target;
+		ScopedWitnessScope witness_scope(this, target, p_class);
+		ScopedCurrentClass receiver_scope(this, target);
 		for (int i = 0; i < conformance->witnesses.size(); i++) {
 			BSParser::FunctionNode *witness = conformance->witnesses[i];
 			if (witness == nullptr) {
@@ -1653,7 +2207,6 @@ void BSAnalyzer::resolve_conformance_bodies(BSParser::ClassNode *p_class) {
 			}
 			analyze_function_body(witness);
 		}
-		current_class = previous_class;
 	}
 }
 

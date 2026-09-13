@@ -15,7 +15,25 @@
     "analyzer_cache",
     "analyzer_type_compatibility",
     "source_analyzer",
-    "autoload_analyzer"
+    "autoload_analyzer",
+    "trait_surface_analyzer",
+    "witness_scope_analyzer",
+    "variadic_callable_analyzer",
+    "builtin_metadata_analyzer",
+    "get_node_analyzer",
+    "numeric_consumer_analyzer",
+    "warning_producer_analyzer",
+    "concrete_type_analyzer",
+    "value_consumer_analyzer",
+    "expression_consumer_analyzer",
+    "abstract_contract_analyzer",
+    "parent_contract_analyzer",
+    "provider_phase_analyzer",
+    "namespace_annotation_analyzer",
+    "declaration_context_analyzer",
+    "enum_call_dispatch_analyzer"
   ],
-  "editor_import": ["global_class"]
+  "editor_import": [
+    "global_class"
+  ]
 }

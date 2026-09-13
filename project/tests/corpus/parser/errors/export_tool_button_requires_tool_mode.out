@@ -1,1 +1,1 @@
-BS_TEST_OK
+>> ERROR at line 1: Tool buttons can only be used in tool scripts (add "@tool" to the top of the script).

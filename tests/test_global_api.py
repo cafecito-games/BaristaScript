@@ -29,7 +29,7 @@ class GlobalAPITest(unittest.TestCase):
         first = GENERATOR.generate(self.source)
         self.assertEqual(first, GENERATOR.generate(self.source))
         self.assertEqual(hashlib.sha256(first.encode("utf-8")).hexdigest(),
-                         "0a823732096dff8b2a24b779fab0b36c796a1ab9039f2d26bc846812e13c7d67")
+                         "089d93d652db165948c5ec01258d80c6e7d42f1bae2f4b6f394b2b56556d7eb6")
         constants = list(self.api["global_constants"])
         for enum in self.api["global_enums"]:
             for value in enum["values"]:
@@ -141,7 +141,9 @@ class GlobalAPITest(unittest.TestCase):
     def test_carrier_fingerprint_is_semantic_and_reports_evidence(self):
         api = copy.deepcopy(self.api)
         api["builtin_classes"].reverse()
-        self.assertEqual(GENERATOR.generate(self.source), GENERATOR.generate(json.dumps(api).encode("utf-8")))
+        self.assertEqual(GENERATOR.validate_builtin_carriers(self.api["builtin_classes"]), GENERATOR.validate_builtin_carriers(api["builtin_classes"]))
+        with self.assertRaisesRegex(ValueError, "builtin metadata projection mismatch"):
+            GENERATOR.generate(json.dumps(api).encode("utf-8"))
         api["builtin_classes"][0]["name"] = "UnknownCarrier"
         with self.assertRaisesRegex(ValueError, "expected [0-9a-f]{64}, actual [0-9a-f]{64}"):
             GENERATOR.generate(json.dumps(api).encode("utf-8"))
@@ -157,6 +159,117 @@ class GlobalAPITest(unittest.TestCase):
             with self.subTest(carrier=carrier):
                 self.assertIn('property("%s", "")' % carrier, output)
                 self.assertIn('property("%s", "value")' % carrier, output)
+
+    def test_complete_builtin_projection_and_native_oracle(self):
+        fields = ("constructors", "methods", "members", "constants", "enums")
+        projection = [{key: builtin[key] for key in ("name",) + fields if key in builtin}
+                      for builtin in self.api["builtin_classes"]]
+        encoded = json.dumps(projection, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        self.assertEqual(hashlib.sha256(self.source).hexdigest(), "53d37f85be32b6d10fb2266ca51f6ef0c3a55728acdb7c8301b1458a93c00943")
+        self.assertEqual(hashlib.sha256(encoded.encode("ascii")).hexdigest(),
+                         "8c4b3d220359541f1a73c9465b008aa3afa4c31ace0e04d99e34bf084b22fa70")
+        self.assertEqual([sum(len(b.get(f, [])) for b in projection) for f in fields], [156, 999, 62, 210, 7])
+        output = GENERATOR.generate(self.source)
+        native = output.split("#ifdef BARISTA_TESTS\n", 1)[1].split("#endif", 1)[0]
+        retained = native.split("BS_NATIVE_BUILTIN_ORACLE\n", 1)[1].split(')BSAPI";', 1)[0]
+        self.assertEqual(retained, encoded)
+        self.assertNotIn("BS_NATIVE_BUILTIN_ORACLE", output.split("#ifdef BARISTA_TESTS\n", 1)[0])
+        self.assertEqual(output.count("r.add_constructor("), 156)
+        self.assertEqual(output.count("r.add_builtin_method("), 999)
+        self.assertEqual(output.count("].members.push_back("), 62)
+        self.assertEqual(output.count("r.add_builtin_constant("), 210)
+        self.assertEqual(output.count("r.add_builtin_enum("), 7)
+        defaults = [(a["type"], a["default_value"]) for b in projection
+                    for m in b["constructors"] + b.get("methods", [])
+                    for a in m.get("arguments", []) if "default_value" in a]
+        self.assertEqual(len(defaults), 150)
+        self.assertEqual(len(set(defaults)), 19)
+
+    def test_builtin_schema_is_decoded_before_fingerprint(self):
+        def builtin(api, name="String"):
+            return next(b for b in api["builtin_classes"] if b["name"] == name)
+        def method(api):
+            return builtin(api)["methods"][0]
+        def default(api):
+            return next(a for m in builtin(api)["methods"] for a in m.get("arguments", []) if "default_value" in a)
+        mutations = [
+            (lambda a: builtin(a).pop("constructors"), "schema"),
+            (lambda a: builtin(a)["constructors"][0].update(index=True), "constructor index"),
+            (lambda a: builtin(a)["constructors"][0].update(index=-1), "constructor index"),
+            (lambda a: builtin(a)["constructors"].append(builtin(a)["constructors"][0]), "duplicate constructor"),
+            (lambda a: builtin(a)["methods"].append(method(a)), "duplicate name"),
+            (lambda a: method(a).update(is_const=1), "method flag"),
+            (lambda a: method(a).update(is_static=None), "method flag"),
+            (lambda a: method(a).update(is_vararg="false"), "method flag"),
+            (lambda a: method(a).update(hash=True), "method hash"),
+            (lambda a: method(a).update(hash=2**63), "method hash"),
+            (lambda a: method(a).update(hash_compatibility=[False]), "compatibility hash"),
+            (lambda a: method(a).update(hash_compatibility=[-1]), "compatibility hash"),
+            (lambda a: method(a).update(hash_compatibility=1), "compatibility hashes"),
+            (lambda a: method(a).update(return_type="invented"), "unknown builtin carrier"),
+            (lambda a: method(a).update(arguments=[dict(name="x", type="int"), dict(name="x", type="int")]), "duplicate name"),
+            (lambda a: method(a).update(arguments=[dict(name="x", type="int", default_value="0"), dict(name="y", type="int")]), "non-trailing"),
+            (lambda a: default(a).update(default_value="danger()"), "literal|encoding|default"),
+            (lambda a: default(a).update(type="invented"), "unknown builtin carrier"),
+            (lambda a: builtin(a,"Vector2")["members"].append(builtin(a,"Vector2")["members"][0]), "duplicate name"),
+            (lambda a: builtin(a,"Vector2")["members"][0].update(type="invented"), "unknown builtin carrier"),
+            (lambda a: builtin(a,"Vector2")["constants"][0].update(value="Vector2(1)"), "component count"),
+            (lambda a: builtin(a,"Vector2")["constants"][0].update(value="Vector2(1e400, 0)"), "non-finite"),
+            (lambda a: builtin(a,"Vector2i")["constants"][0].update(value="Vector2i(2147483648, 0)"), "int32"),
+            (lambda a: builtin(a,"Vector2i")["constants"][0].update(value="Vector2i(1.5, 0)"), "integer component"),
+            (lambda a: builtin(a,"Vector2")["enums"][0].update(is_bitfield=False), "schema"),
+            (lambda a: builtin(a,"Vector2")["enums"][0]["values"][0].update(value=True), "int64"),
+            (lambda a: builtin(a,"Vector2")["enums"][0]["values"][0].update(value=2**63), "int64"),
+            (lambda a: builtin(a,"Vector2")["enums"][0]["values"].append(builtin(a,"Vector2")["enums"][0]["values"][0]), "duplicate name"),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(mutation=mutations.index((mutate,message))):
+                api=copy.deepcopy(self.api); mutate(api)
+                with self.assertRaisesRegex(ValueError,message):
+                    GENERATOR.generate(json.dumps(api).encode("utf-8"))
+        # Real byte mutations preserve duplicate keys that a dict roundtrip would erase.
+        for token in (b'"index": 0', b'"is_const": true', b'"is_static": false', b'"default_value": "-1"'):
+            start=self.source.index(b'"builtin_classes":')
+            self.assertIn(token,self.source[start:])
+            source=self.source[:start]+self.source[start:].replace(token,token+b", "+token,1)
+            with self.assertRaisesRegex(ValueError,"duplicate JSON object member"):
+                GENERATOR.generate(source)
+
+    def test_numeric_components_are_bounded_and_keep_matrix_order(self):
+        # Asymmetric values expose row/column permutation hidden by identity constants.
+        # VariantParser and godot-cpp use this scalar order for each admitted constructor.
+        for carrier, count in (("Transform2D", 6), ("Basis", 9), ("Transform3D", 12), ("Projection", 16)):
+            text = carrier + "(" + ", ".join(str(i) for i in range(1, count + 1)) + ")"
+            expected = "Variant(" + carrier + "(" + ", ".join(str(i) + ".0" for i in range(1, count + 1)) + "))"
+            self.assertEqual(GENERATOR.decoded_value(carrier, text), expected)
+            with self.assertRaisesRegex(ValueError, "component count"):
+                GENERATOR.decoded_value(carrier, carrier + "(0)")
+        for text in ("Vector2(1e-9999, 0)", "Vector2(1e-46, 0)", "Vector2(3.5e38, 0)"):
+            with self.assertRaisesRegex(ValueError, "single precision"):
+                GENERATOR.decoded_value("Vector2", text)
+        for text in ("Vector2(nan, 0)", "Vector2(-inf, 0)", "Vector2(user(), 0)"):
+            with self.assertRaisesRegex(ValueError, "numeric component"):
+                GENERATOR.decoded_value("Vector2", text)
+
+    def test_atomic_publication_preserves_previous_output_on_every_failure(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/"api.json"; source.write_bytes(self.source)
+            target=Path(directory)/"api.h"; target.write_bytes(b"previous output")
+            before=target.stat().st_mtime_ns
+            source.write_bytes(self.source.replace(b'"index": 0',b'"index": true',1))
+            with self.assertRaises(ValueError): GENERATOR.write_header(source,target)
+            self.assertEqual(target.read_bytes(),b"previous output"); self.assertEqual(target.stat().st_mtime_ns,before)
+            source.write_bytes(self.source)
+            with mock.patch.object(GENERATOR.os,"replace",side_effect=OSError("injected publication failure")):
+                with self.assertRaises(OSError): GENERATOR.write_header(source,target)
+            self.assertEqual(target.read_bytes(),b"previous output"); self.assertEqual(target.stat().st_mtime_ns,before)
+            with mock.patch.object(GENERATOR.os,"fsync",side_effect=OSError("injected write failure")):
+                with self.assertRaises(OSError): GENERATOR.write_header(source,target)
+            self.assertEqual(target.read_bytes(),b"previous output"); self.assertEqual(target.stat().st_mtime_ns,before)
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()),["api.h","api.json"])
+            GENERATOR.write_header(source,target); content=target.read_bytes(); before=target.stat().st_mtime_ns
+            GENERATOR.write_header(source,target); self.assertEqual(target.read_bytes(),content); self.assertEqual(target.stat().st_mtime_ns,before)
 
     def test_cpp_string_escaping(self):
         api = copy.deepcopy(self.api)

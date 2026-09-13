@@ -19,5 +19,26 @@
   "auxiliary_sources": [
     "modules/foundry_script/tests/scripts/runtime/features/rtc_runtime_self_adoptable.notest.fs",
     "modules/foundry_script/tests/scripts/utils.notest.fs"
+  ],
+  "analyzer_sources": [
+    "modules/foundry_script/fs_analyzer.cpp",
+    "modules/foundry_script/fs_analyzer.h",
+    "modules/foundry_script/fs_analyzer_call_validation.cpp",
+    "modules/foundry_script/fs_analyzer_conformance.cpp",
+    "modules/foundry_script/fs_analyzer_finalization.cpp",
+    "modules/foundry_script/fs_analyzer_flow_finality.cpp",
+    "modules/foundry_script/fs_analyzer_surface.cpp",
+    "modules/foundry_script/fs_builtin_sources.cpp",
+    "modules/foundry_script/fs_builtin_sources.h",
+    "modules/foundry_script/fs_builtin_types.cpp",
+    "modules/foundry_script/fs_builtin_types.h",
+    "modules/foundry_script/fs_cache.cpp",
+    "modules/foundry_script/fs_cache.h",
+    "modules/foundry_script/fs_conformance_registry.cpp",
+    "modules/foundry_script/fs_conformance_registry.h",
+    "modules/foundry_script/fs_trait_utils.cpp",
+    "modules/foundry_script/fs_trait_utils.h",
+    "modules/foundry_script/fs_type.cpp",
+    "modules/foundry_script/fs_type.h"
   ]
 }

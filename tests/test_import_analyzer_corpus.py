@@ -40,6 +40,53 @@ class AnalyzerImport(unittest.TestCase):
     def inventory(self):
         return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus_staging/analyzer')
 
+    def test_shared_utils_has_one_real_provider(self):
+        inv = self.inventory()
+        record = next(r for r in inv['sources'] if r['upstream_path'] == 'utils.notest.fs')
+        self.assertEqual(record.get('root'), 'res://tests/corpus_support/parser')
+        self.assertEqual(record['imported_path'], 'utils.notest.barista')
+        self.assertEqual(inv['ledger']['skipped'], inv['counts']['helpers'] + 1)
+        stage = self.root / 'stage'
+        self.m.write_stage(inv, self.source, stage)
+        self.assertFalse((stage / '_support/utils.notest.barista').exists())
+        self.assertEqual(sum(p.name == 'utils.notest.barista' for p in stage.rglob('*.barista')), 0)
+        self.assertEqual(inv['counts']['support_helpers'], 2)
+
+    def test_shared_support_actual_bytes_and_root_cannot_drift(self):
+        import copy
+        import run_corpus_triage
+        inv = self.inventory()
+        record = next(r for r in inv['sources'] if r['upstream_path'] == 'utils.notest.fs')
+        project = self.root / 'project'
+        support = project / 'tests/corpus_support/parser/utils.notest.barista'
+        support.parent.mkdir(parents=True)
+        stage = self.root / 'stage'
+        stage.mkdir()
+        (stage / 'previous').write_bytes(b'previous valid stage')
+        with self.assertRaisesRegex(ValueError, 'shared support'):
+            self.m.write_stage(inv, self.source, stage, project_root=project)
+        self.assertEqual((stage / 'previous').read_bytes(), b'previous valid stage')
+        original = (self.source / 'utils.notest.fs').read_bytes()
+        projected = self.m.patch(original, record['transformations'], record['identity'])
+        support.write_bytes(projected)
+        self.m.write_stage(inv, self.source, stage, project_root=project)
+        run_corpus_triage.validate_staging(stage, inv, project_root=project)
+        support.write_bytes(projected + b'drift')
+        with self.assertRaisesRegex(ValueError, 'shared support'):
+            self.m.check_stage(inv, self.source, stage, project_root=project)
+        with self.assertRaisesRegex(ValueError, 'shared support'):
+            run_corpus_triage.validate_staging(stage, inv, project_root=project)
+        support.write_bytes(projected)
+        for root in ('res://outside', 'res://tests/corpus_support/parser/../parser'):
+            changed = copy.deepcopy(inv)
+            next(r for r in changed['sources'] if r['upstream_path'] == 'utils.notest.fs')['root'] = root
+            with self.assertRaisesRegex(ValueError, 'identity/root/path'):
+                run_corpus_triage.validate_staging(stage, changed, project_root=project)
+        support.unlink()
+        support.symlink_to(ROOT / 'project/tests/corpus_support/parser/utils.notest.barista')
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.m.check_stage(inv, self.source, stage, project_root=project)
+
     def test_reviewed_owner_requires_execution_and_source_evidence(self):
         path = 'errors/preload_missing_relative_path.barista'
         owner = dict(self.m.default_policy()['owners'][path])

@@ -83,7 +83,7 @@ class PublicationTest(unittest.TestCase):
         corpus = ROOT / 'project/tests/corpus/parser'
         summary = {'cases': sorted(path.relative_to(corpus).as_posix() for path in corpus.rglob('*.barista') if not path.name.endswith('.notest.barista')),
                    'helpers': sorted(path.relative_to(corpus).as_posix() for path in corpus.rglob('*.notest.barista')),
-                   'analyzer_deferred': baseline['corpora']['parser']['analyzer_deferred']}
+                   'stages': json.loads((corpus / 'case_stages.json').read_text())['cases']}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             destination = root / 'parser'
@@ -98,10 +98,10 @@ class PublicationTest(unittest.TestCase):
                 return summary
             replace = importer.os.replace
             def fail_baseline(source, target):
-                if target == baseline_path:
+                if target == baseline_path and source.name == 'baseline.json':
                     raise OSError('injected publication failure')
                 return replace(source, target)
-            with patch.object(importer, 'BASELINE_PATH', baseline_path), patch.object(importer, '_generate_corpus', side_effect=generate), patch.object(importer.os, 'replace', side_effect=fail_baseline):
+            with patch.object(importer, 'BASELINE_PATH', baseline_path), patch.object(importer, '_generate_corpus', side_effect=generate), patch.object(importer, 'generate_support', side_effect=lambda _f, dest: dest.mkdir()), patch.object(importer.os, 'replace', side_effect=fail_baseline):
                 with self.assertRaisesRegex(OSError, 'injected'):
                     importer.import_corpus(root, destination, publish_baseline=True)
             self.assertEqual((destination / 'previous').read_bytes(), b'valid old tree')

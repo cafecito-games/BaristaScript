@@ -18,11 +18,11 @@
 /*  capture + compound-assign restore, get_operation_type,                */
 /*  resolve_class_member same-parser depth, reduce_await + MISSING_AWAIT / */
 /*  REDUNDANT_AWAIT (#60), class-phase INTERFACE/BODY foreign failure     */
-/*  recording and dependent replay (#60 residual after #118), Coroutine[T]*/
-/*  annotation decode in datatype_from_type_node (#60 residual), direct   */
-/*  async-call wrap + mark_coroutine_handle_capture (#60 residual).       */
+/*  recording and dependent replay (R01/X3, #140), Coroutine[T]*/
+/*  annotation decode in datatype_from_type_node (R02), direct   */
+/*  async-call wrap + mark_coroutine_handle_capture (R02).       */
 /*  Non-generic SelfFieldLeg + Self-contract RETURN assign/return (#60). */
-/*  Gradual Self-union admission + self_free union members (#60 residual). */
+/*  Concrete Self-union admission + self_free union members (R03, #138). */
 /*  complete_self_referential_enum_type + specialize helpers (#60).      */
 /*  Deliberate non-ports: NumericType / fs_numeric_ops / integer suffixes */
 /*  are deleted by D1; fs_builtin_types registration and its JsonResult  */
@@ -48,9 +48,6 @@
 #include "bs_trait_utils.h"
 #include "bs_utility_functions.h"
 #include "bs_warning.h"
-
-#include <godot_cpp/core/gdextension_interface_loader.hpp>
-#include <godot_cpp/variant/utility_functions.hpp>
 
 namespace barista_script {
 
@@ -237,6 +234,43 @@ static bool _constant_truth(const BSParser::ExpressionNode *p_expression) {
 	return _is_static_script_handle(p_expression) || p_expression->is_unmaterialized_constant || p_expression->reduced_value.booleanize();
 }
 
+// Native/global/builtin enums share int-carried nominal identities. Their metatypes
+// are names, never Dictionary payloads or user Script objects.
+static BSParser::DataType _engine_enum_type(const String &qualified) {
+	BSParser::DataType result;
+	result.kind = BSParser::DataType::VARIANT;
+	HashMap<StringName, int64_t> values;
+	bool found = CoreConstants::is_global_enum(qualified);
+	if (found)
+		CoreConstants::get_enum_values(qualified, &values);
+	const int dot = qualified.find(".");
+	if (!found && dot > 0) {
+		const String owner = qualified.substr(0, dot), name = qualified.substr(dot + 1);
+		const auto carrier = BSParser::get_builtin_type(owner);
+		if (const auto *e = BSCoreConstants::get_builtin_enum(carrier, name)) {
+			for (int i = 0; i < e->names.size(); ++i)
+				values.insert(e->names[i], e->values[i]);
+			found = true;
+		} else if (ClassDB::class_exists(owner) && ClassDB::class_has_enum(owner, name)) {
+			const PackedStringArray names = ClassDB::class_get_enum_constants(owner, name);
+			for (int i = 0; i < names.size(); ++i)
+				values.insert(names[i], ClassDB::class_get_integer_constant(owner, names[i]));
+			found = true;
+		}
+	}
+	if (found) {
+		result.kind = BSParser::DataType::ENUM;
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		result.builtin_type = Variant::INT;
+		result.enum_type = qualified;
+		result.native_type = qualified;
+		result.is_meta_type = true;
+		result.is_constant = true;
+		result.enum_values = values;
+	}
+	return result;
+}
+
 static bool _enum_has_value(const BSParser::DataType &p_type, int64_t p_value) {
 	for (const KeyValue<StringName, int64_t> &entry : p_type.enum_values) {
 		if (entry.value == p_value) {
@@ -403,17 +437,9 @@ static bool _construct_builtin_variant(Variant::Type p_target_type, const Varian
 	// GDExtension operation is exposed through the generated interface loader rather than the
 	// godot-cpp Variant wrapper. Copy the constructed native value into the owning wrapper before
 	// destroying the temporary ABI value.
-	alignas(8) uint8_t storage[GODOT_CPP_VARIANT_SIZE]{};
-	const GDExtensionConstVariantPtr arguments[1] = { p_source._native_ptr() };
-	GDExtensionCallError error{};
-	gdextension_interface::variant_construct((GDExtensionVariantType)p_target_type,
-			(GDExtensionUninitializedVariantPtr)storage, arguments, 1, &error);
-	if (error.error != GDEXTENSION_CALL_OK) {
-		gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
+	if (!BSVariantOperators::construct(p_target_type, p_source, r_converted)) {
 		return false;
 	}
-	r_converted = Variant((GDExtensionConstVariantPtr)storage);
-	gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
 	_make_constant_containers_read_only(r_converted);
 	return true;
 }
@@ -758,32 +784,24 @@ bool BSAnalyzer::errors_from_index_are_only_m5_deferred(int p_from_index) const 
 	return saw_any;
 }
 
-BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_class, const StringName &p_name) const {
+BSParser::FunctionNode *BSAnalyzer::find_class_function(BSParser::ClassNode *p_class, const StringName &p_name, bool *r_found_member, const BSParser::Node *p_source) const {
+	if (r_found_member != nullptr) {
+		*r_found_member = false;
+	}
 	if (p_class == nullptr || p_name == StringName()) {
 		return nullptr;
 	}
-	// Soft mutual path-extends may install CLASS loops for registration; stop identity revisits.
-	HashSet<const BSParser::ClassNode *> visited;
-	for (BSParser::ClassNode *lookup = p_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
-		if (visited.has(lookup)) {
-			break;
-		}
-		visited.insert(lookup);
-		if (!lookup->has_member(p_name)) {
-			continue;
-		}
-		// Foundry @ c9d5e35: resolve_class_member before reading the FUNCTION node / signature.
-		// const_cast: find sites always run during analysis on a live analyzer.
-		const_cast<BSAnalyzer *>(this)->resolve_class_member(lookup, p_name);
-		const BSParser::ClassNode::Member member = lookup->get_member(p_name);
-		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
-			return member.function;
-		}
-		// An ordinary non-function declaration claims the name; do not resurrect a same-named
-		// function further up the chain (Foundry ordinary_member_name_found @ c9d5e35).
+	BSAnalyzer *analyzer = const_cast<BSAnalyzer *>(this);
+	BSParser::ClassNode *owner = analyzer->find_member_in_class_or_trait_chain(p_class, p_name, p_source);
+	if (owner == nullptr) {
 		return nullptr;
 	}
-	return nullptr;
+	if (r_found_member != nullptr) {
+		*r_found_member = true;
+	}
+	analyzer->resolve_class_member(owner, p_name, p_source);
+	const auto &member = owner->get_member(p_name);
+	return member.type == BSParser::ClassNode::Member::FUNCTION ? member.function : nullptr;
 }
 
 bool BSAnalyzer::is_bootstrap_path_allowed(const String &p_path) {
@@ -840,7 +858,8 @@ BSParser::DataType BSAnalyzer::type_from_variant(const Variant &p_value) {
 BSParser::DataType BSAnalyzer::type_from_property(const PropertyInfo &p_property, bool p_is_arg, bool p_is_readonly) const {
 	// D1-trimmed decode of Foundry FSAnalyzer::type_from_property (@ c9d5e35): carrier-only
 	// PropertyInfo → DataType for MethodInfo call validation. Width/signedness metadata is never
-	// consulted; coroutine / Callable-signature hint decoding remains follow-up under #60.
+	// consulted. R15: stock Godot lacks Foundry rich PropertyInfo hints (#38);
+	// analyzer-to-analyzer Callable/Coroutine signatures remain in DataType.
 	BSParser::DataType result;
 	result.is_read_only = p_is_readonly;
 	result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
@@ -974,13 +993,15 @@ bool BSAnalyzer::validate_bootstrap_namespace_import(const String &p_import) {
 	return true;
 }
 
-Error BSAnalyzer::run_phase_preflight() {
+Error BSAnalyzer::run_phase_preflight(bool p_validate_annotations) {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
 	if (!parser->get_errors().is_empty()) {
 		return ERR_PARSE_ERROR;
 	}
 	validate_bootstrap_namespace_imports();
-	validate_annotation_declarations();
+	if (p_validate_annotations) {
+		validate_annotation_declarations();
+	}
 	mark_phase(AnalyzerPhase::PREFLIGHT);
 	mark_phase(AnalyzerPhase::DEPENDENCY_PARSE_AVAILABILITY);
 	return parser->get_errors().is_empty() ? OK : ERR_PARSE_ERROR;
@@ -1000,6 +1021,14 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 	if (p_class == nullptr || failed_name_lookups.has(p_class)) {
 		return;
 	}
+
+	// This void adaptation must preserve Foundry's failed inheritance return across
+	// later interface/body requests, even when a failed exit leaves base_type unset.
+	Finally record_inheritance_failure([&]() {
+		if (!p_class->base_type.is_set()) {
+			failed_name_lookups.insert(p_class);
+		}
+	});
 
 	// Foundry resolves the class itself before nested members (`resolve_class_inheritance(..., true)`),
 	// so an outer is already set when a nested `extends Sibling` walks scope via `outer`.
@@ -1163,7 +1192,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			if (lookup.status == NameLookupStatus::FOUND) {
 				qualified = lookup.qualified;
 				if (lookup.indexed && (lookup.record.kind == BSDeclarationKind::ENUM || lookup.record.kind == BSDeclarationKind::TUPLE)) {
-					push_error(vformat(R"(Cannot use %s "%s" in extends chain.)", bs_declaration_kind_name(lookup.record.kind), qualified), first_id);
+					push_error(vformat(R"(Cannot extend %s file "%s".)", bs_declaration_kind_name(lookup.record.kind), qualified), first_id);
 					p_class->base_type = BSParser::DataType();
 					return;
 				}
@@ -1448,6 +1477,34 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
+	// Pin fs_analyzer.cpp:3174-3193: concrete Type[T] is a handle annotation,
+	// independent of user generic specialization.
+	if (p_type_node->type_chain[0]->name == SNAME("Type")) {
+		if (p_type_node->type_chain.size() != 1 || p_type_node->container_types.size() != 1) {
+			push_error("Type[T] expects exactly one type argument.", p_type_node);
+			return result;
+		}
+		BSParser::DataType represented = datatype_from_type_node(p_type_node->container_types[0]);
+		if (represented.kind == BSParser::DataType::UNION) {
+			push_error(vformat(R"(A type handle cannot represent the type union "%s", because a handle names exactly one type at runtime. Use a handle of one alternative instead.)", represented.to_string()), p_type_node->container_types[0]);
+			return result;
+		}
+		if (represented.is_variant() || represented.kind == BSParser::DataType::ENUM || represented.kind == BSParser::DataType::TUPLE || represented.is_type_handle_annotation) {
+			push_error("Type[T] requires an object, script, class, trait, or type-parameter argument.", p_type_node);
+			return result;
+		}
+		if (represented.kind == BSParser::DataType::BUILTIN) {
+			push_error(vformat(R"(Builtin metatypes such as "Type[%s]" are not supported yet.)", represented.to_string()), p_type_node);
+			return result;
+		}
+		represented.is_type_handle_annotation = true;
+		represented.is_meta_type = false;
+		represented.is_constant = false;
+		represented.is_nullable = p_type_node->is_nullable;
+		represented.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		return represented;
+	}
+
 	if (!p_type_node->container_types.is_empty() || !p_type_node->type_argument_expressions.is_empty()) {
 		// Generic / container specialization — deferred unless it is a plain builtin container.
 		const StringName head = p_type_node->type_chain[0]->name;
@@ -1465,7 +1522,126 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
+	auto resolve_nested = [&](BSParser::DataType base, int prefix_size) {
+		for (int i = prefix_size; i < p_type_node->type_chain.size(); ++i) {
+			BSParser::IdentifierNode *part = p_type_node->type_chain[i];
+			if (base.kind == BSParser::DataType::ENUM && base.is_tagged_union && p_type_node->allows_enum_case) {
+				if (i + 1 < p_type_node->type_chain.size()) {
+					push_error("Enum cases cannot contain nested types.", p_type_node->type_chain[i + 1]);
+					base.kind = BSParser::DataType::VARIANT;
+					return base;
+				}
+				if (!base.enum_values.has(part->name)) {
+					push_error(vformat(R"(Enum "%s" has no case named "%s".)", base.to_string(), part->name), part);
+					base.kind = BSParser::DataType::VARIANT;
+					return base;
+				}
+				base.enum_case_name = part->name;
+				break;
+			}
+			BSParser::ClassNode *owner = base.class_type;
+			HashSet<const BSParser::ClassNode *> visited;
+			while (owner != nullptr && !owner->has_member(part->name) && !visited.has(owner)) {
+				visited.insert(owner);
+				owner = owner->base_type.class_type;
+			}
+			if ((base.kind != BSParser::DataType::CLASS && base.kind != BSParser::DataType::SCRIPT) ||
+					owner == nullptr || !owner->has_member(part->name)) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			resolve_class_member(owner, part->name, part);
+			const BSParser::ClassNode::Member member = owner->get_member(part->name);
+			if (member.type != BSParser::ClassNode::Member::CLASS && member.type != BSParser::ClassNode::Member::ENUM && member.type != BSParser::ClassNode::Member::TUPLE) {
+				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
+				base.kind = BSParser::DataType::VARIANT;
+				return base;
+			}
+			base = type_from_metatype(member.get_datatype());
+		}
+		base.is_nullable = p_type_node->is_nullable;
+		return base;
+	};
+
 	StringName name = p_type_node->type_chain[0]->name;
+	BSParser::IdentifierNode *first_id = p_type_node->type_chain[0];
+	if (first_id->suite != nullptr && first_id->suite->has_local(name)) {
+		const auto &local = first_id->suite->get_local(name);
+		if (local.type != BSParser::SuiteNode::Local::CONSTANT) {
+			push_error(vformat(R"(Local %s "%s" cannot be used as a type.)", local.get_name(), name), first_id);
+		} else if (!local.get_datatype().is_set()) {
+			push_error(vformat(R"(Local constant "%s" is not resolved at this point.)", name), first_id);
+		} else if (!local.get_datatype().is_meta_type) {
+			push_error(vformat(R"(Local constant "%s" is not a valid type.)", name), first_id);
+		} else {
+			return resolve_nested(type_from_metatype(local.get_datatype()), 1);
+		}
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+
+	if (current_class == witness_target_class && witness_declaration_scope != nullptr &&
+			name != SNAME("Self") && name != SNAME("Variant") && name != BSParser::get_number_type_name() &&
+			!BSParser::is_builtin_data_type(name) && name != SNAME("AsyncCallable")) {
+		List<BSParser::ClassNode *> target_scopes;
+		get_class_node_current_scope_classes(current_class, &target_scopes, p_type_node);
+		BSParser::ClassNode *selected = nullptr;
+		for (BSParser::ClassNode *scope : target_scopes) {
+			if (scope->has_member(name) || (scope->identifier != nullptr && scope->identifier->name == name)) {
+				selected = scope;
+				break;
+			}
+		}
+		if (selected == nullptr)
+			selected = find_witness_declaration_type(name, p_type_node);
+		if (selected != nullptr) {
+			if (selected->has_member(name) && selected->get_member(name).type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+				bool lexical = false;
+				for (BSParser::ClassNode *scope = witness_declaration_scope; scope != nullptr; scope = scope->outer) {
+					if (scope == selected) {
+						lexical = true;
+						break;
+					}
+				}
+				if (!lexical) {
+					push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", name), p_type_node);
+					result.kind = BSParser::DataType::VARIANT;
+					return result;
+				}
+			}
+			if (selected != current_class) {
+				ScopedCurrentClass selected_scope(this, selected);
+				return datatype_from_type_node(p_type_node);
+			}
+		}
+	}
+	// Foundry c9d5e35:2757,2817-2870: compiler-provided roots own their
+	// compound tails before class or namespace discovery.
+	if (p_type_node->type_chain.size() > 1) {
+		const bool is_self = name == SNAME("Self") && current_class != nullptr;
+		const bool is_number = name == BSParser::get_number_type_name();
+		const bool is_variant = name == SNAME("Variant");
+		const bool is_builtin = BSParser::is_builtin_data_type(name) || name == SNAME("AsyncCallable");
+		if (is_self || is_number || is_variant || is_builtin) {
+			BSParser::IdentifierNode *tail = p_type_node->type_chain[1];
+			if (is_self || is_number) {
+				push_error(vformat(R"(Type "%s" does not contain nested types.)", name), tail);
+			} else if (p_type_node->type_chain.size() > 2) {
+				push_error(is_variant ? "Variant only contains enum types, which do not have nested types." : "Built-in types only contain enum types, which do not have nested types.", p_type_node->type_chain[2]);
+			} else {
+				const auto enum_type = _engine_enum_type(String(name) + String(".") + String(tail->name));
+				if (enum_type.kind == BSParser::DataType::ENUM) {
+					result = type_from_metatype(enum_type);
+					result.is_nullable = p_type_node->is_nullable;
+					return result;
+				}
+				push_error(vformat(R"(Name "%s" is not a nested type of "%s".)", tail->name, name), tail);
+			}
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+	}
 	if (p_type_node->type_chain.size() == 1) {
 		if (name == BSParser::get_number_type_name()) {
 			// Foundry @ c9d5e35: `Number` is the closed int|float union at builtin precedence.
@@ -1476,7 +1652,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 
 		// Foundry get_builtin_data_type / datatype_from_type_node @ c9d5e35: every Variant
 		// builtin spelling (StringName, Callable, bare Array, NodePath, …) resolves here.
-		// Nested builtin enums remain follow-up (godot-cpp lacks Variant::has_enum).
+		// Qualified builtin enums below use the same generated engine metadata.
 		const bool is_async_callable = name == SNAME("AsyncCallable");
 		const Variant::Type builtin_type = is_async_callable ? Variant::CALLABLE : BSParser::get_builtin_type(name);
 		if (builtin_type < Variant::VARIANT_MAX || is_async_callable) {
@@ -1600,16 +1776,19 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
-		// Same-file class/trait declarations are valid value types in annotations.
-		for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+		// Inherited nested heads retain their declaring parser, even across multiple bases.
+		List<BSParser::ClassNode *> type_scopes;
+		if (current_class != nullptr) {
+			get_class_node_current_scope_classes(current_class, &type_scopes, p_type_node);
+		}
+		for (BSParser::ClassNode *scope : type_scopes) {
 			if (!scope->has_member(name)) {
 				continue;
 			}
 			const BSParser::ClassNode::Member member = scope->get_member(name);
 			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
 				resolve_class_member(scope, name, p_type_node);
-				result = member.m_class->get_datatype();
-				result.is_meta_type = false;
+				result = type_from_metatype(member.m_class->get_datatype());
 				result.is_nullable = p_type_node->is_nullable;
 				return result;
 			}
@@ -1626,7 +1805,22 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 		}
 
+		{
+			auto engine_enum = _engine_enum_type(String(name));
+			if (engine_enum.kind == BSParser::DataType::ENUM) {
+				engine_enum.is_meta_type = false;
+				engine_enum.is_constant = false;
+				engine_enum.is_nullable = p_type_node->is_nullable;
+				return engine_enum;
+			}
+		}
 		if (name == SNAME("Self") && current_class != nullptr) {
+			const auto enum_self = enum_self_type();
+			if (enum_self.is_set() && p_type_node->container_types.is_empty()) {
+				result = enum_self;
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
 			// Foundry datatype_from_type_node @ c9d5e35: Self lowers to @Self bound by the
 			// declaring class so trait signature matching can reify it to the implementer.
 			if (!p_type_node->container_types.is_empty()) {
@@ -1668,8 +1862,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 					}
 					return result;
 				}
-				result = current_class->get_datatype();
-				result.is_meta_type = false;
+				result = type_from_metatype(current_class->get_datatype());
 				result.type_arguments.clear();
 				if (!result.is_set() || result.is_variant()) {
 					result.kind = BSParser::DataType::CLASS;
@@ -1683,20 +1876,21 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
-		bool lookup_error = false;
-		BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
-		if (lookup_error || !indexed.is_variant()) {
-			if (!indexed.is_variant()) {
-				indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
-			}
-			return indexed;
-		}
+		// Foundry c9d5e35:2944: flat native types precede namespace candidates.
 		if (ClassDB::class_exists(name)) {
 			result.kind = BSParser::DataType::NATIVE;
 			result.native_type = name;
 			result.builtin_type = Variant::OBJECT;
 		} else {
-			push_error(vformat(R"(Could not find type "%s".)", name), p_type_node->type_chain[0]);
+			bool lookup_error = false;
+			BSParser::DataType indexed = resolve_named_type_in_scope(name, p_type_node, lookup_error);
+			if (lookup_error || !indexed.is_variant()) {
+				if (!indexed.is_variant()) {
+					indexed.is_nullable = indexed.is_nullable || p_type_node->is_nullable;
+				}
+				return indexed;
+			}
+			push_error(vformat(R"(Could not find type "%s" in the current scope.)", name), p_type_node->type_chain[0]);
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
@@ -1704,52 +1898,74 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		return result;
 	}
 
-	auto resolve_nested = [&](BSParser::DataType base, int prefix_size) {
-		for (int i = prefix_size; i < p_type_node->type_chain.size(); ++i) {
-			BSParser::IdentifierNode *part = p_type_node->type_chain[i];
-			BSParser::ClassNode *owner = base.class_type;
-			HashSet<const BSParser::ClassNode *> visited;
-			while (owner != nullptr && !owner->has_member(part->name) && !visited.has(owner)) {
-				visited.insert(owner);
-				owner = owner->base_type.class_type;
-			}
-			if ((base.kind != BSParser::DataType::CLASS && base.kind != BSParser::DataType::SCRIPT) ||
-					owner == nullptr || !owner->has_member(part->name)) {
-				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
-				base.kind = BSParser::DataType::VARIANT;
-				return base;
-			}
-			resolve_class_member(owner, part->name, part);
-			const BSParser::ClassNode::Member member = owner->get_member(part->name);
-			if (member.type != BSParser::ClassNode::Member::CLASS && member.type != BSParser::ClassNode::Member::ENUM && member.type != BSParser::ClassNode::Member::TUPLE) {
-				push_error(vformat(R"(Could not find nested type "%s" under base "%s".)", part->name, base.to_string()), part);
-				base.kind = BSParser::DataType::VARIANT;
-				return base;
-			}
-			base = type_from_metatype(member.get_datatype());
-		}
-		base.is_nullable = p_type_node->is_nullable;
-		return base;
-	};
-
-	// A lexical metatype constant (including a preload handle) claims the prefix
-	// before an identically spelled namespace. Private aliases remain file-local.
+	// Foundry c9d5e35:2950,3050: a lexical root claims the whole chain,
+	// including inherited roots. Resolve members through their retained owner.
 	const StringName lexical_name = p_type_node->type_chain[0]->name;
-	for (BSParser::ClassNode *scope = current_class; scope != nullptr; scope = scope->outer) {
+	List<BSParser::ClassNode *> lexical_scopes;
+	if (current_class != nullptr) {
+		get_class_node_current_scope_classes(current_class, &lexical_scopes, p_type_node);
+	}
+	bool found_out_of_scope_alias = false;
+	for (BSParser::ClassNode *scope : lexical_scopes) {
+		if (scope->identifier != nullptr && scope->identifier->name == lexical_name) {
+			return resolve_nested(type_from_metatype(scope->get_datatype()), 1);
+		}
 		if (!scope->has_member(lexical_name)) {
 			continue;
 		}
 		const auto member = scope->get_member(lexical_name);
-		if (member.type == BSParser::ClassNode::Member::CONSTANT) {
-			resolve_class_member(scope, lexical_name, p_type_node);
-			if (member.get_datatype().is_meta_type) {
-				return resolve_nested(type_from_metatype(member.get_datatype()), 1);
-			}
-			push_error(vformat(R"("%s" is a constant but does not contain a type.)", lexical_name), p_type_node);
+		if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS &&
+				find_type_alias_in_scope(lexical_name) != member.type_alias) {
+			// An invisible inherited alias cannot hide a legal enclosing root.
+			found_out_of_scope_alias = true;
+			continue;
+		}
+		const int errors = parser->get_errors().size();
+		resolve_class_member(scope, lexical_name, p_type_node);
+		if (parser->get_errors().size() > errors) {
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
-		break;
+		if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+			const auto *alias = resolved_type_aliases.getptr(member.type_alias);
+			if (alias != nullptr && alias->is_set()) {
+				return resolve_nested(type_from_metatype(*alias), 1);
+			}
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
+		}
+		if (member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::ENUM ||
+				member.type == BSParser::ClassNode::Member::TUPLE ||
+				(member.type == BSParser::ClassNode::Member::CONSTANT && member.get_datatype().is_meta_type)) {
+			return resolve_nested(type_from_metatype(member.get_datatype()), 1);
+		}
+		push_error(vformat(R"("%s" is a %s but does not contain a type.)", lexical_name, member.get_type_name()), p_type_node);
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+	if (found_out_of_scope_alias) {
+		push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", lexical_name), p_type_node);
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
+	}
+
+	// A native root has only an enum tail; an absent enum must not reopen
+	// namespace lookup (Foundry c9d5e35:2944,3245).
+	if (ClassDB::class_exists(lexical_name)) {
+		BSParser::IdentifierNode *tail = p_type_node->type_chain[1];
+		const auto native_enum = _engine_enum_type(String(lexical_name) + String(".") + String(tail->name));
+		if (native_enum.kind == BSParser::DataType::ENUM) {
+			if (p_type_node->type_chain.size() == 2) {
+				result = type_from_metatype(native_enum);
+				result.is_nullable = p_type_node->is_nullable;
+				return result;
+			}
+			push_error("Enums cannot contain nested types.", p_type_node->type_chain[2]);
+		} else {
+			push_error(vformat(R"(Could not find type "%s" in "%s".)", tail->name, lexical_name), tail);
+		}
+		result.kind = BSParser::DataType::VARIANT;
+		return result;
 	}
 
 	String qualified;
@@ -1758,6 +1974,16 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			qualified += ".";
 		}
 		qualified += String(p_type_node->type_chain[i]->name);
+	}
+
+	{
+		auto engine_enum = _engine_enum_type(qualified);
+		if (engine_enum.kind == BSParser::DataType::ENUM) {
+			engine_enum.is_meta_type = false;
+			engine_enum.is_constant = false;
+			engine_enum.is_nullable = p_type_node->is_nullable;
+			return engine_enum;
+		}
 	}
 
 	// `Message.Move` (or longer chains ending in a case) when the parser asked for an enum case.
@@ -2070,6 +2296,9 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 }
 
 Error BSAnalyzer::run_phase_interface_and_member_surface() {
+	// Literal preload/extends declarations license witnesses for the whole file,
+	// including member initializers preceding the preload's textual position.
+	raise_declared_conformance_dependencies();
 	analyze_class_interface(parser->get_tree());
 	resolve_used_traits(parser->get_tree());
 	mark_phase(AnalyzerPhase::INTERFACE_AND_MEMBER_SURFACE);
@@ -2430,11 +2659,17 @@ void BSAnalyzer::reduce_binary_op(BSParser::BinaryOpNode *p_binary_op) {
 			bool valid = false;
 			Variant::evaluate(p_binary_op->variant_op, p_binary_op->left_operand->reduced_value, p_binary_op->right_operand->reduced_value, p_binary_op->reduced_value, valid);
 			if (!valid) {
-				push_error(vformat(R"(Invalid operands to operator %s, %s and %s.)",
-								   _operator_name(p_binary_op->variant_op),
-								   Variant::get_type_name(p_binary_op->left_operand->reduced_value.get_type()),
-								   Variant::get_type_name(p_binary_op->right_operand->reduced_value.get_type())),
-						p_binary_op);
+				const bool container_operand = left_type.builtin_type == Variant::ARRAY || left_type.builtin_type == Variant::DICTIONARY ||
+						right_type.builtin_type == Variant::ARRAY || right_type.builtin_type == Variant::DICTIONARY;
+				if (container_operand) {
+					push_error(vformat(R"(Invalid operands "%s" and "%s" for "%s" operator.)", left_type.to_string(), right_type.to_string(), _operator_name(p_binary_op->variant_op)), p_binary_op);
+				} else {
+					push_error(vformat(R"(Invalid operands to operator %s, %s and %s.)",
+									   _operator_name(p_binary_op->variant_op),
+									   Variant::get_type_name(p_binary_op->left_operand->reduced_value.get_type()),
+									   Variant::get_type_name(p_binary_op->right_operand->reduced_value.get_type())),
+							p_binary_op);
+				}
 				p_binary_op->reduced_value = Variant();
 			}
 		}
@@ -2527,6 +2762,30 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	if (p_identifier == nullptr) {
 		return;
 	}
+	// Foundry c9d5e35:12640-12685: inspect the selected source after every lookup exit.
+	Finally check_receiver_access([&]() {
+		const bool variable = p_identifier->source == BSParser::IdentifierNode::MEMBER_VARIABLE || p_identifier->source == BSParser::IdentifierNode::INHERITED_VARIABLE;
+		const bool function = p_identifier->source == BSParser::IdentifierNode::MEMBER_FUNCTION && !p_identifier->function_source_is_static;
+		const bool signal = p_identifier->source == BSParser::IdentifierNode::MEMBER_SIGNAL;
+		if (!variable && !function && !signal)
+			return;
+		if (const auto *owner = get_enclosing_enum_function()) {
+			push_error(vformat(R"*(Enum function "%s()" cannot access containing class instance member "%s".)*", owner->identifier->name, p_identifier->name), p_identifier);
+			return;
+		}
+		if (get_node_is_static_context()) {
+			const String kind = variable ? "non-static variable" : function ? "non-static function"
+																			: "signal";
+			const BSParser::FunctionNode *owner = get_enclosing_context_function();
+			if (owner) {
+				push_error(vformat(R"*(Cannot access %s "%s" from the static function "%s()".)*", kind, p_identifier->name, owner->identifier->name), p_identifier);
+			} else {
+				push_error(vformat(R"*(Cannot access %s "%s" from a static variable initializer.)*", kind, p_identifier->name), p_identifier);
+			}
+		}
+		for (auto *lambda = current_lambda; lambda; lambda = lambda->parent_lambda)
+			lambda->use_self = true;
+	});
 	// Foundry reduce_identifier @ c9d5e35: a plain-enum value initializer may name an
 	// earlier member without qualifying it through the enum. Unresolved members include
 	// forward references and cycles and retain the established declaration-order error.
@@ -2588,6 +2847,13 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 				p_identifier->variable_source = local.variable;
 				if (local.variable != nullptr) {
 					p_identifier->set_datatype(local.variable->get_datatype());
+#ifdef DEBUG_ENABLED
+					// Foundry c9d5e35:12578-12585: scalar assignment history, before flow narrowing.
+					const auto declared_type = local.variable->get_datatype();
+					if (local.variable->assignments == 0 && !(declared_type.is_hard_type() && declared_type.kind == BSParser::DataType::BUILTIN)) {
+						push_warning(p_identifier, BSWarning::UNASSIGNED_VARIABLE, { String(p_identifier->name) });
+					}
+#endif
 				}
 				if (const BSParser::DataType *narrowed = flow_finality.lookup_flow_narrowed_type(flow_finality.flow_narrowing_key_from_identifier(p_identifier))) {
 					p_identifier->set_datatype(*narrowed);
@@ -2646,13 +2912,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 			return;
 		}
 	}
-	// Foundry surface: flattened trait members are visible on the implementer (#60).
-	if (current_class != nullptr) {
-		for (int t = 0; t < current_class->resolved_traits.size(); t++) {
-			BSParser::ClassNode *trait = current_class->resolved_traits[t];
-			if (try_bind_identifier_member(p_identifier, trait, false)) {
-				return;
-			}
+	if (BSParser::ClassNode *trait = find_trait_member_in_inheritance_chain(current_class, p_identifier->name, p_identifier)) {
+		if (try_bind_identifier_member(p_identifier, trait, false)) {
+			return;
 		}
 	}
 	// Own class_name / identifier as a CLASS meta handle (`Receiver.Message.…` EXACT_HANDLE).
@@ -2680,7 +2942,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	}
 	// Foundry reduce_identifier Self class-handle @ c9d5e35: expression-position `Self` is the
 	// receiver-relative `@Self` meta handle (needed for `Self.Message.…` SelfFieldLeg selection).
-	if (p_identifier->name == SNAME("Self") && current_class != nullptr && current_function != nullptr) {
+	if (p_identifier->name == SNAME("Self") && current_class != nullptr && current_function != nullptr && !enum_self_type().is_set()) {
 		BSParser::DataType self_handle;
 		self_handle.kind = BSParser::DataType::TYPE_PARAMETER;
 		self_handle.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
@@ -2706,19 +2968,9 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		p_identifier->set_datatype(self_handle);
 		return;
 	}
-	bool lookup_error = false;
-	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier, lookup_error);
-	if (lookup_error) {
-		p_identifier->set_datatype(indexed);
+	if (reduce_identifier_from_witness_declaration_scope(p_identifier))
 		return;
-	}
-	if (!indexed.is_variant()) {
-		indexed.is_meta_type = true;
-		p_identifier->set_datatype(indexed);
-		return;
-	}
-	// Native classes are expression-position class handles after locals and members have missed.
-	// This also lets match patterns distinguish an unshadowed native type from a value pattern.
+	// Foundry c9d5e35:12737: native handles follow lexical values and precede namespaces.
 	if (ClassDB::class_exists(p_identifier->name)) {
 		BSParser::DataType native_meta;
 		native_meta.kind = BSParser::DataType::NATIVE;
@@ -2731,11 +2983,57 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 		p_identifier->set_datatype(native_meta);
 		return;
 	}
+	bool lookup_error = false;
+	BSParser::DataType indexed = resolve_named_type_in_scope(p_identifier->name, p_identifier, lookup_error);
+	if (lookup_error) {
+		p_identifier->set_datatype(indexed);
+		return;
+	}
+	if (!indexed.is_variant()) {
+		indexed.is_meta_type = true;
+		p_identifier->set_datatype(indexed);
+		return;
+	}
+	// A builtin target's expression handle reaches the existing static witness call path.
+	// This carries type identity only; builtin method/constructor metadata stays in its
+	// existing consumers, and no runtime value is constructed for this handle.
+	if (BSParser::is_builtin_data_type(p_identifier->name)) {
+		BSParser::DataType builtin_meta;
+		builtin_meta.kind = BSParser::DataType::BUILTIN;
+		builtin_meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		builtin_meta.builtin_type = BSParser::get_builtin_type(p_identifier->name);
+		builtin_meta.is_meta_type = true;
+		builtin_meta.is_constant = true;
+		p_identifier->set_datatype(builtin_meta);
+		return;
+	}
+	{
+		auto engine_enum = _engine_enum_type(String(p_identifier->name));
+		if (engine_enum.kind == BSParser::DataType::ENUM) {
+			p_identifier->set_datatype(engine_enum);
+			return;
+		}
+	}
+	if (p_identifier->name == SNAME("Variant")) {
+		BSParser::DataType meta;
+		meta.kind = BSParser::DataType::BUILTIN;
+		meta.builtin_type = Variant::NIL;
+		meta.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		meta.native_type = SNAME("Variant");
+		meta.is_meta_type = true;
+		p_identifier->set_datatype(meta);
+		return;
+	}
 	if (CoreConstants::is_global_constant(p_identifier->name)) {
 		const int index = CoreConstants::get_global_constant_index(p_identifier->name);
 		p_identifier->reduced_value = CoreConstants::get_global_constant_value(index);
 		p_identifier->is_constant = true;
-		p_identifier->set_datatype(type_from_variant(p_identifier->reduced_value));
+		auto value_type = _engine_enum_type(String(CoreConstants::get_global_constant_enum(index)));
+		if (value_type.kind != BSParser::DataType::ENUM)
+			value_type = type_from_variant(p_identifier->reduced_value);
+		value_type.is_meta_type = false;
+		value_type.is_constant = true;
+		p_identifier->set_datatype(value_type);
 		return;
 	}
 	MethodInfo utility;
@@ -2796,6 +3094,19 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 		if (candidate == nullptr) {
 			return nullptr;
 		}
+		// A witness is stored beside its declaration, but parameter Self denotes its
+		// conformance target. Recover that existing target before call-site substitution.
+		for (const BSParser::ConformanceNode *conformance : candidate->conformances) {
+			if (conformance == nullptr || !conformance->witnesses.has(p_callee) || conformance->target == nullptr)
+				continue;
+			const BSParser::DataType target_type = conformance->target->get_datatype();
+			if (target_type.kind == BSParser::DataType::CLASS)
+				return target_type.class_type;
+			if (target_type.kind == BSParser::DataType::NATIVE)
+				return conformance->native_target_shim;
+			if (target_type.kind == BSParser::DataType::BUILTIN)
+				return conformance->builtin_target_shim;
+		}
 		for (const BSParser::ClassNode::Member &member : candidate->members) {
 			if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function == p_callee) {
 				return candidate;
@@ -2843,7 +3154,13 @@ void BSAnalyzer::validate_local_call(BSParser::CallNode *p_call, BSParser::Funct
 	};
 	// Named arguments rewrite into canonical positional order before arity/type checks
 	// (Foundry CallSiteValidationContext::canonicalize_named_call_arguments @ c9d5e35).
-	if (!call_site_validation.canonicalize_named_call_arguments(p_call, p_callee)) {
+	const bool named_arguments_valid = call_site_validation.canonicalize_named_call_arguments(p_call, p_callee);
+	// Foundry c9d5e35:8881-8888: selecting an abstract declaration is legal for
+	// ordinary interface calls, but super requires an actual parent implementation.
+	if (p_call->is_super && p_callee->is_abstract) {
+		push_error(vformat(R"*(Cannot call the parent class' abstract function "%s()" because it hasn't been defined.)*", p_call->function_name), p_call);
+	}
+	if (!named_arguments_valid) {
 		set_local_call_return_type();
 		return;
 	}
@@ -2908,6 +3225,20 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		reduce_expression(p_call->arguments[i]);
 	}
 
+	// Most dispatch paths report consumed void after validating arguments. Utilities own
+	// the earlier boundary (Foundry 8544-8548,8589-8593); both use this once-only gate.
+	bool void_result_checked = false;
+	auto check_void_result = [&]() {
+		if (void_result_checked)
+			return;
+		void_result_checked = true;
+		const auto result = p_call->get_datatype();
+		if (!p_is_root && !p_is_await && result.is_hard_type() && result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL) {
+			push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
+		}
+	};
+	Finally check_call_result(check_void_result);
+
 	// Foundry @ c9d5e35: any call may observe / mutate captured locals, so drop narrowing
 	// that was only proven before a lambda captured those locals.
 	Finally clear_captured_flow_narrowing_after_call([&]() {
@@ -2919,8 +3250,23 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	// coroutine *statement* (root position) still warns about a probably-forgotten "await".
 	// Coroutine[void] root discards are exempt: fire-and-forget launches lose no result value.
 #ifdef DEBUG_ENABLED
-	Finally warn_missing_await([&]() {
+	bool static_called_on_instance = false;
+	String static_receiver_type;
+	Finally warn_call_result([&]() {
 		const BSParser::DataType call_type = p_call->get_datatype();
+		// Foundry c9d5e35:8230-8236,9028-9032. All dispatch exits publish metadata;
+		// PRELOAD has its own parser producer and never enters this call consumer.
+		if (p_is_root && call_type.is_set() && !call_type.is_variant() && !call_type.is_coroutine &&
+				!(call_type.kind == BSParser::DataType::BUILTIN && call_type.builtin_type == Variant::NIL) &&
+				!(p_call->is_super && p_call->function_name == SNAME("_init"))) {
+			push_warning(p_call, BSWarning::RETURN_VALUE_DISCARDED, { String(p_call->function_name) });
+		}
+
+		// Same-line warnings retain Foundry's producer order: discarded result, then static call.
+		if (static_called_on_instance) {
+			push_warning(p_call, BSWarning::STATIC_CALLED_ON_INSTANCE, { String(p_call->function_name), static_receiver_type });
+		}
+
 		if (call_type.is_coroutine && !p_is_await && p_is_root && !coroutine_result_is_void(call_type)) {
 			Vector<String> symbols;
 			symbols.push_back(call_type.to_string());
@@ -2931,6 +3277,105 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 	(void)p_is_await;
 	(void)p_is_root;
 #endif
+
+	// Foundry c9d5e35:8608-8616: both super forms start at the actual parent.
+	// Never retry a missing parent method against the current override or its witnesses.
+	if (p_call->is_super && current_class != nullptr) {
+		BSParser::DataType parent_type = current_class->base_type;
+		parent_type.is_meta_type = false;
+		bool resolved_parent = false;
+		Finally complete_parent_call([&]() {
+			if (!resolved_parent) {
+				return;
+			}
+			// Foundry c9d5e35:8986-9022: every resolved super target is a self call.
+			// Keep the common consumers after argument validation, independent of provider.
+			{
+				// These existing helpers use the parser's self scope. Bind only their
+				// call to the analyzer's active receiver, restoring the parser afterward.
+				BSParser::ClassNode *previous_parser_class = parser->current_class;
+				parser->current_class = current_class;
+				Finally restore_signal_receiver([&]() { parser->current_class = previous_parser_class; });
+				call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
+				call_site_validation.validate_local_object_emit_signal_args(p_call, true);
+			}
+			check_self_call(p_call);
+			check_void_result();
+			// Foundry c9d5e35:9040-9051: literal-name signal APIs count as uses on self.
+			mark_implicit_signal_usage(p_call, true);
+		});
+		if (p_call->callee == nullptr && current_lambda != nullptr) {
+			push_error("Cannot use `super()` inside a lambda.", p_call);
+		}
+		bool member_claimed = false;
+		const int errors_before = parser->get_errors().size();
+		BSParser::FunctionNode *callee = nullptr;
+		BSParser::ClassNode *owner = find_member_in_class_or_trait_chain(parent_type.class_type, p_call->function_name, p_call);
+		if (owner != nullptr) {
+			member_claimed = true;
+			resolve_class_member(owner, p_call->function_name, p_call);
+			const BSParser::ClassNode::Member &member = owner->get_member(p_call->function_name);
+			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+				callee = member.function;
+			}
+		}
+		if (callee != nullptr) {
+			resolved_parent = true;
+			p_call->is_static = callee->is_static;
+			p_call->is_noreturn = callee->is_noreturn;
+			validate_local_call(p_call, callee);
+			return;
+		}
+		if (parser->get_errors().size() > errors_before) {
+			return; // The retained owner already reported a failed declaration phase.
+		}
+		if (member_claimed) {
+			// Foundry c9d5e35:16730-16764: an ordinary name claim blocks fallback.
+			const BSParser::ClassNode::Member &member = owner->get_member(p_call->function_name);
+			const BSParser::DataType member_type = member.get_datatype();
+			if (!(member_type.kind == BSParser::DataType::BUILTIN && member_type.builtin_type == Variant::CALLABLE)) {
+				if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+					push_error(vformat(R"(Type alias "%s" cannot be called. It names a type without declaring one, so it has no constructor; call the aliased type instead.)", p_call->function_name), p_call);
+				} else {
+					push_error(vformat(R"(Member "%s" is not a function.)", p_call->function_name), p_call);
+				}
+			}
+		}
+		if (!member_claimed && parent_type.native_type != StringName()) {
+			MethodInfo method_info;
+			if (BSNativeDB::get_method_info(parent_type.native_type, p_call->function_name, &method_info)) {
+				resolved_parent = true;
+				call_site_validation.reject_named_call_arguments(p_call);
+				if (method_info.flags & METHOD_FLAG_VIRTUAL) {
+					push_error(vformat(R"*(Cannot call the parent class' virtual function "%s()" because it hasn't been defined.)*", p_call->function_name), p_call);
+				} else if (method_info.flags & METHOD_FLAG_VIRTUAL_REQUIRED) {
+					push_error(vformat(R"*(Cannot call the parent class' abstract function "%s()" because it hasn't been defined.)*", p_call->function_name), p_call);
+				}
+				p_call->is_static = method_info.flags & METHOD_FLAG_STATIC;
+				call_site_validation.validate_call_arg(method_info, p_call);
+				p_call->set_datatype(type_from_property(method_info.return_val));
+				return;
+			}
+		}
+		if (!member_claimed) {
+			// Foundry c9d5e35:17068-17085: only this receiver's visible witness is
+			// eligible after its ordinary, applied-trait and native methods miss.
+			if (BSParser::FunctionNode *witness = find_conformance_witness(parent_type, p_call->function_name)) {
+				resolved_parent = true;
+				p_call->is_static = witness->is_static;
+				p_call->is_noreturn = witness->is_noreturn;
+				validate_local_call(p_call, witness);
+				return;
+			}
+		}
+		// Foundry c9d5e35:9070-9075: unresolved names cannot map named arguments.
+		call_site_validation.reject_named_call_arguments(p_call);
+		push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, parent_type.to_string()), p_call);
+		BSParser::DataType unresolved;
+		unresolved.kind = BSParser::DataType::VARIANT;
+		p_call->set_datatype(unresolved);
+		return;
+	}
 
 	// Attribute call: `receiver.method(...)` — signal.emit and member-method shapes.
 	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
@@ -2955,6 +3400,16 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		if (subscript != nullptr && subscript->is_attribute && subscript->attribute != nullptr) {
 			reduce_expression(subscript->base);
 			const bool is_self = subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF;
+			auto record_static_instance = [&](bool is_static, const BSParser::DataType &receiver) {
+#ifdef DEBUG_ENABLED
+				// Foundry c9d5e35:9034-9037; only selected ordinary method metadata enters here.
+				if (is_static && !receiver.is_meta_type && !is_self) {
+					static_called_on_instance = true;
+					static_receiver_type = receiver.to_string();
+				}
+#endif
+			};
+
 			if (p_call->function_name == StringName()) {
 				p_call->function_name = subscript->attribute->name;
 			}
@@ -2995,11 +3450,68 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 
+			// Foundry get_function_signature @ c9d5e35: enum hosts claim their methods
+			// before Dictionary fallback. A type receiver may use an instance method's
+			// Dictionary namesake; enum values never acquire the int builtin surface.
+			const auto enum_receiver = subscript->base->get_datatype();
+			if (enum_receiver.kind == BSParser::DataType::ENUM) {
+				if (auto *function = find_enum_function(enum_receiver, p_call->function_name, p_call)) {
+					if (function->is_static != enum_receiver.is_meta_type) {
+						push_error(vformat(R"*(Cannot call %s enum function "%s()" on enum %s "%s".)*",
+										   function->is_static ? "static" : "instance", p_call->function_name,
+										   enum_receiver.is_meta_type ? "type" : "value", enum_receiver.enum_type),
+								p_call->callee);
+					} else {
+						p_call->enum_call_kind = function->is_static ? BSParser::CallNode::ENUM_CALL_STATIC : BSParser::CallNode::ENUM_CALL_INSTANCE;
+						p_call->enum_call_owner_script_path = enum_receiver.script_path;
+						p_call->enum_call_owner_class = enum_receiver.class_type ? StringName(enum_receiver.class_type->fqcn) : StringName();
+						p_call->enum_call_enum_type = enum_receiver.enum_type;
+						p_call->enum_call_function = p_call->function_name;
+					}
+					p_call->is_static = function->is_static;
+					p_call->is_noreturn = function->is_noreturn;
+					validate_local_call(p_call, function);
+					return;
+				}
+				if (enum_receiver.is_meta_type && enum_receiver.builtin_type == Variant::DICTIONARY) {
+					if (const auto *method = BSCoreConstants::get_builtin_method(Variant::DICTIONARY, p_call->function_name)) {
+						call_site_validation.reject_named_call_arguments(p_call);
+						if (!(method->info.flags & (METHOD_FLAG_STATIC | METHOD_FLAG_CONST)))
+							push_error(vformat(R"*(Cannot call non-const Dictionary function "%s()" on enum "%s".)*", p_call->function_name, enum_receiver.enum_type), p_call);
+						call_site_validation.validate_call_arg(method->info, p_call);
+						p_call->set_datatype(type_from_property(method->info.return_val));
+						return;
+					}
+				}
+				if (!enum_receiver.is_meta_type)
+					push_error(vformat(R"*(Function "%s()" does not exist for enum value "%s".)*", p_call->function_name, enum_receiver.enum_type), p_call->callee);
+				else if (enum_receiver.builtin_type == Variant::DICTIONARY)
+					push_error(vformat(R"*(Function "%s()" does not exist for enum "%s" or its Dictionary methods.)*", p_call->function_name, enum_receiver.enum_type), p_call->callee);
+				else
+					push_error(vformat(R"*(The native enum "%s" does not behave like Dictionary and does not have methods of its own.)*", enum_receiver.enum_type), p_call->callee);
+				BSParser::DataType unresolved;
+				unresolved.kind = BSParser::DataType::VARIANT;
+				p_call->set_datatype(unresolved);
+				return;
+			}
+
 			// Foundry constructor admission @ c9d5e35:8805-8834,17037-17043. Native
 			// and local class handles construct their instance type before ordinary method lookup.
 			if (subscript->base != nullptr && p_call->function_name == SNAME("new")) {
 				const BSParser::DataType class_meta_type = subscript->base->get_datatype();
 				if ((class_meta_type.kind == BSParser::DataType::CLASS || class_meta_type.kind == BSParser::DataType::NATIVE) && class_meta_type.is_meta_type) {
+					if (BSNativeDB::is_abstract_core_class(class_meta_type.native_type)) {
+						if (class_meta_type.kind == BSParser::DataType::CLASS)
+							push_error(vformat(R"(Class "%s" cannot be constructed as it is based on abstract native class "%s".)", bs_class_or_trait_diagnostic_name(class_meta_type.class_type), class_meta_type.native_type), p_call);
+						else
+							push_error(vformat(R"(Native class "%s" cannot be constructed as it is abstract.)", class_meta_type.native_type), p_call);
+						// Pinned failed-constructor lookup still diagnoses the Callable callee.
+						push_error(R"*(Name "new" is a Callable. You can call it with "new.call()" instead.)*", p_call->callee);
+						BSParser::DataType unresolved;
+						unresolved.kind = BSParser::DataType::VARIANT;
+						p_call->set_datatype(unresolved);
+						return;
+					}
 					BSParser::FunctionNode *initializer = class_meta_type.kind == BSParser::DataType::CLASS ? find_class_function(class_meta_type.class_type, SNAME("_init")) : nullptr;
 					if (initializer != nullptr) {
 						validate_local_call(p_call, initializer, class_meta_type.class_type);
@@ -3039,15 +3551,12 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.builtin_type == Variant::SIGNAL &&
 						base_type.has_method_signature) {
 					call_site_validation.reject_named_call_arguments(p_call);
-					call_site_validation.validate_signal_connect_arg(base_type, p_call, 0);
-					BSParser::DataType void_type;
-					void_type.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-					void_type.kind = BSParser::DataType::BUILTIN;
-					void_type.builtin_type = Variant::NIL;
-					if (p_call->function_name == SNAME("is_connected")) {
-						void_type.builtin_type = Variant::BOOL;
+					const auto *method = BSCoreConstants::get_builtin_method(Variant::SIGNAL, p_call->function_name);
+					if (method) {
+						call_site_validation.validate_call_arg(method->info, p_call);
+						p_call->set_datatype(type_from_property(method->info.return_val));
 					}
-					p_call->set_datatype(void_type);
+					call_site_validation.validate_signal_connect_arg(base_type, p_call, 0);
 					return;
 				}
 			}
@@ -3057,6 +3566,23 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				const BSParser::DataType base_type = subscript->base->get_datatype();
 				if (call_site_validation.try_type_callable_method_call(p_call, base_type)) {
 					return;
+				}
+			}
+
+			if (subscript->base && p_call->function_name != StringName()) {
+				const auto receiver = subscript->base->get_datatype();
+				if (receiver.kind == BSParser::DataType::BUILTIN && receiver.is_hard_type()) {
+					const auto *method = BSCoreConstants::get_builtin_method(receiver.builtin_type, p_call->function_name);
+					if (method) {
+						call_site_validation.reject_named_call_arguments(p_call);
+						if (receiver.is_meta_type && !(method->info.flags & METHOD_FLAG_STATIC))
+							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(receiver).to_string()), p_call);
+						record_static_instance(method->info.flags & METHOD_FLAG_STATIC, receiver);
+						call_site_validation.validate_call_arg(method->info, p_call, &receiver);
+						const auto result = type_from_property(method->info.return_val);
+						p_call->set_datatype(result);
+						return;
+					}
 				}
 			}
 
@@ -3084,29 +3610,50 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 						base_type.type_parameter_bound[0].kind == BSParser::DataType::CLASS) {
 					method_owner = base_type.type_parameter_bound[0].class_type;
 				}
+				bool member_claimed = false;
 				if (method_owner != nullptr) {
-					BSParser::FunctionNode *callee = find_class_function(method_owner, p_call->function_name);
+					BSParser::FunctionNode *callee = find_class_function(method_owner, p_call->function_name, &member_claimed, p_call->callee);
 					if (callee != nullptr) {
 						if (base_type.is_meta_type && !callee->is_static) {
 							push_error(vformat(R"*(Cannot call non-static function "%s()" on the class "%s" directly. Make an instance instead.)*", p_call->function_name, type_from_metatype(base_type).to_string()), p_call);
 							p_call->set_datatype(callee->get_datatype());
 							return;
 						}
+						record_static_instance(callee->is_static, base_type);
 						validate_local_call(p_call, callee);
 						p_call->is_noreturn = callee->is_noreturn;
 						return;
 					}
 				} else if (is_self && current_class != nullptr) {
-					BSParser::FunctionNode *callee = find_class_function(current_class, p_call->function_name);
+					BSParser::FunctionNode *callee = find_class_function(current_class, p_call->function_name, &member_claimed, p_call->callee);
 					if (callee != nullptr) {
 						validate_local_call(p_call, callee);
 						p_call->is_noreturn = callee->is_noreturn;
 						return;
 					}
 				}
+				// A claimed non-function cannot resurrect a native method or witness.
+				// Reuse the existing member reduction and callee diagnostic before fallback.
+				if (member_claimed && !p_call->is_super) {
+					const int previous_errors = parser->get_errors().size();
+					reduce_expression(subscript);
+					const BSParser::DataType callee_type = subscript->get_datatype();
+					if (parser->get_errors().size() == previous_errors && callee_type.is_set() && !callee_type.is_variant()) {
+						if (callee_type.builtin_type == Variant::CALLABLE) {
+							push_error(vformat(R"*(Name "%s" is a Callable. You can call it with "%s.call()" instead.)*", p_call->function_name, p_call->function_name), p_call->callee);
+						} else {
+							push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, callee_type.to_string()), p_call->callee);
+						}
+					}
+					BSParser::DataType call_type;
+					call_type.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(call_type);
+					return;
+				}
 				if (native_type != StringName()) {
 					MethodInfo method_info;
 					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
+						record_static_instance(method_info.flags & METHOD_FLAG_STATIC, base_type);
 						call_site_validation.reject_named_call_arguments(p_call);
 						call_site_validation.validate_call_arg(method_info, p_call);
 						call_site_validation.validate_typed_object_signal_api_args(base_type, p_call, is_self);
@@ -3163,6 +3710,23 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 							return;
 						}
 					}
+				}
+				if (base_type.kind == BSParser::DataType::BUILTIN && base_type.is_hard_type()) {
+					const auto *member = BSCoreConstants::get_builtin_member(base_type.builtin_type, p_call->function_name);
+					const auto *constant = BSCoreConstants::get_builtin_constant(base_type.builtin_type, p_call->function_name);
+					int64_t enum_value = 0;
+					const auto *enumeration = BSCoreConstants::get_builtin_enum_value(base_type.builtin_type, p_call->function_name, enum_value);
+					const auto *enum_name = BSCoreConstants::get_builtin_enum(base_type.builtin_type, p_call->function_name);
+					if (member || constant || enumeration || enum_name) {
+						const auto claimed = enum_name ? _engine_enum_type(String(Variant::get_type_name(base_type.builtin_type)) + "." + String(enum_name->name)) : member ? type_from_property(*member)
+																																											: type_from_variant(constant ? constant->get_value() : Variant(enum_value));
+						push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, claimed.to_string()), p_call->callee);
+					} else
+						push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, base_type.to_string()), p_call->callee);
+					BSParser::DataType error;
+					error.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(error);
+					return;
 				}
 				if (!p_call->is_super && base_type.is_hard_type() && base_type.is_meta_type) {
 					// Foundry c9d5e35:9125-9143: a claimed non-function is diagnosed at the
@@ -3228,93 +3792,162 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		}
 	}
 
-	// Foundry builtin constructor specialization @ c9d5e35: validate the pinned engine overloads,
-	// then preserve the target signature carried by Callable(Object, method) and Signal(Object, signal).
+	// Resolve the ordinary name first; only an actual builtin metatype is a constructor.
 	StringName constructor_name = p_call->function_name;
-	if (constructor_name == StringName() && p_call->callee != nullptr && p_call->callee->type == BSParser::Node::IDENTIFIER) {
+	if (constructor_name == StringName() && p_call->callee && p_call->callee->type == BSParser::Node::IDENTIFIER)
 		constructor_name = static_cast<BSParser::IdentifierNode *>(p_call->callee)->name;
-	}
-	const bool callable_constructor = constructor_name == SNAME("Callable");
-	const bool signal_constructor = constructor_name == SNAME("Signal");
-	if ((callable_constructor || signal_constructor) &&
-			(p_call->callee == nullptr || p_call->callee->type == BSParser::Node::IDENTIFIER)) {
-		call_site_validation.reject_named_call_arguments(p_call);
-		const Variant::Type builtin_type = callable_constructor ? Variant::CALLABLE : Variant::SIGNAL;
-		BSParser::DataType constructor_type = type_from_property(PropertyInfo(builtin_type, ""));
-		// The pinned engine producer declares exactly (), (same carrier), and
-		// (Object, StringName) overloads for both types
-		// (`godot-cpp/gdextension/extension_api-4-7.json:19959-19984,20130-20155`).
-		// Validate that overload surface before adding Foundry's richer target signature.
-		auto argument_matches = [&](int p_index, const BSParser::DataType &p_expected) {
-			if (p_index < 0 || p_index >= p_call->arguments.size() || p_call->arguments[p_index] == nullptr) {
-				return false;
-			}
-			BSTypeCompatibility::Options options;
-			options.allow_implicit_conversion = true;
-			options.strict_dynamic = strict_dynamic_checks;
-			options.strict_null = strict_null_checks;
-			if (has_materialized_constant_value(p_call->arguments[p_index])) {
-				options.constant_source_value = &p_call->arguments[p_index]->reduced_value;
-			}
-			return BSTypeCompatibility::check(p_expected, p_call->arguments[p_index]->get_datatype(), options).compatible;
-		};
-		bool valid_constructor = p_call->arguments.is_empty();
-		if (p_call->arguments.size() == 1) {
-			const BSParser::DataType source_type = p_call->arguments[0]->get_datatype();
-			// Copy construction is carrier identity, not general type coercion. A genuinely gradual
-			// value remains a runtime check in non-strict mode; a concrete Object/@Self does not.
-			valid_constructor = (source_type.kind == BSParser::DataType::BUILTIN &&
-										source_type.builtin_type == builtin_type) ||
-					(source_type.is_variant() && !strict_dynamic_checks);
-		} else if (p_call->arguments.size() == 2) {
-			const BSParser::DataType object_type = type_from_property(PropertyInfo(
-																			  Variant::OBJECT, "", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_DEFAULT, SNAME("Object")),
-					true);
-			const BSParser::DataType name_type = type_from_property(PropertyInfo(Variant::STRING_NAME, ""), true);
-			const BSParser::DataType receiver_type = p_call->arguments[0] != nullptr
-					? p_call->arguments[0]->get_datatype()
-					: BSParser::DataType();
-			const bool local_object_receiver = receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr;
-			valid_constructor = (local_object_receiver || argument_matches(0, object_type)) && argument_matches(1, name_type);
-		}
-		if (!valid_constructor) {
-			String signature = Variant::get_type_name(builtin_type) + "(";
-			for (int i = 0; i < p_call->arguments.size(); i++) {
-				if (i > 0) {
-					signature += ", ";
+	if (p_call->callee && p_call->callee->type == BSParser::Node::IDENTIFIER && BSParser::get_builtin_type(constructor_name) < Variant::VARIANT_MAX) {
+		reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_call->callee));
+		const auto meta = p_call->callee->get_datatype();
+		if (meta.kind == BSParser::DataType::BUILTIN && meta.is_meta_type) {
+			const auto *builtin = BSCoreConstants::get_builtin(meta.builtin_type);
+			const BSCoreConstants::BuiltinConstructor *accepted = nullptr;
+			// Pure admission has no diagnostics or retyping from rejected overloads.
+			if (builtin)
+				for (const auto &candidate : builtin->constructors) {
+					const auto &info = candidate.info;
+					if (p_call->arguments.size() < info.arguments.size() - info.default_arguments.size() || p_call->arguments.size() > info.arguments.size())
+						continue;
+					bool matches = true;
+					int i = 0;
+					for (const auto &property : info.arguments) {
+						if (i >= p_call->arguments.size())
+							break;
+						const auto *argument = p_call->arguments[i++];
+						BSTypeCompatibility::Options options;
+						options.allow_implicit_conversion = true;
+						options.strict_dynamic = strict_dynamic_checks;
+						options.strict_null = strict_null_checks;
+						if (has_materialized_constant_value(argument))
+							options.constant_source_value = &argument->reduced_value;
+						const auto actual = _substitute_self_type_parameter_with_bounds(argument->get_datatype(), false);
+						if (!BSTypeCompatibility::check(type_from_property(property, true), actual, options).compatible) {
+							matches = false;
+							break;
+						}
+					}
+					if (matches) {
+						accepted = &candidate;
+						break;
+					}
 				}
-				signature += p_call->arguments[i] != nullptr ? p_call->arguments[i]->get_datatype().to_string() : String("Variant");
+			p_call->function_name = constructor_name;
+			const int previous_errors = parser->get_errors().size();
+			call_site_validation.reject_named_call_arguments(p_call);
+			if (!accepted) {
+				String signature = String(constructor_name) + "(";
+				for (int i = 0; i < p_call->arguments.size(); ++i) {
+					if (i)
+						signature += ", ";
+					signature += p_call->arguments[i]->get_datatype().to_string();
+				}
+				signature += ")";
+				push_error(vformat(R"(No constructor of "%s" matches the signature "%s".)", constructor_name, signature), p_call);
+				reject_constant_materialization(p_call);
+				p_call->set_datatype(type_from_metatype(meta));
+				return;
 			}
-			signature += ")";
-			push_error(vformat(R"(No constructor of "%s" matches the signature "%s".)",
-							   Variant::get_type_name(builtin_type), signature),
-					p_call);
-			p_call->set_datatype(constructor_type);
+			// Pin's all-constant value constructors take the direct construction path without
+			// narrowing warnings. Preserve that diagnostic distinction while this M3 path
+			// publishes argument conversions and types, without evaluating arbitrary CALLs.
+			bool constant_value_constructor = true;
+			for (const auto *argument : p_call->arguments) {
+				constant_value_constructor = constant_value_constructor && has_materialized_constant_value(argument);
+			}
+			switch (meta.builtin_type) {
+				case Variant::CALLABLE:
+				case Variant::SIGNAL:
+				case Variant::OBJECT:
+				case Variant::DICTIONARY:
+				case Variant::ARRAY:
+				case Variant::PACKED_BYTE_ARRAY:
+				case Variant::PACKED_INT32_ARRAY:
+				case Variant::PACKED_INT64_ARRAY:
+				case Variant::PACKED_FLOAT32_ARRAY:
+				case Variant::PACKED_FLOAT64_ARRAY:
+				case Variant::PACKED_STRING_ARRAY:
+				case Variant::PACKED_VECTOR2_ARRAY:
+				case Variant::PACKED_VECTOR3_ARRAY:
+				case Variant::PACKED_COLOR_ARRAY:
+				case Variant::PACKED_VECTOR4_ARRAY:
+					constant_value_constructor = false;
+					break;
+				default:
+					break;
+			}
+			if (parser->get_errors().size() == previous_errors) {
+				int i = 0;
+				for (const auto &property : accepted->info.arguments) {
+					if (i >= p_call->arguments.size())
+						break;
+					auto *argument = p_call->arguments[i];
+					const auto expected = type_from_property(property, true);
+					const auto actual = _substitute_self_type_parameter_with_bounds(argument->get_datatype(), false);
+#ifdef DEBUG_ENABLED
+					if (!constant_value_constructor && expected.builtin_type == Variant::INT && actual.builtin_type == Variant::FLOAT && meta.builtin_type != Variant::INT) {
+						Vector<String> symbols;
+						push_warning(p_call, BSWarning::NARROWING_CONVERSION, symbols);
+					}
+					if (!expected.is_variant() && (actual.is_variant() || !actual.is_hard_type())) {
+						mark_node_unsafe(p_call);
+						Vector<String> symbols;
+						symbols.push_back(itos(i + 1));
+						symbols.push_back("constructor");
+						symbols.push_back(constructor_name);
+						symbols.push_back(expected.to_string());
+						symbols.push_back(actual.to_string());
+						push_warning(argument, BSWarning::UNSAFE_CALL_ARGUMENT, symbols);
+					}
+#endif
+					update_constant_expression_type(argument, expected, "pass", constant_value_constructor);
+					++i;
+				}
+			}
+			// Keep shared validation and its resolved_parameter_types publication, after the
+			// selected constructor has owned conversion and warning origins.
+			if (parser->get_errors().size() == previous_errors) {
+				call_site_validation.validate_call_arg(accepted->info, p_call);
+			}
+			auto result = type_from_property(accepted->info.return_val);
+			const bool callable = meta.builtin_type == Variant::CALLABLE;
+			const bool signal = meta.builtin_type == Variant::SIGNAL;
+			if ((callable || signal) && p_call->arguments.size() == 2) {
+				BSParser::DataType explicit_type;
+				const bool found = callable ? call_site_validation.callable_type_from_constant_method_args(p_call, 0, 1, explicit_type) : call_site_validation.signal_type_from_receiver(p_call->arguments[0]->get_datatype(), p_call, 1, explicit_type);
+				if (found)
+					result = explicit_type;
+				else if (callable)
+					call_site_validation.validate_strict_callable_method_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
+				else
+					call_site_validation.validate_strict_signal_name_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
+			}
+			p_call->set_datatype(result);
+			if (parser->get_errors().size() != previous_errors) {
+				reject_constant_materialization(p_call);
+				return;
+			}
+			if (callable || signal) {
+				if (p_call->arguments.is_empty()) {
+					p_call->is_constant = true;
+					p_call->reduced_value = callable ? Variant(Callable()) : Variant(Signal());
+				} else if (p_call->arguments.size() == 1 && has_materialized_constant_value(p_call->arguments[0]) && p_call->arguments[0]->reduced_value.get_type() == meta.builtin_type) {
+					p_call->is_constant = true;
+					p_call->reduced_value = p_call->arguments[0]->reduced_value;
+				}
+			} else if (meta.builtin_type == Variant::ARRAY || meta.builtin_type == Variant::DICTIONARY) {
+				bool reduced = false;
+				const Variant value = make_expression_reduced_value(p_call, reduced);
+				if (reduced) {
+					p_call->is_constant = true;
+					p_call->reduced_value = value;
+				} else if (p_call->arguments.size() == 1 && p_call->arguments[0]->get_datatype().builtin_type == meta.builtin_type) {
+					// An admitted pure copy keeps semantic constness even when a retained Script
+					// handle prevents Variant materialization. The collector still reports false.
+					_preserve_unmaterialized_constant(p_call, p_call->arguments);
+				}
+			}
 			return;
 		}
-		if (p_call->arguments.size() == 2) {
-			BSParser::DataType explicit_type;
-			const bool found = callable_constructor ? call_site_validation.callable_type_from_constant_method_args(p_call, 0, 1, explicit_type) : call_site_validation.signal_type_from_receiver(p_call->arguments[0]->get_datatype(), p_call, 1, explicit_type);
-			if (found) {
-				constructor_type = explicit_type;
-			} else if (callable_constructor) {
-				call_site_validation.validate_strict_callable_method_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
-			} else {
-				call_site_validation.validate_strict_signal_name_fallback(p_call, p_call->arguments[0]->get_datatype(), 1);
-			}
-		}
-		// Foundry fs_analyzer.cpp:8265-8351 @ c9d5e35: only empty carriers and constant
-		// carrier-preserving copies are safe to fold. Receiver/name construction stays dynamic.
-		if (p_call->arguments.is_empty()) {
-			p_call->is_constant = true;
-			p_call->reduced_value = callable_constructor ? Variant(Callable()) : Variant(Signal());
-		} else if (p_call->arguments.size() == 1 && p_call->arguments[0]->is_constant &&
-				p_call->arguments[0]->reduced_value.get_type() == builtin_type) {
-			p_call->is_constant = true;
-			p_call->reduced_value = p_call->arguments[0]->reduced_value;
-		}
-		p_call->set_datatype(constructor_type);
-		return;
 	}
 
 	if (current_class != nullptr) {
@@ -3336,49 +3969,61 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				void_type.kind = BSParser::DataType::BUILTIN;
 				void_type.builtin_type = Variant::NIL;
 				p_call->set_datatype(void_type);
+				p_call->is_static = false;
+				check_self_call(p_call);
 				return;
 			}
-			BSParser::FunctionNode *callee = find_class_function(current_class, fname);
+			bool member_claimed = false;
+			BSParser::FunctionNode *callee = find_class_function(current_class, fname, &member_claimed, p_call->callee);
 			if (callee != nullptr) {
 				validate_local_call(p_call, callee);
 				p_call->is_noreturn = callee->is_noreturn;
+				p_call->is_static = callee->is_static;
+				check_self_call(p_call);
 				return;
 			}
-			// Bare native MethodInfo call on the script's native base (e.g. Node.get_node).
-			if (current_class->base_type.native_type != StringName()) {
-				MethodInfo method_info;
-				if (BSNativeDB::get_method_info(current_class->base_type.native_type, fname, &method_info)) {
-					call_site_validation.reject_named_call_arguments(p_call);
-					call_site_validation.validate_call_arg(method_info, p_call);
-					call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
-					// Foundry treats bare identifier callees as self for unused-signal accounting.
-					mark_implicit_signal_usage(p_call, true);
-					p_call->set_datatype(type_from_property(method_info.return_val));
-					return;
-				}
-			}
-			// Foundry apply_conformance_witness on self after local + native miss.
-			{
-				const BSParser::DataType self_type = current_class->get_datatype();
-				BSParser::FunctionNode *witness = find_conformance_witness(self_type, fname);
-				if (witness != nullptr && (witness->is_static || !self_type.is_meta_type)) {
-					validate_local_call(p_call, witness);
-					p_call->is_noreturn = witness->is_noreturn;
-					return;
-				}
-				if (!p_call->is_super) {
-					String hidden_conformance_source;
-					StringName hidden_conformance_trait;
-					if (find_hidden_conformance_witness(self_type, fname, hidden_conformance_source,
-								hidden_conformance_trait)) {
-						push_error(vformat(R"*(Cannot call "%s()" on "%s": it is supplied by the retroactive conformance to trait "%s" declared in "%s", which this file does not load. Import that file's namespace, or preload it.)*",
-										   fname, self_type.to_string(), hidden_conformance_trait,
-										   bs_diagnostic_file_reference(hidden_conformance_source)),
-								p_call->callee != nullptr ? p_call->callee : static_cast<const BSParser::Node *>(p_call));
-						BSParser::DataType call_type;
-						call_type.kind = BSParser::DataType::VARIANT;
-						p_call->set_datatype(call_type);
+			// Preserve ordinary name claims through both native and witness fallback.
+			if (!member_claimed) {
+				// Bare native MethodInfo call on the script's native base (e.g. Node.get_node).
+				if (current_class->base_type.native_type != StringName()) {
+					MethodInfo method_info;
+					if (BSNativeDB::get_method_info(current_class->base_type.native_type, fname, &method_info)) {
+						call_site_validation.reject_named_call_arguments(p_call);
+						call_site_validation.validate_call_arg(method_info, p_call);
+						call_site_validation.validate_local_object_signal_callable_arg(p_call, true);
+						// Foundry treats bare identifier callees as self for unused-signal accounting.
+						mark_implicit_signal_usage(p_call, true);
+						p_call->set_datatype(type_from_property(method_info.return_val));
+						p_call->is_static = method_info.flags & METHOD_FLAG_STATIC;
+						check_self_call(p_call);
 						return;
+					}
+				}
+				// Foundry apply_conformance_witness on self after local + native miss.
+				{
+					const BSParser::DataType self_type = current_class->get_datatype();
+					BSParser::FunctionNode *witness = find_conformance_witness(self_type, fname);
+					if (witness != nullptr && (witness->is_static || !self_type.is_meta_type)) {
+						validate_local_call(p_call, witness);
+						p_call->is_noreturn = witness->is_noreturn;
+						p_call->is_static = witness->is_static;
+						check_self_call(p_call);
+						return;
+					}
+					if (!p_call->is_super) {
+						String hidden_conformance_source;
+						StringName hidden_conformance_trait;
+						if (find_hidden_conformance_witness(self_type, fname, hidden_conformance_source,
+									hidden_conformance_trait)) {
+							push_error(vformat(R"*(Cannot call "%s()" on "%s": it is supplied by the retroactive conformance to trait "%s" declared in "%s", which this file does not load. Import that file's namespace, or preload it.)*",
+											   fname, self_type.to_string(), hidden_conformance_trait,
+											   bs_diagnostic_file_reference(hidden_conformance_source)),
+									p_call->callee != nullptr ? p_call->callee : static_cast<const BSParser::Node *>(p_call));
+							BSParser::DataType call_type;
+							call_type.kind = BSParser::DataType::VARIANT;
+							p_call->set_datatype(call_type);
+							return;
+						}
 					}
 				}
 			}
@@ -3403,18 +4048,19 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		if (callee_type.kind == BSParser::DataType::BUILTIN && callee_type.builtin_type == Variant::CALLABLE) {
 			if (callee_type.has_method_signature) {
 				const int previous_errors = parser->get_errors().size();
+				p_call->set_datatype(type_from_property(callee_type.method_info.return_val));
+				MethodInfo utility_info;
+				if (static_cast<BSParser::IdentifierNode *>(p_call->callee)->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+						(BSUtilityFunctions::get_function_info(constructor_name, utility_info) || CoreConstants::get_utility_function(constructor_name, utility_info))) {
+					check_void_result();
+				}
 				call_site_validation.reject_named_call_arguments(p_call);
 				call_site_validation.validate_call_arg(callee_type.method_info, p_call);
-				p_call->set_datatype(type_from_property(callee_type.method_info.return_val));
 				// The existing name pipeline owns precedence. Only a genuine unshadowed language
 				// utility reaches this branch with no local/member source (Foundry 8489-8542).
 				MethodInfo language_info;
 				if (static_cast<BSParser::IdentifierNode *>(p_call->callee)->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
 						BSUtilityFunctions::get_function_info(constructor_name, language_info)) {
-					if (!p_is_root && !p_is_await && language_info.return_val.type == Variant::NIL &&
-							!(language_info.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT)) {
-						push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", constructor_name), p_call);
-					}
 					bool all_constant = true;
 					Vector<Variant> arguments;
 					for (const BSParser::ExpressionNode *argument : p_call->arguments) {
@@ -3594,6 +4240,69 @@ void BSAnalyzer::reduce_await(BSParser::AwaitNode *p_await) {
 #endif
 }
 
+bool BSAnalyzer::get_node_is_static_context() const {
+	if (get_node_declaration != nullptr) {
+		if (get_node_declaration->type == BSParser::Node::VARIABLE) {
+			return static_cast<const BSParser::VariableNode *>(get_node_declaration)->is_static;
+		}
+		if (get_node_declaration->type == BSParser::Node::FUNCTION) {
+			return static_cast<const BSParser::FunctionNode *>(get_node_declaration)->is_static;
+		}
+	}
+	return current_function != nullptr && current_function->is_static;
+}
+
+const BSParser::FunctionNode *BSAnalyzer::get_enclosing_context_function() const {
+	const BSParser::FunctionNode *function = current_function;
+	if (get_node_declaration != nullptr) {
+		function = get_node_declaration->type == BSParser::Node::FUNCTION ? static_cast<const BSParser::FunctionNode *>(get_node_declaration) : nullptr;
+	}
+	while (function && function->source_lambda)
+		function = function->source_lambda->parent_function;
+	return function;
+}
+
+void BSAnalyzer::check_self_call(BSParser::CallNode *p_call) {
+	// Foundry c9d5e35:8998-9022: bare and super calls share receiver context/capture.
+	if (p_call->is_static)
+		return;
+	if (const auto *owner = get_enclosing_enum_function()) {
+		push_error(vformat(R"*(Enum function "%s()" cannot access containing class instance member "%s".)*", owner->identifier->name, p_call->function_name), p_call->callee ? p_call->callee : static_cast<BSParser::Node *>(p_call));
+		return;
+	}
+	if (get_node_is_static_context()) {
+		const BSParser::FunctionNode *owner = get_enclosing_context_function();
+		if (owner) {
+			push_error(vformat(R"*(Cannot call non-static function "%s()" from the static function "%s()".)*", p_call->function_name, owner->identifier->name), p_call);
+		} else {
+			push_error(vformat(R"*(Cannot call non-static function "%s()" from a static variable initializer.)*", p_call->function_name), p_call);
+		}
+	} else {
+		for (auto *lambda = current_lambda; lambda; lambda = lambda->parent_lambda)
+			lambda->use_self = true;
+	}
+}
+
+void BSAnalyzer::reduce_get_node(BSParser::GetNodeNode *p_get_node) {
+	// S6: Foundry fs_analyzer.cpp:9352-9375 / mark_lambda_use_self:18557 at c9d5e35.
+	BSParser::DataType result;
+	result.kind = BSParser::DataType::VARIANT;
+	if (current_class == nullptr || !ClassDB::is_parent_class(current_class->base_type.native_type, SNAME("Node"))) {
+		push_error(vformat(R"*(Cannot use shorthand "get_node()" notation ("%c") on a class that isn't a node.)*", p_get_node->use_dollar ? '$' : '%'), p_get_node);
+	} else if (get_node_is_static_context()) {
+		push_error(vformat(R"*(Cannot use shorthand "get_node()" notation ("%c") in a static function.)*", p_get_node->use_dollar ? '$' : '%'), p_get_node);
+	} else {
+		for (BSParser::LambdaNode *lambda = current_lambda; lambda != nullptr; lambda = lambda->parent_lambda) {
+			lambda->use_self = true;
+		}
+		result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		result.kind = BSParser::DataType::NATIVE;
+		result.builtin_type = Variant::OBJECT;
+		result.native_type = SNAME("Node");
+	}
+	p_get_node->set_datatype(result);
+}
+
 void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
 	// Foundry reduce_lambda @ c9d5e35: Callable type + signature now; body after the statement
 	// via resolve_pending_lambda_bodies so capture marking runs under the outer suite's
@@ -3611,12 +4320,18 @@ void BSAnalyzer::reduce_lambda(BSParser::LambdaNode *p_lambda) {
 		return;
 	}
 
+	// Foundry signature context (4677-4683): pending lambda bodies retain the creation context.
+	p_lambda->function->is_static = get_node_is_static_context();
 	BSParser::LambdaNode *previous_lambda = current_lambda;
 	current_lambda = p_lambda;
 	resolve_function_signature_in_class(p_lambda->function, current_class);
 	current_lambda = previous_lambda;
 
-	pending_lambda_bodies.push_back(p_lambda);
+	lambda_type = CallSiteValidationContext(this).callable_type_from_function(p_lambda->function);
+	lambda_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+	lambda_type.is_constant = false;
+	p_lambda->set_datatype(lambda_type);
+	pending_lambda_bodies.push_back({ p_lambda, get_node_declaration != nullptr ? get_node_declaration : current_function });
 }
 
 void BSAnalyzer::resolve_pending_lambda_bodies() {
@@ -3625,19 +4340,22 @@ void BSAnalyzer::resolve_pending_lambda_bodies() {
 	}
 
 	BSParser::LambdaNode *previous_lambda = current_lambda;
-	Vector<BSParser::LambdaNode *> lambdas = pending_lambda_bodies;
+	Vector<PendingLambdaBody> lambdas = pending_lambda_bodies;
+	const BSParser::Node *previous_declaration = get_node_declaration;
 	pending_lambda_bodies.clear();
 
 	for (int i = 0; i < lambdas.size(); i++) {
-		BSParser::LambdaNode *lambda = lambdas[i];
+		BSParser::LambdaNode *lambda = lambdas[i].lambda;
 		if (lambda == nullptr || lambda->function == nullptr) {
 			continue;
 		}
 		current_lambda = lambda;
+		get_node_declaration = lambdas[i].declaration;
 		analyze_function_body(lambda->function, true);
 	}
 
 	current_lambda = previous_lambda;
+	get_node_declaration = previous_declaration;
 }
 
 void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
@@ -3653,6 +4371,87 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 	}
 	reduce_expression(p_subscript->base);
 	const BSParser::DataType tuple_base_type = p_subscript->base->get_datatype();
+	if (p_subscript->is_attribute && p_subscript->attribute) {
+		const auto receiver = tuple_base_type;
+		const auto name = p_subscript->attribute->name;
+		if (receiver.kind == BSParser::DataType::BUILTIN || receiver.kind == BSParser::DataType::NATIVE) {
+			const String owner = receiver.kind == BSParser::DataType::NATIVE || receiver.native_type == SNAME("Variant") ? String(receiver.native_type) : Variant::get_type_name(receiver.builtin_type);
+			if (receiver.is_meta_type) {
+				auto e = _engine_enum_type(owner + String(".") + String(name));
+				if (e.kind == BSParser::DataType::ENUM) {
+					p_subscript->set_datatype(e);
+					return;
+				}
+			}
+			int64_t value = 0;
+			String enumeration;
+			const auto *builtin_enum = receiver.kind == BSParser::DataType::BUILTIN ? BSCoreConstants::get_builtin_enum_value(receiver.builtin_type, name, value) : nullptr;
+			bool enum_value = builtin_enum != nullptr;
+			if (builtin_enum)
+				enumeration = owner + String(".") + String(builtin_enum->name);
+			if (receiver.kind == BSParser::DataType::NATIVE && ClassDB::class_has_integer_constant(receiver.native_type, name)) {
+				value = ClassDB::class_get_integer_constant(receiver.native_type, name);
+				enum_value = true;
+				const String enum_name = ClassDB::class_get_integer_constant_enum(receiver.native_type, name);
+				if (!enum_name.is_empty())
+					enumeration = owner + String(".") + enum_name;
+			}
+			if (enum_value) {
+				auto type = _engine_enum_type(enumeration);
+				if (type.kind != BSParser::DataType::ENUM)
+					type = type_from_variant(value);
+				type.is_meta_type = false;
+				type.is_constant = true;
+				p_subscript->set_datatype(type);
+				p_subscript->is_constant = true;
+				p_subscript->reduced_value = value;
+				return;
+			}
+			if (receiver.kind == BSParser::DataType::BUILTIN) {
+				if (const auto *constant = BSCoreConstants::get_builtin_constant(receiver.builtin_type, name)) {
+					p_subscript->reduced_value = constant->get_value();
+					p_subscript->is_constant = true;
+					p_subscript->set_datatype(type_from_variant(p_subscript->reduced_value));
+					return;
+				}
+				if (!receiver.is_meta_type)
+					if (const auto *member = BSCoreConstants::get_builtin_member(receiver.builtin_type, name)) {
+						p_subscript->set_datatype(type_from_property(*member));
+						return;
+					}
+			} else if (!receiver.is_meta_type) {
+				const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(receiver.native_type, false);
+				for (int i = 0; i < properties.size(); ++i) {
+					const Dictionary property = properties[i];
+					if (StringName(property.get("name", String())) == name) {
+						p_subscript->set_datatype(type_from_native_property(receiver.native_type, PropertyInfo::from_dict(property)));
+						return;
+					}
+				}
+			}
+			BSParser::DataType method;
+			if (call_site_validation.callable_type_from_method(receiver, name, p_subscript, method)) {
+				p_subscript->set_datatype(method);
+				return;
+			}
+			if (receiver.kind == BSParser::DataType::BUILTIN && receiver.is_hard_type() && (receiver.is_meta_type || receiver.builtin_type != Variant::DICTIONARY)) {
+				if (auto *witness = find_conformance_witness(receiver, name)) {
+					if (witness->is_static || !receiver.is_meta_type) {
+						BSParser::DataType callable = call_site_validation.callable_type_from_function(witness);
+						callable.has_explicit_method_signature = true;
+						p_subscript->set_datatype(callable);
+						return;
+					}
+				}
+				push_error(vformat(R"(Cannot find member "%s" in base "%s".)", name, type_from_metatype(receiver).to_string()), p_subscript->attribute);
+				BSParser::DataType error;
+				error.kind = BSParser::DataType::VARIANT;
+				p_subscript->set_datatype(error);
+				return;
+			}
+		}
+	}
+
 	if (p_subscript->is_tuple_index) {
 		reduce_expression(p_subscript->index);
 		BSParser::DataType result_type;
@@ -3782,6 +4581,37 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				return;
 			}
 		}
+		if (tuple_base_type.kind == BSParser::DataType::ENUM && p_subscript->attribute) {
+			const auto name = p_subscript->attribute->name;
+			BSParser::DataType callable;
+			if (call_site_validation.callable_type_from_method(tuple_base_type, name, p_subscript, callable)) {
+				p_subscript->set_datatype(callable);
+				p_subscript->attribute->set_datatype(callable);
+				if (auto *function = find_enum_function(tuple_base_type, name, p_subscript)) {
+					p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
+					p_subscript->attribute->function_source = function;
+					p_subscript->attribute->function_source_is_static = function->is_static;
+				}
+				return;
+			}
+			// Foundry reduce_identifier_from_base / reduce_subscript @ c9d5e35:
+			// an enum owns member lookup, including misses and wrong receiver forms.
+			// Never let `self.member` bind to the containing class or become gradual.
+			if (tuple_base_type.is_meta_type)
+				push_error(vformat(R"(Cannot find member "%s" in base "%s".)", name, type_from_metatype(tuple_base_type).to_string()), p_subscript->attribute);
+			else if (tuple_base_type.is_tagged_union) {
+				bool is_payload_field = false;
+				for (const auto &payload : tuple_base_type.enum_case_payloads)
+					is_payload_field = is_payload_field || payload.value.field_names.has(name);
+				if (is_payload_field)
+					push_error(vformat(R"*(Cannot access payload field "%s" on tagged union "%s" directly; it belongs to a single case, so match on the case first.)*", name, tuple_base_type.enum_type), p_subscript->attribute);
+				else
+					push_error(vformat(R"*(Cannot get property "%s" from a value of tagged union "%s".)*", name, tuple_base_type.enum_type), p_subscript->attribute);
+			} else
+				push_error("Cannot get property from enum value.", p_subscript->attribute);
+			p_subscript->set_datatype(BSParser::DataType::get_variant_type());
+			return;
+		}
 		// Bind `self.<member>` and same-class `ClassName.<static>` so flow finality can see
 		// MEMBER_VARIABLE / STATIC_VARIABLE / INHERITED_VARIABLE on the attribute
 		// (Foundry resolve_subscript @ c9d5e35), including CLASS inheritance chain members.
@@ -3874,9 +4704,10 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				receiver_type.is_meta_type = p_subscript->base->get_datatype().is_meta_type;
 			}
 			if (receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr) {
-				bool inherited = false;
+				BSParser::ClassNode *selected = find_member_in_class_or_trait_chain(receiver_type.class_type, p_subscript->attribute->name, p_subscript->attribute);
+				bool inherited = selected != receiver_type.class_type;
 				HashSet<const BSParser::ClassNode *> visited;
-				for (BSParser::ClassNode *lookup = receiver_type.class_type; lookup != nullptr; lookup = lookup->base_type.class_type) {
+				for (BSParser::ClassNode *lookup = selected; lookup != nullptr; lookup = nullptr) {
 					if (visited.has(lookup)) {
 						break;
 					}
@@ -3898,6 +4729,14 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 							p_subscript->reduced_value = member.constant->initializer->reduced_value;
 							p_subscript->is_unmaterialized_constant = !has_materialized_constant_value(member.constant->initializer);
 						}
+						return;
+					}
+					if (member.type == BSParser::ClassNode::Member::ENUM_VALUE) {
+						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_CONSTANT;
+						p_subscript->attribute->set_datatype(member.get_datatype());
+						p_subscript->set_datatype(member.get_datatype());
+						p_subscript->is_constant = true;
+						p_subscript->reduced_value = member.enum_value.value;
 						return;
 					}
 					if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr &&
@@ -3925,7 +4764,8 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 						p_subscript->attribute->source = BSParser::IdentifierNode::MEMBER_FUNCTION;
 						p_subscript->attribute->function_source = member.function;
 						p_subscript->attribute->function_source_is_static = member.function->is_static;
-						const BSParser::DataType callable = call_site_validation.callable_type_from_function(member.function);
+						BSParser::DataType callable = call_site_validation.callable_type_from_function(member.function);
+						callable.has_explicit_method_signature = true;
 						p_subscript->attribute->set_datatype(callable);
 						p_subscript->set_datatype(callable);
 						return;
@@ -3934,6 +4774,10 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 							member.type == BSParser::ClassNode::Member::ENUM) {
 						p_subscript->attribute->set_datatype(member.get_datatype());
 						p_subscript->set_datatype(member.get_datatype());
+						if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr && !member.m_class->is_trait) {
+							p_subscript->is_constant = true;
+							p_subscript->is_unmaterialized_constant = true;
+						}
 						return;
 					}
 					if (receiver_type.is_meta_type && member.type != BSParser::ClassNode::Member::TYPE_ALIAS) {
@@ -3990,7 +4834,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 					for (int i = 0; i < properties.size(); i++) {
 						const Dictionary property = properties[i];
 						if (StringName(property.get("name", String())) == name) {
-							p_subscript->set_datatype(type_from_property(PropertyInfo::from_dict(property)));
+							p_subscript->set_datatype(type_from_native_property(receiver.native_type, PropertyInfo::from_dict(property)));
 							return;
 						}
 					}
@@ -4147,7 +4991,7 @@ void BSAnalyzer::reject_constant_materialization(BSParser::ExpressionNode *p_exp
 }
 
 // Foundry make_expression_reduced_value and literal collectors @ c9d5e35:15187-15325.
-// Only pure literal/subscript structure is materialized here. CALL belongs to #141 S5;
+// Only pure literal/subscript structure and admitted Array/Dictionary calls are materialized;
 // class/generic runtime descriptors belong to M4/M5. Visitation is not constant success.
 Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_expression, bool &r_reduced) {
 	// Materialization success is separate from semantic constness; callers must not
@@ -4165,6 +5009,34 @@ Variant BSAnalyzer::make_expression_reduced_value(BSParser::ExpressionNode *p_ex
 	// Only unmaterialized literals are collected from syntax. A contextual parent explicitly
 	// invalidates its old carrier after changing children; converted children stay constant.
 	switch (p_expression->type) {
+		case BSParser::Node::CALL: {
+			const auto *call = static_cast<const BSParser::CallNode *>(p_expression);
+			if (!call->callee || call->callee->get_datatype().kind != BSParser::DataType::BUILTIN || !call->callee->get_datatype().is_meta_type)
+				return Variant();
+			const auto carrier = call->callee->get_datatype().builtin_type;
+			if ((carrier != Variant::ARRAY && carrier != Variant::DICTIONARY) || call->get_datatype().builtin_type != carrier)
+				return Variant();
+			if (call->arguments.is_empty()) {
+				Variant value = carrier == Variant::ARRAY ? Variant(Array()) : Variant(Dictionary());
+				_make_constant_containers_read_only(value);
+				r_reduced = true;
+				return value;
+			}
+			Vector<Variant> arguments;
+			for (auto *argument : call->arguments) {
+				bool child_reduced = false;
+				Variant child = make_expression_reduced_value(argument, child_reduced);
+				if (!child_reduced)
+					return Variant();
+				arguments.push_back(child);
+			}
+			Variant value;
+			if (!BSVariantOperators::construct_container(carrier, arguments.ptr(), arguments.size(), value))
+				return Variant();
+			_make_constant_containers_read_only(value);
+			r_reduced = true;
+			return value;
+		}
 		case BSParser::Node::ARRAY:
 		case BSParser::Node::TUPLE_LITERAL: {
 			const Vector<BSParser::ExpressionNode *> &elements = p_expression->type == BSParser::Node::ARRAY
@@ -4324,7 +5196,22 @@ void BSAnalyzer::publish_constant_subscript(BSParser::SubscriptNode *p_subscript
 	p_subscript->set_datatype(type);
 }
 
+// Foundry native property publication: prefer real getter return metadata, retain fallback.
+BSParser::DataType BSAnalyzer::type_from_native_property(const StringName &p_native, const PropertyInfo &p_property) {
+	const bool read_only = BSNativeDB::get_property_setter(p_native, p_property.name) == StringName();
+	const StringName getter = BSNativeDB::get_property_getter(p_native, p_property.name);
+	MethodInfo info;
+	if (getter != StringName() && BSNativeDB::get_method_info(p_native, getter, &info)) {
+		return type_from_property(info.return_val, false, read_only);
+	}
+	return type_from_property(p_property, false, read_only);
+}
+
 void BSAnalyzer::materialize_constant_initializer(BSParser::ConstantNode *p_constant) {
+	// A pure literal already rejected by its typed element checker has no materialized
+	// value. Keep that failure, without adding a derivative nonconstant diagnostic.
+	if (diagnosed_constant_literal_failures.has(p_constant->initializer))
+		return;
 	if (p_constant->initializer == nullptr || (p_constant->initializer->is_constant && !has_materialized_constant_value(p_constant->initializer))) {
 		return;
 	}
@@ -4561,13 +5448,33 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 
 	resolve_contextual_enum_case(p_cast->operand, cast_type);
 	p_cast->set_datatype(cast_type);
+	const auto original_operand_type = p_cast->operand->get_datatype();
+	if (original_operand_type.is_meta_type && original_operand_type.kind == BSParser::DataType::ENUM &&
+			!cast_type.is_variant()) {
+		push_error(vformat(R"(Cannot cast a value of type "%s" as "%s".)", original_operand_type.to_string(), cast_type.to_string()) +
+						BSParser::DataType::same_rendered_name_clause(original_operand_type, "value", cast_type, "target type"),
+				p_cast->operand);
+		return;
+	}
+	const bool int_backed_enum_cast = cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union && !cast_type.is_meta_type &&
+			!original_operand_type.is_meta_type && !original_operand_type.is_tagged_union && original_operand_type.builtin_type == Variant::INT;
 	bool publish_constant = false;
 	if (has_materialized_constant_value(p_cast->operand)) {
 		BSParser::DataType operand_type = p_cast->operand->get_datatype();
-		if (cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union &&
-				operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT) {
+		if (int_backed_enum_cast) {
+			// Declared int? admits the explicit cast, but only a nullable destination
+			// may retain actual NIL. Otherwise the integer carrier must really construct.
+			const bool nullable_nil = cast_type.is_nullable && p_cast->operand->reduced_value.get_type() == Variant::NIL;
+			if (!nullable_nil && p_cast->operand->reduced_value.get_type() != Variant::INT) {
+				Variant converted;
+				if (!_construct_builtin_variant(Variant::INT, p_cast->operand->reduced_value, converted)) {
+					push_error(vformat(R"(Failed to convert a value of type "%s" to "%s".)", type_from_variant(p_cast->operand->reduced_value).to_string(), cast_type.to_string()), p_cast->operand);
+					return;
+				}
+				p_cast->operand->reduced_value = converted;
+			}
 #ifdef DEBUG_ENABLED
-			if (!_enum_has_value(cast_type, p_cast->operand->reduced_value)) {
+			if (!nullable_nil && !_enum_has_value(cast_type, p_cast->operand->reduced_value)) {
 				Vector<String> symbols;
 				symbols.push_back("cast");
 				symbols.push_back(p_cast->operand->reduced_value.stringify());
@@ -4598,8 +5505,8 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 								: conversion_error,
 						p_cast->operand);
 			}
-		} else {
-			update_constant_expression_type(p_cast->operand, cast_type, "cast");
+		} else if (!update_constant_expression_type(p_cast->operand, cast_type, "cast")) {
+			return;
 		}
 		publish_constant = cast_type.is_variant() || p_cast->operand->get_datatype() == cast_type;
 	}
@@ -4626,8 +5533,7 @@ void BSAnalyzer::reduce_cast(BSParser::CastNode *p_cast) {
 	}
 
 	bool valid = false;
-	if (operand_type.kind == BSParser::DataType::BUILTIN && operand_type.builtin_type == Variant::INT &&
-			cast_type.kind == BSParser::DataType::ENUM && !cast_type.is_tagged_union) {
+	if (int_backed_enum_cast) {
 		mark_node_unsafe(p_cast);
 		valid = true;
 	} else if (operand_type.kind == BSParser::DataType::ENUM && !operand_type.is_tagged_union &&
@@ -5270,23 +6176,99 @@ void BSAnalyzer::report_unqualified_contextual_enum_cases() {
 	reduced_contextual_enum_cases.clear();
 }
 
-void BSAnalyzer::qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
+void BSAnalyzer::qualify_contextual_enum_case_consumer(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract) {
 	// Foundry consumer sites call resolve_contextual_enum_case then update_container_literal_element_types.
 	resolve_contextual_enum_case(p_expression, p_expected_type);
-	update_container_literal_element_types(p_expression, p_expected_type);
+	update_container_literal_element_types(p_expression, p_expected_type, p_self_parameter_contract);
 }
 
-bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage) {
+void BSAnalyzer::warn_plain_enum_conversion(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const BSParser::Node *p_origin) {
+#ifdef DEBUG_ENABLED
+	// Foundry is_type_compatible @ c9d5e35:18400-18409: only reporting consumers
+	// advise casts, never pure compatibility queries or tagged-union/type handles.
+	if (p_target.kind == BSParser::DataType::ENUM && !p_target.is_tagged_union && !p_target.is_meta_type && !p_target.is_type_handle_annotation &&
+			p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::INT && !p_source.is_meta_type) {
+		push_warning(p_origin, BSWarning::INT_AS_ENUM_WITHOUT_CAST);
+	}
+#else
+	(void)p_target;
+	(void)p_source;
+	(void)p_origin;
+#endif
+}
+
+void BSAnalyzer::downgrade_assignment_source(BSParser::ExpressionNode *p_assignee) {
+	// Foundry downgrade_node_type_source @ c9d5e35:18517-18554 updates the declaration
+	// that later reads resolve; changing only this assignment's expression is insufficient.
+	BSParser::IdentifierNode *identifier = nullptr;
+	if (p_assignee->type == BSParser::Node::IDENTIFIER) {
+		identifier = static_cast<BSParser::IdentifierNode *>(p_assignee);
+	} else if (p_assignee->type == BSParser::Node::SUBSCRIPT) {
+		auto *subscript = static_cast<BSParser::SubscriptNode *>(p_assignee);
+		if (subscript->is_attribute)
+			identifier = subscript->attribute;
+	}
+	if (identifier == nullptr)
+		return;
+	BSParser::Node *source = nullptr;
+	switch (identifier->source) {
+		case BSParser::IdentifierNode::MEMBER_VARIABLE:
+		case BSParser::IdentifierNode::LOCAL_VARIABLE:
+			source = identifier->variable_source;
+			break;
+		case BSParser::IdentifierNode::FUNCTION_PARAMETER:
+			source = identifier->parameter_source;
+			break;
+		case BSParser::IdentifierNode::LOCAL_ITERATOR:
+			source = identifier->bind_source;
+			break;
+		default:
+			break;
+	}
+	if (source != nullptr) {
+		BSParser::DataType gradual;
+		gradual.kind = BSParser::DataType::VARIANT;
+		source->set_datatype(gradual);
+	}
+}
+
+bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, const char *p_usage, bool p_builtin_constructor) {
 	if (!has_materialized_constant_value(p_expression) || !p_expected_type.is_set() || p_expected_type.is_variant()) {
 		return true;
 	}
 	const BSParser::DataType declared_type = p_expression->get_datatype();
-	// Concrete literals are described by their ordinary call/assign/return consumer. A gradual
-	// constant or closed union needs this value-aware path because the consumer otherwise admits
-	// Variant or loses the known alternative. Container elements use their pinned "include" wording.
-	if (!declared_type.is_variant() && declared_type.kind != BSParser::DataType::UNION && String(p_usage) != "include") {
+	// Foundry constant retyping: report once at the expression, then publish the enum
+	// type so the declaration/return/call compatibility consumer does not warn again.
+	if (p_expected_type.kind == BSParser::DataType::ENUM && !p_expected_type.is_tagged_union && !p_expected_type.is_meta_type && !p_expected_type.is_type_handle_annotation &&
+			declared_type.kind == BSParser::DataType::BUILTIN && declared_type.builtin_type == Variant::INT && !declared_type.is_meta_type) {
+		// Pin6978 checks the declared type (including nullable provenance) before7007
+		// publishes an enum. Leave refusals untouched for the existing positional reporter.
+		BSTypeCompatibility::Options options;
+		options.allow_implicit_conversion = true;
+		options.strict_dynamic = strict_dynamic_checks;
+		options.strict_null = strict_null_checks;
+		options.constant_source_value = &p_expression->reduced_value;
+		if (!BSTypeCompatibility::check(p_expected_type, declared_type, options).compatible) {
+			return true;
+		}
+		const bool nullable_nil = p_expected_type.is_nullable && p_expression->reduced_value.get_type() == Variant::NIL;
+		if (!nullable_nil && p_expression->reduced_value.get_type() != Variant::INT) {
+			Variant converted;
+			if (!_construct_builtin_variant(Variant::INT, p_expression->reduced_value, converted)) {
+				push_error(vformat(R"(Failed to convert a value of type "%s" to "%s".)", type_from_variant(p_expression->reduced_value).to_string(), p_expected_type.to_string()), p_expression);
+				return false;
+			}
+			p_expression->reduced_value = converted;
+		}
+		if (!nullable_nil && String(p_usage) != "cast")
+			warn_plain_enum_conversion(p_expected_type, declared_type, p_expression);
+		BSParser::DataType published = p_expected_type;
+		published.is_constant = true;
+		p_expression->set_datatype(published);
 		return true;
 	}
+	const bool position_reports_refusal = !declared_type.is_variant() && declared_type.kind != BSParser::DataType::UNION &&
+			String(p_usage) != "include" && String(p_usage) != "cast" && !p_builtin_constructor;
 	if (p_expected_type.kind != BSParser::DataType::BUILTIN &&
 			p_expected_type.kind != BSParser::DataType::ENUM &&
 			p_expected_type.kind != BSParser::DataType::UNION) {
@@ -5324,11 +6306,25 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 		is_compatible = Variant::can_convert(comparison_type.builtin_type, p_expected_type.builtin_type);
 	}
 	if (!is_compatible) {
+		if (position_reports_refusal) {
+			return true;
+		}
 		const BSParser::DataType &reported_type = declared_type.is_variant() ? comparison_type : declared_type;
 		push_error(vformat(R"*(Cannot %s a value of type "%s" as "%s".)*",
 						   p_usage, reported_type.to_string(), p_expected_type.to_string()),
 				p_expression);
 		return false;
+	}
+	// Foundry :6995 also checks the known integer inside a Variant constant.
+	// This follows strict-dynamic/refusal handling and publishes the same enum type.
+	if (p_expected_type.kind == BSParser::DataType::ENUM && !p_expected_type.is_tagged_union && !p_expected_type.is_meta_type && !p_expected_type.is_type_handle_annotation &&
+			comparison_type.kind == BSParser::DataType::BUILTIN && comparison_type.builtin_type == Variant::INT && !comparison_type.is_meta_type) {
+		if (String(p_usage) != "cast")
+			warn_plain_enum_conversion(p_expected_type, comparison_type, p_expression);
+		BSParser::DataType published = p_expected_type;
+		published.is_constant = true;
+		p_expression->set_datatype(published);
+		return true;
 	}
 	if (p_expected_type.kind != BSParser::DataType::BUILTIN || comparison_type.kind != BSParser::DataType::BUILTIN) {
 		return true;
@@ -5356,7 +6352,7 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	p_expression->reduced_value = converted;
 	p_expression->set_datatype(published);
 #ifdef DEBUG_ENABLED
-	if (p_expected_type.builtin_type == Variant::INT && comparison_type.builtin_type == Variant::FLOAT) {
+	if (!p_builtin_constructor && p_expected_type.builtin_type == Variant::INT && comparison_type.builtin_type == Variant::FLOAT) {
 		Vector<String> symbols;
 		push_warning(p_expression, BSWarning::NARROWING_CONVERSION, symbols);
 	}
@@ -5364,7 +6360,10 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 	return true;
 }
 
-bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
+bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type, bool p_self_parameter_contract) {
+	if (diagnosed_constant_literal_failures.has(p_expression)) {
+		return true;
+	}
 	if (p_expression == nullptr || !p_expected_type.is_set() || !p_expected_type.is_hard_type()) {
 		return false;
 	}
@@ -5489,10 +6488,13 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 		case BSParser::Node::ARRAY: {
 			if (target_type.kind == BSParser::DataType::BUILTIN && target_type.builtin_type == Variant::ARRAY &&
 					target_type.has_container_element_type(0)) {
+				const bool was_constant_literal = p_expression->is_constant;
 				const int error_count = parser != nullptr ? parser->get_errors().size() : 0;
 				update_array_literal_element_type(static_cast<BSParser::ArrayNode *>(p_expression),
-						target_type.get_container_element_type(0));
+						target_type.get_container_element_type(0), p_self_parameter_contract);
 				if (parser != nullptr && parser->get_errors().size() > error_count) {
+					if (was_constant_literal)
+						diagnosed_constant_literal_failures.insert(p_expression);
 					reject_constant_materialization(p_expression);
 					return true;
 				}
@@ -5512,11 +6514,14 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 		case BSParser::Node::DICTIONARY: {
 			if (target_type.kind == BSParser::DataType::BUILTIN && target_type.builtin_type == Variant::DICTIONARY &&
 					target_type.has_container_element_types()) {
+				const bool was_constant_literal = p_expression->is_constant;
 				const int error_count = parser != nullptr ? parser->get_errors().size() : 0;
 				update_dictionary_literal_element_type(static_cast<BSParser::DictionaryNode *>(p_expression),
 						target_type.get_container_element_type_or_variant(0),
-						target_type.get_container_element_type_or_variant(1));
+						target_type.get_container_element_type_or_variant(1), p_self_parameter_contract);
 				if (parser != nullptr && parser->get_errors().size() > error_count) {
+					if (was_constant_literal)
+						diagnosed_constant_literal_failures.insert(p_expression);
 					reject_constant_materialization(p_expression);
 					return true;
 				}
@@ -5541,19 +6546,22 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 			if (literal->elements.size() != target_type.container_element_types.size()) {
 				return false;
 			}
+			const bool was_constant_literal = p_expression->is_constant;
 			const int error_count = parser != nullptr ? parser->get_errors().size() : 0;
 			Vector<BSParser::DataType> element_types;
 			for (int i = 0; i < literal->elements.size(); i++) {
 				BSParser::ExpressionNode *element = literal->elements[i];
 				const BSParser::DataType expected_element = target_type.get_container_element_type(i);
 				resolve_contextual_enum_case(element, expected_element);
-				update_container_literal_element_types(element, expected_element);
+				update_container_literal_element_types(element, expected_element, p_self_parameter_contract);
 				update_constant_expression_type(element, expected_element, "include");
 				element_types.push_back(element->get_datatype());
 			}
 			BSParser::DataType published = make_tuple_type(StringName(), String(), String(), element_types, Vector<StringName>(), false);
 			p_expression->set_datatype(published);
 			if (parser != nullptr && parser->get_errors().size() > error_count) {
+				if (was_constant_literal)
+					diagnosed_constant_literal_failures.insert(p_expression);
 				reject_constant_materialization(p_expression);
 				return true;
 			}
@@ -5571,7 +6579,7 @@ bool BSAnalyzer::update_container_literal_element_types(BSParser::ExpressionNode
 	return false;
 }
 
-void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type) {
+void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array, const BSParser::DataType &p_element_type, bool p_self_parameter_contract) {
 	if (p_array == nullptr) {
 		return;
 	}
@@ -5582,18 +6590,18 @@ void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array,
 		}
 		// An element stands where the container's element type says it stands.
 		resolve_contextual_enum_case(element_node, p_element_type);
-		update_container_literal_element_types(element_node, p_element_type);
+		update_container_literal_element_types(element_node, p_element_type, p_self_parameter_contract);
 		mark_coroutine_handle_capture(element_node, p_element_type);
 		const bool constant_type_ok = update_constant_expression_type(element_node, p_element_type, "include");
-		if (datatype_contains_self_type_parameter(p_element_type) && element_node->type == BSParser::Node::SELF) {
+		if (!p_self_parameter_contract && datatype_contains_self_type_parameter(p_element_type) && element_node->type == BSParser::Node::SELF) {
 			element_node->set_datatype(_substitute_self_type_parameter_with_bounds(p_element_type, true));
 		}
 		const BSParser::DataType element_type = element_node->get_datatype();
 		bool compatible = constant_type_ok;
 		if (compatible && datatype_contains_self_type_parameter(p_element_type)) {
-			compatible = element_node->type == BSParser::Node::SELF ||
+			compatible = (!p_self_parameter_contract && element_node->type == BSParser::Node::SELF) ||
 					_datatype_matches_analyzer_substituted_self(p_element_type, element_type) ||
-					_self_contract_admits_value_type(p_element_type, element_type, SelfContractKind::RETURN, element_node, nullptr,
+					_self_contract_admits_value_type(p_element_type, element_type, p_self_parameter_contract ? SelfContractKind::PARAMETER : SelfContractKind::RETURN, element_node, nullptr,
 							_self_contract_options(strict_dynamic_checks, strict_null_checks));
 		} else if (compatible) {
 			BSTypeCompatibility::Options options;
@@ -5615,7 +6623,7 @@ void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array,
 	}
 }
 
-void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type) {
+void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode *p_dictionary, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type, bool p_self_parameter_contract) {
 	if (p_dictionary == nullptr) {
 		return;
 	}
@@ -5623,7 +6631,7 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 		BSParser::ExpressionNode *key_element_node = p_dictionary->elements[i].key;
 		if (key_element_node != nullptr) {
 			resolve_contextual_enum_case(key_element_node, p_key_type);
-			update_container_literal_element_types(key_element_node, p_key_type);
+			update_container_literal_element_types(key_element_node, p_key_type, p_self_parameter_contract);
 			mark_coroutine_handle_capture(key_element_node, p_key_type);
 			const bool constant_type_ok = update_constant_expression_type(key_element_node, p_key_type, "include");
 			BSTypeCompatibility::Options options;
@@ -5646,18 +6654,18 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 		BSParser::ExpressionNode *value_element_node = p_dictionary->elements[i].value;
 		if (value_element_node != nullptr) {
 			resolve_contextual_enum_case(value_element_node, p_value_type);
-			update_container_literal_element_types(value_element_node, p_value_type);
+			update_container_literal_element_types(value_element_node, p_value_type, p_self_parameter_contract);
 			mark_coroutine_handle_capture(value_element_node, p_value_type);
 			const bool constant_type_ok = update_constant_expression_type(value_element_node, p_value_type, "include");
-			if (datatype_contains_self_type_parameter(p_value_type) && value_element_node->type == BSParser::Node::SELF) {
+			if (!p_self_parameter_contract && datatype_contains_self_type_parameter(p_value_type) && value_element_node->type == BSParser::Node::SELF) {
 				value_element_node->set_datatype(_substitute_self_type_parameter_with_bounds(p_value_type, true));
 			}
 			const BSParser::DataType value_type = value_element_node->get_datatype();
 			bool compatible = constant_type_ok;
 			if (compatible && datatype_contains_self_type_parameter(p_value_type)) {
-				compatible = value_element_node->type == BSParser::Node::SELF ||
+				compatible = (!p_self_parameter_contract && value_element_node->type == BSParser::Node::SELF) ||
 						_datatype_matches_analyzer_substituted_self(p_value_type, value_type) ||
-						_self_contract_admits_value_type(p_value_type, value_type, SelfContractKind::RETURN, value_element_node, nullptr,
+						_self_contract_admits_value_type(p_value_type, value_type, p_self_parameter_contract ? SelfContractKind::PARAMETER : SelfContractKind::RETURN, value_element_node, nullptr,
 								_self_contract_options(strict_dynamic_checks, strict_null_checks));
 			} else if (compatible) {
 				BSTypeCompatibility::Options options;
@@ -6679,7 +7687,7 @@ Dictionary BSAnalyzer::debug_self_identity_controls() {
 void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, const BSParser::DataType &p_enum_meta_type) {
 	// Foundry reduce_call_enum_case_construction @ c9d5e35 (SelfFieldLeg + self-ref completion):
 	// spelling-aware `@Self` payload admission + complete_self_referential_enum_type on fields.
-	// open_union_members_collapse / full open-schema alternative admission remain #60 residuals.
+	// R06: concrete union reduction is implemented (#138); open generic schemas belong to M5.
 	if (p_call == nullptr) {
 		return;
 	}
@@ -6852,7 +7860,7 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	};
 
 	// Foundry checked_payload_field_type @ c9d5e35: complete recursive shells after spelling /
-	// type-argument transform. open_union_members_collapse remains an explicit #60 residual.
+	// type-argument transform. R06: open generic union-schema collapse belongs to M5.
 	const auto checked_payload_field_type = [&](int p_index, const BSParser::DataType &p_specialized_field) -> BSParser::DataType {
 		const BSParser::DataType *open_field = open_payload_field(case_name, p_index);
 		if (open_field == nullptr) {
@@ -6968,6 +7976,41 @@ void BSAnalyzer::reduce_call_enum_case_construction(BSParser::CallNode *p_call, 
 	p_call->set_datatype(case_value_type);
 }
 
+bool BSAnalyzer::witness_target_scope_declares_name(const StringName &p_name, const BSParser::Node *p_source) {
+	if (witness_target_class == nullptr)
+		return false;
+	List<BSParser::ClassNode *> scopes;
+	get_class_node_current_scope_classes(witness_target_class, &scopes, const_cast<BSParser::Node *>(p_source));
+	for (BSParser::ClassNode *scope : scopes) {
+		if (scope->has_member(p_name) || (scope->identifier != nullptr && scope->identifier->name == p_name))
+			return true;
+		if (find_trait_member_in_inheritance_chain(scope, p_name, p_source) != nullptr)
+			return true;
+	}
+	const auto self_type = witness_target_class->get_datatype();
+	if (self_type.kind == BSParser::DataType::BUILTIN && self_type.builtin_type != Variant::NIL && self_type.builtin_type != Variant::OBJECT) {
+		int64_t enum_value = 0;
+		if (BSCoreConstants::get_builtin_member(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_method(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_constant(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_enum(self_type.builtin_type, p_name) ||
+				BSCoreConstants::get_builtin_enum_value(self_type.builtin_type, p_name, enum_value))
+			return true;
+	}
+	const StringName native = witness_target_class->base_type.native_type;
+	if (native != StringName() && ClassDB::class_exists(native)) {
+		if (ClassDB::class_has_method(native, p_name) || ClassDB::class_has_signal(native, p_name) || ClassDB::class_has_enum(native, p_name) || ClassDB::class_has_integer_constant(native, p_name))
+			return true;
+		const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(native);
+		for (int i = 0; i < properties.size(); i++) {
+			const Dictionary property = properties[i];
+			if (StringName(property.get("name", String())) == p_name)
+				return true;
+		}
+	}
+	return false;
+}
+
 bool BSAnalyzer::find_named_tuple_meta_type(const BSParser::DataType &p_base_type, bool p_is_self, const StringName &p_name,
 		const BSParser::Node *p_source, BSParser::DataType &r_tuple_meta_type) {
 	if (p_name == StringName()) {
@@ -7041,6 +8084,12 @@ bool BSAnalyzer::find_named_tuple_meta_type(const BSParser::DataType &p_base_typ
 			return r_tuple_meta_type.kind == BSParser::DataType::TUPLE && r_tuple_meta_type.is_meta_type;
 		}
 	}
+	if (p_is_self && start == witness_target_class) {
+		if (BSParser::ClassNode *declaration = find_witness_declaration_type(p_name, p_source)) {
+			ScopedCurrentClass declaration_scope(this, declaration);
+			return find_named_tuple_meta_type(declaration->get_datatype(), true, p_name, p_source, r_tuple_meta_type);
+		}
+	}
 	return false;
 }
 
@@ -7055,12 +8104,15 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 	p_call->is_tuple_construction = true;
 	BSParser::DataType tuple_type = type_from_metatype(p_tuple_meta_type);
 	tuple_type.is_read_only = true;
+	BSParser::DataType value_type = !p_call->receiver_is_current_self && _datatype_contains_self_type_parameter(tuple_type)
+			? _substitute_self_type_parameter_with_bounds(tuple_type)
+			: tuple_type;
 	const int expected_count = tuple_type.container_element_types.size();
 	if (p_call->arguments.size() != expected_count) {
 		push_error(vformat(R"*(Tuple "%s" expects %d argument(s), but %d were given.)*",
 						   tuple_type.to_string(), expected_count, p_call->arguments.size()),
 				p_call);
-		p_call->set_datatype(tuple_type);
+		p_call->set_datatype(value_type);
 		return;
 	}
 
@@ -7069,7 +8121,7 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 	for (int i = 0; i < expected_count; i++) {
 		const BSParser::DataType field_type = tuple_type.get_container_element_type(i);
 		BSParser::ExpressionNode *argument = p_call->arguments[i];
-		qualify_contextual_enum_case_consumer(argument, field_type);
+		qualify_contextual_enum_case_consumer(argument, field_type, true);
 		const BSParser::DataType argument_type = argument->get_datatype();
 		bool compatible = true;
 		if (_datatype_contains_self_type_parameter(field_type)) {
@@ -7091,7 +8143,8 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 		if (!compatible) {
 			push_error(vformat(R"*(Invalid argument %d for tuple "%s": should be "%s" but is "%s".)*",
 							   i + 1, tuple_type.to_string(), field_type.to_string(), argument_type.to_string()) +
-							BSParser::DataType::same_rendered_name_clause(field_type, "tuple field's type", argument_type, "argument"),
+							BSParser::DataType::same_rendered_name_clause(field_type, "tuple field's type", argument_type, "argument") +
+							self_parameter_receiver_identity_clause(field_type, argument_type, p_call, "tuple field", "argument"),
 					argument);
 		}
 		if (!has_materialized_constant_value(argument)) {
@@ -7104,11 +8157,11 @@ void BSAnalyzer::reduce_call_tuple_construction(BSParser::CallNode *p_call, cons
 		values.make_read_only();
 		p_call->is_constant = true;
 		p_call->reduced_value = values;
-		tuple_type.is_constant = true;
+		value_type.is_constant = true;
 	}
 	_preserve_unmaterialized_constant(p_call, p_call->arguments);
-	tuple_type.is_constant = p_call->is_constant;
-	p_call->set_datatype(tuple_type);
+	value_type.is_constant = p_call->is_constant;
+	p_call->set_datatype(value_type);
 }
 
 bool BSAnalyzer::datatype_contains_self_type_parameter(const BSParser::DataType &p_type) const {
@@ -7231,7 +8284,7 @@ bool _self_parameter_receiver_identity_slot(const BSParser::DataType &p_expected
 }
 
 String BSAnalyzer::self_parameter_receiver_identity_clause(const BSParser::DataType &p_expected_type,
-		const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call) const {
+		const BSParser::DataType &p_argument_type, const BSParser::CallNode *p_call, const String &p_expected_role, const String &p_actual_role) const {
 	const BSTypeCompatibility::Options options = _self_contract_options(
 			strict_dynamic_checks, strict_null_checks,
 			current_function == nullptr || !current_function->is_static);
@@ -7242,7 +8295,7 @@ String BSAnalyzer::self_parameter_receiver_identity_clause(const BSParser::DataT
 			}
 			BSParser::DataType alternative = member;
 			alternative.is_nullable = p_expected_type.is_nullable;
-			const String clause = self_parameter_receiver_identity_clause(alternative, p_argument_type, p_call);
+			const String clause = self_parameter_receiver_identity_clause(alternative, p_argument_type, p_call, p_expected_role, p_actual_role);
 			if (!clause.is_empty()) {
 				return clause;
 			}
@@ -7261,8 +8314,8 @@ String BSAnalyzer::self_parameter_receiver_identity_clause(const BSParser::DataT
 	if (p_call == nullptr || _call_receiver_is_current_self(p_call)) {
 		return String();
 	}
-	return vformat(R"*( The parameter's "Self"%s is resolved against the receiver expression; the argument is relative to the calling frame's receiver.)*",
-			slot.is_empty() ? String() : " at " + slot);
+	return vformat(R"*( The %s's "Self"%s is resolved against the receiver expression; the %s is relative to the calling frame's receiver.)*",
+			p_expected_role, slot.is_empty() ? String() : " at " + slot, p_actual_role);
 }
 
 bool BSAnalyzer::resolve_contextual_enum_case(BSParser::ExpressionNode *p_expression, const BSParser::DataType &p_expected_type) {
@@ -7384,15 +8437,19 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 		case BSParser::Node::IDENTIFIER:
 			reduce_identifier(static_cast<BSParser::IdentifierNode *>(p_expression));
 			break;
+		case BSParser::Node::GET_NODE:
+			reduce_get_node(static_cast<BSParser::GetNodeNode *>(p_expression));
+			break;
 		case BSParser::Node::PRELOAD:
 			reduce_preload(static_cast<BSParser::PreloadNode *>(p_expression));
 			break;
 		case BSParser::Node::AWAIT:
 			reduce_await(static_cast<BSParser::AwaitNode *>(p_expression));
 			break;
-		case BSParser::Node::CALL:
-			reduce_call(static_cast<BSParser::CallNode *>(p_expression), false, p_is_root);
-			break;
+		case BSParser::Node::CALL: {
+			auto *call = static_cast<BSParser::CallNode *>(p_expression);
+			reduce_call(call, false, p_is_root);
+		} break;
 		case BSParser::Node::LAMBDA:
 			reduce_lambda(static_cast<BSParser::LambdaNode *>(p_expression));
 			break;
@@ -7444,7 +8501,10 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			// Foundry reduce_self @ c9d5e35: expression `self` is the frame's `@Self` type parameter
 			// so RETURN-kind Self-contract admission (assign / return) matches Self-typed values.
 			BSParser::SelfNode *self_node = static_cast<BSParser::SelfNode *>(p_expression);
-			if (current_class != nullptr) {
+			const auto enum_self = enum_self_type();
+			if (enum_self.is_set()) {
+				self_node->set_datatype(enum_self);
+			} else if (current_class != nullptr) {
 				self_node->set_datatype(_self_type_parameter_for_class(current_class));
 			}
 			self_node->reduced = true;
@@ -7518,46 +8578,55 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 			}
 
 			flow_finality.clear_flow_narrowing(assignment->assignee);
-			// Foundry reduce_assignment @ c9d5e35: reject immutable destinations before
-			// ordinary value compatibility so a tuple/constant write emits one focused error.
+			if (assignment->assignee != nullptr && assignment->assigned_value != nullptr) {
+				resolve_contextual_enum_case(assignment->assigned_value, assignment->assignee->get_datatype());
+				mark_coroutine_handle_capture(assignment->assigned_value, assignment->assignee->get_datatype());
+			}
 			if (assignment->assignee != nullptr) {
-				if (assignment->assignee->type == BSParser::Node::IDENTIFIER) {
-					const BSParser::IdentifierNode *identifier = static_cast<const BSParser::IdentifierNode *>(assignment->assignee);
-					if (identifier->source == BSParser::IdentifierNode::LOCAL_CONSTANT ||
-							identifier->source == BSParser::IdentifierNode::MEMBER_CONSTANT ||
-							identifier->source == BSParser::IdentifierNode::LOCAL_BIND) {
-						push_error("Cannot assign a new value to a constant.", assignment->assignee);
-						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
-						break;
-					}
-				} else if (assignment->assignee->type == BSParser::Node::SUBSCRIPT) {
-					const BSParser::SubscriptNode *subscript = static_cast<const BSParser::SubscriptNode *>(assignment->assignee);
-					const BSParser::DataType base_type = subscript->base != nullptr ? subscript->base->get_datatype() : BSParser::DataType();
-					if (base_type.kind == BSParser::DataType::TUPLE) {
-						push_error(vformat(R"*(Cannot assign to an element of tuple "%s"; tuples are immutable.)*", base_type.to_string()), assignment->assignee);
-						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
-						break;
-					}
-					const bool resolved_constant_destination = subscript->get_datatype().is_constant ||
-							(subscript->attribute != nullptr && subscript->attribute->source == BSParser::IdentifierNode::MEMBER_CONSTANT);
-					if (resolved_constant_destination || (subscript->base != nullptr && subscript->base->is_constant) || base_type.is_constant) {
-						push_error("Cannot assign a new value to a constant.", assignment->assignee);
-						assignment->set_datatype(assignment->assigned_value != nullptr ? assignment->assigned_value->get_datatype() : BSParser::DataType());
-						break;
+				const auto assignee_type = assignment->assignee->get_datatype();
+				const auto *sub = assignment->assignee->type == BSParser::Node::SUBSCRIPT
+						? static_cast<const BSParser::SubscriptNode *>(assignment->assignee)
+						: nullptr;
+				String error;
+				if (sub && sub->base && sub->base->get_datatype().kind == BSParser::DataType::TUPLE && !sub->base->get_datatype().is_meta_type) {
+					error = vformat(R"(Cannot assign to an element of tuple "%s"; tuples are immutable.)", sub->base->get_datatype().to_string());
+				} else if (assignee_type.is_constant) {
+					error = "Cannot assign a new value to a constant.";
+				} else if (sub && sub->base && sub->base->is_constant) {
+					const auto base_type = sub->base->get_datatype();
+					if (base_type.kind != BSParser::DataType::SCRIPT && base_type.kind != BSParser::DataType::CLASS)
+						error = "Cannot assign a new value to a constant.";
+				} else if (assignee_type.is_read_only) {
+					error = "Cannot assign a new value to a read-only property.";
+				} else {
+					// Pin Variant::is_type_shared: only Object, Array and Dictionary share storage.
+					while (sub && sub->base) {
+						const auto base_type = sub->base->get_datatype();
+						if (!base_type.is_hard_type() || !base_type.is_read_only)
+							break;
+						const bool shared = base_type.builtin_type == Variant::OBJECT || base_type.builtin_type == Variant::ARRAY || base_type.builtin_type == Variant::DICTIONARY;
+						if (base_type.kind == BSParser::DataType::BUILTIN && !shared) {
+							error = "Cannot assign a new value to a read-only property.";
+							break;
+						}
+						sub = sub->base->type == BSParser::Node::SUBSCRIPT ? static_cast<const BSParser::SubscriptNode *>(sub->base) : nullptr;
 					}
 				}
-			}
-			if (assignment->assignee != nullptr && assignment->assigned_value != nullptr) {
-				// Contextual `.Case` on the RHS takes its union from the assignee (@ c9d5e35).
-				qualify_contextual_enum_case_consumer(assignment->assigned_value, assignment->assignee->get_datatype());
-				mark_coroutine_handle_capture(assignment->assigned_value, assignment->assignee->get_datatype());
+				if (!error.is_empty()) {
+					push_error(error, assignment->assignee);
+					assignment->set_datatype(assignment->assigned_value ? assignment->assigned_value->get_datatype() : BSParser::DataType());
+					break;
+				}
+				update_container_literal_element_types(assignment->assigned_value, assignee_type);
 			}
 			if (assignment->assigned_value != nullptr) {
 				BSParser::DataType assignee_type;
 				if (assignment->assignee != nullptr) {
 					assignee_type = assignment->assignee->get_datatype();
 				}
-				const bool constant_type_ok = update_constant_expression_type(assignment->assigned_value, assignee_type, "assign");
+				// Pin7766: compound operations convert their result, not their RHS operand.
+				const bool constant_type_ok = assignment->operation != BSParser::AssignmentNode::OP_NONE || !assignee_type.is_hard_type() ||
+						update_constant_expression_type(assignment->assigned_value, assignee_type, "assign");
 				BSParser::DataType assigned_value_type = assignment->assigned_value->get_datatype();
 				bool compatible = true;
 				BSParser::DataType op_type = assigned_value_type;
@@ -7591,7 +8660,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 				}
 				assignment->set_datatype(op_type);
 
-				// Foundry reduce_assignment Self-contract RETURN gate @ c9d5e35.
+				// Pin7850: embedded Self contracts precede ordinary weak-store downgrade.
 				if (!constant_type_ok) {
 					// Value-aware constant reporting already emitted the sole mismatch.
 				} else if (!assignee_type.is_variant() && assignee_type.is_set() &&
@@ -7612,7 +8681,20 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 						mark_node_unsafe(assignment);
 						assignment->use_conversion_assign = true;
 					}
+					// Foundry reduce_assignment @ c9d5e35:7926-7993 keeps soft declarations
+					// gradual after an incompatible store; hard destinations retain D1 conversion rules.
+				} else if (assignee_type.is_set() && !assignee_type.is_variant() && !assignee_type.is_hard_type() && op_type.is_set()) {
+					BSTypeCompatibility::Options options;
+					options.allow_implicit_conversion = false;
+					options.strict_dynamic = strict_dynamic_checks;
+					options.strict_null = strict_null_checks;
+					warn_plain_enum_conversion(assignee_type, op_type, assignment->assigned_value);
+					if (op_type.is_variant() || !BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
+						mark_node_unsafe(assignment);
+						downgrade_assignment_source(assignment->assignee);
+					}
 				} else if (assignee_type.is_set() && !assignee_type.is_variant() && op_type.is_set()) {
+					warn_plain_enum_conversion(assignee_type, op_type, assignment->assigned_value);
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
@@ -7621,19 +8703,142 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 						options.constant_source_value = &assignment->assigned_value->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
-						push_error(vformat(R"*(Value of type "%s" cannot be assigned to a variable of type "%s".)*",
-										   assigned_value_type.to_string(), assignee_type.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type"),
-								assignment->assigned_value);
+						StringName target_name;
+						if (assignment->assignee->type == BSParser::Node::IDENTIFIER)
+							target_name = static_cast<BSParser::IdentifierNode *>(assignment->assignee)->name;
+						else if (assignment->assignee->type == BSParser::Node::SUBSCRIPT) {
+							const auto *subscript = static_cast<BSParser::SubscriptNode *>(assignment->assignee);
+							if (subscript->is_attribute && subscript->attribute)
+								target_name = subscript->attribute->name;
+						}
+						// Pin7900-7968: strict-profile failures take precedence over handle identity.
+						String error;
+						if (strict_dynamic_checks && op_type.is_variant()) {
+							error = target_name != StringName()
+									? vformat(R"(Cannot assign Variant value to variable "%s" in strict dynamic mode; expected "%s".)", target_name, assignee_type.to_string())
+									: vformat(R"(Cannot assign Variant value to target in strict dynamic mode; expected "%s".)", assignee_type.to_string());
+						} else if (strict_null_checks && op_type.is_nullable && !assignee_type.is_nullable && !assignee_type.is_variant()) {
+							error = target_name != StringName()
+									? vformat(R"(Cannot assign nullable value of type "%s" to variable "%s"; expected non-nullable "%s".)", assigned_value_type.to_string(), target_name, assignee_type.to_string())
+									: vformat(R"(Cannot assign nullable value of type "%s" to target; expected non-nullable "%s".)", assigned_value_type.to_string(), assignee_type.to_string());
+						} else {
+							error = make_type_handle_assignment_error(assignee_type, assigned_value_type, "variable", target_name, false);
+							if (error.is_empty()) {
+								error = vformat(R"(Value of type "%s" cannot be assigned to a variable of type "%s".)", assigned_value_type.to_string(), assignee_type.to_string()) + BSParser::DataType::same_rendered_name_clause(assigned_value_type, "value", assignee_type, "variable's type");
+							}
+						}
+						push_error(error, assignment->assigned_value);
 					} else if (op_type.is_variant() || !op_type.is_hard_type()) {
 						mark_node_unsafe(assignment);
 						assignment->use_conversion_assign = true;
 					}
 				}
 			}
+#ifdef DEBUG_ENABLED
+			// Foundry c9d5e35:8003-8009: compatibility/conversion diagnostics precede
+			// this warning; the store's scalar counter was incremented before reduction.
+			if (assignment->operation != BSParser::AssignmentNode::OP_NONE && assignment->assignee != nullptr && assignment->assignee->type == BSParser::Node::IDENTIFIER) {
+				const auto *assignee = static_cast<const BSParser::IdentifierNode *>(assignment->assignee);
+				if (assignee->source == BSParser::IdentifierNode::LOCAL_VARIABLE && assignee->variable_source != nullptr && assignee->variable_source->assignments == 1) {
+					push_warning(assignment, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, { String(assignee->name), _operator_name(assignment->variant_op) });
+				}
+			}
+#endif
+
 		} break;
 		default:
 			break;
+	}
+}
+
+// Foundry fs_analyzer.cpp:2215-2255,2282-2313: report the represented class,
+// keeping declaration and subsequent-store wording distinct.
+String BSAnalyzer::make_type_handle_assignment_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name, bool p_specified) {
+	if (!p_target.is_type_handle_annotation || (p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::NIL))
+		return String();
+	const String target = p_name != StringName() ? vformat(R"(%s "%s"%s "%s")", p_kind, p_name, p_specified ? " with specified type" : " of type", p_target.to_string()) : vformat(R"(target of type "%s")", p_target.to_string());
+	const String represented_target = _type_handle_represented_type(p_target).to_string();
+	if (_type_handle_source_is_handle(p_source)) {
+		const String represented_source = _type_handle_represented_type(p_source).to_string();
+		return vformat(R"(Cannot assign class handle "%s" to %s; handle represents "%s", which is not compatible with "%s".)", represented_source, target, represented_source, represented_target);
+	}
+	return vformat(R"(Cannot assign instance value of type "%s" to %s; expected a class handle whose represented instance type is "%s".)", p_source.to_string(), target, represented_target);
+}
+String BSAnalyzer::make_type_handle_argument_error(const StringName &p_function, int p_argument, const BSParser::DataType &p_target, const BSParser::DataType &p_source) {
+	if (!p_target.is_type_handle_annotation || (p_source.kind == BSParser::DataType::BUILTIN && p_source.builtin_type == Variant::NIL))
+		return String();
+	const String represented_target = _type_handle_represented_type(p_target).to_string();
+	if (_type_handle_source_is_handle(p_source)) {
+		const String represented_source = _type_handle_represented_type(p_source).to_string();
+		return vformat(R"*(Cannot pass class handle "%s" as argument %d of "%s()"; handle represents "%s", which is not compatible with expected represented instance type "%s" for "%s".)*", represented_source, p_argument, p_function, represented_source, represented_target, p_target.to_string());
+	}
+	return vformat(R"*(Cannot pass instance value of type "%s" as argument %d of "%s()"; expected a class handle whose represented instance type is "%s" for "%s".)*", p_source.to_string(), p_argument, p_function, represented_target, p_target.to_string());
+}
+String BSAnalyzer::make_declaration_type_error(const BSParser::DataType &p_target, const BSParser::DataType &p_source, const String &p_kind, const StringName &p_name) {
+	// Foundry resolve_assignable @ c9d5e35:5477-5524: profile errors precede class-handle explanations.
+	if (strict_dynamic_checks && p_source.is_variant()) {
+		return vformat(R"(Cannot assign Variant value to %s "%s" in strict dynamic mode; expected "%s".)", p_kind, p_name, p_target.to_string());
+	}
+	if (strict_null_checks && p_source.is_nullable && !p_target.is_nullable && !p_target.is_variant()) {
+		return vformat(R"(Cannot assign nullable value of type "%s" to %s "%s"; expected non-nullable "%s".)", p_source.to_string(), p_kind, p_name, p_target.to_string());
+	}
+	const String handle_error = make_type_handle_assignment_error(p_target, p_source, p_kind, p_name, true);
+	if (!handle_error.is_empty())
+		return handle_error;
+	return vformat(R"(Cannot assign a value of type %s to %s "%s" with specified type %s.)", p_source.to_string(), p_kind, p_name, p_target.to_string()) + BSParser::DataType::same_rendered_name_clause(p_source, "value", p_target, "specified type");
+}
+
+void BSAnalyzer::resolve_variable_destructure(BSParser::VariableDestructureNode *p_destructure) {
+	BSParser::DataType initializer_type;
+	if (p_destructure->initializer != nullptr) {
+		reduce_expression(p_destructure->initializer);
+		initializer_type = p_destructure->initializer->get_datatype();
+	}
+
+	bool shape_is_known = false;
+	if (p_destructure->initializer == nullptr) {
+		// The parser already reported the missing initializer.
+	} else if (!initializer_type.is_set() || !initializer_type.is_hard_type() || initializer_type.kind != BSParser::DataType::TUPLE) {
+		push_error(vformat(R"(Cannot destructure a value of type "%s"; only a tuple with a statically known shape can be destructured.)",
+						   initializer_type.to_string()),
+				p_destructure->initializer);
+	} else if (initializer_type.is_meta_type) {
+		push_error(vformat(R"(Cannot destructure the tuple type "%s"; construct a value first.)", initializer_type.to_string()),
+				p_destructure->initializer);
+	} else if (strict_null_checks && initializer_type.is_nullable) {
+		// Destructuring reads the elements, so it dereferences the value: a nullable tuple must be
+		// narrowed to non-null first, exactly like the other strict-null boundaries.
+		push_error(vformat(R"(Cannot destructure the nullable value of type "%s"; check for null first.)", initializer_type.to_string()),
+				p_destructure->initializer);
+	} else if (initializer_type.container_element_types.size() != p_destructure->bindings.size()) {
+		push_error(vformat(R"(Cannot destructure the tuple "%s" into %d bindings; it has %d elements.)",
+						   initializer_type.to_string(), p_destructure->bindings.size(), initializer_type.container_element_types.size()),
+				p_destructure->initializer);
+	} else {
+		shape_is_known = true;
+	}
+
+	for (int i = 0; i < p_destructure->bindings.size(); i++) {
+		BSParser::VariableNode *binding = p_destructure->bindings[i];
+		if (binding == nullptr) {
+			continue; // A `_` slot binds nothing.
+		}
+
+		BSParser::DataType binding_type;
+		if (shape_is_known) {
+			binding_type = initializer_type.get_container_element_type_or_variant(i);
+			binding_type.type_source = BSParser::DataType::ANNOTATED_INFERRED;
+		} else {
+			// Keep going with a Variant binding so a broken initializer reports once instead of
+			// cascading through every later use of the names it declares.
+			binding_type.kind = BSParser::DataType::VARIANT;
+			binding_type.type_source = BSParser::DataType::UNDETECTED;
+		}
+		// A `const` binding is immutable, not compile-time constant: its value comes from a runtime
+		// tuple, so it must not be treated as a foldable constant.
+		binding_type.is_constant = false;
+		binding_type.is_read_only = false;
+		binding->set_datatype(binding_type);
 	}
 }
 
@@ -7641,21 +8846,22 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 	if (p_node == nullptr) {
 		return;
 	}
+	// Foundry resolve_suite c9d5e35:5334-5348 applies statement suppression before
+	// reduction, including calls and assignments as well as local declarations.
+	for (BSParser::AnnotationNode *annotation : p_node->annotations) {
+		if (annotation != nullptr && annotation->name == SNAME("@warning_ignore")) {
+			resolve_annotation(annotation);
+			annotation->apply(parser, p_node, current_class);
+		}
+	}
 	if (p_node->is_expression()) {
 		reduce_expression(static_cast<BSParser::ExpressionNode *>(p_node), true);
 		return;
 	}
-	// Foundry resolve_suite @ c9d5e35:5334-5348 applies declaration annotations before
-	// resolve_assignable queues warnings. Reuse the parser's validated suppression spans.
-	if (p_node->type == BSParser::Node::VARIABLE || p_node->type == BSParser::Node::CONSTANT) {
-		for (BSParser::AnnotationNode *annotation : p_node->annotations) {
-			if (annotation != nullptr && annotation->name == SNAME("@warning_ignore")) {
-				resolve_annotation(annotation, p_node->type == BSParser::Node::VARIABLE ? BSParser::AnnotationDeclarationNode::TARGET_VARIABLE : BSParser::AnnotationDeclarationNode::TARGET_CONSTANT);
-				annotation->apply(parser, p_node, current_class);
-			}
-		}
-	}
 	switch (p_node->type) {
+		case BSParser::Node::VARIABLE_DESTRUCTURE:
+			resolve_variable_destructure(static_cast<BSParser::VariableDestructureNode *>(p_node));
+			break;
 		case BSParser::Node::VARIABLE: {
 			BSParser::VariableNode *variable = static_cast<BSParser::VariableNode *>(p_node);
 			if (variable->initializer != nullptr) {
@@ -7679,12 +8885,19 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					}
 					declared.type_source = variable->infer_datatype ? BSParser::DataType::ANNOTATED_INFERRED : BSParser::DataType::INFERRED;
 					declared.is_constant = false;
+					declared.is_read_only = false;
 					variable->set_datatype(declared);
 				}
 			}
+			// Mutable slots never inherit the declaration type's or initializer's storage flags.
+			declared.is_constant = false;
+			declared.is_read_only = false;
+			variable->set_datatype(declared);
 			if (variable->datatype_specifier != nullptr && declared.is_set() && !declared.is_variant() && variable->initializer != nullptr && variable->initializer->get_datatype().is_set()) {
 				const bool constant_type_ok = update_constant_expression_type(variable->initializer, declared, "assign");
 				const BSParser::DataType initializer_type = variable->initializer->get_datatype();
+				if (constant_type_ok)
+					warn_plain_enum_conversion(declared, initializer_type, variable->initializer);
 				// Foundry assignable Self-contract RETURN gate @ c9d5e35.
 				if (!constant_type_ok) {
 					// Value-aware constant reporting already emitted the sole mismatch.
@@ -7695,8 +8908,8 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, variable->initializer, nullptr,
 												  _self_contract_options(strict_dynamic_checks, strict_null_checks,
 														  current_function == nullptr || !current_function->is_static)))) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
+						push_error(vformat(R"(Cannot assign a value of type %s to variable "%s" with specified type %s.)",
+										   initializer_type.to_string(), variable->identifier ? variable->identifier->name : StringName("<unknown>"), declared.to_string()) +
 										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
 								variable->initializer);
 					} else if (value_is_gradual || initializer_type.is_variant()) {
@@ -7712,10 +8925,6 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						options.constant_source_value = &variable->initializer->reduced_value;
 					}
 					bool compatible = BSTypeCompatibility::check(declared, initializer_type, options).compatible;
-					if ((declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) &&
-							!_datatype_strict_identity_equal(declared, initializer_type)) {
-						compatible = false;
-					}
 					if (!compatible) {
 						if (initializer_type.is_tagged_union_type() && declared.kind == BSParser::DataType::BUILTIN && declared.builtin_type == Variant::INT) {
 							push_error(vformat(R"(Cannot assign a value of type %s to variable "%s" with specified type %s.)",
@@ -7731,10 +8940,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
 									variable->initializer);
 						} else {
-							push_error(vformat(R"(Cannot assign a value of type "%s" to a variable of type "%s".)",
-											   initializer_type.to_string(), declared.to_string()) +
-											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-									variable->initializer);
+							push_error(make_declaration_type_error(declared, initializer_type, "variable", variable->identifier != nullptr ? variable->identifier->name : StringName("<unknown>")), variable->initializer);
 						}
 					}
 				}
@@ -7777,10 +8983,14 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 										: !_self_contract_admits_value_type(declared, initializer_type, BSAnalyzer::SelfContractKind::RETURN, constant->initializer, nullptr,
 												  _self_contract_options(strict_dynamic_checks, strict_null_checks,
 														  current_function == nullptr || !current_function->is_static)))) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-								constant->initializer);
+						if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(declared, initializer_type, "constant", constant->identifier != nullptr ? constant->identifier->name : StringName("<unknown>")), constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), declared.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+									constant->initializer);
+						}
 					}
 				} else {
 					BSTypeCompatibility::Options options;
@@ -7791,10 +9001,14 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						options.constant_source_value = &constant->initializer->reduced_value;
 					}
 					if (!BSTypeCompatibility::check(declared, initializer_type, options).compatible) {
-						push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
-										   initializer_type.to_string(), declared.to_string()) +
-										BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
-								constant->initializer);
+						if (declared.kind == BSParser::DataType::TUPLE || initializer_type.kind == BSParser::DataType::TUPLE) {
+							push_error(make_declaration_type_error(declared, initializer_type, "constant", constant->identifier != nullptr ? constant->identifier->name : StringName("<unknown>")), constant->initializer);
+						} else {
+							push_error(vformat(R"(Cannot assign a value of type "%s" to a constant of type "%s".)",
+											   initializer_type.to_string(), declared.to_string()) +
+											BSParser::DataType::same_rendered_name_clause(initializer_type, "value", declared, "specified type"),
+									constant->initializer);
+						}
 					}
 				}
 			}
@@ -7802,25 +9016,39 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 		case BSParser::Node::RETURN: {
 			BSParser::ReturnNode *ret = static_cast<BSParser::ReturnNode *>(p_node);
 			if (ret->return_value != nullptr) {
-				reduce_expression(ret->return_value);
 				// Foundry: contextual `.Case` return takes its union from the function return type.
 				BSParser::DataType expected_return;
 				if (current_function != nullptr) {
 					expected_return = current_function->get_datatype();
 				}
+				const bool returns_void = expected_return.is_hard_type() && expected_return.kind == BSParser::DataType::BUILTIN && expected_return.builtin_type == Variant::NIL;
+				const bool is_call = ret->return_value->type == BSParser::Node::CALL;
+				reduce_expression(ret->return_value, returns_void && is_call);
 				qualify_contextual_enum_case_consumer(ret->return_value, expected_return);
+				if (returns_void) {
+					ret->void_return = true;
+					if (is_call && !ret->return_value->get_datatype().is_hard_type()) {
+#ifdef DEBUG_ENABLED
+						Vector<String> symbols;
+						symbols.push_back(current_function->identifier != nullptr ? String(current_function->identifier->name) : String("<anonymous function>"));
+						symbols.push_back(static_cast<BSParser::CallNode *>(ret->return_value)->function_name);
+						push_warning(ret, BSWarning::UNSAFE_VOID_RETURN, symbols);
+#endif
+						mark_node_unsafe(ret);
+					} else if (!is_call) {
+						push_error("A void function cannot return a value.", ret);
+					}
+					BSParser::DataType result = expected_return;
+					result.is_constant = true;
+					ret->set_datatype(result);
+					break;
+				}
 				if (expected_return.is_set()) {
 					mark_coroutine_handle_capture(ret->return_value, expected_return);
 				}
 				const bool constant_type_ok = update_constant_expression_type(ret->return_value, expected_return, "return");
 				ret->set_datatype(ret->return_value->get_datatype());
-				const bool returns_void = expected_return.is_set() && expected_return.kind == BSParser::DataType::BUILTIN &&
-						expected_return.builtin_type == Variant::NIL;
 				if (!constant_type_ok) {
-					break;
-				}
-				if (returns_void) {
-					push_error("A void function cannot return a value.", ret);
 					break;
 				}
 				// Foundry resolve_return Self-contract RETURN gate @ c9d5e35.
@@ -7865,6 +9093,7 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					}
 				} else if (expected_return.is_set() && !expected_return.is_variant()) {
 					const BSParser::DataType result = ret->return_value->get_datatype();
+					warn_plain_enum_conversion(expected_return, result, ret);
 					BSTypeCompatibility::Options options;
 					options.allow_implicit_conversion = true;
 					options.strict_dynamic = strict_dynamic_checks;
@@ -8013,7 +9242,10 @@ void BSAnalyzer::resolve_for(BSParser::ForNode *p_for) {
 			if (iterator != nullptr) {
 				variable_type = iterator->get_datatype();
 				variable_type.type_source = list_type.type_source;
-			} else if (BSNativeDB::get_method_info(list_type.native_type, SNAME("_iter_get"), &method)) {
+			} else if (ClassDB::class_has_method(list_type.native_type, SNAME("_iter_get"), false) &&
+					BSNativeDB::get_method_info(list_type.native_type, SNAME("_iter_get"), &method)) {
+				// Object-core virtual metadata describes an extension point, not an iterator
+				// implementation. Preserve the hard/soft missing-implementation contract below.
 				variable_type = type_from_property(method.return_val, (method.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT) != 0);
 				variable_type.type_source = list_type.type_source;
 			} else if (!list_type.is_hard_type()) {
@@ -8128,10 +9360,13 @@ void BSAnalyzer::analyze_suite(BSParser::SuiteNode *p_suite) {
 }
 
 void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {
-	if (p_enum == nullptr || p_owner == nullptr) {
+	if (p_enum == nullptr || p_owner == nullptr || resolved_enum_interfaces.has(p_enum) || resolving_enum_interfaces.has(p_enum)) {
 		return;
 	}
-	// Foundry resolve_enum_interface @ c9d5e35: signatures precede body analysis.
+	// Foundry resolve_enum_interface @ c9d5e35: one owner-scoped lifecycle for
+	// normal traversal and early lookup. Each function's conflicts, annotations,
+	// and signature are visited together so mixed diagnostics retain source order.
+	resolving_enum_interfaces.insert(p_enum);
 	BSParser::ClassNode *previous_class = current_class;
 	BSParser::FunctionNode *previous_function = current_function;
 	BSParser::EnumNode *previous_enum = current_enum;
@@ -8140,22 +9375,32 @@ void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BS
 	current_function = nullptr;
 	current_enum = p_enum;
 	current_enum_owner = p_owner;
+	Finally restore_scope([&]() {
+		current_enum_owner = previous_enum_owner;
+		current_enum = previous_enum;
+		current_function = previous_function;
+		current_class = previous_class;
+		resolving_enum_interfaces.erase(p_enum);
+		resolved_enum_interfaces.insert(p_enum);
+	});
+	const StringName enum_name = p_enum->identifier ? p_enum->identifier->name : StringName("<anonymous enum>");
+	const auto shell = p_owner->is_enum_file ? make_standalone_global_enum_type(p_owner, parser->script_path) : make_class_enum_type(enum_name, p_owner, parser->script_path, true);
+	resolve_enum_values(p_enum, shell, p_owner);
+	HashSet<StringName> function_names;
 	for (BSParser::FunctionNode *function : p_enum->functions) {
-		if (function == nullptr || function->resolved_signature) {
-			continue;
+		if (function && function->identifier) {
+			const auto name = function->identifier->name;
+			if (p_enum->get_datatype().enum_values.has(name))
+				push_error(vformat(R"*(Enum function "%s()" conflicts with enum value "%s".)*", name, name), function->identifier);
+			if (function_names.has(name))
+				push_error(vformat(R"*(Enum function "%s()" is declared more than once.)*", name), function->identifier);
+			if (function->is_static && BSCoreConstants::get_builtin_method(Variant::DICTIONARY, name))
+				push_error(vformat(R"*(Static enum function "%s" conflicts with Dictionary method "%s()".)*", name, name), function->identifier);
 		}
-		for (BSParser::AnnotationNode *annotation : function->annotations) {
-			if (annotation != nullptr) {
-				resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
-				annotation->apply(parser, function, p_owner);
-			}
-		}
+		if (function && function->identifier)
+			function_names.insert(function->identifier->name);
 		resolve_function_signature_in_class(function, p_owner);
 	}
-	current_enum_owner = previous_enum_owner;
-	current_enum = previous_enum;
-	current_function = previous_function;
-	current_class = previous_class;
 }
 
 void BSAnalyzer::analyze_enum_function_bodies(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {
@@ -8187,6 +9432,10 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 	p_function->resolved_body = true;
 	BSParser::FunctionNode *previous = current_function;
 	current_function = p_function;
+	const BSParser::Node *previous_declaration = get_node_declaration;
+	if (!p_is_lambda)
+		get_node_declaration = p_function;
+	Finally restore_declaration([&]() { get_node_declaration = previous_declaration; });
 	// Foundry applies function annotations before body analysis (resolve_class_body @ c9d5e35).
 	for (BSParser::AnnotationNode *annotation : p_function->annotations) {
 		if (annotation != nullptr) {
@@ -8194,10 +9443,18 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 			annotation->apply(parser, p_function, current_class);
 		}
 	}
-	if (!p_function->has_body) {
-		if (!p_function->is_abstract) {
-			push_error(vformat(R"(Function "%s" must have a body or be declared abstract.)", p_function->identifier != nullptr ? p_function->identifier->name : StringName()), p_function);
+	// Foundry c9d5e35:5025-5041: body shape is an analyzer contract, including
+	// parser-admitted empty-colon lambdas. Bodyful abstract errors belong to the suite.
+	if (p_function->body == nullptr || p_function->body->statements.is_empty()) {
+		if (p_function->source_lambda != nullptr) {
+			push_error(R"(A lambda function must have a ":" followed by a body.)", p_function);
+		} else if (!p_function->is_abstract) {
+			push_error(R"(A function must either have a ":" followed by a body, or be marked as "abstract".)", p_function);
 		}
+		current_function = previous;
+		return;
+	} else if (p_function->is_abstract) {
+		push_error("An abstract function cannot have a body.", p_function->body);
 		current_function = previous;
 		return;
 	}
@@ -8207,8 +9464,12 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 		FlowFinalityContext::FlowNarrowingScope flow_scope(flow_finality, !p_is_lambda);
 		analyze_suite(p_function->body);
 	}
+	// Foundry c9d5e35:5063-5066: publish the completed suite result before named accessor checks.
+	if (!p_function->get_datatype().is_hard_type() && p_function->body->get_datatype().is_set()) {
+		p_function->set_datatype(p_function->body->get_datatype());
+	}
 	// Foundry resolve_function_body checks every resolved body, including lambdas and witnesses.
-	// Keep those consumers in our existing flow phase, after successful body analysis.
+	// Drain them in the flow phase or diagnostic recovery after a visited body fails.
 	// resolved_body above ensures each parser-owned function is queued exactly once.
 	pending_function_flow_checks.push_back(p_function);
 	warn_unused_parameters(p_function);
@@ -8218,7 +9479,9 @@ void BSAnalyzer::analyze_function_body(BSParser::FunctionNode *p_function, bool 
 
 void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 #ifdef DEBUG_ENABLED
-	if (p_function == nullptr || p_function->is_abstract) {
+	// Inline accessors enter body analysis directly; their parameters bypass the
+	// signature lifecycle that owns UNUSED_PARAMETER (Foundry c9d5e35:4726-4733).
+	if (p_function == nullptr || !p_function->resolved_signature || p_function->is_abstract) {
 		return;
 	}
 	const String function_visible_name = p_function->identifier != nullptr ? String(p_function->identifier->name) : String("<anonymous>");
@@ -8247,6 +9510,31 @@ void BSAnalyzer::warn_unused_parameters(BSParser::FunctionNode *p_function) {
 #endif
 }
 
+void BSAnalyzer::warn_shadowed_local(BSParser::IdentifierNode *p_identifier, const String &p_context) {
+#ifdef DEBUG_ENABLED
+	// Foundry is_shadowing c9d5e35:17910-17946: global identifiers take precedence
+	// over a current-class member. Use the same metadata as ordinary identifier lookup.
+	const StringName name = p_identifier->name;
+	MethodInfo utility;
+	String global_kind;
+	if (BSUtilityFunctions::get_function_info(name, utility) || CoreConstants::get_utility_function(name, utility)) {
+		global_kind = "built-in function";
+	} else if (ClassDB::class_exists(name)) {
+		global_kind = "native class";
+	} else if (ScriptServer::is_global_class(name)) {
+		global_kind = vformat(R"(global class defined in "%s")", ScriptServer::get_global_class_path(name).get_file());
+	} else if (BSParser::get_builtin_type(name) < Variant::VARIANT_MAX) {
+		global_kind = "built-in type";
+	}
+	if (!global_kind.is_empty()) {
+		push_warning(p_identifier, BSWarning::SHADOWED_GLOBAL_IDENTIFIER, { p_context, String(name), global_kind });
+	} else if (current_class != nullptr && current_class->has_member(name)) {
+		const auto member = current_class->get_member(name);
+		push_warning(p_identifier, BSWarning::SHADOWED_VARIABLE, { p_context, String(name), member.get_type_name(), itos(member.get_line()) });
+	}
+#endif
+}
+
 void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
 #ifdef DEBUG_ENABLED
 	if (p_suite == nullptr) {
@@ -8260,12 +9548,14 @@ void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
 				symbols.push_back(String(local.variable->identifier->name));
 				push_warning(local.variable, BSWarning::UNUSED_VARIABLE, symbols);
 			}
+			warn_shadowed_local(local.variable->identifier, "variable");
 		} else if (local.type == BSParser::SuiteNode::Local::CONSTANT && local.constant != nullptr && local.constant->identifier != nullptr) {
 			if (local.constant->usages == 0 && !String(local.constant->identifier->name).begins_with("_")) {
 				Vector<String> symbols;
 				symbols.push_back(String(local.constant->identifier->name));
 				push_warning(local.constant, BSWarning::UNUSED_LOCAL_CONSTANT, symbols);
 			}
+			warn_shadowed_local(local.constant->identifier, "constant");
 		}
 	}
 	for (int i = 0; i < p_suite->statements.size(); i++) {
@@ -8295,6 +9585,65 @@ void BSAnalyzer::warn_unused_locals(BSParser::SuiteNode *p_suite) {
 #else
 	(void)p_suite;
 #endif
+}
+
+void BSAnalyzer::check_named_property_accessors(BSParser::VariableNode *p_variable, BSParser::ClassNode *p_class) {
+	// Foundry c9d5e35:3735-3813. Check after all bodies so inferred getter results exist.
+	if (p_variable->property != BSParser::VariableNode::PROP_SETGET)
+		return;
+	BSTypeCompatibility::Options options;
+	options.allow_implicit_conversion = true;
+	options.strict_dynamic = strict_dynamic_checks;
+	options.strict_null = strict_null_checks;
+	const auto property_type = p_variable->get_datatype();
+	BSParser::FunctionNode *getter = nullptr;
+	BSParser::FunctionNode *setter = nullptr;
+	bool valid_getter = false, valid_setter = false;
+	if (p_variable->getter_pointer) {
+		const StringName name = p_variable->getter_pointer->name;
+		if (p_class->has_function(name))
+			getter = p_class->get_member(name).function;
+		if (!getter) {
+			push_error(vformat(R"(Getter "%s" not found.)", name), p_variable);
+		} else {
+			const auto result = getter->get_datatype();
+			if (!getter->parameters.is_empty() || result.has_no_type() || (result.kind == BSParser::DataType::BUILTIN && result.builtin_type == Variant::NIL)) {
+				push_error(vformat(R"(Function "%s" cannot be used as getter because of its signature.)", name), p_variable);
+			} else if (!BSTypeCompatibility::check(property_type, result, options).compatible) {
+				push_error(vformat(R"(Function with return type "%s" cannot be used as getter for a property of type "%s".)", result.to_string(), property_type.to_string()), p_variable);
+			} else {
+				valid_getter = true;
+#ifdef DEBUG_ENABLED
+				if (property_type.builtin_type == Variant::INT && result.builtin_type == Variant::FLOAT)
+					push_warning(p_variable, BSWarning::NARROWING_CONVERSION);
+#endif
+			}
+		}
+	}
+	if (p_variable->setter_pointer) {
+		const StringName name = p_variable->setter_pointer->name;
+		if (p_class->has_function(name))
+			setter = p_class->get_member(name).function;
+		if (!setter) {
+			push_error(vformat(R"(Setter "%s" not found.)", name), p_variable);
+		} else if (setter->parameters.size() != 1) {
+			push_error(vformat(R"(Function "%s" cannot be used as setter because of its signature.)", name), p_variable);
+		} else {
+			const auto parameter = setter->parameters[0]->get_datatype();
+			if (!BSTypeCompatibility::check(property_type, parameter, options).compatible) {
+				push_error(vformat(R"(Function with argument type "%s" cannot be used as setter for a property of type "%s".)", parameter.to_string(), property_type.to_string()), p_variable);
+			} else {
+				valid_setter = true;
+#ifdef DEBUG_ENABLED
+				if (property_type.builtin_type == Variant::FLOAT && parameter.builtin_type == Variant::INT)
+					push_warning(p_variable, BSWarning::NARROWING_CONVERSION);
+#endif
+			}
+		}
+	}
+	if (property_type.is_variant() && valid_getter && valid_setter && !BSTypeCompatibility::check(getter->get_datatype(), setter->parameters[0]->get_datatype(), options).compatible) {
+		push_error(vformat(R"(Getter with type "%s" cannot be used along with setter of type "%s".)", getter->get_datatype().to_string(), setter->parameters[0]->get_datatype().to_string()), p_variable);
+	}
 }
 
 void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser::Node *p_source) {
@@ -8417,6 +9766,32 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 				owner_resolution_failures.first_error_index(p_class, OwnerResolutionFailures::INTERFACE));
 	}
 
+	// Foundry c9d5e35:3641-3670: prepare directly applied external bodies before
+	// implementer finality consumes their declaration identities. Transitive traits
+	// are prepared by their own applying parser; inline traits are local members.
+	for (const BSParser::ClassNode::TraitUse &use : p_class->used_traits) {
+		BSParser::ClassNode *trait = use.resolved_trait;
+		if (trait == nullptr) {
+			continue;
+		}
+		Ref<BSParserRef> trait_ref = ensure_external_parser(trait, "While resolving trait body for flattening", p_source);
+		if (trait_ref.is_valid()) {
+			ForeignAnalyzerVisibilityScope visibility(trait_ref->get_analyzer());
+			if (trait_ref->raise_status(BSParserRef::FULLY_SOLVED) != OK) {
+				String trait_path = trait_ref->get_path();
+				if (trait_path.is_empty()) {
+					trait_path = trait->get_datatype().script_path;
+				}
+				String message = vformat(R"(Could not resolve body of trait "%s" applied by "%s".)", bs_class_or_trait_diagnostic_name(trait), bs_class_or_trait_diagnostic_name(p_class));
+				const String suffix = _dependency_error_suffix("trait", trait_path, trait_ref->get_parser(), 0);
+				if (!suffix.is_empty()) {
+					message += " " + suffix;
+				}
+				push_error(message, p_source);
+			}
+		}
+	}
+
 	if (p_class->base_type.kind == BSParser::DataType::CLASS && p_class->base_type.class_type != nullptr) {
 		BSParser::ClassNode *base_class = p_class->base_type.class_type;
 		analyze_class_body(base_class, p_class);
@@ -8441,17 +9816,27 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 				break;
 			case BSParser::ClassNode::Member::VARIABLE:
 				if (member.variable != nullptr) {
-					// Foundry surface applies VARIABLE annotations before body/finality checks
-					// (resolve_class_body @ c9d5e35) so `@onready` is visible to final-member rules.
+					// Preserve body-phase warning suppression and non-export annotations. Builtin
+					// exports already consumed the final datatype/guard in the member surface.
 					for (BSParser::AnnotationNode *annotation : member.variable->annotations) {
-						if (annotation != nullptr) {
+						if (annotation != nullptr && !(annotation->info && !annotation->is_custom && String(annotation->name).begins_with("@export"))) {
 							resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_VARIABLE);
 							annotation->apply(parser, member.variable, current_class);
 						}
 					}
-					if (member.variable->initializer != nullptr) {
-						reduce_expression(member.variable->initializer);
-						qualify_contextual_enum_case_consumer(member.variable->initializer, member.variable->get_datatype());
+				}
+				if (member.variable != nullptr && member.variable->property == BSParser::VariableNode::PROP_INLINE) {
+					// Foundry c9d5e35:3713-3726: accessors consume the completed property type
+					// and enter the ordinary body lifecycle exactly once.
+					if (member.variable->getter != nullptr) {
+						member.variable->getter->return_type = member.variable->datatype_specifier;
+						member.variable->getter->set_datatype(member.variable->get_datatype());
+						analyze_function_body(member.variable->getter);
+					}
+					if (member.variable->setter != nullptr && !member.variable->setter->parameters.is_empty()) {
+						member.variable->setter->parameters[0]->datatype_specifier = member.variable->datatype_specifier;
+						member.variable->setter->parameters[0]->set_datatype(member.variable->get_datatype());
+						analyze_function_body(member.variable->setter);
 					}
 				}
 				break;
@@ -8494,11 +9879,53 @@ void BSAnalyzer::analyze_class_body(BSParser::ClassNode *p_class, const BSParser
 	if (p_class->is_enum_file) {
 		analyze_enum_function_bodies(p_class->enum_file_decl, p_class);
 	}
+	for (const auto &member : p_class->members) {
+		if (member.type == BSParser::ClassNode::Member::VARIABLE && member.variable != nullptr)
+			check_named_property_accessors(member.variable, p_class);
+	}
 	warn_unused_class_members(p_class);
 	if (!pending_lambda_bodies.is_empty()) {
 		// Foundry resolve_class_body @ c9d5e35: any leftover pending lambdas (e.g. class-level
 		// initializers) must still resolve before leaving the body phase.
 		resolve_pending_lambda_bodies();
+	}
+	// Foundry c9d5e35:3827-3862: nearest concrete implementations discharge
+	// inherited abstract obligations; a concrete intermediate ends the search.
+	if (!p_class->is_abstract && !p_class->is_trait) {
+		HashSet<StringName> implemented_functions;
+		const BSParser::ClassNode *base_class = p_class;
+		while (base_class != nullptr) {
+			if (base_class != p_class && !base_class->is_abstract) {
+				break;
+			}
+			for (const BSParser::ClassNode::Member &member : base_class->members) {
+				if (member.type != BSParser::ClassNode::Member::FUNCTION || member.function == nullptr) {
+					continue;
+				}
+				if (member.function->is_abstract) {
+					const String class_name = p_class->identifier == nullptr ? p_class->fqcn.get_file() : String(p_class->identifier->name);
+					if (base_class == p_class) {
+						push_error(vformat(R"*(Class "%s" is not abstract but contains abstract methods. Mark the class as "abstract" or remove "abstract" from all methods in this class.)*", class_name), p_class);
+						break;
+					} else if (!implemented_functions.has(member.function->identifier->name)) {
+						const String base_name = base_class->identifier == nullptr ? base_class->fqcn.get_file() : String(base_class->identifier->name);
+						push_error(vformat(R"*(Class "%s" must implement "%s.%s()" and other inherited abstract methods or be marked as "abstract".)*", class_name, base_name, member.function->identifier->name), p_class);
+						break;
+					}
+				} else {
+					implemented_functions.insert(member.function->identifier->name);
+				}
+			}
+			if (base_class->base_type.kind == BSParser::DataType::CLASS) {
+				base_class = base_class->base_type.class_type;
+			} else if (base_class->base_type.kind == BSParser::DataType::SCRIPT) {
+				const Ref<BSParserRef> base_ref = parser->get_depended_parser_for(base_class->base_type.script_path);
+				ERR_BREAK(base_ref.is_null());
+				base_class = base_ref->get_parser()->get_tree();
+			} else {
+				break;
+			}
+		}
 	}
 	current_class = previous;
 }
@@ -9074,6 +10501,19 @@ void BSAnalyzer::check_pending_function_flow_finality() {
 	pending_function_flow_checks.clear();
 }
 
+bool BSAnalyzer::class_satisfies_trait_base(BSParser::ClassNode *p_class, BSParser::ClassNode *p_trait) {
+	if (p_class == nullptr || p_trait == nullptr) {
+		return false;
+	}
+	if (!p_trait->extends_used) {
+		return true;
+	}
+	// The existing concrete compatibility walk uses retained CLASS ancestry and native bases.
+	// It does not resolve a fresh parser by path or accept a declaration-index hint.
+	return p_class->base_type.is_set() && p_trait->base_type.is_set() &&
+			BSTypeCompatibility::is_compatible(p_trait->base_type, p_class->base_type);
+}
+
 void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 	if (p_class != nullptr && !parser->has_class(p_class) && !p_class->is_native_conformance_shim && !p_class->is_builtin_conformance_shim) {
 		Ref<BSParserRef> owner = ensure_external_parser(p_class, "While resolving trait uses", p_class);
@@ -9114,6 +10554,13 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 		return;
 	}
 
+	if (!p_class->base_type.is_resolving()) {
+		resolve_class_inheritance(p_class);
+	}
+	if (!p_class->base_type.is_set()) {
+		fail();
+		return;
+	}
 	p_class->resolving_trait_uses = true;
 	p_class->resolved_traits.clear();
 
@@ -9159,9 +10606,24 @@ void BSAnalyzer::resolve_used_traits(BSParser::ClassNode *p_class) {
 			fail();
 			return;
 		}
+		if (!class_satisfies_trait_base(p_class, trait)) {
+			push_error(vformat(R"(Class "%s" cannot use trait "%s" because it does not inherit from "%s".)",
+							   bs_class_or_trait_diagnostic_name(p_class), bs_class_or_trait_diagnostic_name(trait), trait->base_type.to_string()),
+					source);
+			fail();
+			return;
+		}
 		append_trait_unique(p_class->resolved_traits, trait);
 		for (int t = 0; t < trait->resolved_traits.size(); t++) {
-			append_trait_unique(p_class->resolved_traits, trait->resolved_traits[t]);
+			BSParser::ClassNode *transitive = trait->resolved_traits[t];
+			if (!class_satisfies_trait_base(p_class, transitive)) {
+				push_error(vformat(R"(Class "%s" cannot use trait "%s" because it does not inherit from "%s".)",
+								   bs_class_or_trait_diagnostic_name(p_class), bs_class_or_trait_diagnostic_name(transitive), transitive->base_type.to_string()),
+						source);
+				fail();
+				return;
+			}
+			append_trait_unique(p_class->resolved_traits, transitive);
 		}
 	}
 
@@ -9188,7 +10650,7 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 	auto exists = [&](const String &p_candidate) {
 		return ScriptServer::has_global_class_candidate(StringName(p_candidate));
 	};
-	if (p_name.contains(".") || p_scope == nullptr) {
+	if ((p_name.contains(".") && exists(p_name)) || p_scope == nullptr) {
 		if (exists(p_name)) {
 			result.qualified = p_name;
 		}
@@ -9218,9 +10680,9 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 					if (i > 0) {
 						choices += i == candidates.size() - 1 ? " and " : ", ";
 					}
-					choices += String("\"") + candidates[i] + String("\"");
+					choices += String("\"") + candidates[i].trim_suffix(String(".") + p_name) + String("\"");
 				}
-				push_error(vformat(R"(Could not resolve %s "%s": imported declarations %s are ambiguous.)", p_symbol_kind, p_name, choices), p_source);
+				push_error(vformat(R"(Could not resolve %s "%s": imported namespaces %s are ambiguous.)", p_symbol_kind, p_name, choices), p_source);
 				failed_name_lookups.insert(p_source);
 				result.status = NameLookupStatus::ERROR;
 				return result;
@@ -9249,7 +10711,14 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 		return result;
 	Error error = OK;
 	Ref<BSParserRef> provider = get_depended_parser(result.record.path, BSParserRef::PARSED, error);
-	if (provider.is_null() || error != OK || provider->get_parser() == nullptr || !provider->get_parser()->get_errors().is_empty()) {
+	// A directly applied trait consumes its body at the applying class, not at this
+	// name. A cached BODY failure must not masquerade as a failed parse for the
+	// next consumer; successful earlier phases remain usable for that replay.
+	const bool trait_body_pending = p_symbol_kind == "trait" && result.record.kind == BSDeclarationKind::TRAIT &&
+			provider.is_valid() && provider->get_status() == BSParserRef::FULLY_SOLVED &&
+			provider->get_result_for_status(BSParserRef::INTERFACE_SOLVED) == OK;
+	if (provider.is_null() || provider->get_parser() == nullptr ||
+			(!trait_body_pending && (error != OK || !provider->get_parser()->get_errors().is_empty()))) {
 		push_error(vformat(R"(Could not resolve %s "%s": provider "%s" could not be parsed.)", p_symbol_kind, p_name, result.record.path), p_source);
 		failed_name_lookups.insert(p_source);
 		result.status = NameLookupStatus::ERROR;
@@ -9259,14 +10728,22 @@ BSAnalyzer::NameLookup BSAnalyzer::lookup_declaration(const String &p_name, BSPa
 
 BSParser::DataType BSAnalyzer::resolve_named_type_in_scope(const StringName &p_name, BSParser::Node *p_source, bool &r_error) {
 	const NameLookup lookup = lookup_declaration(String(p_name), current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
-	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup, p_source);
+	BSParser::DataType result = named_type_from_lookup(lookup, p_source);
+	// A selected declaration whose owner failed is an error, never a namespace
+	// miss eligible for another (shorter) prefix. Foundry c9d5e35:2987.
+	r_error = lookup.status == NameLookupStatus::ERROR ||
+			(lookup.status == NameLookupStatus::FOUND && result.is_variant());
+	return result;
 }
 
 BSParser::DataType BSAnalyzer::resolve_named_type(const String &p_qualified, BSParser::Node *p_source, bool &r_error) {
-	const NameLookup lookup = lookup_declaration(p_qualified, nullptr, p_source, "type");
-	r_error = lookup.status == NameLookupStatus::ERROR;
-	return named_type_from_lookup(lookup, p_source);
+	const NameLookup lookup = lookup_declaration(p_qualified, current_class != nullptr ? current_class : parser->get_tree(), p_source, "type");
+	BSParser::DataType result = named_type_from_lookup(lookup, p_source);
+	// A selected declaration whose owner failed is an error, never a namespace
+	// miss eligible for another (shorter) prefix. Foundry c9d5e35:2987.
+	r_error = lookup.status == NameLookupStatus::ERROR ||
+			(lookup.status == NameLookupStatus::FOUND && result.is_variant());
+	return result;
 }
 
 BSParser::DataType BSAnalyzer::resolve_global_head(const String &p_name, const BSParser::Node *p_source) {
@@ -9360,6 +10837,7 @@ Error BSAnalyzer::run_phase_flow_finality() {
 	if (head != nullptr) {
 		check_pending_function_flow_finality();
 		// Foundry FLOW_FINALITY_INVARIANTS: abstract trait requirements after body.
+		validate_trait_conflicts(head);
 		validate_trait_requirements(head);
 	}
 	mark_phase(AnalyzerPhase::FLOW_FINALITY_INVARIANTS);
@@ -9385,7 +10863,10 @@ Error BSAnalyzer::run_phase_conformance_witness_body() {
 Error BSAnalyzer::resolve_inheritance() {
 	ERR_FAIL_COND_V(parser == nullptr, ERR_BUG);
 	const BSConformanceRegistry::ScopedVisibility conformance_scope(&conformance_visibility);
-	Error err = run_phase_preflight();
+	// Foundry c9d5e35:4387: dependency interfaces expose duplicate annotation
+	// signatures so usage can diagnose their canonical identity. Full analyze
+	// still validates the provider declarations in its own preflight.
+	Error err = run_phase_preflight(false);
 	if (err != OK) {
 		commit_or_remove_declaration(false);
 		return err;
@@ -9413,15 +10894,16 @@ Error BSAnalyzer::resolve_body() {
 	Error err = run_phase_body_expression_callable_signal();
 	if (err != OK) {
 		// Foundry resolves final assignments after visiting bodies even if a body reported
-		// an error (resolve_class_body @ c9d5e35). Keep recovery in phase 5: no exit-summary
-		// checks, witness bodies, warning finalization, or success publication follow it.
+		// an error (resolve_class_body @ c9d5e35). Its inline function exit checks also
+		// run for visited bodies. Drain only that queue; later phases remain fail-stop.
 		check_final_assignments();
+		check_pending_function_flow_finality();
 		commit_or_remove_declaration(false);
 		return err;
 	}
 	err = run_phase_flow_finality();
 	if (err != OK) {
-		// Foundry residual #60: body already queued pending warnings (e.g. NON_EXHAUSTIVE_MATCH);
+		// R17: body already queued pending warnings (e.g. NON_EXHAUSTIVE_MATCH);
 		// flush them even when flow-finality exits early (return-typed incomplete matches).
 		run_phase_finalize();
 		commit_or_remove_declaration(false);
@@ -9457,12 +10939,14 @@ Error BSAnalyzer::analyze() {
 	err = run_phase_body_expression_callable_signal();
 	if (err != OK && !errors_are_only_m5_deferred()) {
 		check_final_assignments();
+		// R17/R26: recover the pinned inline exit diagnostics for already visited bodies.
+		check_pending_function_flow_finality();
 		commit_or_remove_declaration(false);
 		return err;
 	}
 	Error flow_err = run_phase_flow_finality();
 	if (flow_err != OK && !errors_are_only_m5_deferred()) {
-		// Foundry residual #60: flush pending warnings even when flow-finality exits early
+		// R17: flush pending warnings even when flow-finality exits early
 		// (latent with return-typed incomplete tagged-union matches).
 		run_phase_finalize();
 		commit_or_remove_declaration(false);

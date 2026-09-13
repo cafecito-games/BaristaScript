@@ -179,7 +179,7 @@ TEST_SUITE("provider_analyzer") {
 			BSAnalyzer analyzer(&consumer);
 			CHECK(analyzer.analyze() != OK);
 			const bool property = source.contains("p.count");
-			diagnostic(consumer, property ? "Cannot assign a value of type \"int\" to a variable of type \"String\"." : "Cannot assign a value of type \"String\" to a variable of type \"int\".", 2, property ? 17 : 14, 2, property ? 24 : 22);
+			diagnostic(consumer, property ? "Cannot assign a value of type int to variable \"x\" with specified type String." : "Cannot assign a value of type String to variable \"x\" with specified type int.", 2, property ? 17 : 14, 2, property ? 24 : 22);
 		}
 	}
 	TEST_CASE("missing_property_preserves_default_unsafe_and_strict_error_modes") {
@@ -679,7 +679,7 @@ TEST_SUITE("provider_analyzer") {
 						} else {
 							CHECK(result != OK);
 							const String type_name = kind == 0 ? "Head" : "repair_x2.Head";
-							const String message = String("Cannot assign a value of type \"") + type_name + String("?\" to a variable of type \"") + type_name + String("\".");
+							const String message = vformat(R"(Cannot assign nullable value of type "%s?" to variable "target"; expected non-nullable "%s".)", type_name, type_name);
 							// Identifier `value` follows the literal prefix `var target: <name> = `.
 							diagnostic(consumer, message, 3, name.length() + 16, 3, name.length() + 21);
 						}

@@ -129,7 +129,11 @@ target_sources(${LIBNAME}
     src/bs_build_info.cpp
     src/bs_build_info.h
     src/bs_platform.h
+    src/bs_platform_names.h
+    src/bs_platform_serialization.h
     src/bs_platform_seam.cpp
+    src/bs_platform_variant.cpp
+    src/bs_platform_variant.h
     src/bs_warning.cpp
     src/bs_warning.h
     src/bs_platform_shims.cpp

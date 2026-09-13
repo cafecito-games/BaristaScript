@@ -168,7 +168,9 @@ def result_record(process, case, corpus, expected):
             'actual_block': actual, 'frontend_result': result, 'passed': terminal == 'passed'}
 
 
-def validate_staging(root, inventory):
+def validate_staging(root, inventory, *, project_root=None):
+    from import_analyzer_corpus import shared_source_path
+    project_root = project_root or ROOT / "project"
     if (len({r['identity'] for r in inventory['sources']}) != len(inventory['sources'])
             or len({r['imported_path'] for r in inventory['sources']}) != len(inventory['sources'])
             or sum(r['role'] == 'case' for r in inventory['sources']) != inventory['counts']['cases']):
@@ -178,7 +180,7 @@ def validate_staging(root, inventory):
     entries = tree_entries(root)
     sources = {path for path, kind in entries.items() if kind == 'file' and path.endswith('.barista')}
     helpers = {path for path in sources if path.endswith('.notest.barista')}
-    helper_records = {r['imported_path'] for r in inventory['sources'] if r['role'] in ('helper', 'support_helper')}
+    helper_records = {r['imported_path'] for r in inventory['sources'] if r['role'] in ('helper', 'support_helper') and 'root' not in r}
     if len(records) != inventory['ledger']['total'] or helpers != helper_records or sources - helpers != set(records):
         raise ValueError('staging inventory/population disagreement')
     complaint = validate_triage_ledger('analyzer staging', inventory['ledger'], disk_cases=set(records), disk_helpers=helpers)
@@ -187,6 +189,9 @@ def validate_staging(root, inventory):
     validate_stages(read_json(root / 'case_stages.json'), set(records), helpers, inventory['foundry_revision'])
     for record in inventory['sources']:
         if record.get('disposition') in ('excluded', 'deferred'):
+            continue
+        shared = shared_source_path(record, project_root)
+        if shared is not None:
             continue
         path = root / record['imported_path']
         if digest(path) != record['imported_sha256']:
@@ -252,7 +257,7 @@ def main(argv=None):
         with staged_project({'library': str(library)}) as project:
             prepare_triage_project(project)
             copied = project / 'bin' / ('native' + library.suffix)
-            validate_staging(project / args.corpus.removeprefix('res://'), inventory)
+            validate_staging(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
             for name in ('corpus_runner.gd', 'corpus_harness.gd'):
                 require_equal('staged execution script ' + name, report['execution_files']['project/tests/' + name],
                               digest(project / 'tests' / name))

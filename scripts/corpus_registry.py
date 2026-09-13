@@ -149,11 +149,19 @@ def load_registry(root: Path = ROOT) -> dict:
         normalized_path(path, "modules/foundry_script/tests/scripts/")
         if not path.endswith(".notest.fs") or any(path == record["source"] or path.startswith(record["source"] + "/") for record in corpora.values()):
             raise ValueError(f"invalid auxiliary helper source: {path}")
+    analyzer = registry.get("analyzer_sources", [])
+    if (not isinstance(analyzer, list) or not all(isinstance(path, str) for path in analyzer)
+            or analyzer != sorted(set(analyzer))):
+        raise ValueError("analyzer sources must be sorted unique paths")
+    for path in analyzer:
+        normalized_path(path, "modules/foundry_script/")
+        if not path.endswith((".cpp", ".h")) or "/" in path[len("modules/foundry_script/"):]:
+            raise ValueError(f"invalid analyzer source: {path}")
     return registry
 
 
 def source_paths(registry: dict) -> list[str]:
-    return sorted([record["source"] for record in registry["corpora"].values()] + registry.get("auxiliary_sources", []))
+    return sorted([record["source"] for record in registry["corpora"].values()] + registry.get("auxiliary_sources", []) + registry.get("analyzer_sources", []))
 
 
 def sparse_patterns(registry: dict) -> list[str]:
@@ -191,6 +199,8 @@ def validate_registration(root: Path = ROOT, *, baseline_path: Path | None = Non
         corpus = corpora[name]
         if not isinstance(corpus, dict):
             raise ValueError(f"corpus {name!r}: baseline must be an object")
+        if "analyzer_deferred" in corpus:
+            raise ValueError("obsolete analyzer_deferred field is forbidden")
         imported = corpus.get("imported", True)  # compatibility with the initial parser ledger
         if type(imported) is not bool or imported != (record["state"] == "active"):
             raise ValueError(f"corpus {name!r}: imported boolean must agree with registry state")
@@ -278,6 +288,7 @@ def verify_checkout(foundry: Path, registry: dict, requested: str) -> None:
         raise ValueError(f"{foundry}: HEAD {head} is not the pinned revision {revision}")
     inputs = [(name, record, False) for name, record in sorted(registry["corpora"].items())]
     inputs += [("support_helper", {"source": path}, True) for path in registry.get("auxiliary_sources", [])]
+    inputs += [("analyzer_source", {"source": path}, True) for path in registry.get("analyzer_sources", [])]
     for name, record, single_file in inputs:
         source = local_path(foundry, record["source"])
         if single_file:
