@@ -557,6 +557,7 @@ private:
 	// Parser-owned nodes rejected by subscript/contextual analysis; never retry their carriers.
 	HashSet<const BSParser::ExpressionNode *> failed_constant_expressions;
 	HashSet<const BSParser::ExpressionNode *> diagnosed_constant_literal_failures;
+	HashSet<const BSParser::FunctionNode *> diagnosed_function_member_cycles;
 	/** Foundry transparent type-alias expansion cache / failure and cycle guards. */
 	HashMap<const BSParser::TypeAliasNode *, BSParser::DataType> resolved_type_aliases;
 	HashSet<const BSParser::TypeAliasNode *> failed_type_aliases;

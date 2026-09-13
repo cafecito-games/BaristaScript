@@ -29,7 +29,8 @@
     "namespace_annotation_analyzer",
     "declaration_context_analyzer",
     "enum_call_dispatch_analyzer",
-    "call_admission_analyzer"
+    "call_admission_analyzer",
+    "declaration_cycle_analyzer"
   ],
   "editor_import": [
     "global_class"

@@ -1275,6 +1275,12 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 	};
 
 	if (member.get_datatype().is_resolving()) {
+		if (member.type == BSParser::ClassNode::Member::FUNCTION && member.function != nullptr) {
+			if (diagnosed_function_member_cycles.has(member.function)) {
+				return;
+			}
+			diagnosed_function_member_cycles.insert(member.function);
+		}
 		push_error(vformat(R"(Could not resolve member "%s": Cyclic reference.)", member.get_name()), p_source);
 		return;
 	}
@@ -1426,10 +1432,13 @@ void BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			}
 
 			if (member.constant->initializer != nullptr) {
+				const int initializer_error_count = parser->get_errors().size();
 				reduce_expression(member.constant->initializer);
 				qualify_contextual_enum_case_consumer(member.constant->initializer, type);
 				mark_coroutine_handle_capture(member.constant->initializer, type);
-				materialize_constant_initializer(member.constant);
+				if (parser->get_errors().size() == initializer_error_count) {
+					materialize_constant_initializer(member.constant);
+				}
 				const bool constant_type_ok = update_constant_expression_type(member.constant->initializer, type, "assign");
 				check_assignable_inference(member.constant, "constant");
 				const BSParser::DataType initializer_type = member.constant->initializer->get_datatype();

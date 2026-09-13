@@ -1034,9 +1034,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 	// Foundry resolves the class itself before nested members (`resolve_class_inheritance(..., true)`),
 	// so an outer is already set when a nested `extends Sibling` walks scope via `outer`.
 	if (p_class->base_type.is_resolving()) {
-		push_error(vformat(R"(Could not resolve class "%s": Cyclic reference.)",
-						   p_class->identifier != nullptr ? String(p_class->identifier->name) : String("<main>")),
-				p_class);
+		push_error("Cyclic inheritance.", p_class);
 		return;
 	}
 	if (p_class->base_type.is_set()) {
