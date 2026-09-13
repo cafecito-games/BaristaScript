@@ -851,11 +851,9 @@ bool BSAnalyzer::CallSiteValidationContext::callable_type_from_method(const BSPa
 			r_callable_type.has_explicit_method_signature = true;
 			return true;
 		}
-		if (!receiver_type.is_meta_type || receiver_type.builtin_type != Variant::DICTIONARY)
-			return false;
-		receiver_type.kind = BSParser::DataType::BUILTIN;
-		receiver_type.builtin_type = Variant::DICTIONARY;
-		receiver_type.is_meta_type = false;
+		// Dictionary fallback belongs to direct enum-metatype calls only. Pinned
+		// member lookup never publishes a Dictionary method Callable from an enum.
+		return false;
 	}
 	if (receiver_type.kind == BSParser::DataType::TYPE_PARAMETER &&
 			receiver_type.type_parameter_name == SNAME("@Self") &&

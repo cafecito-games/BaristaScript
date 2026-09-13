@@ -38,6 +38,202 @@ void check_source(const String &source, const String &expected) {
 }
 } //namespace
 TEST_SUITE("enum_call_dispatch_analyzer") {
+	TEST_CASE("repair_enum_expression_Self_is_not_a_class_handle_even_in_nested_lambdas") {
+		check_source("enum Status:\n\tREADY = 1\n\tfunc keys() -> Array:\n\t\treturn Self.keys()\n",
+				">> ERROR at line 4: Identifier \"Self\" not declared in the current scope.");
+		check_source("enum Status:\n\tREADY = 1\n\tfunc keys() -> Array:\n\t\tvar callback = func():\n\t\t\tvar nested = func(): return Self.keys()\n\t\t\treturn nested.call()\n\t\treturn callback.call()\n",
+				">> ERROR at line 5: Identifier \"Self\" not declared in the current scope.");
+		check_source("class Receiver:\n\tstatic func identity():\n\t\treturn Self\nenum Status:\n\tREADY = 1\n\tfunc identity(value: Self = READY) -> Self:\n\t\tvar callback = func() -> Self: return self\n\t\treturn callback.call()\n", "BS_TEST_OK");
+	}
+	TEST_CASE("repair_early_enum_calls_and_references_resolve_defaults_in_their_owner") {
+		for (const char *initializer : { "Status.pick()", "Status.pick" }) {
+			check_source(String("static var selected = ") + initializer + "\nenum Status:\n\tREADY = 1\n\tstatic func pick(value: Self = READY) -> Self:\n\t\treturn value\n", "BS_TEST_OK");
+		}
+		check_source(R"BS(static var selected = Status.pick()
+enum Status:
+	READY = 1
+	static func pick(value: Other = Other.READY, own: Self = READY) -> Self:
+		return own
+enum Other:
+	READY = 2
+	static func pick(value: Self = READY) -> Self:
+		return value
+static var later = Other.pick()
+)BS",
+				"BS_TEST_OK");
+		check_source("static var selected = Status.keys()\nenum Status:\n\tREADY = 1\n\tstatic func keys() -> Array:\n\t\treturn []\n",
+				">> ERROR at line 4: Static enum function \"keys\" conflicts with Dictionary method \"keys()\".");
+		check_source("static var selected = Status.READY()\nenum Status:\n\tREADY = 1\n\tstatic func READY() -> int:\n\t\treturn 1\n",
+				">> ERROR at line 4: Enum function \"READY()\" conflicts with enum value \"READY\".");
+	}
+	TEST_CASE("repair_early_enum_interface_applies_annotations_before_bodies_and_restores_owner") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState registry;
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(R"BS(static var selected = Status.pick
+enum Status:
+	READY = 1
+	@warning_ignore("unused_parameter")
+	static func pick(value: Self = READY) -> Self:
+		return READY
+enum Other:
+	READY = 2
+	static func pick(value: Self = READY) -> Self:
+		return value
+static var later = Other.pick
+)BS",
+								storage.path("enum_early_annotation.barista"), false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.resolve_interface() == OK);
+		const auto *status = parser.get_tree()->get_member("Status").m_enum;
+		const auto *other = parser.get_tree()->get_member("Other").m_enum;
+		BS_TEST_REQUIRE(status && other && status->functions.size() == 1 && other->functions.size() == 1);
+		const auto *function = status->functions[0];
+		BS_TEST_REQUIRE(function->annotations.size() == 1 && function->parameters.size() == 1);
+		CHECK(function->annotations.front()->get()->is_resolved);
+		CHECK(function->annotations.front()->get()->is_applied);
+		CHECK_FALSE(function->resolved_body);
+		CHECK(function->parameters[0]->initializer->reduced_value == Variant(1));
+		CHECK(other->functions[0]->parameters[0]->initializer->reduced_value == Variant(2));
+		CHECK(other->functions[0]->get_datatype().enum_type == StringName("Other"));
+	}
+	TEST_CASE("repair_enum_reference_misses_stop_at_enum_owner_and_keep_attribute_spans") {
+		for (const char *attribute : { "outer_value", "changed" }) {
+			for (bool nested : { false, true }) {
+				StorageFixture storage;
+				BSConformanceRegistry::ScopedCorpusState registry;
+				TestParser parser;
+				const String prefix = "var outer_value: int = 1\nsignal changed\nenum Status:\n\tREADY = 1\n\tfunc leak():\n";
+				const String body = nested ? String("\t\tvar callback = func():\n\t\t\tvar nested = func(): return self.") + attribute + "\n\t\t\treturn nested.call()\n\t\treturn callback.call()\n" : String("\t\treturn self.") + attribute + "\n";
+				BS_TEST_REQUIRE(parser.parse(prefix + body, storage.path("enum_reference_miss.barista"), false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK(analyzer.analyze() != OK);
+				CHECK(parser.get_errors().size() == 1);
+				if (parser.get_errors().size() != 1)
+					continue;
+				const auto &error = parser.get_errors().front()->get();
+				CHECK(error.message == "Cannot get property from enum value.");
+				int matches = 0;
+				for (auto *node = parser.get_allocated_nodes(); node; node = node->next) {
+					if (node->type != BSParser::Node::SUBSCRIPT)
+						continue;
+					const auto *subscript = static_cast<const BSParser::SubscriptNode *>(node);
+					if (!subscript->attribute || subscript->attribute->name != StringName(attribute))
+						continue;
+					CHECK(subscript->get_datatype().is_variant());
+					CHECK_FALSE(subscript->get_datatype().has_method_signature);
+					CHECK(error.line == subscript->attribute->start_line);
+					CHECK(error.column == subscript->attribute->start_column);
+					CHECK(error.end_line == subscript->attribute->end_line);
+					CHECK(error.end_column == subscript->attribute->end_column);
+					++matches;
+				}
+				CHECK(matches == 1);
+			}
+		}
+		const String declarations = "enum Status:\n\tREADY = 1\n\tfunc label() -> String:\n\t\treturn \"ready\"\n\tstatic func parse() -> Self:\n\t\treturn READY\nenum Other:\n\tREADY = 1\nfunc test():\n\tvar method = ";
+		check_source(declarations + String("Other.READY.label\n"), ">> ERROR at line 10: Cannot get property from enum value.");
+		check_source(declarations + String("Status.READY.parse\n"), ">> ERROR at line 10: Cannot get property from enum value.");
+		// Pinned DataType::to_string retains the declaring filename for local enums.
+		check_source(declarations + String("Status.label\n"), ">> ERROR at line 10: Cannot find member \"label\" in base \"enum_call_dispatch.barista.Status\".");
+	}
+	TEST_CASE("repair_enum_early_signatures_keep_defaults_rest_async_noreturn_and_distinct_owners") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState registry;
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(R"BS(static var first = Status.pick
+static var second = Other.pick
+static var task = Status.work
+static var stop = Status.abort
+enum Status:
+	READY = 1
+	static func pick(value: Self = READY, ...rest: Array[Self]) -> Self:
+		return value
+	static async func work(value: Self) -> Self:
+		return value
+	@noreturn
+	static func abort() -> void:
+		push_fatal("abort")
+enum Other:
+	READY = 2
+	static func pick(value: Self = READY) -> Self:
+		return value
+)BS",
+								storage.path("enum_callable_metadata.barista"), false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.resolve_interface() == OK);
+		for (const auto &error : parser.get_errors())
+			MESSAGE(std::string(error.message.utf8().get_data()));
+		const auto first = parser.get_tree()->get_member("first").variable->initializer->get_datatype();
+		const auto second = parser.get_tree()->get_member("second").variable->initializer->get_datatype();
+		BS_TEST_REQUIRE(first.has_explicit_method_signature && second.has_explicit_method_signature);
+		CHECK(first.method_info.default_arguments.size() == 1);
+		CHECK(first.method_info.default_arguments[0] == Variant(1));
+		CHECK(second.method_info.default_arguments[0] == Variant(2));
+		BS_TEST_REQUIRE(first.has_method_rest_parameter_type() && first.method_return_type.size() == 1 && second.method_return_type.size() == 1);
+		CHECK(first.get_method_rest_parameter_type().get_container_element_type(0).enum_type == StringName("Status"));
+		CHECK(first.method_return_type[0].enum_type == StringName("Status"));
+		CHECK(second.method_return_type[0].enum_type == StringName("Other"));
+		CHECK(parser.get_tree()->get_member("task").variable->initializer->get_datatype().signature_is_async);
+		const auto *stop = static_cast<const BSParser::SubscriptNode *>(parser.get_tree()->get_member("stop").variable->initializer);
+		BS_TEST_REQUIRE(stop->attribute->function_source);
+		CHECK(stop->attribute->function_source->is_noreturn);
+		CHECK_FALSE(stop->attribute->function_source->resolved_body);
+	}
+	TEST_CASE("repair_cross_enum_signature_reentry_and_error_restoration_do_not_leak_scope") {
+		check_source(R"BS(static var selected = Status.pick
+enum Status:
+	READY = 1
+	static func pick(callback: Callable = Other.pick, own: Self = READY) -> Self:
+		return own
+	static func helper(own: Self = READY) -> Self:
+		return own
+enum Other:
+	READY = 2
+	static func pick(callback: Callable = Status.helper, own: Self = READY) -> Self:
+		return own
+)BS",
+				"BS_TEST_OK");
+		check_source(R"BS(static var selected = Status.keys()
+enum Status:
+	READY = 1
+	static func keys() -> Array:
+		return []
+enum Other:
+	READY = 2
+	static func pick(own: Self = READY) -> Self:
+		return own
+static var later = Other.pick()
+)BS",
+				">> ERROR at line 4: Static enum function \"keys\" conflicts with Dictionary method \"keys()\".");
+	}
+	TEST_CASE("repair_enum_Dictionary_method_references_do_not_escape_direct_call_admission") {
+		for (const char *method : { "clear", "erase", "merge", "keys", "duplicate" }) {
+			check_source(String("enum Status:\n\tREADY = 1\nfunc test():\n\tvar method = Status.") + method + "\n\tmethod.call()\n",
+					String(">> ERROR at line 4: Cannot find member \"") + method + "\" in base \"enum_call_dispatch.barista.Status\".");
+		}
+		for (const char *method : { "clear", "erase", "merge" }) {
+			const String args = String(method) == "clear" ? "" : String(method) == "erase" ? "\"READY\""
+																						   : "{}";
+			check_source(String("enum Status:\n\tREADY = 1\nfunc test():\n\tStatus.") + method + "(" + args + ")\n",
+					String(">> ERROR at line 4: Cannot call non-const Dictionary function \"") + method + "()\" on enum \"Status\".");
+		}
+		check_source(R"BS(enum Status:
+	READY = 1
+	func keys() -> String:
+		return "ready"
+func test():
+	var keys: Array = Status.keys()
+	var label: String = Status.READY.keys()
+	var duplicate = Status.duplicate()
+	duplicate.clear()
+	duplicate.erase("READY")
+	duplicate.merge({})
+	var clear = duplicate.clear
+	clear.call()
+)BS",
+				"BS_TEST_OK");
+	}
 	TEST_CASE("enum_outer_signal_access_in_lambda_is_rejected_without_reading_other_source_union_arms") {
 		check_source(R"BS(signal changed
 enum Status:

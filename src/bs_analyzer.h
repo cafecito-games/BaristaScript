@@ -534,6 +534,10 @@ private:
 	/** Active plain-enum initializer scope; lets later values refer to earlier members bare. */
 	BSParser::EnumNode *current_enum = nullptr;
 	BSParser::ClassNode *current_enum_owner = nullptr;
+	// Enum interface admission is declaration-owned, not inferred from a function's
+	// resolved_signature flag (early initializers can request a signature first).
+	HashSet<const BSParser::EnumNode *> resolving_enum_interfaces;
+	HashSet<const BSParser::EnumNode *> resolved_enum_interfaces;
 	/** Foundry `current_lambda` (@ c9d5e35): set while reducing a lambda body for capture marking. */
 	BSParser::LambdaNode *current_lambda = nullptr;
 	/** Foundry pending_body_resolution_lambdas (@ c9d5e35): flush after each suite statement. */

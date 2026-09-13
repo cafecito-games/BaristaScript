@@ -2942,15 +2942,7 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	}
 	// Foundry reduce_identifier Self class-handle @ c9d5e35: expression-position `Self` is the
 	// receiver-relative `@Self` meta handle (needed for `Self.Message.…` SelfFieldLeg selection).
-	if (p_identifier->name == SNAME("Self") && current_class != nullptr && current_function != nullptr) {
-		const auto enum_self = enum_self_type();
-		if (enum_self.is_set()) {
-			auto meta = get_enclosing_enum_function()->owner_enum->get_datatype();
-			p_identifier->set_datatype(meta);
-			p_identifier->is_constant = true;
-			p_identifier->reduced_value = get_enclosing_enum_function()->owner_enum->dictionary;
-			return;
-		}
+	if (p_identifier->name == SNAME("Self") && current_class != nullptr && current_function != nullptr && !enum_self_type().is_set()) {
 		BSParser::DataType self_handle;
 		self_handle.kind = BSParser::DataType::TYPE_PARAMETER;
 		self_handle.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
@@ -4602,6 +4594,23 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript) {
 				}
 				return;
 			}
+			// Foundry reduce_identifier_from_base / reduce_subscript @ c9d5e35:
+			// an enum owns member lookup, including misses and wrong receiver forms.
+			// Never let `self.member` bind to the containing class or become gradual.
+			if (tuple_base_type.is_meta_type)
+				push_error(vformat(R"(Cannot find member "%s" in base "%s".)", name, type_from_metatype(tuple_base_type).to_string()), p_subscript->attribute);
+			else if (tuple_base_type.is_tagged_union) {
+				bool is_payload_field = false;
+				for (const auto &payload : tuple_base_type.enum_case_payloads)
+					is_payload_field = is_payload_field || payload.value.field_names.has(name);
+				if (is_payload_field)
+					push_error(vformat(R"*(Cannot access payload field "%s" on tagged union "%s" directly; it belongs to a single case, so match on the case first.)*", name, tuple_base_type.enum_type), p_subscript->attribute);
+				else
+					push_error(vformat(R"*(Cannot get property "%s" from a value of tagged union "%s".)*", name, tuple_base_type.enum_type), p_subscript->attribute);
+			} else
+				push_error("Cannot get property from enum value.", p_subscript->attribute);
+			p_subscript->set_datatype(BSParser::DataType::get_variant_type());
+			return;
 		}
 		// Bind `self.<member>` and same-class `ClassName.<static>` so flow finality can see
 		// MEMBER_VARIABLE / STATIC_VARIABLE / INHERITED_VARIABLE on the attribute
@@ -9351,10 +9360,13 @@ void BSAnalyzer::analyze_suite(BSParser::SuiteNode *p_suite) {
 }
 
 void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {
-	if (p_enum == nullptr || p_owner == nullptr) {
+	if (p_enum == nullptr || p_owner == nullptr || resolved_enum_interfaces.has(p_enum) || resolving_enum_interfaces.has(p_enum)) {
 		return;
 	}
-	// Foundry resolve_enum_interface @ c9d5e35: signatures precede body analysis.
+	// Foundry resolve_enum_interface @ c9d5e35: one owner-scoped lifecycle for
+	// normal traversal and early lookup. Finish declaration checks before defaults
+	// can re-enter this enum through another function's signature.
+	resolving_enum_interfaces.insert(p_enum);
 	BSParser::ClassNode *previous_class = current_class;
 	BSParser::FunctionNode *previous_function = current_function;
 	BSParser::EnumNode *previous_enum = current_enum;
@@ -9363,9 +9375,20 @@ void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BS
 	current_function = nullptr;
 	current_enum = p_enum;
 	current_enum_owner = p_owner;
+	Finally restore_scope([&]() {
+		current_enum_owner = previous_enum_owner;
+		current_enum = previous_enum;
+		current_function = previous_function;
+		current_class = previous_class;
+		resolving_enum_interfaces.erase(p_enum);
+		resolved_enum_interfaces.insert(p_enum);
+	});
+	const StringName enum_name = p_enum->identifier ? p_enum->identifier->name : StringName("<anonymous enum>");
+	const auto shell = p_owner->is_enum_file ? make_standalone_global_enum_type(p_owner, parser->script_path) : make_class_enum_type(enum_name, p_owner, parser->script_path, true);
+	resolve_enum_values(p_enum, shell, p_owner);
 	HashSet<StringName> function_names;
 	for (BSParser::FunctionNode *function : p_enum->functions) {
-		if (function && function->identifier && !function->resolved_signature) {
+		if (function && function->identifier) {
 			const auto name = function->identifier->name;
 			if (p_enum->get_datatype().enum_values.has(name))
 				push_error(vformat(R"*(Enum function "%s()" conflicts with enum value "%s".)*", name, name), function->identifier);
@@ -9376,21 +9399,10 @@ void BSAnalyzer::analyze_enum_function_signatures(BSParser::EnumNode *p_enum, BS
 		}
 		if (function && function->identifier)
 			function_names.insert(function->identifier->name);
-		if (function == nullptr || function->resolved_signature) {
-			continue;
-		}
-		for (BSParser::AnnotationNode *annotation : function->annotations) {
-			if (annotation != nullptr) {
-				resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
-				annotation->apply(parser, function, p_owner);
-			}
-		}
+	}
+	for (BSParser::FunctionNode *function : p_enum->functions) {
 		resolve_function_signature_in_class(function, p_owner);
 	}
-	current_enum_owner = previous_enum_owner;
-	current_enum = previous_enum;
-	current_function = previous_function;
-	current_class = previous_class;
 }
 
 void BSAnalyzer::analyze_enum_function_bodies(BSParser::EnumNode *p_enum, BSParser::ClassNode *p_owner) {

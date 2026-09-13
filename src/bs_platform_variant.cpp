@@ -37,10 +37,43 @@ bool BSVariantOperators::construct_container(Variant::Type p_type, const Variant
 	GDExtensionCallError error{};
 	gdextension_interface::variant_construct((GDExtensionVariantType)p_type,
 			(GDExtensionUninitializedVariantPtr)storage, arguments, p_count, &error);
-	if (error.error == GDEXTENSION_CALL_OK)
-		r_value = Variant((GDExtensionConstVariantPtr)storage);
+	if (error.error != GDEXTENSION_CALL_OK) {
+		gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
+		return false;
+	}
+	const Variant result((GDExtensionConstVariantPtr)storage);
 	gdextension_interface::variant_destroy((GDExtensionVariantPtr)storage);
-	return error.error == GDEXTENSION_CALL_OK;
+	const auto script_slot = [](const Variant &p_slot) {
+		// Godot exposes absent script metadata as an OBJECT-null Variant, while
+		// source `null` arguments arrive as NIL; their Variant types differ.
+		return p_slot.get_type() == Variant::NIL ? Variant(static_cast<Object *>(nullptr)) : p_slot;
+	};
+	// Typed constructors call set_typed/assign, whose failures do not propagate
+	// through CallError. Assignment is atomic: failed conversion leaves the fresh
+	// destination empty. Check metadata too, since failed set_typed can leave an
+	// untyped destination. Do not publish either failed result as a constant.
+	if (p_count > 1 && p_type == Variant::ARRAY) {
+		const Array value = result;
+		if (value.get_typed_builtin() != int64_t(p_arguments[1]) ||
+				value.get_typed_class_name() != StringName(p_arguments[2]) ||
+				value.get_typed_script() != script_slot(p_arguments[3]) ||
+				value.size() != Array(p_arguments[0]).size())
+			return false;
+	} else if (p_count > 1) {
+		const Dictionary value = result;
+		if (value.get_typed_key_builtin() != int64_t(p_arguments[1]) ||
+				value.get_typed_key_class_name() != StringName(p_arguments[2]) ||
+				value.get_typed_key_script() != script_slot(p_arguments[3]) ||
+				value.get_typed_value_builtin() != int64_t(p_arguments[4]) ||
+				value.get_typed_value_class_name() != StringName(p_arguments[5]) ||
+				value.get_typed_value_script() != script_slot(p_arguments[6]) ||
+				(value.is_empty() && !Dictionary(p_arguments[0]).is_empty()))
+			return false;
+		// Successful key conversions may collapse multiple keys; size equality is
+		// not a valid Dictionary postcondition.
+	}
+	r_value = result;
+	return true;
 }
 
 bool BSVariantOperators::has_validated_evaluator(Variant::Operator p_op, Variant::Type p_a, Variant::Type p_b) {

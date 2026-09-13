@@ -463,6 +463,36 @@ void BSAnalyzer::resolve_function_signature_in_class(BSParser::FunctionNode *p_f
 	if (p_function == nullptr) {
 		return;
 	}
+	if (p_function->owner_enum && !resolving_enum_interfaces.has(p_function->owner_enum)) {
+		analyze_enum_function_signatures(p_function->owner_enum, p_class);
+		return;
+	}
+	// Reentrant enum signature requests retain the selected declaration's scope,
+	// even when reached from another enum's default or an early class initializer.
+	const auto previous_enum = current_enum;
+	const auto previous_enum_owner = current_enum_owner;
+	Finally restore_enum([&]() {
+		current_enum = previous_enum;
+		current_enum_owner = previous_enum_owner;
+	});
+	if (p_function->owner_enum) {
+		current_enum = p_function->owner_enum;
+		current_enum_owner = p_class;
+		const auto annotation_class = current_class;
+		const auto annotation_function = current_function;
+		current_class = p_class;
+		current_function = nullptr;
+		Finally restore_annotation_scope([&]() {
+			current_class = annotation_class;
+			current_function = annotation_function;
+		});
+		for (BSParser::AnnotationNode *annotation : p_function->annotations) {
+			if (annotation) {
+				resolve_annotation(annotation, BSParser::AnnotationDeclarationNode::TARGET_METHOD);
+				annotation->apply(parser, p_function, p_class);
+			}
+		}
+	}
 	const StringName function_name = p_function->identifier != nullptr ? p_function->identifier->name : StringName();
 	if (p_function->get_datatype().is_resolving()) {
 		push_error(vformat(R"(Could not resolve function "%s": Cyclic reference.)", function_name), p_function);
