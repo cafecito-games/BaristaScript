@@ -103,6 +103,7 @@ public:
 		BEFORE_WRITE,
 		AFTER_WRITE_BEFORE_RENAME,
 		TRUNCATE_TEMP_AFTER_WRITE,
+		REMOVE_TEMP_BEFORE_PROMOTION,
 	};
 
 	static String get_default_store_path();

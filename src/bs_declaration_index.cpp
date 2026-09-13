@@ -153,8 +153,13 @@ bool is_canonical_res_path(const String &p_path) {
 }
 
 void discard_temp(const String &p_temp_path) {
-	if (FileAccess::file_exists(p_temp_path)) {
-		DirAccess::remove_absolute(p_temp_path);
+	String path = p_temp_path;
+#if defined(UNIX_ENABLED)
+	// Match FileAccess and bs_replace_file: a backslash is a separator alias on POSIX.
+	path = path.replace("\\", "/");
+#endif
+	if (FileAccess::file_exists(path)) {
+		DirAccess::remove_absolute(path);
 	}
 }
 
@@ -823,13 +828,18 @@ Error BSDeclarationIndex::flush(const String &p_store_path, WriteFault p_fault) 
 		ERR_PRINT("declaration index flush failed between write and rename (simulated)");
 		return Error::ERR_FILE_CANT_WRITE;
 	}
+	if (p_fault == WriteFault::REMOVE_TEMP_BEFORE_PROMOTION) {
+		// Remove only this attempt's source, then exercise the real publication backend.
+		discard_temp(temp_path);
+	}
 #endif
 
-	const Error rename_error = DirAccess::rename_absolute(temp_path, p_store_path);
-	if (rename_error != Error::OK) {
+	// Publish with one replacement operation; never delete/truncate the destination first.
+	const Error replace_error = bs_replace_file(temp_path, p_store_path);
+	if (replace_error != Error::OK) {
 		discard_temp(temp_path);
-		ERR_PRINT("declaration index flush rename failed for '" + temp_path + "'");
-		return rename_error;
+		ERR_PRINT("declaration index flush replacement failed for '" + temp_path + "'");
+		return replace_error;
 	}
 	return Error::OK;
 }
