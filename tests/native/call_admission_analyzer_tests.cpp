@@ -231,6 +231,9 @@ func from_return():
 			{ "callable_parameter_index_call.barista", "func test(callback: Callable):\n\tcallback[0]()\n", 2, 0, BSParser::IdentifierNode::FUNCTION_PARAMETER },
 			{ "callable_local_index_call.barista", "func test(callback: Callable):\n\tvar local: Callable = callback\n\tlocal[0]()\n", 3, 1, BSParser::IdentifierNode::LOCAL_VARIABLE },
 			{ "callable_member_index_call.barista", "var callback: Callable\n\nfunc test():\n\tcallback[0]()\n", 4, 0, BSParser::IdentifierNode::MEMBER_VARIABLE },
+			{ "callable_parameter_unresolved_index_call.barista", "func test(callback: Callable):\n\tcallback[missing]()\n", 2, 0, BSParser::IdentifierNode::FUNCTION_PARAMETER },
+			{ "callable_local_unresolved_index_call.barista", "func test(callback: Callable):\n\tvar local: Callable = callback\n\tlocal[missing]()\n", 3, 1, BSParser::IdentifierNode::LOCAL_VARIABLE },
+			{ "callable_member_unresolved_index_call.barista", "var callback: Callable\n\nfunc test():\n\tcallback[missing]()\n", 4, 0, BSParser::IdentifierNode::MEMBER_VARIABLE },
 		};
 		for (const auto &entry : cases) {
 			StorageFixture storage;

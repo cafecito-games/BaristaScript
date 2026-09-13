@@ -3312,7 +3312,6 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 			}
 			if (generic_method == nullptr || generic_method->type_parameters.is_empty()) {
-				reduce_expression(indexed->index);
 				push_error(R"*(Cannot call on an expression. Use ".call()" if it's a Callable.)*", p_call);
 				BSParser::DataType unresolved;
 				unresolved.kind = BSParser::DataType::VARIANT;
