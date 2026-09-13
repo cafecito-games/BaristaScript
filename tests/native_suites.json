@@ -43,7 +43,8 @@
     "declaration_context_analyzer",
     "enum_call_dispatch_analyzer",
     "call_admission_analyzer",
-    "analyzer_resolution"
+    "analyzer_resolution",
+    "declaration_cycle_analyzer"
   ],
   "editor_import": [
     "global_class"
