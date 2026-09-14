@@ -113,6 +113,8 @@ class ReportTests(unittest.TestCase):
             shutil.copytree(ROOT / 'tests/fixtures/analyzer_import/scripts', source)
             policy = importer.default_policy()
             policy.update(counts=None, owners={}, expectation_edits={}, expectation_overrides={})
+            policy['rewritten'].pop('features/lookup_class.barista')
+            policy['source_edits'].pop('analyzer/features/lookup_class.fs')
             uri = 'res://tests/corpus_staging/analyzer'
             policy['counts'] = importer.inventory_sources(source, policy, uri)['counts']
             inventory = importer.inventory_sources(source, policy, uri)
