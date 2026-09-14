@@ -1168,6 +1168,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 	};
 
 	BSParser::DataType result;
+	int extends_index = 0;
 	if (!p_class->extends_used) {
 		result.kind = BSParser::DataType::NATIVE;
 		result.native_type = SNAME("RefCounted");
@@ -1207,7 +1208,7 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			return;
 		}
 		const StringName first = first_id->name;
-		int extends_index = 1;
+		extends_index = 1;
 		bool found = false;
 
 		if (!found) {
@@ -1339,37 +1340,38 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			p_class->base_type = BSParser::DataType();
 			return;
 		}
+	}
 
-		// Nested extends chain: `extends Outer.Inner` after the first identifier resolved to CLASS.
-		for (int index = extends_index; index < p_class->extends.size(); index++) {
-			BSParser::IdentifierNode *id = p_class->extends[index];
-			if (result.kind != BSParser::DataType::CLASS || result.class_type == nullptr) {
-				push_error(vformat(R"(Cannot get nested types for extension from non-BaristaScript type "%s".)", result.to_string()), id);
-				p_class->base_type = BSParser::DataType();
-				return;
-			}
-			if (!result.class_type->has_member(id->name)) {
-				push_error(vformat(R"(Could not find nested type "%s".)", id->name), id);
-				p_class->base_type = BSParser::DataType();
-				return;
-			}
-			const BSParser::ClassNode::Member member = result.class_type->get_member(id->name);
-			if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr) {
-				push_error(vformat(R"(Identifier "%s" is not a preloaded script or class.)", id->name), id);
-				p_class->base_type = BSParser::DataType();
-				return;
-			}
-			if (!member.m_class->base_type.is_set()) {
-				resolve_class_inheritance(member.m_class);
-			}
-			if (!member.m_class->base_type.is_set()) {
-				p_class->base_type = BSParser::DataType();
-				return;
-			}
-			result.class_type = member.m_class;
-			result.native_type = member.m_class->base_type.native_type;
-			result.script_path = parser != nullptr ? parser->script_path : String();
+	// Foundry resolves the nested tail after either a path or identifier head. Keep
+	// the provider path already carried by result so the selected ClassNode and its
+	// retained owner remain from the same parser generation.
+	for (int index = extends_index; index < p_class->extends.size(); index++) {
+		BSParser::IdentifierNode *id = p_class->extends[index];
+		if (result.kind != BSParser::DataType::CLASS || result.class_type == nullptr) {
+			push_error(vformat(R"(Cannot get nested types for extension from non-BaristaScript type "%s".)", result.to_string()), id);
+			p_class->base_type = BSParser::DataType();
+			return;
 		}
+		if (!result.class_type->has_member(id->name)) {
+			push_error(vformat(R"(Could not find nested type "%s".)", id->name), id);
+			p_class->base_type = BSParser::DataType();
+			return;
+		}
+		const BSParser::ClassNode::Member member = result.class_type->get_member(id->name);
+		if (member.type != BSParser::ClassNode::Member::CLASS || member.m_class == nullptr) {
+			push_error(vformat(R"(Identifier "%s" is not a preloaded script or class.)", id->name), id);
+			p_class->base_type = BSParser::DataType();
+			return;
+		}
+		if (!member.m_class->base_type.is_set()) {
+			resolve_class_inheritance(member.m_class);
+		}
+		if (!member.m_class->base_type.is_set()) {
+			p_class->base_type = BSParser::DataType();
+			return;
+		}
+		result.class_type = member.m_class;
+		result.native_type = member.m_class->base_type.native_type;
 	}
 
 	// Foundry surface:764-780 @ c9d5e35. Preload aliases must not turn a

@@ -263,9 +263,29 @@ TEST_SUITE("base_outer_analyzer") {
 			require_inner_base_identity(retained->get_parser()->get_tree());
 			BSParser::ClassNode *provider_inner_ab = nested(nested(retained->get_parser()->get_tree(), "InnerA"), "InnerAB");
 			BS_TEST_REQUIRE(provider_inner_ab != nullptr);
-			CHECK(retained->get_parser()->has_class(parser.get_tree()->base_type.class_type));
+			CHECK(parser.get_tree()->base_type.class_type == provider_inner_ab);
 			CHECK(provider_inner_ab->outer == nested(retained->get_parser()->get_tree(), "InnerA"));
 			public_agreement(source, consumer_path, true);
+		}
+	}
+
+	TEST_CASE("quoted_path_nested_tail_rejects_missing_and_nonclass_members") {
+		for (const bool missing : { false, true }) {
+			CAPTURE(missing);
+			StorageFixture storage;
+			const String provider_path = path("quoted_tail_provider.notest");
+			install(storage, provider_path,
+					"class Inner:\n"
+					"\tconst VALUE := 1\n");
+			const String tail = missing ? "Missing" : "Inner.VALUE";
+			const String source = "extends \"quoted_tail_provider.notest.barista\"." + tail + "\n";
+			const String consumer_path = path(missing ? "quoted_tail_missing.notest" : "quoted_tail_nonclass.notest");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, consumer_path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			CHECK(error_block(parser) == (missing ? ">> ERROR at line 1: Could not find nested type \"Missing\"." : ">> ERROR at line 1: Identifier \"VALUE\" is not a preloaded script or class."));
+			public_agreement(source, consumer_path, false);
 		}
 	}
 
