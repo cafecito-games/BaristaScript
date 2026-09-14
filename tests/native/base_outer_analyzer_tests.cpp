@@ -130,6 +130,41 @@ String exact_external_inner_base_source() {
 		   "\tsuper.test()\n";
 }
 
+String inherited_lexical_outer_provider_source() {
+	return "class A:\n"
+		   "\tconst TARGET := \"wrong\"\n"
+		   "\tclass B:\n"
+		   "\t\tconst WAITING := \"godot\"\n"
+		   "\t\tvar hidden_variable := 1\n"
+		   "\t\tsignal hidden_signal\n"
+		   "\t\tfunc hidden_function() -> int:\n"
+		   "\t\t\treturn 1\n"
+		   "\t\tenum State:\n"
+		   "\t\t\tREADY = 7\n"
+		   "\t\tenum:\n"
+		   "\t\t\tANONYMOUS = 9\n"
+		   "\t\tclass Helper:\n"
+		   "\t\t\tpass\n"
+		   "\t\ttuple Pair(value: int, text: String)\n"
+		   "\t\tclass D extends C:\n"
+		   "\t\t\tpass\n"
+		   "class C:\n"
+		   "\tconst TARGET := \"right\"\n"
+		   "class E extends A.B.D:\n"
+		   "\tpass\n";
+}
+
+String inherited_lexical_outer_consumer_source() {
+	return "const External := preload(\"inherited_lexical_outer_provider.notest.barista\")\n"
+		   "class Internal:\n"
+		   "\tconst TARGET := \"consumer wrong\"\n"
+		   "\tclass Leaf extends External.E:\n"
+		   "\t\tstatic func read_waiting():\n"
+		   "\t\t\treturn WAITING\n"
+		   "\t\tstatic func read_target():\n"
+		   "\t\t\treturn TARGET\n";
+}
+
 void public_agreement(const String &p_source, const String &p_path, bool p_valid) {
 	Ref<BaristaScriptAnalyzerProbe> probe;
 	probe.instantiate();
@@ -184,6 +219,24 @@ BSParser::ClassNode *nested(BSParser::ClassNode *p_class, const StringName &p_na
 	const auto member = p_class->get_member(p_name);
 	CHECK(bool(member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr));
 	return member.type == BSParser::ClassNode::Member::CLASS ? member.m_class : nullptr;
+}
+
+BSParser::IdentifierNode *returned_identifier(BSParser::ClassNode *p_class, const StringName &p_function) {
+	BSParser::FunctionNode *method = function(p_class, p_function);
+	CHECK(bool(method != nullptr && method->body != nullptr && method->body->statements.size() == 1));
+	if (method == nullptr || method->body == nullptr || method->body->statements.size() != 1) {
+		return nullptr;
+	}
+	CHECK(method->body->statements[0]->type == BSParser::Node::RETURN);
+	if (method->body->statements[0]->type != BSParser::Node::RETURN) {
+		return nullptr;
+	}
+	auto *return_node = static_cast<BSParser::ReturnNode *>(method->body->statements[0]);
+	CHECK(bool(return_node->return_value != nullptr && return_node->return_value->type == BSParser::Node::IDENTIFIER));
+	if (return_node->return_value == nullptr || return_node->return_value->type != BSParser::Node::IDENTIFIER) {
+		return nullptr;
+	}
+	return static_cast<BSParser::IdentifierNode *>(return_node->return_value);
 }
 
 void analyze_exact_graph(StorageFixture &p_storage, const String &p_stem) {
@@ -266,6 +319,128 @@ TEST_SUITE("base_outer_analyzer") {
 			CHECK(parser.get_tree()->base_type.class_type == provider_inner_ab);
 			CHECK(provider_inner_ab->outer == nested(retained->get_parser()->get_tree(), "InnerA"));
 			public_agreement(source, consumer_path, true);
+		}
+	}
+
+	TEST_CASE("external_inherited_base_reaches_its_lexical_outer_constant_cold_and_warm") {
+		for (const bool warm : { false, true }) {
+			CAPTURE(warm);
+			StorageFixture storage;
+			const String provider_path = path("inherited_lexical_outer_provider.notest");
+			install(storage, provider_path, inherited_lexical_outer_provider_source());
+			Ref<BSParserRef> warmed;
+			if (warm) {
+				Error error = OK;
+				warmed = BSCache::get_parser(provider_path, BSParserRef::FULLY_SOLVED, error);
+				BS_TEST_REQUIRE(warmed.is_valid() && error == OK);
+			}
+
+			Ref<BSParserRef> first_retained;
+			for (int repeat = 0; repeat < 2; repeat++) {
+				CAPTURE(repeat);
+				const String consumer_path = path(vformat("inherited_lexical_outer_%s_%d.notest", warm ? "warm" : "cold", repeat));
+				const String source = inherited_lexical_outer_consumer_source();
+				BSParser parser;
+				BS_TEST_REQUIRE(parser.parse(source, consumer_path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK(analyzer.analyze() == OK);
+				MESSAGE(std::string(error_block(parser).utf8().get_data()));
+				no_errors(parser);
+
+				const Ref<BSParserRef> retained = dependency(parser, provider_path);
+				BS_TEST_REQUIRE(retained.is_valid());
+				if (warm) {
+					CHECK(retained == warmed);
+				}
+				if (first_retained.is_valid()) {
+					CHECK(retained == first_retained);
+				} else {
+					first_retained = retained;
+				}
+
+				BSParser::ClassNode *provider = retained->get_parser()->get_tree();
+				BSParser::ClassNode *provider_a = nested(provider, "A");
+				BSParser::ClassNode *provider_b = nested(provider_a, "B");
+				BSParser::ClassNode *provider_c = nested(provider, "C");
+				BSParser::ClassNode *consumer_leaf = nested(nested(parser.get_tree(), "Internal"), "Leaf");
+				BS_TEST_REQUIRE(provider_b != nullptr && provider_c != nullptr && consumer_leaf != nullptr);
+
+				BSParser::IdentifierNode *waiting = returned_identifier(consumer_leaf, "read_waiting");
+				BS_TEST_REQUIRE(waiting != nullptr);
+				CHECK(waiting->source == BSParser::IdentifierNode::MEMBER_CONSTANT);
+				CHECK(waiting->constant_source == provider_b->get_member("WAITING").constant);
+				CHECK(waiting->get_datatype().builtin_type == Variant::STRING);
+				CHECK(waiting->is_constant);
+				CHECK(waiting->reduced_value == Variant("godot"));
+
+				BSParser::IdentifierNode *target = returned_identifier(consumer_leaf, "read_target");
+				BS_TEST_REQUIRE(target != nullptr);
+				CHECK(target->source == BSParser::IdentifierNode::MEMBER_CONSTANT);
+				CHECK(target->constant_source == provider_c->get_member("TARGET").constant);
+				CHECK(target->reduced_value == Variant("right"));
+				public_agreement(source, consumer_path, true);
+			}
+		}
+	}
+
+	TEST_CASE("inherited_lexical_outer_exposes_only_constant_type_surfaces") {
+		struct Surface {
+			const char *name;
+			BSParser::IdentifierNode::Source source;
+		};
+		for (const Surface &surface : {
+					 Surface{ "State", BSParser::IdentifierNode::UNDEFINED_SOURCE },
+					 Surface{ "ANONYMOUS", BSParser::IdentifierNode::MEMBER_CONSTANT },
+					 Surface{ "Helper", BSParser::IdentifierNode::MEMBER_CLASS },
+					 Surface{ "Pair", BSParser::IdentifierNode::MEMBER_CLASS },
+			 }) {
+			CAPTURE(surface.name);
+			StorageFixture storage;
+			const String provider_path = path("inherited_lexical_outer_provider.notest");
+			install(storage, provider_path, inherited_lexical_outer_provider_source());
+			const String source = "const External := preload(\"inherited_lexical_outer_provider.notest.barista\")\n"
+								  "class Internal:\n"
+								  "\tclass Leaf extends External.E:\n"
+								  "\t\tstatic func read():\n"
+								  "\t\t\treturn " +
+					String(surface.name) + "\n";
+			BSParser parser;
+			const String consumer_path = path("inherited_lexical_outer_surface_" + String(surface.name) + ".notest");
+			BS_TEST_REQUIRE(parser.parse(source, consumer_path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			no_errors(parser);
+			BSParser::ClassNode *leaf = nested(nested(parser.get_tree(), "Internal"), "Leaf");
+			BSParser::IdentifierNode *value = returned_identifier(leaf, "read");
+			BS_TEST_REQUIRE(value != nullptr);
+			if (StringName(surface.name) == StringName("State")) {
+				CHECK(value->get_datatype().kind == BSParser::DataType::ENUM);
+			} else {
+				CHECK(value->source == surface.source);
+			}
+			public_agreement(source, consumer_path, true);
+		}
+	}
+
+	TEST_CASE("inherited_lexical_outer_does_not_expose_instance_surfaces") {
+		for (const StringName &name : { StringName("hidden_variable"), StringName("hidden_function"), StringName("hidden_signal") }) {
+			CAPTURE(name);
+			StorageFixture storage;
+			const String provider_path = path("inherited_lexical_outer_provider.notest");
+			install(storage, provider_path, inherited_lexical_outer_provider_source());
+			const String source = "const External := preload(\"inherited_lexical_outer_provider.notest.barista\")\n"
+								  "class Internal:\n"
+								  "\tclass Leaf extends External.E:\n"
+								  "\t\tstatic func read():\n"
+								  "\t\t\treturn " +
+					String(name) + (name == StringName("hidden_function") ? "()\n" : "\n");
+			BSParser parser;
+			const String consumer_path = path("inherited_lexical_outer_hidden_" + String(name) + ".notest");
+			BS_TEST_REQUIRE(parser.parse(source, consumer_path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			CHECK(error_block(parser) == vformat(">> ERROR at line 5: Identifier \"%s\" not declared in the current scope.", name));
+			public_agreement(source, consumer_path, false);
 		}
 	}
 
