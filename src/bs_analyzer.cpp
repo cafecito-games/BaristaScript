@@ -3812,6 +3812,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 					method_owner = base_type.type_parameter_bound[0].class_type;
 				}
 				bool member_claimed = false;
+				const int provider_errors = parser->get_errors().size();
 				if (method_owner != nullptr) {
 					BSParser::FunctionNode *callee = find_class_function(method_owner, p_call->function_name, &member_claimed, p_call->callee);
 					if (callee != nullptr) {
@@ -3853,11 +3854,23 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				}
 				if (native_type != StringName()) {
 					MethodInfo method_info;
-					if (BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info)) {
-						record_static_instance(method_info.flags & METHOD_FLAG_STATIC, base_type);
+					BSParser::DataType method_receiver = base_type;
+					bool found = BSNativeDB::get_method_info(native_type, p_call->function_name, &method_info);
+					const auto resource_receiver = subscript->base->get_datatype();
+					// The retained provider view supplements the declared Script resource.
+					// Only a genuine provider miss may consult that resource's methods.
+					if (!found && !member_claimed && parser->get_errors().size() == provider_errors &&
+							base_type.kind == BSParser::DataType::CLASS && base_type.is_meta_type &&
+							resource_receiver.kind == BSParser::DataType::NATIVE && !resource_receiver.is_meta_type &&
+							resource_receiver.native_type == SNAME("BaristaScript")) {
+						method_receiver = resource_receiver;
+						found = BSNativeDB::get_method_info(resource_receiver.native_type, p_call->function_name, &method_info);
+					}
+					if (found) {
+						record_static_instance(method_info.flags & METHOD_FLAG_STATIC, method_receiver);
 						call_site_validation.reject_named_call_arguments(p_call);
 						call_site_validation.validate_call_arg(method_info, p_call);
-						call_site_validation.validate_typed_object_signal_api_args(base_type, p_call, is_self);
+						call_site_validation.validate_typed_object_signal_api_args(method_receiver, p_call, is_self);
 						// Foundry @ c9d5e35: after MethodInfo on self.emit_signal / connect, still run typed
 						// payload / callable checks against the named local signal.
 						if (is_self && p_call->function_name == SNAME("emit_signal")) {
@@ -4663,6 +4676,8 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 		reduce_expression(p_subscript->base);
 	}
 	const BSParser::DataType tuple_base_type = p_subscript->is_attribute ? _static_receiver_type(p_subscript->base) : p_subscript->base->get_datatype();
+	const int provider_errors = parser->get_errors().size();
+	bool provider_member_claimed = false;
 	if (p_subscript->is_attribute && p_subscript->attribute) {
 		const auto receiver = tuple_base_type;
 		const auto name = p_subscript->attribute->name;
@@ -5005,6 +5020,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 			}
 			if (receiver_type.kind == BSParser::DataType::CLASS && receiver_type.class_type != nullptr) {
 				BSParser::ClassNode *selected = find_member_in_class_or_trait_chain(receiver_type.class_type, p_subscript->attribute->name, p_subscript->attribute);
+				provider_member_claimed = selected != nullptr;
 				bool inherited = selected != receiver_type.class_type;
 				HashSet<const BSParser::ClassNode *> visited;
 				for (BSParser::ClassNode *lookup = selected; lookup != nullptr; lookup = nullptr) {
@@ -5128,23 +5144,37 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 		if ((receiver.kind == BSParser::DataType::CLASS || receiver.kind == BSParser::DataType::SCRIPT) && p_subscript->attribute != nullptr) {
 			// Engine properties/method values remain the final ordinary class surface.
 			const StringName name = p_subscript->attribute->name;
-			const StringName native = receiver.native_type;
-			if (native != StringName()) {
-				if (!receiver.is_meta_type) {
+			auto try_native_member = [&](const BSParser::DataType &native_receiver) {
+				const StringName native = native_receiver.native_type;
+				if (native == StringName()) {
+					return false;
+				}
+				if (!native_receiver.is_meta_type) {
 					const TypedArray<Dictionary> properties = ClassDB::class_get_property_list(native, false);
 					for (int i = 0; i < properties.size(); i++) {
 						const Dictionary property = properties[i];
 						if (StringName(property.get("name", String())) == name) {
-							p_subscript->set_datatype(type_from_native_property(receiver.native_type, PropertyInfo::from_dict(property)));
-							return;
+							p_subscript->set_datatype(type_from_native_property(native, PropertyInfo::from_dict(property)));
+							return true;
 						}
 					}
 				}
 				MethodInfo method;
-				if (BSNativeDB::get_method_info(native, name, &method) && (!receiver.is_meta_type || (method.flags & METHOD_FLAG_STATIC))) {
+				if (BSNativeDB::get_method_info(native, name, &method) && (!native_receiver.is_meta_type || (method.flags & METHOD_FLAG_STATIC))) {
 					p_subscript->set_datatype(call_site_validation.explicit_callable_type_from_info(method));
-					return;
+					return true;
 				}
+				return false;
+			};
+			if (try_native_member(receiver)) {
+				return;
+			}
+			const auto resource_receiver = p_subscript->base->get_datatype();
+			if (!provider_member_claimed && parser->get_errors().size() == provider_errors &&
+					receiver.kind == BSParser::DataType::CLASS && receiver.is_meta_type &&
+					resource_receiver.kind == BSParser::DataType::NATIVE && !resource_receiver.is_meta_type &&
+					resource_receiver.native_type == SNAME("BaristaScript") && try_native_member(resource_receiver)) {
+				return;
 			}
 			if (receiver.is_meta_type) {
 				push_error(vformat(R"(Cannot find member "%s" in base "%s".)", name, type_from_metatype(receiver).to_string()), p_subscript->attribute);

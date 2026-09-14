@@ -193,6 +193,62 @@ TEST_SUITE("preload_analyzer") {
 		CHECK(body->statements[1]->get_datatype().class_type == head);
 		CHECK(static_cast<BSParser::VariableNode *>(body->statements[2])->initializer->get_datatype().builtin_type == Variant::STRING);
 	}
+	TEST_CASE("annotated_preload_resource_surface_survives_provider_miss") {
+		StorageFixture fixture;
+		const String path = provider(fixture, "resource_surface", "const A = 42\n");
+		BS_TEST_REQUIRE(!path.is_empty());
+		for (const String &receiver : { String("P"), String("Alias"), String("self.Alias") }) {
+			BSParser consumer;
+			const String source = "const P: BaristaScript = preload(\"resource_surface.barista\")\nconst Alias: BaristaScript = P\nvar base := " + receiver + ".get_instance_base_type()\nvar name := " + receiver + ".resource_name\nvar method := " + receiver + ".get_instance_base_type\nfunc test():\n\tconst Local: BaristaScript = Alias\n\tvar source: String = Local.get_source_code()\n\tprint(source)\n";
+			BS_TEST_REQUIRE(consumer.parse(source, "res://tests/x3/resource_consumer.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() == OK);
+			no_errors(consumer);
+			CHECK(consumer.get_tree()->get_member("base").get_datatype().builtin_type == Variant::STRING_NAME);
+			CHECK(consumer.get_tree()->get_member("name").get_datatype().builtin_type == Variant::STRING);
+			const auto method = consumer.get_tree()->get_member("method").get_datatype();
+			CHECK(method.builtin_type == Variant::CALLABLE);
+			CHECK(method.has_method_signature);
+			CHECK(method.method_info.return_val.type == Variant::STRING_NAME);
+			CHECK(consumer.get_tree()->get_member("Alias").get_datatype().kind == BSParser::DataType::NATIVE);
+			BS_TEST_REQUIRE(consumer.get_depended_parsers().has(path));
+			CHECK(consumer.get_tree()->get_member("P").constant->initializer->get_datatype().class_type == consumer.get_depended_parsers()[path]->get_parser()->get_tree());
+			CHECK(bool(BaristaScriptLanguage::get_singleton()->_validate(source, "res://tests/x3/resource_consumer.barista", true, true, true, true).get("valid", false)));
+		}
+	}
+	TEST_CASE("annotated_preload_resource_fallback_preserves_provider_claims") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "resource_claims", "const resource_name = 42\nstatic func get_instance_base_type() -> int:\n\treturn 42\n").is_empty());
+		BSParser consumer;
+		BS_TEST_REQUIRE(consumer.parse("const P: BaristaScript = preload(\"resource_claims.barista\")\nvar name := P.resource_name\nvar result := P.get_instance_base_type()\nvar method := P.get_instance_base_type\n", "res://tests/x3/claims.barista", false) == OK);
+		BSAnalyzer analyzer(&consumer);
+		CHECK(analyzer.analyze() == OK);
+		no_errors(consumer);
+		CHECK(consumer.get_tree()->get_member("name").get_datatype().builtin_type == Variant::INT);
+		CHECK(consumer.get_tree()->get_member("result").get_datatype().builtin_type == Variant::INT);
+		CHECK(consumer.get_tree()->get_member("method").get_datatype().method_info.return_val.type == Variant::INT);
+		for (const String &source : { String("const get_instance_base_type = 1\n"), String("static func get_instance_base_type() -> Missing:\n\treturn null\n") }) {
+			const String path = provider(fixture, "failed_resource_claim", source);
+			BS_TEST_REQUIRE(!path.is_empty());
+			BSCache::remove_parser(path);
+			BSParser failed;
+			BS_TEST_REQUIRE(failed.parse("const P: BaristaScript = preload(\"failed_resource_claim.barista\")\nvar result = P.get_instance_base_type()\n", "res://tests/x3/failed_claim.barista", false) == OK);
+			BSAnalyzer failed_analyzer(&failed);
+			CHECK(failed_analyzer.analyze() != OK);
+			CHECK_FALSE(failed.get_errors().is_empty());
+		}
+	}
+	TEST_CASE("annotated_preload_resource_fallback_keeps_missing_members_invalid") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "resource_missing", "const A = 42\n").is_empty());
+		for (const String &expression : { String("P.no_such_member"), String("P.no_such_method()") }) {
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("const P: BaristaScript = preload(\"resource_missing.barista\")\nvar result = " + expression + "\n", "res://tests/x3/missing_resource_member.barista", false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			CHECK(analyzer.analyze() != OK);
+			CHECK(consumer.get_errors().size() == 1);
+		}
+	}
 	// Foundry c9d5e35 analyzer/features/preload_constant_types_are_inferred.fs
 	// and fs_to_preload.notest.fs: same constant producer; static analysis only.
 	TEST_CASE("relative_preload_retains_static_provider_and_infers_constant") {
