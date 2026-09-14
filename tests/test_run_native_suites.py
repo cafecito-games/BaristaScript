@@ -97,6 +97,22 @@ class ResultTests(unittest.TestCase):
                 workflow = header + if_line + run_line
                 self.assertIsNone(validate_ci.check_native_suite_wiring(workflow))
 
+    def test_ci_requires_a_potentially_reachable_native_runner_job(self):
+        import validate_ci
+        command = '    steps:\n      - run: python3 tests/run_native_suites.py --godot "$godot_binary"\n'
+        for condition in ("false", "'false'", '\"false\"', "'  false  '", "${{ false }}",
+                          "'${{ false }}'", '\"${{   false   }}\"',
+                          '\"  ${{ false }}  \"', "false # disabled"):
+            with self.subTest(rejected=condition):
+                workflow = "jobs:\n  build:\n    if: %s\n" % condition + command
+                self.assertIsNotNone(validate_ci.check_native_suite_wiring(workflow))
+        for condition in (None, "true", "${{ true }}", "${{ matrix.enabled }}",
+                          "${{ false || matrix.enabled }}", "${{ 'false' }}"):
+            with self.subTest(accepted=condition):
+                if_line = "" if condition is None else "    if: %s\n" % condition
+                workflow = "jobs:\n  build:\n" + if_line + command
+                self.assertIsNone(validate_ci.check_native_suite_wiring(workflow))
+
     def test_unknown_manifest_suite_is_rejected(self):
         self.assertRaises(ValueError, runner.select_suites, ["missing"])
 

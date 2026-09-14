@@ -71,8 +71,8 @@ def line_invocations(line: str, runner_path: str = SUITE_RUNNER) -> list[str]:
     return invocations
 
 
-def workflow_steps(workflow: str) -> list[dict]:
-    """Return parsed step mappings from every job in a workflow."""
+def workflow_steps(workflow: str) -> list[tuple[dict, dict]]:
+    """Return each parsed step together with its enclosing job mapping."""
     try:
         import yaml
     except ImportError as error:
@@ -90,33 +90,35 @@ def workflow_steps(workflow: str) -> list[dict]:
     if not isinstance(jobs, dict):
         raise ValueError("CI jobs must be a mapping")
 
-    parsed: list[dict] = []
+    parsed: list[tuple[dict, dict]] = []
     for job in jobs.values():
         if not isinstance(job, dict) or "steps" not in job:
             continue
         steps = job["steps"]
         if not isinstance(steps, list):
             raise ValueError("CI job steps must be a list")
-        parsed.extend(step for step in steps if isinstance(step, dict))
+        parsed.extend((job, step) for step in steps if isinstance(step, dict))
     return parsed
 
 
-def runner_invocations(steps: list[dict], runner_path: str) -> list[tuple[str, dict]]:
-    """Every suite-runner command, paired with its parsed workflow step."""
-    invocations: list[tuple[str, dict]] = []
-    for step in steps:
+def runner_invocations(
+    job_steps: list[tuple[dict, dict]], runner_path: str
+) -> list[tuple[str, dict, dict]]:
+    """Every suite-runner command, paired with its parsed job and step."""
+    invocations: list[tuple[str, dict, dict]] = []
+    for job, step in job_steps:
         command = step.get("run")
         if not isinstance(command, str):
             continue
         for line in executable_lines(command):
             for arguments in line_invocations(line, runner_path):
-                invocations.append((arguments, step))
+                invocations.append((arguments, job, step))
     return invocations
 
 
-def step_is_unreachable(step: dict) -> bool:
-    """Whether a step condition is exactly a normalized constant false."""
-    condition = step.get("if")
+def condition_is_unreachable(owner: dict) -> bool:
+    """Whether a job or step condition is exactly a normalized constant false."""
+    condition = owner.get("if")
     if not isinstance(condition, str):
         return False
     condition = condition.strip()
@@ -134,13 +136,13 @@ def check_suite_runner_wiring(
 ) -> str | None:
     """Require a reachable runner step whose failure can make the job fail."""
     try:
-        steps = workflow_steps(workflow)
+        job_steps = workflow_steps(workflow)
     except ValueError as error:
         return str(error)
 
     invocations = [
-        (arguments, step)
-        for arguments, step in runner_invocations(steps, runner_path)
+        (arguments, job, step)
+        for arguments, job, step in runner_invocations(job_steps, runner_path)
         if "--godot" in arguments and "--list" not in arguments
     ]
     if not invocations:
@@ -151,14 +153,15 @@ def check_suite_runner_wiring(
 
     effective = [
         arguments
-        for arguments, step in invocations
+        for arguments, job, step in invocations
         if not SUPPRESSED_STATUS.search(arguments)
         and not step_continues_on_error(step)
-        and not step_is_unreachable(step)
+        and not condition_is_unreachable(job)
+        and not condition_is_unreachable(step)
     ]
     if not effective:
         return (
-            f"CI must let {runner_path} fail the job from a potentially reachable step; "
+            f"CI must let {runner_path} fail the job from a potentially reachable job and step; "
             "its exit status is the guard, so no effective invocation may be suppressed, "
             "continue on error, or use a constant-false condition"
         )
@@ -179,12 +182,12 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
     status must be allowed to fail the job.
     """
     try:
-        steps = workflow_steps(workflow)
+        job_steps = workflow_steps(workflow)
     except ValueError as error:
         return str(error)
     active = "\n".join(
         line
-        for step in steps
+        for _job, step in job_steps
         if isinstance(step.get("run"), str)
         for line in executable_lines(step["run"])
     )
