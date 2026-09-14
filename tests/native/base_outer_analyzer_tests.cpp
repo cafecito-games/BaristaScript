@@ -263,7 +263,7 @@ TEST_SUITE("base_outer_analyzer") {
 			require_inner_base_identity(retained->get_parser()->get_tree());
 			BSParser::ClassNode *provider_inner_ab = nested(nested(retained->get_parser()->get_tree(), "InnerA"), "InnerAB");
 			BS_TEST_REQUIRE(provider_inner_ab != nullptr);
-			CHECK(parser.get_tree()->base_type.class_type == retained->get_parser()->get_tree());
+			CHECK(retained->get_parser()->has_class(parser.get_tree()->base_type.class_type));
 			CHECK(provider_inner_ab->outer == nested(retained->get_parser()->get_tree(), "InnerA"));
 			public_agreement(source, consumer_path, true);
 		}
