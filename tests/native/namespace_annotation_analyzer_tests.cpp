@@ -5,6 +5,7 @@
 /*  This file is part of BaristaScript, a Godot GDExtension.              */
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
+#include "barista_script.h"
 #include "bs_global_class.h"
 #include "storage_fixture.h"
 #include "test_require.h"
@@ -587,6 +588,14 @@ void one_error(const BSParser &parser, const String &message, const BSParser::No
 	CHECK(error.end_line == site->end_line);
 	CHECK(error.end_column == site->end_column);
 }
+void extends_public_agreement(const String &source, const String &path, bool valid) {
+	CHECK(bool(BaristaScriptLanguage::get_singleton()->_validate(source, path, true, true, true, true).get("valid", !valid)) == valid);
+	Ref<BaristaScript> script;
+	script.instantiate();
+	script->set_path(path);
+	script->_set_source_code(source);
+	CHECK(script->_is_valid() == valid);
+}
 void materialization_failure(bool nested) {
 	StorageFixture storage;
 	const String path = "res://tests/f2/item.barista";
@@ -704,6 +713,73 @@ TEST_SUITE("namespace_annotation_analyzer") {
 		CHECK(good.get_tree()->get_member("x").get_datatype().kind == BSParser::DataType::ENUM);
 		CHECK(good.get_tree()->get_member("x").get_datatype().enum_type == StringName("Node.ProcessMode"));
 		CHECK(good.get_tree()->get_member("y").get_datatype().script_path == "res://tests/f1/native_collision.barista");
+	}
+	TEST_CASE("extend_non_gdscript_nested") {
+		// Exact Foundry c9d5e35 analyzer/errors/extend_non_gdscript_nested.fs source.
+		StorageFixture storage;
+		const String source = R"source(class Foo extends RefCounted.Bar:
+	pass
+
+func test():
+	print('not ok')
+)source";
+		const String path = String(corpus_root) + "errors/extend_non_gdscript_nested.barista";
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		BS_TEST_REQUIRE(parser.get_tree()->has_member("Foo"));
+		const auto *foo = parser.get_tree()->get_member("Foo").m_class;
+		BS_TEST_REQUIRE(foo != nullptr);
+		BS_TEST_REQUIRE(foo->extends.size() == 2);
+		CHECK(block(parser) == ">> ERROR at line 1: Cannot get nested types for extension from non-BaristaScript type \"RefCounted\".");
+		one_error(parser, "Cannot get nested types for extension from non-BaristaScript type \"RefCounted\".", foo->extends[1]);
+		extends_public_agreement(source, path, false);
+	}
+	TEST_CASE("native_extends_heads_precede_colliding_script_namespaces") {
+		StorageFixture storage;
+		for (const String ns : { String("a"), String("b") }) {
+			install(storage, "res://tests/native_extends/" + ns + ".barista", "namespace " + ns + ".RefCounted\nclass_name Bar\nextends RefCounted\n");
+			install(storage, "res://tests/native_extends/" + ns + "_time.barista", "namespace " + ns + ".Time\nclass_name Bar\n");
+		}
+		for (const String prefix : { String(""), String("import a\n"), String("namespace a\n"), String("import a\nimport b\n") }) {
+			for (const String head : { String("RefCounted"), String("Time") }) {
+				const String source = prefix + String("extends ") + head + ".Bar\n";
+				const String path = "res://tests/native_extends/consumer.barista";
+				BSParser parser;
+				BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK(analyzer.analyze() != OK);
+				const bool singleton = head == "Time";
+				one_error(parser, singleton ? "Cannot inherit native class \"Time\" because it is an engine singleton." : "Cannot get nested types for extension from non-BaristaScript type \"RefCounted\".", parser.get_tree()->extends[singleton ? 0 : 1]);
+				extends_public_agreement(source, path, false);
+			}
+		}
+		for (const String base : { String("RefCounted"), String("a.RefCounted.Bar"), String("a.Time.Bar") }) {
+			const String source = "import a\nimport b\nextends " + base + "\n";
+			const String path = "res://tests/native_extends/good.barista";
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			BS_TEST_REQUIRE(analyzer.analyze() == OK);
+			const auto type = parser.get_tree()->base_type;
+			CHECK(type.kind == (base == "RefCounted" ? BSParser::DataType::NATIVE : BSParser::DataType::CLASS));
+			CHECK(type.native_type == StringName("RefCounted"));
+			if (base != "RefCounted")
+				CHECK(type.script_path == (base == "a.Time.Bar" ? "res://tests/native_extends/a_time.barista" : "res://tests/native_extends/a.barista"));
+			extends_public_agreement(source, path, true);
+		}
+		check_source("extends MissingBase\n", ">> ERROR at line 1: Could not find base class \"MissingBase\".");
+		extends_public_agreement("extends MissingBase\n", "res://tests/native_extends/missing.barista", false);
+	}
+	TEST_CASE("native_extends_original_error_controls") {
+		// Exact pinned originals, with only the established FS-to-BS vocabulary adaptation.
+		original_case("errors/extend_engine_singleton.barista", "# GH-82081\n\nextends Time\n\nfunc test():\n\tpass\n",
+				">> ERROR at line 3: Cannot inherit native class \"Time\" because it is an engine singleton.");
+		original_case("errors/extend_unknown.barista", "class Foo:\n\tpass\n\nclass Bar extends Foo.Baz:\n\tpass\n\nfunc test():\n\tprint('not ok')\n",
+				">> ERROR at line 4: Could not find nested type \"Baz\".");
+		original_case("errors/namespaced_script_extends_unknown.barista", "extends fs_ns_extends.library.FSNsExtendsMissing\n\nfunc test() -> void:\n\tpass\n",
+				">> ERROR at line 1: Could not find base class \"fs_ns_extends\".");
 	}
 	TEST_CASE("repair1_whole_chain_provider_materialization_failure_is_terminal") { materialization_failure(false); }
 	TEST_CASE("repair1_shorter_prefix_provider_materialization_failure_is_terminal") { materialization_failure(true); }
