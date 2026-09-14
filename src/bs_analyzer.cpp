@@ -1856,11 +1856,18 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 		if (current_class != nullptr) {
 			get_class_node_current_scope_classes(current_class, &type_scopes, p_type_node);
 		}
+		bool found_out_of_scope_alias = false;
 		for (BSParser::ClassNode *scope : type_scopes) {
 			if (!scope->has_member(name)) {
 				continue;
 			}
 			const BSParser::ClassNode::Member member = scope->get_member(name);
+			if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+				// Visible aliases were resolved above. Keep the private claimant, but
+				// allow a legal enclosing lexical type to win without expanding it.
+				found_out_of_scope_alias = true;
+				continue;
+			}
 			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
 				resolve_class_member(scope, name, p_type_node);
 				result = type_from_metatype(member.m_class->get_datatype());
@@ -1879,6 +1886,11 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				}
 			}
 			break;
+		}
+		if (found_out_of_scope_alias) {
+			push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", name), p_type_node);
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
 		}
 		// Same-file/inherited named tuple declarations resolve to their value type in annotations.
 		{

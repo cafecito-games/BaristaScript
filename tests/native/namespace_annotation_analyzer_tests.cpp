@@ -918,3 +918,123 @@ TEST_SUITE("namespace_annotation_analyzer") {
 		CHECK(parser.get_tree()->get_member("x").get_datatype().is_variant());
 	}
 }
+TEST_SUITE("namespace_annotation_analyzer") {
+	TEST_CASE("type_alias_cross_file_base") {
+		StorageFixture storage;
+		const String base = String(corpus_root) + "errors/type_alias_cross_file_base.notest.barista";
+		install(storage, base, "class_name TypeAliasCrossFileBase\n\ntype Meters = float\n\nvar distance: Meters = 1.0\n");
+		const String source = R"source(# The file is the unit of alias visibility: an alias does not travel with the type that declares it,
+# so inheriting a class does not bring its aliases into scope.
+const Base = preload("./type_alias_cross_file_base.notest.barista")
+
+
+class Derived extends Base:
+	var extra: Meters = 2.0
+
+
+func test():
+	print(Derived.new().extra)
+)source";
+		const String path = String(corpus_root) + "errors/type_alias_cross_file_base.barista";
+		Error err = OK;
+		auto provider = BSCache::get_parser(base, BSParserRef::INTERFACE_SOLVED, err);
+		BS_TEST_REQUIRE(provider.is_valid());
+		BS_TEST_REQUIRE(err == OK);
+		CHECK(provider->get_parser()->get_tree()->get_member("distance").get_datatype().builtin_type == Variant::FLOAT);
+		const String store = storage.path("aliases.bsgi");
+		BS_TEST_REQUIRE(storage.index().flush(store) == OK);
+		const auto before = read_bytes(store);
+		const auto revision = storage.index().get_refresh_revision(base);
+		for (int replay = 0; replay < 2; ++replay) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			auto *derived = parser.get_tree()->get_member("Derived").m_class;
+			one_error(parser, "Type alias \"Meters\" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.", derived->get_member("extra").variable->datatype_specifier);
+			CHECK(derived->get_member("extra").variable->datatype_specifier->start_line == 7);
+			CHECK(derived->base_type.class_type == provider->get_parser()->get_tree());
+			CHECK(derived->get_member("extra").get_datatype().is_variant());
+			CHECK(provider->get_parser()->get_errors().is_empty());
+		}
+		extends_public_agreement(source, path, false);
+		CHECK(storage.index().get_refresh_revision(base) == revision);
+		BS_TEST_REQUIRE(storage.index().flush(store) == OK);
+		CHECK(read_bytes(store) == before);
+	}
+	TEST_CASE("simple_private_alias_is_terminal_before_external_name_collisions") {
+		for (const String collision : { String("global"), String("import"), String("namespace"), String("index") }) {
+			StorageFixture storage;
+			install(storage, "res://tests/simple_alias/base.barista", "type Meters = float\n");
+			install(storage, "res://tests/simple_alias/competitor.barista", String(collision == "global" ? "" : "namespace a\n") + "class_name Meters\n");
+			const String prefix = collision == "import" ? "import a\n" : collision == "namespace" ? "namespace a\n"
+																								  : "";
+			const String source = prefix + String("extends \"res://tests/simple_alias/base.barista\"\nvar x: Meters\n");
+			const String path = "res://tests/simple_alias/consumer.barista";
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			one_error(parser, "Type alias \"Meters\" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.", parser.get_tree()->get_member("x").variable->datatype_specifier);
+			CHECK(parser.get_tree()->get_member("x").get_datatype().is_variant());
+			extends_public_agreement(source, path, false);
+		}
+	}
+	TEST_CASE("simple_alias_cannot_claim_a_native_class_name") {
+		StorageFixture storage;
+		check_source("type Node = float\n", ">> ERROR at line 1: Type alias \"Node\" hides a native class.");
+		extends_public_agreement("type Node = float\n", "res://tests/simple_alias/native.barista", false);
+	}
+	TEST_CASE("simple_private_alias_allows_visible_enclosing_types") {
+		check_source("class Owner:\n\ttype Meters = float\n\tvar distance: Meters = 1.0\n");
+		for (const String declaration : { String("class Meters:\n\tpass\n"), String("enum Meters:\n\tVALUE = 0\n"), String("class Owner:\n\tpass\nconst Meters = Owner\n"), String("type Meters = float\n") }) {
+			StorageFixture storage;
+			install(storage, "res://tests/simple_alias/base.barista", "type Meters = String\n");
+			const String source = declaration + String("class Derived extends \"res://tests/simple_alias/base.barista\":\n\tvar x: Meters\n");
+			const String path = "res://tests/simple_alias/consumer.barista";
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const Error status = analyzer.analyze();
+			INFO(std::string(block(parser).utf8().get_data()));
+			CHECK(status == OK);
+			if (status != OK)
+				continue;
+			const auto type = parser.get_tree()->get_member("Derived").m_class->get_member("x").get_datatype();
+			CHECK(!type.is_variant());
+			CHECK(type.builtin_type != Variant::STRING);
+			if (declaration.begins_with("type")) {
+				CHECK(type.builtin_type == Variant::FLOAT);
+			} else {
+				CHECK(type.script_path == path);
+			}
+			extends_public_agreement(source, path, true);
+		}
+	}
+	TEST_CASE("simple_inherited_types_keep_provider_identity_and_missing_names") {
+		StorageFixture storage;
+		const String base = "res://tests/simple_alias/base.barista";
+		install(storage, base, "class Item:\n\tenum Kind:\n\t\tVALUE = 0\ntuple Pair(value: int, other: int)\nconst Meta = Item\ntype Meters = float\nvar local: Meters\n");
+		Error err = OK;
+		auto provider = BSCache::get_parser(base, BSParserRef::INTERFACE_SOLVED, err);
+		BS_TEST_REQUIRE(provider.is_valid());
+		BS_TEST_REQUIRE(err == OK);
+		const String source = "extends \"res://tests/simple_alias/base.barista\"\nvar item: Item\nvar kind: Item.Kind\nvar pair: Pair\nvar meta: Meta\n";
+		const String path = "res://tests/simple_alias/consumer.barista";
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+		BSAnalyzer analyzer(&parser);
+		const Error status = analyzer.analyze();
+		INFO(std::string(block(parser).utf8().get_data()));
+		BS_TEST_REQUIRE(status == OK);
+		for (const String member : { String("item"), String("kind"), String("pair"), String("meta") }) {
+			const auto type = parser.get_tree()->get_member(member).get_datatype();
+			CHECK(type.script_path == base);
+			CHECK(!type.is_variant());
+		}
+		CHECK(parser.get_tree()->get_member("item").get_datatype().class_type == provider->get_parser()->get_tree()->get_member("Item").m_class);
+		CHECK(parser.get_tree()->get_member("meta").get_datatype().class_type == parser.get_tree()->get_member("item").get_datatype().class_type);
+		extends_public_agreement(source, path, true);
+		check_source("extends \"res://tests/simple_alias/base.barista\"\nvar x: AbsentType\n", ">> ERROR at line 2: Could not find type \"AbsentType\" in the current scope.");
+	}
+}
