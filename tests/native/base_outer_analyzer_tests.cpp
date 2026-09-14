@@ -6,7 +6,9 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+#include "barista_script.h"
 #include "barista_script_language.h"
+#include "bs_analyzer_probe.h"
 #include "bs_global_class.h"
 #include "storage_fixture.h"
 #include "test_require.h"
@@ -103,6 +105,54 @@ String exact_consumer_source() {
 		   "\tExtend.InnerClass.InnerInnerClass.test_a_prime(A.APrime.new())\n";
 }
 
+BSParser::ClassNode *nested(BSParser::ClassNode *p_class, const StringName &p_name);
+
+String exact_inner_base_source() {
+	return "extends InnerA\n\n"
+		   "func test():\n"
+		   "\tsuper.test()\n\n"
+		   "class InnerA extends InnerAB:\n"
+		   "\tfunc test():\n"
+		   "\t\tprint(\"InnerA.test\")\n"
+		   "\t\tsuper.test()\n\n"
+		   "\tclass InnerAB extends InnerB:\n"
+		   "\t\tfunc test():\n"
+		   "\t\t\tprint(\"InnerA.InnerAB.test\")\n"
+		   "\t\t\tsuper.test()\n\n"
+		   "class InnerB:\n"
+		   "\tfunc test():\n"
+		   "\t\tprint(\"InnerB.test\")\n";
+}
+
+String exact_external_inner_base_source() {
+	return "extends \"inner_base.barista\".InnerA.InnerAB\n\n"
+		   "func test():\n"
+		   "\tsuper.test()\n";
+}
+
+void public_agreement(const String &p_source, const String &p_path, bool p_valid) {
+	Ref<BaristaScriptAnalyzerProbe> probe;
+	probe.instantiate();
+	CHECK(bool(probe->analyze_source(p_source, p_path).get("valid", !p_valid)) == p_valid);
+	CHECK(bool(BaristaScriptLanguage::get_singleton()->_validate(p_source, p_path, true, true, true, true).get("valid", !p_valid)) == p_valid);
+	Ref<BaristaScript> resource;
+	resource.instantiate();
+	resource->_set_source_code(p_source);
+	resource->set_path(p_path);
+	CHECK(resource->_is_valid() == p_valid);
+}
+
+void require_inner_base_identity(BSParser::ClassNode *p_root) {
+	BS_TEST_REQUIRE(p_root != nullptr);
+	BSParser::ClassNode *inner_a = nested(p_root, "InnerA");
+	BSParser::ClassNode *inner_ab = nested(inner_a, "InnerAB");
+	BSParser::ClassNode *inner_b = nested(p_root, "InnerB");
+	BS_TEST_REQUIRE(inner_a != nullptr && inner_ab != nullptr && inner_b != nullptr);
+	CHECK(p_root->base_type.class_type == inner_a);
+	CHECK(inner_a->base_type.class_type == inner_ab);
+	CHECK(inner_ab->base_type.class_type == inner_b);
+}
+
 void install_exact_graph(StorageFixture &p_storage) {
 	install(p_storage, path("base_outer_resolution_a.notest"), exact_a_source());
 	install(p_storage, path("base_outer_resolution_b.notest"), exact_b_source());
@@ -170,6 +220,80 @@ void analyze_exact_graph(StorageFixture &p_storage, const String &p_stem) {
 } // namespace
 
 TEST_SUITE("base_outer_analyzer") {
+	TEST_CASE("exact_inner_base_keeps_reentrant_nested_inheritance_without_self_conflict") {
+		StorageFixture storage;
+		const String source = exact_inner_base_source();
+		const String source_path = path("inner_base");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(source, source_path, false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() == OK);
+		MESSAGE(std::string(error_block(parser).utf8().get_data()));
+		no_errors(parser);
+		require_inner_base_identity(parser.get_tree());
+		public_agreement(source, source_path, true);
+	}
+
+	TEST_CASE("external_inner_base_retains_exact_provider_identity_cold_and_warm") {
+		for (const bool warm : { false, true }) {
+			CAPTURE(warm);
+			StorageFixture storage;
+			const String provider_path = path("inner_base");
+			const String consumer_path = path(warm ? "external_inner_base_warm" : "external_inner_base");
+			install(storage, provider_path, exact_inner_base_source());
+			Ref<BSParserRef> warmed;
+			if (warm) {
+				Error error = OK;
+				warmed = BSCache::get_parser(provider_path, BSParserRef::FULLY_SOLVED, error);
+				BS_TEST_REQUIRE(warmed.is_valid() && error == OK);
+			}
+
+			const String source = exact_external_inner_base_source();
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, consumer_path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			MESSAGE(std::string(error_block(parser).utf8().get_data()));
+			no_errors(parser);
+			const Ref<BSParserRef> retained = dependency(parser, provider_path);
+			BS_TEST_REQUIRE(retained.is_valid());
+			if (warm) {
+				CHECK(retained == warmed);
+			}
+			require_inner_base_identity(retained->get_parser()->get_tree());
+			BSParser::ClassNode *provider_inner_ab = nested(nested(retained->get_parser()->get_tree(), "InnerA"), "InnerAB");
+			BS_TEST_REQUIRE(provider_inner_ab != nullptr);
+			CHECK(parser.get_tree()->base_type.class_type == retained->get_parser()->get_tree());
+			CHECK(provider_inner_ab->outer == nested(retained->get_parser()->get_tree(), "InnerA"));
+			public_agreement(source, consumer_path, true);
+		}
+	}
+
+	TEST_CASE("resolving_edge_filter_preserves_true_outer_conflicts") {
+		struct Conflict {
+			const char *name;
+			const char *source;
+			const char *expected;
+		};
+		for (const Conflict &conflict : {
+					 Conflict{ "nested_outer_class_identifier_conflict", "class_name NestedOuterClassIdentifierConflict\n\nclass Inner:\n\tvar NestedOuterClassIdentifierConflict := 1\n\nfunc test() -> void:\n\tpass\n", ">> ERROR at line 4: The member \"NestedOuterClassIdentifierConflict\" already exists in outer class NestedOuterClassIdentifierConflict." },
+					 Conflict{ "nested_outer_constant_conflict", "class Outer:\n\tconst LIMIT := 1\n\n\tclass Inner:\n\t\tvar LIMIT := 2\n\nfunc test() -> void:\n\tpass\n", ">> ERROR at line 5: The member \"LIMIT\" already exists in outer class Outer." },
+					 Conflict{ "nested_outer_inherited_surface_conflict", "class Base:\n\tconst TOKEN := 1\n\nclass Outer extends Base:\n\tclass Inner:\n\t\tvar TOKEN := 2\n\nfunc test() -> void:\n\tpass\n", ">> ERROR at line 6: The member \"TOKEN\" already exists in outer class Base." },
+					 Conflict{ "nested_outer_nested_class_conflict", "class Outer:\n\tclass Helper:\n\t\tpass\n\n\tclass Inner:\n\t\tvar Helper := 1\n\nfunc test() -> void:\n\tpass\n", ">> ERROR at line 6: The member \"Helper\" already exists in outer class Outer." },
+			 }) {
+			CAPTURE(conflict.name);
+			StorageFixture storage;
+			const String source = conflict.source;
+			const String source_path = storage.path(String(conflict.name) + ".barista");
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, source_path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			CHECK(error_block(parser) == conflict.expected);
+			public_agreement(source, source_path, false);
+		}
+	}
+
 	TEST_CASE("exact_base_outer_resolution_graph_keeps_all_six_call_sites_static") {
 		StorageFixture storage;
 		install_exact_graph(storage);
