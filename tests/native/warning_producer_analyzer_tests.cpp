@@ -6,6 +6,8 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+#include "barista_script.h"
+#include "bs_analyzer_probe.h"
 #include "bs_conformance_registry.h"
 #include "storage_fixture.h"
 #include "test_require.h"
@@ -31,7 +33,7 @@ struct WarningProfile {
 		set("debug/barista_script/warnings/enable", true);
 		for (int i = 0; i < BSWarning::WARNING_MAX; ++i)
 			set(BSWarning::get_setting_path_from_code(BSWarning::Code(i)), BSWarning::IGNORE);
-		for (auto code : { BSWarning::RETURN_VALUE_DISCARDED, BSWarning::STATIC_CALLED_ON_INSTANCE, BSWarning::UNASSIGNED_VARIABLE, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, BSWarning::UNUSED_VARIABLE, BSWarning::UNUSED_LOCAL_CONSTANT, BSWarning::SHADOWED_VARIABLE, BSWarning::SHADOWED_GLOBAL_IDENTIFIER })
+		for (auto code : { BSWarning::RETURN_VALUE_DISCARDED, BSWarning::STATIC_CALLED_ON_INSTANCE, BSWarning::UNASSIGNED_VARIABLE, BSWarning::UNASSIGNED_VARIABLE_OP_ASSIGN, BSWarning::UNUSED_VARIABLE, BSWarning::UNUSED_LOCAL_CONSTANT, BSWarning::SHADOWED_VARIABLE, BSWarning::SHADOWED_GLOBAL_IDENTIFIER, BSWarning::CONFUSABLE_LOCAL_DECLARATION, BSWarning::CONFUSABLE_LOCAL_USAGE })
 			level(code, BSWarning::WARN);
 	}
 	void level(BSWarning::Code code, BSWarning::WarnLevel value) {
@@ -379,6 +381,313 @@ TEST_SUITE("warning_producer_analyzer") {
 		CHECK(parser.get_warnings().size() == 2);
 		warning(parser, 0, BSWarning::SHADOWED_VARIABLE, "The local variable \"item\" is shadowing an already-declared constant at line 4 in the current class.", 6, 13, 17);
 		warning(parser, 1, BSWarning::SHADOWED_GLOBAL_IDENTIFIER, "The variable \"abs\" has the same name as a built-in function.", 9, 9, 12);
+	}
+	TEST_CASE("original_confusable_local_declaration_uses_finalized_parent_only_for_warning") {
+		StorageFixture storage;
+		WarningProfile profile;
+		const String source = "func test():\n\tif true:\n\t\tvar a = 1\n\t\tprint(a)\n\tvar a = 2\n\tprint(a)\n";
+		for (int repeat = 0; repeat < 2; ++repeat) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/confusable_local_declaration.barista", false) == OK);
+			auto *function = parser.get_tree()->get_member("test").function;
+			BS_TEST_REQUIRE(function != nullptr && function->body != nullptr && function->body->statements.size() == 3);
+			BS_TEST_REQUIRE(function->body->statements[0]->type == BSParser::Node::IF);
+			auto *if_node = static_cast<BSParser::IfNode *>(function->body->statements[0]);
+			BS_TEST_REQUIRE(if_node->true_block != nullptr && if_node->true_block->statements.size() == 2);
+			BS_TEST_REQUIRE(if_node->true_block->parent_block == function->body);
+			BS_TEST_REQUIRE(if_node->true_block->statements[0]->type == BSParser::Node::VARIABLE);
+			BS_TEST_REQUIRE(if_node->true_block->statements[1]->type == BSParser::Node::CALL);
+			auto *inner = static_cast<BSParser::VariableNode *>(if_node->true_block->statements[0]);
+			auto *inner_print = static_cast<BSParser::CallNode *>(if_node->true_block->statements[1]);
+			BS_TEST_REQUIRE(inner_print->arguments.size() == 1 && inner_print->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			auto *inner_use = static_cast<BSParser::IdentifierNode *>(inner_print->arguments[0]);
+			BS_TEST_REQUIRE(function->body->statements[1]->type == BSParser::Node::VARIABLE);
+			BS_TEST_REQUIRE(function->body->statements[2]->type == BSParser::Node::CALL);
+			auto *outer = static_cast<BSParser::VariableNode *>(function->body->statements[1]);
+			auto *outer_print = static_cast<BSParser::CallNode *>(function->body->statements[2]);
+			BS_TEST_REQUIRE(outer_print->arguments.size() == 1 && outer_print->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			auto *outer_use = static_cast<BSParser::IdentifierNode *>(outer_print->arguments[0]);
+			CHECK(inner_use->source == BSParser::IdentifierNode::LOCAL_VARIABLE);
+			CHECK(inner_use->suite == if_node->true_block);
+			CHECK(inner_use->variable_source == inner);
+			CHECK(outer_use->source == BSParser::IdentifierNode::LOCAL_VARIABLE);
+			CHECK(outer_use->suite == function->body);
+			CHECK(outer_use->variable_source == outer);
+			CHECK(inner->usages == 1);
+			CHECK(outer->usages == 1);
+
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			CHECK(rendered(parser) == R"EXPECTED(~~ WARNING at line 3: (CONFUSABLE_LOCAL_DECLARATION) The variable "a" is declared below in the parent block.)EXPECTED");
+			warning(parser, 0, BSWarning::CONFUSABLE_LOCAL_DECLARATION, "The variable \"a\" is declared below in the parent block.", 3, 13, 14);
+			CHECK(inner->usages == 1);
+			CHECK(outer->usages == 1);
+		}
+	}
+	TEST_CASE("original_confusable_local_usage_preserves_temporal_binding_and_usage_count") {
+		StorageFixture storage;
+		WarningProfile profile;
+		const String source = "var a = 1\n\nfunc test():\n\tprint(a)\n\tvar a = 2\n\tprint(a)\n";
+		for (int repeat = 0; repeat < 2; ++repeat) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/confusable_local_usage.barista", false) == OK);
+			auto *member = parser.get_tree()->get_member("a").variable;
+			auto *function = parser.get_tree()->get_member("test").function;
+			BS_TEST_REQUIRE(member != nullptr && function != nullptr && function->body != nullptr && function->body->statements.size() == 3);
+			auto *before_call = static_cast<BSParser::CallNode *>(function->body->statements[0]);
+			auto *local = static_cast<BSParser::VariableNode *>(function->body->statements[1]);
+			auto *after_call = static_cast<BSParser::CallNode *>(function->body->statements[2]);
+			BS_TEST_REQUIRE(before_call->arguments.size() == 1 && before_call->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			BS_TEST_REQUIRE(after_call->arguments.size() == 1 && after_call->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			auto *before = static_cast<BSParser::IdentifierNode *>(before_call->arguments[0]);
+			auto *after = static_cast<BSParser::IdentifierNode *>(after_call->arguments[0]);
+			CHECK(before->source == BSParser::IdentifierNode::UNDEFINED_SOURCE);
+			CHECK(before->suite == function->body);
+			CHECK(after->source == BSParser::IdentifierNode::LOCAL_VARIABLE);
+			CHECK(after->variable_source == local);
+			CHECK(local->usages == 1);
+
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			CHECK(rendered(parser) == R"EXPECTED(~~ WARNING at line 4: (CONFUSABLE_LOCAL_USAGE) The identifier "a" will be shadowed below in the block.
+~~ WARNING at line 5: (SHADOWED_VARIABLE) The local variable "a" is shadowing an already-declared variable at line 1 in the current class.)EXPECTED");
+			warning(parser, 0, BSWarning::CONFUSABLE_LOCAL_USAGE, "The identifier \"a\" will be shadowed below in the block.", 4, 11, 12);
+			warning(parser, 1, BSWarning::SHADOWED_VARIABLE, "The local variable \"a\" is shadowing an already-declared variable at line 1 in the current class.", 5, 9, 10);
+			CHECK(before->source == BSParser::IdentifierNode::MEMBER_VARIABLE);
+			CHECK(before->variable_source == member);
+			CHECK(local->usages == 1);
+			CHECK(member->usages == 1);
+		}
+	}
+	TEST_CASE("original_confusable_local_usage_initializer_reaches_outer_member") {
+		StorageFixture storage;
+		WarningProfile profile;
+		const String source = "var a = 1\n\nfunc test():\n\tprint(a)\n\tvar a = a + 1\n\tprint(a)\n";
+		for (int repeat = 0; repeat < 2; ++repeat) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/confusable_local_usage_initializer.barista", false) == OK);
+			auto *member = parser.get_tree()->get_member("a").variable;
+			auto *function = parser.get_tree()->get_member("test").function;
+			BS_TEST_REQUIRE(member != nullptr && function != nullptr && function->body != nullptr && function->body->statements.size() == 3);
+			auto *before_call = static_cast<BSParser::CallNode *>(function->body->statements[0]);
+			auto *local = static_cast<BSParser::VariableNode *>(function->body->statements[1]);
+			auto *after_call = static_cast<BSParser::CallNode *>(function->body->statements[2]);
+			BS_TEST_REQUIRE(before_call->arguments.size() == 1 && before_call->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			BS_TEST_REQUIRE(local->initializer != nullptr && local->initializer->type == BSParser::Node::BINARY_OPERATOR);
+			auto *binary = static_cast<BSParser::BinaryOpNode *>(local->initializer);
+			BS_TEST_REQUIRE(binary->left_operand != nullptr && binary->left_operand->type == BSParser::Node::IDENTIFIER);
+			BS_TEST_REQUIRE(after_call->arguments.size() == 1 && after_call->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			auto *before = static_cast<BSParser::IdentifierNode *>(before_call->arguments[0]);
+			auto *initializer = static_cast<BSParser::IdentifierNode *>(binary->left_operand);
+			auto *after = static_cast<BSParser::IdentifierNode *>(after_call->arguments[0]);
+			CHECK(before->source == BSParser::IdentifierNode::UNDEFINED_SOURCE);
+			CHECK(before->suite == function->body);
+			CHECK(initializer->source == BSParser::IdentifierNode::UNDEFINED_SOURCE);
+			CHECK(initializer->suite == function->body);
+			CHECK(after->source == BSParser::IdentifierNode::LOCAL_VARIABLE);
+			CHECK(after->variable_source == local);
+			CHECK(local->usages == 1);
+
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			CHECK(rendered(parser) == R"EXPECTED(~~ WARNING at line 4: (CONFUSABLE_LOCAL_USAGE) The identifier "a" will be shadowed below in the block.
+~~ WARNING at line 5: (CONFUSABLE_LOCAL_USAGE) The identifier "a" will be shadowed below in the block.
+~~ WARNING at line 5: (SHADOWED_VARIABLE) The local variable "a" is shadowing an already-declared variable at line 1 in the current class.)EXPECTED");
+			warning(parser, 0, BSWarning::CONFUSABLE_LOCAL_USAGE, "The identifier \"a\" will be shadowed below in the block.", 4, 11, 12);
+			warning(parser, 1, BSWarning::CONFUSABLE_LOCAL_USAGE, "The identifier \"a\" will be shadowed below in the block.", 5, 13, 14);
+			warning(parser, 2, BSWarning::SHADOWED_VARIABLE, "The local variable \"a\" is shadowing an already-declared variable at line 1 in the current class.", 5, 9, 10);
+			CHECK(before->source == BSParser::IdentifierNode::MEMBER_VARIABLE);
+			CHECK(before->variable_source == member);
+			CHECK(initializer->source == BSParser::IdentifierNode::MEMBER_VARIABLE);
+			CHECK(initializer->variable_source == member);
+			CHECK(local->get_datatype().kind == BSParser::DataType::BUILTIN);
+			CHECK(local->get_datatype().builtin_type == Variant::INT);
+			CHECK(local->usages == 1);
+			CHECK(member->usages == 2);
+		}
+	}
+	TEST_CASE("original_confusable_local_usage_loop_keeps_iterator_and_local_flow") {
+		StorageFixture storage;
+		WarningProfile profile;
+		const String source = "var a = 1\n\nfunc test():\n\tfor _i in 3:\n\t\tprint(a)\n\t\tvar a = 2\n\t\tprint(a)\n";
+		for (int repeat = 0; repeat < 2; ++repeat) {
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, "res://tests/confusable_local_usage_loop.barista", false) == OK);
+			auto *member = parser.get_tree()->get_member("a").variable;
+			auto *function = parser.get_tree()->get_member("test").function;
+			BS_TEST_REQUIRE(member != nullptr && function != nullptr && function->body != nullptr && function->body->statements.size() == 1);
+			BS_TEST_REQUIRE(function->body->statements[0]->type == BSParser::Node::FOR);
+			auto *loop = static_cast<BSParser::ForNode *>(function->body->statements[0]);
+			BS_TEST_REQUIRE(loop->loop != nullptr && loop->loop->statements.size() == 3);
+			BS_TEST_REQUIRE(loop->variable != nullptr && loop->loop->has_local("_i"));
+			const auto &iterator_local = loop->loop->get_local("_i");
+			CHECK(iterator_local.type == BSParser::SuiteNode::Local::FOR_VARIABLE);
+			CHECK(iterator_local.bind == loop->variable);
+			auto *before_call = static_cast<BSParser::CallNode *>(loop->loop->statements[0]);
+			auto *local = static_cast<BSParser::VariableNode *>(loop->loop->statements[1]);
+			auto *after_call = static_cast<BSParser::CallNode *>(loop->loop->statements[2]);
+			BS_TEST_REQUIRE(before_call->arguments.size() == 1 && before_call->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			BS_TEST_REQUIRE(after_call->arguments.size() == 1 && after_call->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			auto *before = static_cast<BSParser::IdentifierNode *>(before_call->arguments[0]);
+			auto *after = static_cast<BSParser::IdentifierNode *>(after_call->arguments[0]);
+			CHECK(before->source == BSParser::IdentifierNode::UNDEFINED_SOURCE);
+			CHECK(before->suite == loop->loop);
+			CHECK(after->source == BSParser::IdentifierNode::LOCAL_VARIABLE);
+			CHECK(after->variable_source == local);
+			CHECK(local->usages == 1);
+
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			CHECK(rendered(parser) == R"EXPECTED(~~ WARNING at line 5: (CONFUSABLE_LOCAL_USAGE) The identifier "a" will be shadowed below in the block.
+~~ WARNING at line 6: (SHADOWED_VARIABLE) The local variable "a" is shadowing an already-declared variable at line 1 in the current class.)EXPECTED");
+			warning(parser, 0, BSWarning::CONFUSABLE_LOCAL_USAGE, "The identifier \"a\" will be shadowed below in the block.", 5, 15, 16);
+			warning(parser, 1, BSWarning::SHADOWED_VARIABLE, "The local variable \"a\" is shadowing an already-declared variable at line 1 in the current class.", 6, 13, 14);
+			CHECK(before->source == BSParser::IdentifierNode::MEMBER_VARIABLE);
+			CHECK(before->variable_source == member);
+			CHECK(loop->variable->get_datatype().kind == BSParser::DataType::BUILTIN);
+			CHECK(loop->variable->get_datatype().builtin_type == Variant::INT);
+			CHECK(local->usages == 1);
+			CHECK(member->usages == 1);
+		}
+	}
+	TEST_CASE("temporal_local_binding_controls_keep_prior_declarations_and_real_self_failures") {
+		StorageFixture storage;
+		WarningProfile profile;
+		profile.level(BSWarning::SHADOWED_VARIABLE, BSWarning::IGNORE);
+		{
+			BSParser parser;
+			const String source = "func test():\n\tvar a = 1\n\tprint(a)\n";
+			BS_TEST_REQUIRE(parser.parse(source, storage.path("prior_local.barista"), false) == OK);
+			auto *function = parser.get_tree()->get_member("test").function;
+			BS_TEST_REQUIRE(function != nullptr && function->body != nullptr && function->body->statements.size() == 2);
+			auto *local = static_cast<BSParser::VariableNode *>(function->body->statements[0]);
+			auto *call = static_cast<BSParser::CallNode *>(function->body->statements[1]);
+			BS_TEST_REQUIRE(call->arguments.size() == 1 && call->arguments[0]->type == BSParser::Node::IDENTIFIER);
+			auto *use = static_cast<BSParser::IdentifierNode *>(call->arguments[0]);
+			CHECK(use->source == BSParser::IdentifierNode::LOCAL_VARIABLE);
+			CHECK(use->variable_source == local);
+			CHECK(local->usages == 1);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() == OK);
+			diagnostics(parser);
+			CHECK(parser.get_errors().is_empty());
+			CHECK(parser.get_warnings().is_empty());
+			CHECK(use->source == BSParser::IdentifierNode::LOCAL_VARIABLE);
+			CHECK(use->variable_source == local);
+			CHECK(local->usages == 1);
+		}
+		for (const char *keyword : { "var", "const" }) {
+			BSParser parser;
+			const String source = String("func test():\n\t") + keyword + " value = value\n\tprint(value)\n";
+			BS_TEST_REQUIRE(parser.parse(source, storage.path(String(keyword) + "_self_reference.barista"), false) == OK);
+			auto *function = parser.get_tree()->get_member("test").function;
+			BS_TEST_REQUIRE(function != nullptr && function->body != nullptr && function->body->statements.size() == 2);
+			auto *assignable = static_cast<BSParser::AssignableNode *>(function->body->statements[0]);
+			BS_TEST_REQUIRE(assignable->initializer != nullptr && assignable->initializer->type == BSParser::Node::IDENTIFIER);
+			auto *self_use = static_cast<BSParser::IdentifierNode *>(assignable->initializer);
+			CHECK(self_use->source == BSParser::IdentifierNode::UNDEFINED_SOURCE);
+			CHECK(self_use->suite == function->body);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			diagnostics(parser);
+			BS_TEST_REQUIRE(!parser.get_errors().is_empty());
+			CHECK(parser.get_errors().front()->get().message == R"(Identifier "value" not declared in the current scope.)");
+			// Error results intentionally suppress warnings in the public diagnostic block.
+			CHECK(parser.get_warnings().is_empty());
+		}
+	}
+	TEST_CASE("confusable_local_warnings_honor_severity_and_statement_suppression") {
+		StorageFixture storage;
+		struct Consumer {
+			BSWarning::Code code;
+			const char *source;
+			const char *ignored_source;
+			const char *message;
+			int line;
+			int column;
+			int end_column;
+		};
+		const Consumer cases[] = {
+			{ BSWarning::CONFUSABLE_LOCAL_USAGE,
+					"var value = 1\nfunc test():\n\tprint(value)\n\tvar value = 2\n\tprint(value)\n",
+					"var value = 1\nfunc test():\n\t@warning_ignore(\"confusable_local_usage\")\n\tprint(value)\n\tvar value = 2\n\tprint(value)\n",
+					"The identifier \"value\" will be shadowed below in the block.", 3, 11, 16 },
+			{ BSWarning::CONFUSABLE_LOCAL_DECLARATION,
+					"func test():\n\tif true:\n\t\tvar value = 1\n\tvar value = 2\n\tprint(value)\n",
+					"func test():\n\tif true:\n\t\t@warning_ignore(\"confusable_local_declaration\")\n\t\tvar value = 1\n\tvar value = 2\n\tprint(value)\n",
+					"The variable \"value\" is declared below in the parent block.", 3, 13, 18 },
+		};
+		for (const Consumer &c : cases) {
+			for (int mode : { 0, 1, 2, 3 }) {
+				WarningProfile profile;
+				for (int code = 0; code < BSWarning::WARNING_MAX; ++code)
+					profile.level(BSWarning::Code(code), BSWarning::IGNORE);
+				profile.level(c.code, mode == 0 ? BSWarning::IGNORE : mode == 2 ? BSWarning::ERROR
+																				: BSWarning::WARN);
+				BSParser parser;
+				const String source = mode == 3 ? c.ignored_source : c.source;
+				BS_TEST_REQUIRE(parser.parse(source, storage.path("confusable_severity.barista"), false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK((analyzer.analyze() == OK) == (mode != 2));
+				diagnostics(parser);
+				if (mode == 1) {
+					CHECK(parser.get_errors().is_empty());
+					BS_TEST_REQUIRE(parser.get_warnings().size() == 1);
+					warning(parser, 0, c.code, c.message, c.line, c.column, c.end_column);
+				} else if (mode == 2) {
+					BS_TEST_REQUIRE(parser.get_errors().size() == 1);
+					CHECK(parser.get_warnings().is_empty());
+					const auto &error = parser.get_errors().front()->get();
+					CHECK(error.message == String(c.message) + " (Warning treated as error.)");
+					CHECK(error.line == c.line);
+					CHECK(error.column == c.column);
+				} else {
+					CHECK(parser.get_errors().is_empty());
+					CHECK(parser.get_warnings().is_empty());
+				}
+			}
+		}
+	}
+	TEST_CASE("confusable_warn_diagnostics_keep_probe_language_and_resource_valid") {
+		StorageFixture storage;
+		WarningProfile profile;
+		const String path = storage.path("confusable_public.barista");
+		const String source = "var a = 1\n\nfunc test():\n\tprint(a)\n\tvar a = 2\n\tprint(a)\n";
+		Ref<BaristaScriptAnalyzerProbe> probe;
+		probe.instantiate();
+		const Dictionary analyzed = probe->analyze_source(source, path);
+		CHECK(bool(analyzed.get("valid", false)));
+		CHECK(Array(analyzed.get("errors", Array())).is_empty());
+		const Dictionary validated = probe->validate_source(source, path, true);
+		CHECK(bool(validated.get("valid", false)));
+		CHECK(Array(validated.get("errors", Array())).is_empty());
+		const Array warnings = validated.get("warnings", Array());
+		BS_TEST_REQUIRE(warnings.size() == 2);
+		const Dictionary first = warnings[0];
+		CHECK(int(first.get("code", -1)) == BSWarning::CONFUSABLE_LOCAL_USAGE);
+		CHECK(String(first.get("string_code", "")) == "CONFUSABLE_LOCAL_USAGE");
+		CHECK(String(first.get("message", "")) == "The identifier \"a\" will be shadowed below in the block.");
+		CHECK(int(first.get("start_line", 0)) == 4);
+		CHECK(int(first.get("start_column", 0)) == 11);
+		CHECK(int(first.get("end_line", 0)) == 4);
+		CHECK(int(first.get("end_column", 0)) == 12);
+		const Dictionary language = BaristaScriptLanguage::get_singleton()->_validate(source, path, true, true, true, true);
+		CHECK(bool(language.get("valid", false)));
+		CHECK(Array(language.get("errors", Array())).is_empty());
+		CHECK(Array(language.get("warnings", Array())).size() == 2);
+		Ref<BaristaScript> script;
+		script.instantiate();
+		script->set_path(path);
+		script->_set_source_code(source);
+		CHECK(script->_is_valid());
 	}
 	TEST_CASE("unassigned_scalar_counter_keeps_defaults_captures_and_compound_rhs_order") {
 		StorageFixture storage;
