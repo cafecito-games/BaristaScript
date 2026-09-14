@@ -1092,7 +1092,28 @@ void BSAnalyzer::get_class_node_current_scope_classes(BSParser::ClassNode *p_nod
 		(void)p_source;
 	};
 
-	if (p_node->base_type.class_type != nullptr) {
+	auto base_reenters_source_declaration = [&](const BSParser::ClassNode *p_base) {
+		if (p_base == nullptr || p_source == nullptr) {
+			return false;
+		}
+		if (p_base == p_source) {
+			return true;
+		}
+		for (const BSParser::ClassNode::Member &member : p_base->members) {
+			if (member.get_source_node() == p_source) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// A RESOLVING inheritance edge may carry a provisional class pointer so
+	// inheritance recursion can diagnose a real cycle. It is not settled ancestry
+	// yet and must not reenter that class through lexical-scope enumeration. The
+	// interface pass can revisit the same edge after it settles, so retain the
+	// source-declaration guard for that replay as well.
+	if (!p_node->base_type.is_resolving() && p_node->base_type.class_type != nullptr &&
+			!base_reenters_source_declaration(p_node->base_type.class_type)) {
 		resolve_for_scope_traverse(p_node->base_type.class_type);
 		get_class_node_current_scope_classes(p_node->base_type.class_type, p_list, p_source);
 	}
