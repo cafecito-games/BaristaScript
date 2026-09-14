@@ -1887,8 +1887,10 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 			break;
 		}
-		if (current_class != nullptr) {
-			// The declaring class name remains visible before an inherited private alias.
+		const auto resolve_current_class_name = [&]() {
+			if (current_class == nullptr) {
+				return false;
+			}
 			const StringName class_name = current_class->identifier != nullptr ? current_class->identifier->name : StringName();
 			const StringName global_name = current_class->get_global_name();
 			if ((class_name != StringName() && name == class_name) ||
@@ -1898,7 +1900,7 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 					if (!result.is_variant()) {
 						result.is_nullable = result.is_nullable || p_type_node->is_nullable;
 					}
-					return result;
+					return true;
 				}
 				result = type_from_metatype(current_class->get_datatype());
 				result.type_arguments.clear();
@@ -1911,10 +1913,15 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				}
 				result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
 				result.is_nullable = p_type_node->is_nullable;
+				return true;
+			}
+			return false;
+		};
+		if (found_out_of_scope_alias) {
+			// Only a private alias claimant needs the declaring-class exception early.
+			if (resolve_current_class_name()) {
 				return result;
 			}
-		}
-		if (found_out_of_scope_alias) {
 			push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", name), p_type_node);
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
@@ -1972,6 +1979,8 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			if (bound.is_set() && !bound.is_variant()) {
 				result.type_parameter_bound.push_back(bound);
 			}
+			return result;
+		} else if (resolve_current_class_name()) {
 			return result;
 		}
 		// Foundry c9d5e35:2944: flat native types precede namespace candidates.
