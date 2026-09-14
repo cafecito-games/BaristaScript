@@ -714,7 +714,7 @@ private:
 	BSParser::DataType get_operation_type(Variant::Operator p_operation, const BSParser::DataType &p_a, const BSParser::DataType &p_b, bool &r_valid, const BSParser::Node *p_source);
 	BSParser::DataType get_operation_type(Variant::Operator p_operation, const BSParser::DataType &p_a, bool &r_valid, const BSParser::Node *p_source);
 	void mark_node_unsafe(const BSParser::Node *p_node);
-	void reduce_identifier(BSParser::IdentifierNode *p_identifier);
+	void reduce_identifier(BSParser::IdentifierNode *p_identifier, bool p_suppress_undeclared = false);
 	/** Foundry reduce_identifier lambda capture walk (@ c9d5e35) after a capturable local bind. */
 	void maybe_capture_identifier_in_lambda(BSParser::IdentifierNode *p_identifier);
 	/**
