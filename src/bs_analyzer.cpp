@@ -3571,9 +3571,14 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				BSParser::ClassNode *head = file_type.class_type;
 				analyze_class_interface(head, subscript->attribute);
 				if (head->enum_file_decl != nullptr && head->enum_file_decl->get_datatype().get_enum_case_payload(subscript->attribute->name) != nullptr) {
-					// The file-handle diagnostic applies to calls as well as member values.
+					// Foundry c9d5e35:9125-9143,12021-12037: retain the construction-form
+					// error on the attribute and the non-callable error on the full callee.
+					// Source ordering puts the latter first; the failed call is not a case value.
 					reduce_expression(subscript);
-					p_call->set_datatype(subscript->get_datatype());
+					push_error(vformat(R"*(Name "%s" called as a function but is a "%s".)*", p_call->function_name, subscript->get_datatype().to_string()), p_call->callee);
+					BSParser::DataType error;
+					error.kind = BSParser::DataType::VARIANT;
+					p_call->set_datatype(error);
 					return;
 				}
 			}
