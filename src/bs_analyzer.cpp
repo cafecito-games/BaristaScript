@@ -2967,9 +2967,16 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier, bool 
 		maybe_capture_identifier_in_lambda(p_identifier);
 		return;
 	}
-	// Suite locals (including parameters) are declared during parse; bind them first so flow
-	// finality can see LOCAL_VARIABLE / variable_source for `final var` assignment targets.
-	if (p_identifier->suite != nullptr && p_identifier->suite->has_local(p_identifier->name)) {
+	// Suite locals (including parameters) are declared during parse. Only rehydrate one that the
+	// parser had already bound at this source position: the finalized suite also contains later
+	// declarations, and treating those as visible here would erase declaration order.
+	const bool parser_bound_local = p_identifier->source == BSParser::IdentifierNode::FUNCTION_PARAMETER ||
+			p_identifier->source == BSParser::IdentifierNode::LOCAL_VARIABLE ||
+			p_identifier->source == BSParser::IdentifierNode::LOCAL_CONSTANT ||
+			p_identifier->source == BSParser::IdentifierNode::LOCAL_ITERATOR ||
+			p_identifier->source == BSParser::IdentifierNode::LOCAL_BIND;
+	if (parser_bound_local &&
+			p_identifier->suite != nullptr && p_identifier->suite->has_local(p_identifier->name)) {
 		const BSParser::SuiteNode::Local &local = p_identifier->suite->get_local(p_identifier->name);
 		p_identifier->source_function = local.source_function;
 		switch (local.type) {
@@ -3037,6 +3044,15 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier, bool 
 				break;
 		}
 	}
+#ifdef DEBUG_ENABLED
+	// Foundry reduce_identifier @ c9d5e35:12616-12625: an unresolved parser source with a
+	// same-suite declaration in the finalized tree is a forward use. Warn, then keep looking so
+	// an outer member/global can still supply the value (including a local's own initializer).
+	if (p_identifier->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+			p_identifier->suite != nullptr && p_identifier->suite->has_local(p_identifier->name)) {
+		push_warning(p_identifier, BSWarning::CONFUSABLE_LOCAL_USAGE, { String(p_identifier->name) });
+	}
+#endif // DEBUG_ENABLED
 	if (current_function != nullptr) {
 		for (int i = 0; i < current_function->parameters.size(); i++) {
 			BSParser::ParameterNode *parameter = current_function->parameters[i];
@@ -9195,6 +9211,21 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 		reduce_expression(static_cast<BSParser::ExpressionNode *>(p_node), true);
 		return;
 	}
+#ifdef DEBUG_ENABLED
+	// Foundry resolve_assignable @ c9d5e35:5349-5361: parser suites are finalized before
+	// analysis, so a declaration in a child block can identify the same spelling declared later
+	// in its immediate parent without changing either declaration's lexical binding.
+	if (p_node->type == BSParser::Node::VARIABLE || p_node->type == BSParser::Node::CONSTANT) {
+		BSParser::AssignableNode *assignable = static_cast<BSParser::AssignableNode *>(p_node);
+		if (assignable->identifier != nullptr && assignable->identifier->suite != nullptr &&
+				assignable->identifier->suite->parent_block != nullptr &&
+				assignable->identifier->suite->parent_block->has_local(assignable->identifier->name)) {
+			const BSParser::SuiteNode::Local &parent_local = assignable->identifier->suite->parent_block->get_local(assignable->identifier->name);
+			push_warning(assignable->identifier, BSWarning::CONFUSABLE_LOCAL_DECLARATION,
+					{ parent_local.get_name(), String(assignable->identifier->name) });
+		}
+	}
+#endif // DEBUG_ENABLED
 	switch (p_node->type) {
 		case BSParser::Node::VARIABLE_DESTRUCTURE:
 			resolve_variable_destructure(static_cast<BSParser::VariableDestructureNode *>(p_node));
