@@ -45167,10 +45167,34 @@
     }
   },
   "rewritten": {
+    "features/lookup_class.barista": "Rename incidental root class E and its use to G while preserving strict order-independent lexical-outer conflicts, Internal.E, inherited TARGET/WAITING, nested F, and unchanged BS_TEST_OK.",
     "features/use_preload_script_as_type.barista": "Translate the exact declared preload resource type FoundryScript to the registered BaristaScript class. Preserve the preload, type-use assertion, line positions and complete static success expectation."
   },
   "schema_version": 1,
   "source_edits": {
+    "analyzer/features/lookup_class.fs": {
+      "patches": [
+        {
+          "after": "G",
+          "before": "E",
+          "end": 533,
+          "line": 32,
+          "occurrences": 1,
+          "rule": "strict-outer-conflict-incidental-rename",
+          "start": 532
+        },
+        {
+          "after": "G",
+          "before": "E",
+          "end": 794,
+          "line": 49,
+          "occurrences": 1,
+          "rule": "strict-outer-conflict-incidental-rename",
+          "start": 793
+        }
+      ],
+      "sha256": "df86ab03fb9a399ab518538b0382a6bb69e62143531fed246d48a00d7a8c012b"
+    },
     "analyzer/features/use_preload_script_as_type.fs": {
       "patches": [
         {

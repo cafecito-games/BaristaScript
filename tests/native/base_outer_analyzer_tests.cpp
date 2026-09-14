@@ -489,6 +489,35 @@ TEST_SUITE("base_outer_analyzer") {
 		}
 	}
 
+	TEST_CASE("later_declared_lexical_outer_surfaces_still_conflict_deterministically") {
+		struct Conflict {
+			const char *name;
+			const char *outer_declaration;
+			const char *expected;
+		};
+		for (const Conflict &conflict : {
+					 Conflict{ "constant", "\tconst TOKEN := 1\n", ">> ERROR at line 3: The member \"TOKEN\" already exists in outer class Outer." },
+					 Conflict{ "nested_class", "\tclass TOKEN:\n\t\tpass\n", ">> ERROR at line 3: The member \"TOKEN\" already exists in outer class Outer." },
+			 }) {
+			CAPTURE(conflict.name);
+			const String source = "class Outer:\n"
+								  "\tclass Inner:\n"
+								  "\t\tvar TOKEN := 2\n" +
+					String(conflict.outer_declaration);
+			for (int repeat = 0; repeat < 2; repeat++) {
+				CAPTURE(repeat);
+				StorageFixture storage;
+				const String source_path = storage.path(vformat("later_outer_%s_%d.barista", conflict.name, repeat));
+				BSParser parser;
+				BS_TEST_REQUIRE(parser.parse(source, source_path, false) == OK);
+				BSAnalyzer analyzer(&parser);
+				CHECK(analyzer.analyze() != OK);
+				CHECK(error_block(parser) == conflict.expected);
+				public_agreement(source, source_path, false);
+			}
+		}
+	}
+
 	TEST_CASE("exact_base_outer_resolution_graph_keeps_all_six_call_sites_static") {
 		StorageFixture storage;
 		install_exact_graph(storage);

@@ -7,6 +7,7 @@
 
 """Pinned miniature analyzer transport and fail-closed staging regressions."""
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -36,6 +37,8 @@ class AnalyzerImport(unittest.TestCase):
         self.policy['owners'] = {}
         self.policy['expectation_edits'] = {}
         self.policy['expectation_overrides'] = {}
+        self.policy['rewritten'].pop('features/lookup_class.barista')
+        self.policy['source_edits'].pop('analyzer/features/lookup_class.fs')
 
     def inventory(self):
         return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus_staging/analyzer')
@@ -432,7 +435,43 @@ class FullPinned(unittest.TestCase):
         first = importer.inventory_sources(source, policy, uri)
         self.assertEqual(first, importer.inventory_sources(source, policy, uri))
         self.assertEqual((first['counts']['sources'], first['counts']['cases'], first['counts']['helpers']), (1596, 1346, 250))
+        self.assertEqual(first['counts']['support_helpers'], 2)
         self.assertEqual(sum(len(r['references']) for r in first['sources']), 139)
+
+        lookup_path = 'analyzer/features/lookup_class.fs'
+        lookup_case = 'features/lookup_class.barista'
+        lookup_data = (source / lookup_path).read_bytes()
+        lookup_edit = policy['source_edits'][lookup_path]
+        self.assertIn('strict order-independent lexical-outer conflicts',
+                      policy['rewritten'][lookup_case])
+        self.assertEqual(hashlib.sha256(lookup_data).hexdigest(),
+                         'df86ab03fb9a399ab518538b0382a6bb69e62143531fed246d48a00d7a8c012b')
+        self.assertEqual(lookup_edit, {
+            'sha256': 'df86ab03fb9a399ab518538b0382a6bb69e62143531fed246d48a00d7a8c012b',
+            'patches': [
+                {'start': 532, 'end': 533, 'line': 32, 'before': 'E', 'after': 'G',
+                 'rule': 'strict-outer-conflict-incidental-rename', 'occurrences': 1},
+                {'start': 793, 'end': 794, 'line': 49, 'before': 'E', 'after': 'G',
+                 'rule': 'strict-outer-conflict-incidental-rename', 'occurrences': 1},
+            ],
+        })
+        lookup = next(record for record in first['sources']
+                      if record['upstream_path'] == lookup_path)
+        self.assertEqual(lookup['disposition'], 'rewritten')
+        self.assertEqual(lookup['expected_block'], 'BS_TEST_OK')
+        self.assertEqual(lookup['expectation_edits'], [])
+        self.assertEqual(lookup['imported_sha256'],
+                         '005b619a501e0d163c00f0929ab42106e3674a6c6034cce7a08d819535f13230')
+        transformed = importer.patch(lookup_data, lookup['transformations'], lookup_path)
+        self.assertIn(b'class G extends D:', transformed)
+        self.assertIn(b'var f: = G.F.new()', transformed)
+        self.assertIn(b'class E extends External.E:', transformed)
+        self.assertNotIn(lookup_path[:-3] + '.out', policy['expectation_edits'])
+
+        stale = copy.deepcopy(policy)
+        stale['source_edits'][lookup_path]['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'source edit hash preimage mismatch'):
+            importer.inventory_sources(source, stale, uri)
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary) / 'stage'
             importer.write_stage(first, source, stage)
