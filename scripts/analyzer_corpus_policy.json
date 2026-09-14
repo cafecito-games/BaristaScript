@@ -114,25 +114,25 @@
     "errors/partial_trait_reapplication_conflicting_arguments.barista": "M5: Partial knownness of generic argument vectors is the asserted relation; fixing all parameters removes that relation and may change D4 validity. Dependency: case-local generic composite Pair/Result -> generic trait Keeper -> partial generic class -> specialized destination/conformance",
     "errors/proxy_create_proxy_method_type_parameter.barista": "M5: Concrete proxy target admission is separate; this block only asserts missing generic reification. Dependency: case-local free method/class parameter -> builtin create_proxy type argument -> return T",
     "errors/proxy_create_proxy_static_type_parameter.barista": "M5: Concrete proxy target admission is separate; this block only asserts missing generic reification. Dependency: case-local free method/class parameter -> builtin create_proxy type argument -> return T",
-    "errors/retroactive_conformance_boundaries_reject_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_builtin_store_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_class_store_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_conflicting_chain_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_cross_file_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_native_ancestor_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_native_chain_rejects_conflicting_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_native_chain_rejects_conflicting_arguments_cross_file.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_native_chain_rejects_conflicting_arguments_reversed.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_native_chain_rejects_conflicting_composite_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_open_position_keeps_known_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_rejects_conflicting_component.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_cross_file.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_cross_file_reversed.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_reversed.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_uses.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_uses_cross_file.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
-    "errors/retroactive_conformance_script_chain_rejects_conflicting_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_boundaries_reject_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_builtin_store_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_class_store_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_conflicting_chain_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_cross_file_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_native_ancestor_rejects_conflicting_evidence.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_native_chain_rejects_conflicting_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_native_chain_rejects_conflicting_arguments_cross_file.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_native_chain_rejects_conflicting_arguments_reversed.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_native_chain_rejects_conflicting_composite_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_open_position_keeps_known_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_rejects_conflicting_component.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_cross_file.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_cross_file_reversed.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_reversed.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_uses.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_script_ancestor_rejects_conflicting_uses_cross_file.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+    "errors/retroactive_conformance_script_chain_rejects_conflicting_arguments.barista": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
     "errors/retroactive_conformance_script_chain_rejects_conflicting_arguments_cross_file.barista": "M5: The complete negative blocks require differing generic argument vectors. Without them all trait identities agree and legal ancestor shadowing cannot reproduce the assertion. Dependency: per-case exact helper chains above, all bodies read including transitive bridge and subtrait dependencies",
     "errors/retroactive_conformance_script_chain_rejects_conflicting_arguments_cross_file_reversed.barista": "M5: The complete negative blocks require differing generic argument vectors. Without them all trait identities agree and legal ancestor shadowing cannot reproduce the assertion. Dependency: per-case exact helper chains above, all bodies read including transitive bridge and subtrait dependencies",
     "errors/retroactive_conformance_script_chain_rejects_conflicting_arguments_reversed.barista": "M5: The complete negative blocks require differing generic argument vectors. Without them all trait identities agree and legal ancestor shadowing cannot reproduce the assertion. Dependency: per-case exact helper chains above, all bodies read including transitive bridge and subtrait dependencies",
@@ -285,7 +285,7 @@
     "errors/integer_constant_out_of_range_unwidthed_argument.barista": "M3 D1 exclusion: take(int) called with5000000000 is valid signed64; sole expected int32 argument conversion error removed. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
     "errors/integer_constant_out_of_range_widthed_positions.barista": "M3 D1 exclusion: All three max-ulong-to-long return/call/local errors rely on unsigned carrier versus signed carrier. Dropping suffix makes an out-of-range token, a different pipeline assertion. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
     "errors/integer_variable_width_crossing_rejected.barista": "M3 D1 exclusion: Plain.long member assigned ulong via set(value) differs only by removed signedness; changing both to int makes set valid. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
-    "errors/match_plain_enum_partial_carrier_test_not_exhaustive.barista": "M3 D1 exclusion: Plain enum match value is int is partial only under Foundry int32/long carrier distinction. \u00a76.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
+    "errors/match_plain_enum_partial_carrier_test_not_exhaustive.barista": "M3 D1 exclusion: Plain enum match value is int is partial only under Foundry int32/long carrier distinction. §6.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
     "errors/numeric_union_carrier_crossing_arithmetic.barista": "M3 D1 exclusion: int|long plus uint asserts cross-carrier arithmetic without statically known operands. D1 collapses union to int and removes cross-carrier incompatibility. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
     "errors/numeric_union_number_bound_arithmetic.barista": "M3 D1 exclusion: Number-bound X+Y fails because Foundry Number includes incompatible long/ulong. Barista Number=int|float removes that exact bad combination; generic inference does not rescue the removed arithmetic assertion. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
     "errors/reinterpret_integer_cast.barista": "M3 D1 exclusion: Every as! error tests equal integer widths or operand/target admission of a removed operator. Ordinary as has different semantics and cannot preserve any complete assertion. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
@@ -5047,7 +5047,7 @@
         "advisory_report": "45-m5-source-errors.json",
         "advisory_report_sha256": "f168c72c0dd42cfee08805df8d6f3cc509272f40208747f622c5fce88cfd958a",
         "assertion": "Exact #45 declared compiler deferral; required non-generic enum helper returns an improperly bare payload case.",
-        "final_disposition": "Exact compiler/runtime deferral; not executed or counted as a static pass.",
+        "final_disposition": "M4: pinned compiler-error assertion lies after static analyzer evaluation; exact #45 later-stage deferral.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/enum_name_bare_payload_case_in_own_body.fs",
         "scope_observation": "preserve_exact_compiler_deferral"
       }
@@ -8428,12 +8428,12 @@
         141
       ],
       "primary_issue": 139,
-      "reason": "A `final` class has no subtypes, so a method the class does not declare can never be supplied by something the analyzer cannot see. The call below used to pass analysis in silence \u2014 the `UNSAFE_METHOD_ACCESS` warning that covered it is ignored by default \u2014 and failed only when the line ran. Line 12: message.deliver() => Cannot call \"deliver()\" on \"FrmMessage\": the method does not exist, and the class is final, so no subtype can supply it.",
+      "reason": "A `final` class has no subtypes, so a method the class does not declare can never be supplied by something the analyzer cannot see. The call below used to pass analysis in silence — the `UNSAFE_METHOD_ACCESS` warning that covered it is ignored by default — and failed only when the line ran. Line 12: message.deliver() => Cannot call \"deliver()\" on \"FrmMessage\": the method does not exist, and the class is final, so no subtype can supply it.",
       "review_state": "execution_reviewed",
       "source_review": {
         "advisory_report": "45-source-errors_remaining_a.json",
         "advisory_report_sha256": "d5d0bfcd78ea107000f046689d7330b85d7fb041661f2d917ed03754a69d689a",
-        "assertion": "A `final` class has no subtypes, so a method the class does not declare can never be supplied by something the analyzer cannot see. The call below used to pass analysis in silence \u2014 the `UNSAFE_METHOD_ACCESS` warning that covered it is ignored by default \u2014 and failed only when the line ran. Line 12: message.deliver() => Cannot call \"deliver()\" on \"FrmMessage\": the method does not exist, and the class is final, so no subtype can supply it.",
+        "assertion": "A `final` class has no subtypes, so a method the class does not declare can never be supplied by something the analyzer cannot see. The call below used to pass analysis in silence — the `UNSAFE_METHOD_ACCESS` warning that covered it is ignored by default — and failed only when the line ran. Line 12: message.deliver() => Cannot call \"deliver()\" on \"FrmMessage\": the method does not exist, and the class is final, so no subtype can supply it.",
         "final_disposition": "No final eligibility decision; all static cases remain staged and executed.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/final_receiver_unresolved_method.fs",
         "scope_observation": "retained_static_no_M5_basis"
@@ -12214,7 +12214,7 @@
         "advisory_report": "45-m5-source-errors.json",
         "advisory_report_sha256": "f168c72c0dd42cfee08805df8d6f3cc509272f40208747f622c5fce88cfd958a",
         "assertion": "Exact #45 declared compiler deferral. Source resolves helper with bare generic uses, but upstream expected status is FS_TEST_COMPILER_ERROR and text is Failed to compile depended scripts.",
-        "final_disposition": "Exact compiler/runtime deferral; not executed or counted as a static pass.",
+        "final_disposition": "M4: pinned compiler-error assertion lies after static analyzer evaluation; exact #45 later-stage deferral.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/generic_trait_use_missing_type_arguments_dependency.fs",
         "scope_observation": "preserve_exact_compiler_deferral"
       }
@@ -13964,13 +13964,13 @@
         138
       ],
       "primary_issue": 45,
-      "reason": "M3 D1 exclusion: Plain enum match value is int is partial only under Foundry int32/long carrier distinction. \u00a76.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
+      "reason": "M3 D1 exclusion: Plain enum match value is int is partial only under Foundry int32/long carrier distinction. §6.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
       "review_state": "source_reviewed_excluded",
       "source_review": {
         "advisory_report": "45-pending395-unresolved-root-decision-20260913.json",
         "advisory_report_sha256": "4c9635ecf216d945a090bc6625c54334700961d1795d674831f40f8bc58fe380",
-        "assertion": "Plain enum match value is int is partial only under Foundry int32/long carrier distinction. \u00a76.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern.",
-        "final_disposition": "M3 D1 exclusion: Plain enum match value is int is partial only under Foundry int32/long carrier distinction. \u00a76.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
+        "assertion": "Plain enum match value is int is partial only under Foundry int32/long carrier distinction. §6.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern.",
+        "final_disposition": "M3 D1 exclusion: Plain enum match value is int is partial only under Foundry int32/long carrier distinction. §6.1 explicitly makes Barista is int whole-carrier exhaustive; preserving the negative is impossible without changing its tested pattern. The reason must identify the removed integer-width/signedness premise and preserve the original source/output record and hashes in inventory provenance.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/match_plain_enum_partial_carrier_test_not_exhaustive.fs",
         "scope_observation": "exact_D1_non_applicable"
       }
@@ -16563,13 +16563,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "RcdTarget recorded Keeper[int], but return/argument/member demand Keeper[String]; only recorded argument contradiction makes all three fail.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_boundaries_reject_conflicting_evidence.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -16629,13 +16629,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "extend int uses RcbKeeper[int], int value stored in RcbKeeper[String]; generic conformance argument evidence is essential.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_builtin_store_rejects_conflicting_evidence.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -16728,13 +16728,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "RccTarget conforms only through extend Keeper[int], stored as Keeper[String]; no nominal conformance failure exists without argument vector.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_class_store_rejects_conflicting_evidence.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -16761,13 +16761,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "BaseKeeper uses Keeper[String], child retroactively Keeper[int]; same-trait different-vector chain contradiction.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_conflicting_chain_arguments.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -16795,13 +16795,13 @@
         140
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "preload retroactive_conformance_cross_file_source.notest.fs -> RcxTarget/RcxKeeper[T] in rcx_target/rcx_trait.notest.fs -> recorded int versus consumer String; all three helpers read and conflict is specialized evidence, not reach failure.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_cross_file_rejects_conflicting_evidence.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17026,13 +17026,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "RefCounted conformed Keeper[int], Resource descendant stored Keeper[String]; generic binding inherited through native ancestry is target.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_native_ancestor_rejects_conflicting_evidence.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17059,13 +17059,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "Object Keeper[int] versus RefCounted Keeper[String] creates specialized dispatch incoherence; plain same-trait ancestor shadowing is legal.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_native_chain_rejects_conflicting_arguments.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17093,13 +17093,13 @@
         140
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "preload rncc_chain_ancestor_source.notest.fs Object Keeper[int] -> rncc_chain_trait.notest.fs RnccxKeeper[T] -> local RefCounted Keeper[String]; exact external generic conflict path.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_native_chain_rejects_conflicting_arguments_cross_file.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17126,13 +17126,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "RefCounted Keeper[String] then Object Keeper[int] reverses native-chain conflict order; absent argument vectors no conflict remains.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_native_chain_rejects_conflicting_arguments_reversed.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17159,13 +17159,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "Object Keeper[Array[int]] versus RefCounted Keeper[Array[String]] compares composite argument element identity.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_native_chain_rejects_conflicting_composite_arguments.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17225,13 +17225,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "RcoDuo[int,Self] on open RcoTarget retains known int while Self position remains unknown; agreeing String/float second-slot controls and conflicting first-slot store require partial generic evidence, subject to D4 review at M5.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_open_position_keeps_known_arguments.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17258,13 +17258,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "RclTarget recorded Keeper[Array[int]] but destination Keeper[Array[String]]; nested generic argument evidence alone is incompatible.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_rejects_conflicting_component.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17291,13 +17291,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "SanMiddle Keeper[int] versus script descendant SanHolder Keeper[String]; chain coherence requires specialized trait arguments.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17325,13 +17325,13 @@
         140
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "sax_ancestor_conformance.notest.fs -> SaxMiddle in sax_ancestor_middle.notest.fs and SaxKeeper[T] in sax_ancestor_trait.notest.fs; local SaxHolder descendant records String against ancestor int. All three providers read.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_cross_file.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17359,13 +17359,13 @@
         140
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "say_ancestor_holder.notest.fs declares SayHolder extends SayMiddle plus Keeper[String], with say_ancestor_middle/trait helpers; local base conformance records int, reversing cross-file direction. All three providers read.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_cross_file_reversed.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17392,13 +17392,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "SanrHolder Keeper[String] then SanrMiddle Keeper[int] reverses same-file script ancestry declaration order; sole error is differing vectors.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_script_ancestor_rejects_conflicting_arguments_reversed.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17425,13 +17425,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "SanuHolder uses Keeper[String] versus retroactive base Keeper[int] compares declared and registry evidence sources.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_script_ancestor_rejects_conflicting_uses.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17459,13 +17459,13 @@
         140
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "preload sau_ancestor_conformance.notest.fs -> SauMiddle/sau_ancestor_middle and SauKeeper[T]/sau_ancestor_trait; local derived uses String versus base int. Trait size()->int is deliberately independent of T, proving argument coherence alone is the target.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_script_ancestor_rejects_conflicting_uses_cross_file.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17492,13 +17492,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+      "reason": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "Native RefCounted Keeper[int] versus SchHolder script descendant Keeper[String]; script-to-native ancestry specialization conflict.",
-        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (\u00a74.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
+        "final_disposition": "M5: Every target conformance remains nominally valid without arguments. Deleting vectors makes inheritance-chain shadowing legal (§4.8), so a concrete rewrite cannot preserve the contradiction. Dependency: conformance declaration -> target inheritance chain -> generic trait argument identity; external provider chains explicitly named per case",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_script_chain_rejects_conflicting_arguments.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -17996,12 +17996,12 @@
         138
       ],
       "primary_issue": 140,
-      "reason": "Required source bytes are present; PRELOAD declaration does not produce its constant script identity before consumers. Loaded conformance proves RtcScopedLoadedTrait and loaded_mark at lines 10\u201312; unloaded RtcScopedTrait assignment at line 13 and mark at line 15 remain unavailable. Both static diagnostics and the loaded controls are retained.",
+      "reason": "Required source bytes are present; PRELOAD declaration does not produce its constant script identity before consumers. Loaded conformance proves RtcScopedLoadedTrait and loaded_mark at lines 10–12; unloaded RtcScopedTrait assignment at line 13 and mark at line 15 remain unavailable. Both static diagnostics and the loaded controls are retained.",
       "review_state": "execution_reviewed",
       "source_review": {
         "advisory_report": "45-source-errors_remaining_b.json",
         "advisory_report_sha256": "16068f49d8aa488900a274a7f3e5b2b294e8a6db2c2d247fe818ca28468e6fb0",
-        "assertion": "Loaded conformance proves RtcScopedLoadedTrait and loaded_mark at lines 10\u201312; unloaded RtcScopedTrait assignment at line 13 and mark at line 15 remain unavailable. Both static diagnostics and the loaded controls are retained.",
+        "assertion": "Loaded conformance proves RtcScopedLoadedTrait and loaded_mark at lines 10–12; unloaded RtcScopedTrait assignment at line 13 and mark at line 15 remain unavailable. Both static diagnostics and the loaded controls are retained.",
         "final_disposition": "No final eligibility decision; all static cases remain staged and executed.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/retroactive_conformance_unloaded_declaring_file.fs",
         "scope_observation": "retained_static_no_M5_basis"
@@ -19554,12 +19554,12 @@
         138
       ],
       "primary_issue": 140,
-      "reason": "Required source bytes are present; PRELOAD declaration does not produce its constant script identity before consumers. Provider callable property/result use int parameters and signal property/result carry int. Consumer lines 5\u20138 request String versions; all four external closed-signature mismatches remain M3.",
+      "reason": "Required source bytes are present; PRELOAD declaration does not produce its constant script identity before consumers. Provider callable property/result use int parameters and signal property/result carry int. Consumer lines 5–8 request String versions; all four external closed-signature mismatches remain M3.",
       "review_state": "execution_reviewed",
       "source_review": {
         "advisory_report": "45-source-errors_remaining_b.json",
         "advisory_report_sha256": "16068f49d8aa488900a274a7f3e5b2b294e8a6db2c2d247fe818ca28468e6fb0",
-        "assertion": "Provider callable property/result use int parameters and signal property/result carry int. Consumer lines 5\u20138 request String versions; all four external closed-signature mismatches remain M3.",
+        "assertion": "Provider callable property/result use int parameters and signal property/result carry int. Consumer lines 5–8 request String versions; all four external closed-signature mismatches remain M3.",
         "final_disposition": "No final eligibility decision; all static cases remain staged and executed.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/strict_external_signature_mismatch.fs",
         "scope_observation": "retained_static_no_M5_basis"
@@ -22854,13 +22854,13 @@
         45
       ],
       "primary_issue": 141,
-      "reason": "The int alias collision at line 3 and native Label collision at line 7 remain meaningful. uint/long/ulong collisions at lines 4\u20136 rely on deleted D1 builtin names; renaming all to int creates different duplicate declarations.",
+      "reason": "The int alias collision at line 3 and native Label collision at line 7 remain meaningful. uint/long/ulong collisions at lines 4–6 rely on deleted D1 builtin names; renaming all to int creates different duplicate declarations.",
       "review_state": "execution_reviewed",
       "source_review": {
         "adaptation_boundary": "Retain concrete M3 assertions separately. Any later source rewrite requires exact preimages, equivalent retained assertions and real execution; unchanged discovery does not prove that adaptation.",
         "advisory_report": "45-source-errors_remaining_b.json",
         "advisory_report_sha256": "16068f49d8aa488900a274a7f3e5b2b294e8a6db2c2d247fe818ca28468e6fb0",
-        "assertion": "The int alias collision at line 3 and native Label collision at line 7 remain meaningful. uint/long/ulong collisions at lines 4\u20136 rely on deleted D1 builtin names; renaming all to int creates different duplicate declarations.",
+        "assertion": "The int alias collision at line 3 and native Label collision at line 7 remain meaningful. uint/long/ulong collisions at lines 4–6 rely on deleted D1 builtin names; renaming all to int creates different duplicate declarations.",
         "final_disposition": "No final eligibility decision; all static cases remain staged and executed.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/type_alias_hides_existing_type.fs",
         "scope_observation": "mixed_D1_and_retained_static_review"
@@ -22957,13 +22957,13 @@
         45
       ],
       "primary_issue": 141,
-      "reason": "Scalar is an alias used as a value and call at lines 11\u201312, and Only is used as a value through new at line 13. uint is incidental to Scalar naming no value; replace its union arm by a retained String arm while preserving all four alias errors.",
+      "reason": "Scalar is an alias used as a value and call at lines 11–12, and Only is used as a value through new at line 13. uint is incidental to Scalar naming no value; replace its union arm by a retained String arm while preserving all four alias errors.",
       "review_state": "execution_reviewed",
       "source_review": {
         "adaptation_boundary": "Retain concrete M3 assertions separately. Any later source rewrite requires exact preimages, equivalent retained assertions and real execution; unchanged discovery does not prove that adaptation.",
         "advisory_report": "45-source-errors_remaining_b.json",
         "advisory_report_sha256": "16068f49d8aa488900a274a7f3e5b2b294e8a6db2c2d247fe818ca28468e6fb0",
-        "assertion": "Scalar is an alias used as a value and call at lines 11\u201312, and Only is used as a value through new at line 13. uint is incidental to Scalar naming no value; replace its union arm by a retained String arm while preserving all four alias errors.",
+        "assertion": "Scalar is an alias used as a value and call at lines 11–12, and Only is used as a value through new at line 13. uint is incidental to Scalar naming no value; replace its union arm by a retained String arm while preserving all four alias errors.",
         "final_disposition": "No final eligibility decision; all static cases remain staged and executed.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/type_alias_not_an_expression.fs",
         "scope_observation": "D1_incidental_rewrite_candidate"
@@ -28028,12 +28028,12 @@
         45
       ],
       "primary_issue": 141,
-      "reason": "The only failure is rpc_id first argument String versus synthetic native peer_id integer at line 14. The source uses no deleted token, but the pinned output says long. fs_analyzer.cpp:16353\u201316354 prepends native PropertyInfo(INT, peer_id). D1 changes its spelling to int while preserving position and String mismatch.",
+      "reason": "The only failure is rpc_id first argument String versus synthetic native peer_id integer at line 14. The source uses no deleted token, but the pinned output says long. fs_analyzer.cpp:16353–16354 prepends native PropertyInfo(INT, peer_id). D1 changes its spelling to int while preserving position and String mismatch.",
       "review_state": "execution_reviewed",
       "source_review": {
         "advisory_report": "45-source-errors_remaining_b.json",
         "advisory_report_sha256": "16068f49d8aa488900a274a7f3e5b2b294e8a6db2c2d247fe818ca28468e6fb0",
-        "assertion": "The only failure is rpc_id first argument String versus synthetic native peer_id integer at line 14. The source uses no deleted token, but the pinned output says long. fs_analyzer.cpp:16353\u201316354 prepends native PropertyInfo(INT, peer_id). D1 changes its spelling to int while preserving position and String mismatch.",
+        "assertion": "The only failure is rpc_id first argument String versus synthetic native peer_id integer at line 14. The source uses no deleted token, but the pinned output says long. fs_analyzer.cpp:16353–16354 prepends native PropertyInfo(INT, peer_id). D1 changes its spelling to int while preserving position and String mismatch.",
         "final_disposition": "No final eligibility decision; all static cases remain staged and executed.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/typed_callable_bind_gapped_arity_rpc_id_peer_id_type.fs",
         "scope_observation": "D1_native_metadata_spelling_review"
@@ -42369,7 +42369,7 @@
         "advisory_report": "45-m5-source-features_warnings.json",
         "advisory_report_sha256": "df40f083ee4f71c37e377731723a15836c6b8668adfb1c5edb975f71f0bd4486",
         "assertion": "Paired output is FS_TEST_RUNTIME_ERROR with two is_inside_tree errors; source:18,22-26 is closed callable arity/RPC checking. Preserve #45's exact named later-stage deferral; there is no generic basis and this audit does not reinterpret its status.",
-        "final_disposition": "Exact compiler/runtime deferral; not executed or counted as a static pass.",
+        "final_disposition": "M4: pinned runtime-error assertion lies after static analyzer evaluation; exact #45 later-stage deferral.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/features/typed_callable_bind_gapped_arity_rpc_id.fs",
         "scope_observation": "preserve_exact_later_stage_deferral"
       }
@@ -42455,7 +42455,7 @@
         "advisory_report": "45-m5-source-features_warnings.json",
         "advisory_report_sha256": "df40f083ee4f71c37e377731723a15836c6b8668adfb1c5edb975f71f0bd4486",
         "assertion": "Paired output is FS_TEST_RUNTIME_ERROR with two is_inside_tree errors; source:16,21-22 is closed bind/unbind RPC arity checking. Preserve #45's exact named later-stage deferral without converting it to analyzer success.",
-        "final_disposition": "Exact compiler/runtime deferral; not executed or counted as a static pass.",
+        "final_disposition": "M4: pinned runtime-error assertion lies after static analyzer evaluation; exact #45 later-stage deferral.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/features/typed_callable_unbind_gapped_arity_rpc_id.fs",
         "scope_observation": "preserve_exact_later_stage_deferral"
       }

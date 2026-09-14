@@ -323,6 +323,10 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                           'source_reviewed_excluded' if path in triage['excluded'] else None)
         if expected_state is not None and owner['review_state'] != expected_state:
             raise ValueError(f'{expected_state.removeprefix("source_reviewed_")} policy requires matching owner state: {path}')
+        if (expected_state is not None
+                and (owner['reason'] != triage[expected_state.removeprefix('source_reviewed_')][path]
+                     or owner['source_review']['final_disposition'] != triage[expected_state.removeprefix('source_reviewed_')][path])):
+            raise ValueError(f'{expected_state.removeprefix("source_reviewed_")} disposition rationale mismatch: {path}')
         if expected_state is None and owner['review_state'] in ('source_reviewed_deferred', 'source_reviewed_excluded'):
             raise ValueError(f'orphan reviewed disposition owner: {path}')
     for disposition in ('deferred', 'excluded'):

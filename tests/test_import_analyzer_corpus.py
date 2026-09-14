@@ -142,6 +142,8 @@ class AnalyzerImport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'excluded policy requires matching owner state'):
             self.inventory()
         owner['review_state'] = 'source_reviewed_excluded'
+        owner['reason'] = self.policy['excluded'][path]
+        owner['source_review']['final_disposition'] = self.policy['excluded'][path]
         self.inventory()
 
         self.policy['excluded'].pop(path)
@@ -149,6 +151,8 @@ class AnalyzerImport(unittest.TestCase):
             self.inventory()
         owner['review_state'] = 'source_reviewed_deferred'
         self.policy['deferred'][path] = 'M5-reviewed fixture.'
+        owner['reason'] = self.policy['deferred'][path]
+        owner['source_review']['final_disposition'] = self.policy['deferred'][path]
         self.inventory()
 
         owner['source_review'] = dict(owner['source_review'], identity='wrong.fs')
@@ -164,6 +168,32 @@ class AnalyzerImport(unittest.TestCase):
         self.policy['excluded'][path] = 'Root-reviewed removed premise fixture.'
         with self.assertRaisesRegex(ValueError, 'excluded policy requires owner records'):
             self.inventory()
+
+    def test_reviewed_disposition_rationale_must_match_both_owner_fields(self):
+        path = 'errors/preload_missing_relative_path.barista'
+        for disposition in ('deferred', 'excluded'):
+            state = 'source_reviewed_' + disposition
+            reason = f'{disposition} source-reviewed fixture rationale.'
+            with self.subTest(disposition=disposition):
+                self.policy[disposition][path] = reason
+                owner = self.disposition_owner(path, state, reason)
+                self.policy['owners'][path] = owner
+                self.inventory()
+                for field in ('reason', 'final_disposition'):
+                    with self.subTest(disposition=disposition, field=field):
+                        if field == 'reason':
+                            owner[field] = 'contradictory owner rationale'
+                        else:
+                            owner['source_review'][field] = 'contradictory final disposition'
+                        with self.assertRaisesRegex(ValueError, 'disposition rationale mismatch'):
+                            self.inventory()
+                        owner['reason'] = reason
+                        owner['source_review']['final_disposition'] = reason
+                self.policy[disposition].pop(path)
+                self.policy['owners'].pop(path)
+
+    def test_authored_policy_uses_canonical_importer_encoding(self):
+        self.assertEqual(self.m.POLICY.read_bytes(), self.m.encoded(self.m.default_policy()))
 
     def test_only_missing_metadata_producers_are_prerequisites(self):
         owners = self.m.default_policy()['owners']
