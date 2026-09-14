@@ -1244,6 +1244,22 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 			}
 		}
 
+		// A flat native head claims the chain before namespace lookup. D7 still
+		// forbids native nested types; the tail check below reports that at the tail.
+		if (!found && ClassDB::class_exists(first)) {
+			Engine *engine = Engine::get_singleton();
+			if (engine != nullptr && engine->has_singleton(first)) {
+				push_error(vformat(R"(Cannot inherit native class "%s" because it is an engine singleton.)", first), first_id);
+				p_class->base_type = BSParser::DataType();
+				return;
+			}
+			result.kind = BSParser::DataType::NATIVE;
+			result.native_type = first;
+			result.builtin_type = Variant::OBJECT;
+			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+			found = true;
+		}
+
 		if (!found) {
 			String qualified;
 			for (int i = 0; i < p_class->extends.size(); i++) {
@@ -1288,21 +1304,6 @@ void BSAnalyzer::resolve_class_inheritance(BSParser::ClassNode *p_class) {
 				found = true;
 				extends_index = p_class->extends.size(); // Fully consumed by the qualified global name.
 			}
-		}
-
-		// D7: native names remain flat — only a single-identifier extends can be a native class.
-		if (!found && p_class->extends.size() == 1 && ClassDB::class_exists(first)) {
-			Engine *engine = Engine::get_singleton();
-			if (engine != nullptr && engine->has_singleton(first)) {
-				push_error(vformat(R"(Cannot inherit native class "%s" because it is an engine singleton.)", first), first_id);
-				p_class->base_type = BSParser::DataType();
-				return;
-			}
-			result.kind = BSParser::DataType::NATIVE;
-			result.native_type = first;
-			result.builtin_type = Variant::OBJECT;
-			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-			found = true;
 		}
 
 		if (!found) {
