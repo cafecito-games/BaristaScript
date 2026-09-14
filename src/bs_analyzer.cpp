@@ -69,6 +69,29 @@ static bool _is_static_script_handle(const BSParser::ExpressionNode *p_expressio
 			p_expression->get_datatype().class_type != nullptr;
 }
 
+// Return a dotted identifier/attribute chain without reducing any of its prefixes.
+// Exact global enum declarations are expression values, so their namespace prefixes
+// must not be diagnosed as ordinary lexical identifiers first.
+static bool _expression_attribute_chain(const BSParser::ExpressionNode *p_expression, String &r_qualified) {
+	if (p_expression == nullptr) {
+		return false;
+	}
+	if (p_expression->type == BSParser::Node::IDENTIFIER) {
+		r_qualified = String(static_cast<const BSParser::IdentifierNode *>(p_expression)->name);
+		return true;
+	}
+	if (p_expression->type != BSParser::Node::SUBSCRIPT) {
+		return false;
+	}
+	const auto *subscript = static_cast<const BSParser::SubscriptNode *>(p_expression);
+	if (!subscript->is_attribute || subscript->base == nullptr || subscript->attribute == nullptr ||
+			!_expression_attribute_chain(subscript->base, r_qualified)) {
+		return false;
+	}
+	r_qualified += "." + String(subscript->attribute->name);
+	return true;
+}
+
 static bool _convert_constant_dictionary_key(const BSParser::DataType &p_type, Variant &r_key);
 
 static bool _has_known_constant_truth(const BSParser::ExpressionNode *p_expression);
@@ -3046,6 +3069,14 @@ void BSAnalyzer::reduce_identifier(BSParser::IdentifierNode *p_identifier) {
 	}
 	if (!indexed.is_variant()) {
 		indexed.is_meta_type = true;
+		if (indexed.kind == BSParser::DataType::ENUM) {
+			// `enum_name` is a Dictionary-like declaration value. Its members remain
+			// nominal INT values through the ordinary enum subscript path below.
+			indexed.builtin_type = Variant::DICTIONARY;
+			indexed.is_constant = true;
+			p_identifier->is_constant = true;
+			p_identifier->is_unmaterialized_constant = true;
+		}
 		p_identifier->set_datatype(indexed);
 		return;
 	}
@@ -4501,6 +4532,31 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 			register_contextual_enum_case(p_subscript);
 		}
 		return;
+	}
+	if (p_subscript->is_attribute && p_subscript->attribute != nullptr) {
+		String qualified;
+		if (_expression_attribute_chain(p_subscript, qualified) && qualified.contains(".")) {
+			BSDeclarationRecord candidate;
+			BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+			const bool indexed = language != nullptr && language->get_declaration_index().try_get_by_qualified_name(qualified, candidate);
+			const bool declared = indexed || ScriptServer::resolve_global_class(qualified, candidate);
+			if (declared && candidate.kind == BSDeclarationKind::ENUM) {
+				const NameLookup lookup = lookup_declaration(qualified, current_class != nullptr ? current_class : parser->get_tree(), p_subscript, "type");
+				BSParser::DataType declaration = named_type_from_lookup(lookup, p_subscript);
+				if (lookup.status == NameLookupStatus::ERROR || declaration.is_variant()) {
+					p_subscript->set_datatype(declaration);
+					return;
+				}
+				declaration.is_meta_type = true;
+				declaration.builtin_type = Variant::DICTIONARY;
+				declaration.is_constant = true;
+				p_subscript->attribute->set_datatype(declaration);
+				p_subscript->set_datatype(declaration);
+				p_subscript->is_constant = true;
+				p_subscript->is_unmaterialized_constant = true;
+				return;
+			}
+		}
 	}
 	bool engine_enum_base = false;
 	if (p_subscript->base->type == BSParser::Node::SUBSCRIPT) {

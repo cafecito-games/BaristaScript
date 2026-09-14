@@ -1008,6 +1008,17 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 		return Result(true, true, false);
 	}
 
+	// A plain enum declaration is a read-only Dictionary-like value. Its members
+	// are non-meta, nominal INT values and intentionally do not enter this arm.
+	if (p_target.kind == BSParser::DataType::BUILTIN && p_target.builtin_type == Variant::DICTIONARY &&
+			p_source.kind == BSParser::DataType::ENUM && p_source.is_meta_type && !p_source.is_tagged_union) {
+		BSParser::DataType dictionary_source = p_source;
+		dictionary_source.kind = BSParser::DataType::BUILTIN;
+		dictionary_source.is_meta_type = false;
+		dictionary_source.is_constant = false;
+		return check(p_target, dictionary_source, p_options);
+	}
+
 	if (p_source.is_nullable && !p_target.is_nullable) {
 		if (p_options.strict_null) {
 			return Result(false, false, false);
