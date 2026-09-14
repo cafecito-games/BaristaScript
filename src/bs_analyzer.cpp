@@ -1851,42 +1851,6 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
-		// Inherited nested heads retain their declaring parser, even across multiple bases.
-		List<BSParser::ClassNode *> type_scopes;
-		if (current_class != nullptr) {
-			get_class_node_current_scope_classes(current_class, &type_scopes, p_type_node);
-		}
-		bool found_out_of_scope_alias = false;
-		for (BSParser::ClassNode *scope : type_scopes) {
-			if (!scope->has_member(name)) {
-				continue;
-			}
-			const BSParser::ClassNode::Member member = scope->get_member(name);
-			if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
-				// Visible aliases were resolved above. Keep the private claimant, but
-				// allow a legal enclosing lexical type to win without expanding it.
-				found_out_of_scope_alias = true;
-				continue;
-			}
-			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
-				resolve_class_member(scope, name, p_type_node);
-				result = type_from_metatype(member.m_class->get_datatype());
-				result.is_nullable = p_type_node->is_nullable;
-				return result;
-			}
-			if (member.type == BSParser::ClassNode::Member::CONSTANT) {
-				if (!resolve_class_member(scope, name, p_type_node)) {
-					result.kind = BSParser::DataType::VARIANT;
-					return result;
-				}
-				if (member.get_datatype().is_meta_type) {
-					result = type_from_metatype(member.get_datatype());
-					result.is_nullable = result.is_nullable || p_type_node->is_nullable;
-					return result;
-				}
-			}
-			break;
-		}
 		const auto resolve_current_class_name = [&]() {
 			if (current_class == nullptr) {
 				return false;
@@ -1917,11 +1881,46 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 			return false;
 		};
-		if (found_out_of_scope_alias) {
-			// Only a private alias claimant needs the declaring-class exception early.
-			if (resolve_current_class_name()) {
+		// Inherited nested heads retain their declaring parser, even across multiple bases.
+		List<BSParser::ClassNode *> type_scopes;
+		if (current_class != nullptr) {
+			get_class_node_current_scope_classes(current_class, &type_scopes, p_type_node);
+		}
+		bool found_out_of_scope_alias = false;
+		for (BSParser::ClassNode *scope : type_scopes) {
+			if (!scope->has_member(name)) {
+				continue;
+			}
+			const BSParser::ClassNode::Member member = scope->get_member(name);
+			if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+				// Visible aliases were resolved above. The current class wins before
+				// deeper bases; otherwise keep looking for a legal enclosing type.
+				if (resolve_current_class_name()) {
+					return result;
+				}
+				found_out_of_scope_alias = true;
+				continue;
+			}
+			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
+				resolve_class_member(scope, name, p_type_node);
+				result = type_from_metatype(member.m_class->get_datatype());
+				result.is_nullable = p_type_node->is_nullable;
 				return result;
 			}
+			if (member.type == BSParser::ClassNode::Member::CONSTANT) {
+				if (!resolve_class_member(scope, name, p_type_node)) {
+					result.kind = BSParser::DataType::VARIANT;
+					return result;
+				}
+				if (member.get_datatype().is_meta_type) {
+					result = type_from_metatype(member.get_datatype());
+					result.is_nullable = result.is_nullable || p_type_node->is_nullable;
+					return result;
+				}
+			}
+			break;
+		}
+		if (found_out_of_scope_alias) {
 			push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", name), p_type_node);
 			result.kind = BSParser::DataType::VARIANT;
 			return result;

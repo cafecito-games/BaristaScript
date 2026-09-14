@@ -1016,6 +1016,27 @@ func test():
 		CHECK(type.enum_type == StringName("Side"));
 		extends_public_agreement(source, path, true);
 	}
+	TEST_CASE("nearer_private_alias_keeps_current_class_before_deeper_inherited_types") {
+		for (bool metatype : { false, true }) {
+			StorageFixture storage;
+			const String root = "res://tests/simple_alias/root.barista";
+			install(storage, root, metatype ? "class Owner:\n\tpass\nconst Meters = Owner\n" : "class Meters:\n\tpass\n");
+			install(storage, "res://tests/simple_alias/middle.barista", "extends \"res://tests/simple_alias/root.barista\"\ntype Meters = float\n");
+			const String source = "class_name Meters\nextends \"res://tests/simple_alias/middle.barista\"\nvar x: Meters\n";
+			const String path = "res://tests/simple_alias/three_levels.barista";
+			BSParser parser;
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			const Error status = analyzer.analyze();
+			INFO(std::string(block(parser).utf8().get_data()));
+			CHECK(status == OK);
+			const auto type = parser.get_tree()->get_member("x").get_datatype();
+			CHECK(type.kind == BSParser::DataType::CLASS);
+			CHECK(type.class_type == parser.get_tree());
+			CHECK(type.script_path == path);
+			extends_public_agreement(source, path, true);
+		}
+	}
 	TEST_CASE("simple_private_alias_allows_visible_enclosing_types") {
 		check_source("class Owner:\n\ttype Meters = float\n\tvar distance: Meters = 1.0\n");
 		for (const String declaration : { String("class Meters:\n\tpass\n"), String("enum Meters:\n\tVALUE = 0\n"), String("class Owner:\n\tpass\nconst Meters = Owner\n"), String("type Meters = float\n") }) {
