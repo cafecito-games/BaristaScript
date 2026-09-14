@@ -7,6 +7,7 @@
 
 """Pinned miniature analyzer transport and fail-closed staging regressions."""
 import argparse
+import collections
 import copy
 import hashlib
 import importlib.util
@@ -34,7 +35,20 @@ class AnalyzerImport(unittest.TestCase):
         shutil.copytree(ROOT / 'tests/fixtures/analyzer_import/scripts', self.source)
         self.policy = self.m.default_policy()
         self.policy['counts'] = None
-        self.policy['owners'] = {}
+        fixture_cases = {
+            path.relative_to(self.source / 'analyzer').as_posix().removesuffix('.fs') + '.barista'
+            for path in (self.source / 'analyzer').rglob('*.fs') if not path.name.endswith('.notest.fs')
+        }
+        self.policy['deferred'] = {
+            path: reason for path, reason in self.policy['deferred'].items() if path in fixture_cases
+        }
+        self.policy['excluded'] = {
+            path: reason for path, reason in self.policy['excluded'].items() if path in fixture_cases
+        }
+        self.policy['owners'] = {
+            path: owner for path, owner in self.policy['owners'].items()
+            if path in self.policy['deferred'] or path in self.policy['excluded']
+        }
         self.policy['expectation_edits'] = {}
         self.policy['expectation_overrides'] = {}
         self.policy['rewritten'].pop('features/lookup_class.barista')
@@ -42,6 +56,18 @@ class AnalyzerImport(unittest.TestCase):
 
     def inventory(self):
         return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus_staging/analyzer')
+
+    def disposition_owner(self, path, state, reason):
+        owner = copy.deepcopy(self.m.default_policy()['owners']['errors/preload_missing_relative_path.barista'])
+        owner['primary_issue'] = 138
+        owner['prerequisites'] = []
+        owner['review_state'] = state
+        owner['reason'] = reason
+        owner['source_review'] = dict(owner['source_review'],
+                                     identity=self.m.SCRIPTS + '/analyzer/' + path.removesuffix('.barista') + '.fs',
+                                     assertion='The fixture has a source-reviewed disposition.',
+                                     final_disposition=reason)
+        return owner
 
     def test_shared_utils_has_one_real_provider(self):
         inv = self.inventory()
@@ -104,7 +130,39 @@ class AnalyzerImport(unittest.TestCase):
             self.inventory()
         owner.update(self.m.default_policy()['owners'][path])
         owner['review_state'] = 'source_reviewed_deferred'
-        with self.assertRaisesRegex(ValueError, 'deferred owner'):
+        with self.assertRaisesRegex(ValueError, 'orphan reviewed disposition owner'):
+            self.inventory()
+
+    def test_reviewed_dispositions_require_exact_bidirectional_owner_state(self):
+        path = 'errors/preload_missing_relative_path.barista'
+        owner = copy.deepcopy(self.m.default_policy()['owners'][path])
+        self.policy['owners'][path] = owner
+
+        self.policy['excluded'][path] = 'Root-reviewed removed premise fixture.'
+        with self.assertRaisesRegex(ValueError, 'excluded policy requires matching owner state'):
+            self.inventory()
+        owner['review_state'] = 'source_reviewed_excluded'
+        self.inventory()
+
+        self.policy['excluded'].pop(path)
+        with self.assertRaisesRegex(ValueError, 'orphan reviewed disposition owner'):
+            self.inventory()
+        owner['review_state'] = 'source_reviewed_deferred'
+        self.policy['deferred'][path] = 'M5-reviewed fixture.'
+        self.inventory()
+
+        owner['source_review'] = dict(owner['source_review'], identity='wrong.fs')
+        with self.assertRaisesRegex(ValueError, 'owner source review'):
+            self.inventory()
+        owner['source_review'] = dict(self.m.default_policy()['owners'][path]['source_review'])
+        owner.pop('execution_evidence')
+        with self.assertRaisesRegex(ValueError, 'execution evidence'):
+            self.inventory()
+
+    def test_disposition_without_owner_fails_closed(self):
+        path = 'errors/preload_missing_relative_path.barista'
+        self.policy['excluded'][path] = 'Root-reviewed removed premise fixture.'
+        with self.assertRaisesRegex(ValueError, 'excluded policy requires owner records'):
             self.inventory()
 
     def test_only_missing_metadata_producers_are_prerequisites(self):
@@ -223,6 +281,9 @@ class AnalyzerImport(unittest.TestCase):
             path.with_suffix('.out').write_bytes(b'FS_TEST_OK\n')
         self.inventory()
         self.policy['deferred']['features/paired_provider.barista'] = 'M5 reviewed fixture control'
+        self.policy['owners']['features/paired_provider.barista'] = self.disposition_owner(
+            'features/paired_provider.barista', 'source_reviewed_deferred',
+            self.policy['deferred']['features/paired_provider.barista'])
         with self.assertRaisesRegex(ValueError, 'required.*dependency.*removed'):
             self.inventory()
 
@@ -344,6 +405,9 @@ class AnalyzerImport(unittest.TestCase):
         source.write_bytes(b'class_name Box[T]\nvar item: T\n')
         source.with_suffix('.out').write_bytes(b'FS_TEST_OK\n')
         self.policy['deferred']['features/generic_fixture.barista'] = 'M5: the assertion requires free T substitution in a user generic class.'
+        self.policy['owners']['features/generic_fixture.barista'] = self.disposition_owner(
+            'features/generic_fixture.barista', 'source_reviewed_deferred',
+            self.policy['deferred']['features/generic_fixture.barista'])
         inv = self.inventory()
         self.assertEqual(inv['ledger']['upstream_total'], inv['ledger']['total'] + len(self.policy['deferred']))
         self.policy['rewritten']['features/generic_fixture.barista'] = 'duplicate disposition'
@@ -437,6 +501,30 @@ class FullPinned(unittest.TestCase):
         self.assertEqual((first['counts']['sources'], first['counts']['cases'], first['counts']['helpers']), (1596, 1346, 250))
         self.assertEqual(first['counts']['support_helpers'], 2)
         self.assertEqual(sum(len(r['references']) for r in first['sources']), 139)
+
+        m5 = sorted(set(policy['deferred']) - set(importer.LATER))
+        excluded = sorted(policy['excluded'])
+        combined = sorted(set(m5) | set(excluded))
+        case_list_sha = lambda paths: hashlib.sha256(('\n'.join(paths) + '\n').encode()).hexdigest()
+        self.assertEqual((len(m5), case_list_sha(m5)),
+                         (231, '1d348c41a1b9b68aefe9fbc0bea393310cf64d89c78037a6b18385ccdcbf368b'))
+        self.assertEqual((len(excluded), case_list_sha(excluded)),
+                         (33, '07aee540c42b8282e3b52ee461709d3e1a4e7a8f7e9dbcdc51872a95cf7174ee'))
+        self.assertEqual((len(combined), case_list_sha(combined)),
+                         (264, '9d8000dd6cb16cc4521c243c870a0805c97095c1613bc7801cb56476497bfcaa'))
+        self.assertEqual((first['ledger']['upstream_total'], first['ledger']['total'],
+                          len(policy['excluded']), len(policy['deferred'])),
+                         (1346, 1078, 33, 235))
+        included = [record for record in first['sources']
+                    if record.get('role') == 'case' and record['disposition'] not in ('excluded', 'deferred')]
+        self.assertEqual(collections.Counter(record['imported_path'].split('/')[0] for record in included),
+                         {'errors': 662, 'features': 354, 'warnings': 62})
+        self.assertEqual(collections.Counter(record['status'] for record in included),
+                         {'FS_TEST_ANALYZER_ERROR': 646, 'FS_TEST_OK': 414, 'FS_TEST_PARSER_ERROR': 18})
+        for path in m5:
+            self.assertEqual(policy['owners'][path]['review_state'], 'source_reviewed_deferred')
+        for path in excluded:
+            self.assertEqual(policy['owners'][path]['review_state'], 'source_reviewed_excluded')
 
         lookup_path = 'analyzer/features/lookup_class.fs'
         lookup_case = 'features/lookup_class.barista'

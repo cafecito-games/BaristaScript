@@ -1,4 +1,4 @@
-# Analyzer discovery (issue #45, checkpoint A)
+# Analyzer discovery and adjudication (issue #45, checkpoints A–B)
 
 The analyzer is pending: `corpora.analyzer.imported=false`, and
 `project/tests/corpus/analyzer` must remain absent. Discovery is an inventory and
@@ -21,11 +21,23 @@ expectation edits carry exact pin-bound hashes, byte spans, preimages, line
 anchors, rules and occurrence counts. Ordinary strings, comments, namespace
 identities, and runtime transcript are not rewritten.
 
-Only the four exact compiler/runtime-error cases are deferred in discovery.
-Generic and hard-fork scope observations are review candidates; they do not
-silently remove cases. Final reviewed dispositions, concrete adaptations,
-passing analyzer/aggregate pins, and promotion belong to checkpoint B after
-#138–#141 and #31 restoration.
+Checkpoint B preserves the complete 1,346-case inventory while materializing
+264 source-reviewed eligibility decisions. Exactly 231 static cases whose
+assertions require M5 generics are deferred alongside the four exact
+compiler/runtime cases from checkpoint A. Exactly 33 whole cases are excluded:
+32 assert only integer widths or signedness removed by BaristaScript's D1
+single-carrier contract, and one requires a Foundry-engine-only native surface
+that stock Godot cannot provide. These decisions come from pinned source and
+dependency review, never from whether the current analyzer happens to pass.
+
+The resulting staging equation is `1,346 = 1,078 included + 33 excluded + 235
+deferred`. Included cases split into 662 errors, 354 features, and 62 warnings;
+their pinned statuses are 646 analyzer errors, 414 successes, and 18 parser
+errors. All 250 analyzer helpers and the two auxiliary support identities remain
+in the inventory and available to selected cases. No included case may refer to
+an excluded or deferred paired case. Concrete M3 adaptations and retained or
+mixed projections remain included until their later, independently reviewed
+packets; this policy change does not rewrite their sources or expectations.
 
 Run from the repository root with a clean checkout of the registered source:
 
@@ -73,9 +85,12 @@ fixtures retain pinned bytes and hashes in
 `tests/fixtures/analyzer_import/provenance.json`; `--foundry` additionally runs
 the full real producer, same-count drift and removed-case checks.
 
-The discovery policy records all 1,342 static observations as
-`execution_reviewed` and the four exact later-stage cases as
-`source_reviewed_deferred`. Each static owner has a source assertion, bounded
+The adjudicated policy records 1,078 static observations as
+`execution_reviewed`, 231 static observations plus the four exact later-stage
+cases as `source_reviewed_deferred`, and 33 reviewed exclusions as
+`source_reviewed_excluded`. The importer enforces both directions of these
+owner/disposition relationships and fails closed on missing, cross-labelled, or
+orphaned owner state. Each static owner has a source assertion, bounded
 code family, prerequisites, and hashes of its original full report, source,
 expectation and complete expected/actual blocks. Six disjoint source reviews
 cover all 1,346 pairs and their identified providers. Source scope observations
