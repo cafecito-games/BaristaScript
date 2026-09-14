@@ -1851,16 +1851,56 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				return result;
 			}
 		}
+		const auto resolve_current_class_name = [&]() {
+			if (current_class == nullptr) {
+				return false;
+			}
+			const StringName class_name = current_class->identifier != nullptr ? current_class->identifier->name : StringName();
+			const StringName global_name = current_class->get_global_name();
+			if ((class_name != StringName() && name == class_name) ||
+					(global_name != StringName() && name == global_name)) {
+				if (current_class == parser->get_tree() && (current_class->is_enum_file || current_class->is_tuple_file)) {
+					result = type_from_metatype(resolve_global_head(String(name), p_type_node));
+					if (!result.is_variant()) {
+						result.is_nullable = result.is_nullable || p_type_node->is_nullable;
+					}
+					return true;
+				}
+				result = type_from_metatype(current_class->get_datatype());
+				result.type_arguments.clear();
+				if (!result.is_set() || result.is_variant()) {
+					result.kind = BSParser::DataType::CLASS;
+					result.class_type = current_class;
+					result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+					result.builtin_type = Variant::OBJECT;
+					result.native_type = current_class->base_type.native_type;
+				}
+				result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+				result.is_nullable = p_type_node->is_nullable;
+				return true;
+			}
+			return false;
+		};
 		// Inherited nested heads retain their declaring parser, even across multiple bases.
 		List<BSParser::ClassNode *> type_scopes;
 		if (current_class != nullptr) {
 			get_class_node_current_scope_classes(current_class, &type_scopes, p_type_node);
 		}
+		bool found_out_of_scope_alias = false;
 		for (BSParser::ClassNode *scope : type_scopes) {
 			if (!scope->has_member(name)) {
 				continue;
 			}
 			const BSParser::ClassNode::Member member = scope->get_member(name);
+			if (member.type == BSParser::ClassNode::Member::TYPE_ALIAS) {
+				// Visible aliases were resolved above. The current class wins before
+				// deeper bases; otherwise keep looking for a legal enclosing type.
+				if (resolve_current_class_name()) {
+					return result;
+				}
+				found_out_of_scope_alias = true;
+				continue;
+			}
 			if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr) {
 				resolve_class_member(scope, name, p_type_node);
 				result = type_from_metatype(member.m_class->get_datatype());
@@ -1879,6 +1919,11 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				}
 			}
 			break;
+		}
+		if (found_out_of_scope_alias) {
+			push_error(vformat(R"(Type alias "%s" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.)", name), p_type_node);
+			result.kind = BSParser::DataType::VARIANT;
+			return result;
 		}
 		// Same-file/inherited named tuple declarations resolve to their value type in annotations.
 		{
@@ -1934,33 +1979,8 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 				result.type_parameter_bound.push_back(bound);
 			}
 			return result;
-		} else if (current_class != nullptr) {
-			// Same-file class_name / identifier as a CLASS type (needed for SelfFieldLeg fixtures
-			// that annotate parameters as the declaring class rather than `Self`).
-			const StringName class_name = current_class->identifier != nullptr ? current_class->identifier->name : StringName();
-			const StringName global_name = current_class->get_global_name();
-			if ((class_name != StringName() && name == class_name) ||
-					(global_name != StringName() && name == global_name)) {
-				if (current_class == parser->get_tree() && (current_class->is_enum_file || current_class->is_tuple_file)) {
-					result = type_from_metatype(resolve_global_head(String(name), p_type_node));
-					if (!result.is_variant()) {
-						result.is_nullable = result.is_nullable || p_type_node->is_nullable;
-					}
-					return result;
-				}
-				result = type_from_metatype(current_class->get_datatype());
-				result.type_arguments.clear();
-				if (!result.is_set() || result.is_variant()) {
-					result.kind = BSParser::DataType::CLASS;
-					result.class_type = current_class;
-					result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-					result.builtin_type = Variant::OBJECT;
-					result.native_type = current_class->base_type.native_type;
-				}
-				result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-				result.is_nullable = p_type_node->is_nullable;
-				return result;
-			}
+		} else if (resolve_current_class_name()) {
+			return result;
 		}
 		// Foundry c9d5e35:2944: flat native types precede namespace candidates.
 		if (ClassDB::class_exists(name)) {
