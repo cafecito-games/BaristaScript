@@ -1316,6 +1316,14 @@ BSTypeCompatibility::Result BSTypeCompatibility::check(const BSParser::DataType 
 	}
 
 	if (p_target.kind == BSParser::DataType::NATIVE || p_target.kind == BSParser::DataType::CLASS || p_target.kind == BSParser::DataType::SCRIPT) {
+		// Foundry c9d5e35:1481-1512: a script class handle is a Script resource
+		// value. M3 retains its parser metatype instead of materializing that resource.
+		// Keep this exact BaristaScript boundary separate from ordinary references.
+		if (p_target.kind == BSParser::DataType::NATIVE && !p_target.is_meta_type && p_target.native_type == SNAME("BaristaScript") &&
+				p_source.kind == BSParser::DataType::CLASS && p_source.is_meta_type && p_source.class_type != nullptr &&
+				p_source.script_path.get_extension() == "barista") {
+			return Result(true, false, false);
+		}
 		if (p_source.kind == BSParser::DataType::NATIVE || p_source.kind == BSParser::DataType::CLASS || p_source.kind == BSParser::DataType::SCRIPT) {
 			if (p_target.can_reference(p_source)) {
 				return Result(true, false, false);
