@@ -181,6 +181,57 @@ BSParser::ExpressionNode *variable_initializer(BSParser &p_parser, const StringN
 	return member.type == BSParser::ClassNode::Member::VARIABLE ? member.variable->initializer : nullptr;
 }
 
+BSParser::ExpressionNode *function_return_value(BSParser::ClassNode *p_class, const StringName &p_name) {
+	CHECK(p_class != nullptr);
+	if (p_class == nullptr) {
+		return nullptr;
+	}
+	CHECK(p_class->has_member(p_name));
+	if (!p_class->has_member(p_name)) {
+		return nullptr;
+	}
+	const auto member = p_class->get_member(p_name);
+	CHECK(member.type == BSParser::ClassNode::Member::FUNCTION);
+	CHECK(member.function != nullptr);
+	if (member.type != BSParser::ClassNode::Member::FUNCTION || member.function == nullptr) {
+		return nullptr;
+	}
+	CHECK(member.function->body != nullptr);
+	if (member.function->body == nullptr) {
+		return nullptr;
+	}
+	CHECK_FALSE(member.function->body->statements.is_empty());
+	if (member.function->body->statements.is_empty()) {
+		return nullptr;
+	}
+	BSParser::Node *statement = member.function->body->statements[member.function->body->statements.size() - 1];
+	CHECK(statement->type == BSParser::Node::RETURN);
+	return statement->type == BSParser::Node::RETURN ? static_cast<BSParser::ReturnNode *>(statement)->return_value : nullptr;
+}
+
+BSParser::IdentifierNode *attribute_root(BSParser::ExpressionNode *p_expression) {
+	while (p_expression != nullptr && p_expression->type == BSParser::Node::SUBSCRIPT) {
+		auto *subscript = static_cast<BSParser::SubscriptNode *>(p_expression);
+		if (!subscript->is_attribute) {
+			return nullptr;
+		}
+		p_expression = subscript->base;
+	}
+	return p_expression != nullptr && p_expression->type == BSParser::Node::IDENTIFIER
+			? static_cast<BSParser::IdentifierNode *>(p_expression)
+			: nullptr;
+}
+
+void check_string_value(const BSParser::ExpressionNode *p_expression, const String &p_value) {
+	BS_TEST_REQUIRE(p_expression != nullptr);
+	const BSParser::DataType type = p_expression->get_datatype();
+	CHECK(type.kind == BSParser::DataType::BUILTIN);
+	CHECK(type.builtin_type == Variant::STRING);
+	CHECK_FALSE(type.is_meta_type);
+	CHECK(p_expression->is_constant);
+	CHECK(p_expression->reduced_value == Variant(p_value));
+}
+
 void check_enum_declaration(const BSParser::ExpressionNode *p_expression, int64_t p_first, int64_t p_second) {
 	BS_TEST_REQUIRE(p_expression != nullptr);
 	const BSParser::DataType type = p_expression->get_datatype();
@@ -325,6 +376,91 @@ TEST_SUITE("top_level_enum_analyzer") {
 		MESSAGE(std::string(diagnostic_block(failed).utf8().get_data()));
 		CHECK(diagnostic_block(failed).contains("top_level_enum_failed.notest.barista"));
 		CHECK_FALSE(constant_initializer(failed, "Alias")->is_constant);
+	}
+
+	TEST_CASE("qualified_enum_namespace_yields_to_parameter_root") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		install(storage, path("top_level_enum_shadow_provider.notest"), "namespace reviewns\n\nenum_name State:\n\tREADY = 1\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("func select(reviewns: Dictionary[String, String]) -> String:\n\treturn reviewns.State\n", path("top_level_enum_parameter_shadow"), false) == OK);
+		check_ok(parser);
+		BSParser::ExpressionNode *selected = function_return_value(parser.get_tree(), "select");
+		BS_TEST_REQUIRE(selected != nullptr);
+		CHECK(selected->get_datatype().is_variant());
+		BSParser::IdentifierNode *root = attribute_root(selected);
+		BS_TEST_REQUIRE(root != nullptr);
+		CHECK(root->source == BSParser::IdentifierNode::FUNCTION_PARAMETER);
+		CHECK(root->parameter_source != nullptr);
+		CHECK(root->get_datatype().kind == BSParser::DataType::BUILTIN);
+		CHECK(root->get_datatype().builtin_type == Variant::DICTIONARY);
+		BS_TEST_REQUIRE(root->get_datatype().container_element_types.size() == 2);
+		CHECK(root->get_datatype().container_element_types[1].kind == BSParser::DataType::BUILTIN);
+		CHECK(root->get_datatype().container_element_types[1].builtin_type == Variant::STRING);
+	}
+
+	TEST_CASE("qualified_enum_namespace_yields_to_local_constant_root") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		install(storage, path("top_level_enum_shadow_provider.notest"), "namespace reviewns\n\nenum_name State:\n\tREADY = 1\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("func select() -> String:\n\tconst reviewns = { \"State\": \"local\" }\n\treturn reviewns.State\n", path("top_level_enum_local_shadow"), false) == OK);
+		check_ok(parser);
+		BSParser::ExpressionNode *selected = function_return_value(parser.get_tree(), "select");
+		check_string_value(selected, "local");
+		BSParser::IdentifierNode *root = attribute_root(selected);
+		BS_TEST_REQUIRE(root != nullptr);
+		CHECK(root->source == BSParser::IdentifierNode::LOCAL_CONSTANT);
+		CHECK(root->constant_source != nullptr);
+	}
+
+	TEST_CASE("qualified_enum_namespace_yields_to_member_constant_root") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		install(storage, path("top_level_enum_shadow_provider.notest"), "namespace reviewns\n\nenum_name State:\n\tREADY = 1\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("const reviewns = { \"State\": \"member\" }\nconst Selected: String = reviewns.State\n", path("top_level_enum_member_shadow"), false) == OK);
+		check_ok(parser);
+		BSParser::ExpressionNode *selected = constant_initializer(parser, "Selected");
+		check_string_value(selected, "member");
+		BSParser::IdentifierNode *root = attribute_root(selected);
+		BS_TEST_REQUIRE(root != nullptr);
+		CHECK(root->source == BSParser::IdentifierNode::MEMBER_CONSTANT);
+		CHECK(root->constant_source != nullptr);
+	}
+
+	TEST_CASE("qualified_enum_namespace_yields_to_nested_lexical_class_root") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		install(storage, path("top_level_enum_shadow_provider.notest"), "namespace reviewns\n\nenum_name State:\n\tREADY = 1\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse("class reviewns:\n\tconst State = \"nested\"\nconst Selected: String = reviewns.State\n", path("top_level_enum_nested_class_shadow"), false) == OK);
+		check_ok(parser);
+		BSParser::ExpressionNode *selected = constant_initializer(parser, "Selected");
+		check_string_value(selected, "nested");
+		BSParser::IdentifierNode *root = attribute_root(selected);
+		BS_TEST_REQUIRE(root != nullptr);
+		CHECK(root->source == BSParser::IdentifierNode::MEMBER_CLASS);
+	}
+
+	TEST_CASE("qualified_enum_namespace_yields_to_inherited_member_root") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		install(storage, path("top_level_enum_shadow_provider.notest"), "namespace reviewns\n\nenum_name State:\n\tREADY = 1\n");
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(R"source(class Base:
+	const reviewns = { "State": "inherited" }
+class InheritedChild extends Base:
+	const Selected: String = reviewns.State
+)source",
+								path("top_level_enum_inherited_shadow"), false) == OK);
+		check_ok(parser);
+		BSParser::ClassNode *inherited = parser.get_tree()->get_member("InheritedChild").m_class;
+		BS_TEST_REQUIRE(inherited != nullptr);
+		check_string_value(inherited->get_member("Selected").constant->initializer, "inherited");
+		BSParser::IdentifierNode *root = attribute_root(inherited->get_member("Selected").constant->initializer);
+		BS_TEST_REQUIRE(root != nullptr);
+		CHECK(root->source == BSParser::IdentifierNode::MEMBER_CONSTANT);
 	}
 
 	TEST_CASE("adjacent_top_level_enum_container_control_remains_static") {
