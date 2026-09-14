@@ -1747,21 +1747,26 @@ bool BSAnalyzer::try_bind_identifier_member_in_inheritance(BSParser::IdentifierN
 	if (p_identifier == nullptr || p_class == nullptr) {
 		return false;
 	}
-	bool first = true;
-	// Soft mutual path-extends may install CLASS loops for registration; stop identity revisits.
-	HashSet<const BSParser::ClassNode *> visited;
-	for (BSParser::ClassNode *lookup = p_class; lookup != nullptr; lookup = lookup->base_type.class_type) {
-		if (visited.has(lookup)) {
-			break;
+
+	List<BSParser::ClassNode *> scope_classes;
+	get_class_node_current_scope_classes(p_class, &scope_classes, p_identifier);
+
+	// The recursive order includes each selected base's lexical outers. Keep the receiver's
+	// inheritance segment distinct so those lexical scopes can donate constants/types without
+	// exposing instance variables, functions, or signals.
+	HashSet<const BSParser::ClassNode *> receiver_classes;
+	if (!p_is_lexical_outer) {
+		for (BSParser::ClassNode *receiver = p_class; receiver != nullptr && !receiver_classes.has(receiver); receiver = receiver->base_type.class_type) {
+			receiver_classes.insert(receiver);
 		}
-		visited.insert(lookup);
-		// Foundry fs_analyzer.cpp:12018,12146-12172: lexical outers do not supply
-		// receiver variables/functions/signals. Reuse the same visible-outer policy as conflicts.
-		const bool visible = !p_is_lexical_outer || (lookup->has_member(p_identifier->name) && _member_is_visible_outer_class_surface(lookup->get_member(p_identifier->name)));
-		if (visible && try_bind_identifier_member(p_identifier, lookup, !first)) {
+	}
+
+	for (BSParser::ClassNode *lookup : scope_classes) {
+		const bool receiver_access = receiver_classes.has(lookup);
+		const bool visible = receiver_access || (lookup->has_member(p_identifier->name) && _member_is_visible_outer_class_surface(lookup->get_member(p_identifier->name)));
+		if (visible && try_bind_identifier_member(p_identifier, lookup, receiver_access && lookup != p_class)) {
 			return true;
 		}
-		first = false;
 	}
 	if (p_is_lexical_outer) {
 		return false;
