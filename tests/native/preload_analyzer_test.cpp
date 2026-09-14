@@ -7,7 +7,9 @@
 /**************************************************************************/
 
 #include "barista_script.h"
+#include "bs_analyzer_probe.h"
 #include "bs_global_class.h"
+#include "bs_type.h"
 #include "storage_fixture.h"
 #include "test_require.h"
 #include <string>
@@ -60,6 +62,137 @@ void diagnostic(const BSParser &parser, const String &message, const BSParser::N
 }
 } //namespace
 TEST_SUITE("preload_analyzer") {
+	// Exact projected Foundry c9d5e35 use_preload_script_as_type.fs and helper.
+	TEST_CASE("annotated_script_preload_is_resource_value_and_retains_type_handle") {
+		StorageFixture fixture;
+		const String dependency = provider(fixture, "fs_to_preload.notest", "const A := 42\n\nfunc something():\n\treturn \"OK\"\n");
+		BS_TEST_REQUIRE(!dependency.is_empty());
+		const String source = "const preloaded: BaristaScript = preload(\"fs_to_preload.notest.barista\")\n\nfunc test():\n\tvar preloaded_instance: preloaded = preloaded.new()\n\tprint(preloaded_instance.something())\n";
+		const String path = "res://tests/x3/use_preload_script_as_type.barista";
+		BSParser consumer;
+		BS_TEST_REQUIRE(consumer.parse(source, path, false) == OK);
+		BSAnalyzer analyzer(&consumer);
+		CHECK(analyzer.analyze() == OK);
+		no_errors(consumer);
+		auto *constant = consumer.get_tree()->get_member("preloaded").constant;
+		const auto declared = constant->get_datatype();
+		CHECK(declared.kind == BSParser::DataType::NATIVE);
+		CHECK(declared.native_type == StringName("BaristaScript"));
+		CHECK(declared.is_hard_type());
+		CHECK_FALSE(declared.is_meta_type);
+		auto *load = static_cast<BSParser::PreloadNode *>(constant->initializer);
+		CHECK(load->resource.is_null());
+		CHECK(load->is_unmaterialized_constant);
+		const auto handle = load->get_datatype();
+		CHECK(handle.kind == BSParser::DataType::CLASS);
+		CHECK(handle.is_meta_type);
+		BS_TEST_REQUIRE(consumer.get_depended_parsers().has(dependency));
+		auto retained = consumer.get_depended_parsers()[dependency];
+		CHECK(handle.class_type == retained->get_parser()->get_tree());
+		CHECK(handle.script_path == dependency);
+		Error error = OK;
+		CHECK(BSCache::get_parser(dependency, BSParserRef::INHERITANCE_SOLVED, error) == retained);
+		CHECK(error == OK);
+		auto *body = consumer.get_tree()->get_member("test").function->body;
+		BS_TEST_REQUIRE(body->statements.size() == 2);
+		auto *instance = static_cast<BSParser::VariableNode *>(body->statements[0]);
+		CHECK(instance->get_datatype().class_type == handle.class_type);
+		CHECK_FALSE(instance->get_datatype().is_meta_type);
+		CHECK(instance->initializer->get_datatype().class_type == handle.class_type);
+		CHECK_FALSE(instance->initializer->get_datatype().is_meta_type);
+		auto *print_call = static_cast<BSParser::CallNode *>(body->statements[1]);
+		BS_TEST_REQUIRE(print_call->arguments.size() == 1);
+		// Foundry resolve_function_signature:4798-4806 keeps unannotated returns
+		// dynamic, even though this exact helper returns a String literal.
+		CHECK(print_call->arguments[0]->get_datatype().is_variant());
+		auto *method = retained->get_parser()->get_tree()->get_member("something").function;
+		CHECK(method->resolved_signature);
+		CHECK(method->get_datatype().is_variant());
+		CHECK(print_call->arguments[0]->get_datatype() == method->get_datatype());
+		auto *constructor = static_cast<BSParser::CallNode *>(instance->initializer);
+		auto *receiver = static_cast<BSParser::SubscriptNode *>(constructor->callee)->base;
+		CHECK(receiver->get_datatype().kind == BSParser::DataType::NATIVE);
+		CHECK(receiver->get_datatype().native_type == StringName("BaristaScript"));
+		Ref<BaristaScriptAnalyzerProbe> probe;
+		probe.instantiate();
+		const Dictionary probed = probe->analyze_source(source, path);
+		CHECK(bool(probed.get("valid", false)));
+		CHECK(PackedStringArray(probed["errors"]).is_empty());
+		const Dictionary validation = BaristaScriptLanguage::get_singleton()->_validate(source, path, true, true, true, true);
+		CHECK(bool(validation.get("valid", false)));
+		CHECK(Array(validation["errors"]).is_empty());
+		Ref<BaristaScript> script;
+		script.instantiate();
+		script->_set_source_code(source);
+		script->set_path(path);
+		CHECK(script->_is_valid());
+		CHECK_FALSE(declared.can_reference(handle));
+		CHECK(BSTypeCompatibility::check(declared, handle).compatible);
+		for (const StringName &name : { StringName("Object"), StringName("Resource"), StringName("Script") }) {
+			auto target = declared;
+			target.native_type = name;
+			CHECK_FALSE(BSTypeCompatibility::check(target, handle).compatible);
+		}
+	}
+	TEST_CASE("script_resource_adapter_rejects_native_metatypes_and_ordinary_preloads") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(write_bytes(fixture.path("plain.tres"), bytes("[gd_resource type=\"Resource\" format=3]\n\n[resource]\n")));
+		BSParser::DataType target;
+		target.kind = BSParser::DataType::NATIVE;
+		target.builtin_type = Variant::OBJECT;
+		target.native_type = "BaristaScript";
+		target.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+		BSTypeCompatibility::Options reference_only;
+		reference_only.allow_runtime_narrowing = false;
+		for (const StringName &name : { StringName("Node"), StringName("BaristaScript") }) {
+			auto native_meta = target;
+			native_meta.native_type = name;
+			native_meta.is_meta_type = true;
+			CHECK_FALSE(BSTypeCompatibility::check(target, native_meta, reference_only).compatible);
+			const auto ordinary = BSTypeCompatibility::check(target, native_meta);
+			CHECK((!ordinary.compatible || ordinary.requires_runtime_check));
+		}
+		for (const String &value : { String("Node"), String("preload(\"plain.tres\")") }) {
+			BSParser consumer;
+			BS_TEST_REQUIRE(consumer.parse("const P: BaristaScript = " + value + "\n", fixture.path("consumer.barista"), false) == OK);
+			BSAnalyzer analyzer(&consumer);
+			const bool resource = value.begins_with("preload");
+			CHECK((analyzer.analyze() == OK) == resource);
+			auto *constant = consumer.get_tree()->get_member("P").constant;
+			if (resource) {
+				const auto source_type = constant->initializer->get_datatype();
+				CHECK(source_type.kind == BSParser::DataType::NATIVE);
+				CHECK(source_type.native_type == StringName("Resource"));
+				CHECK_FALSE(source_type.is_meta_type);
+				CHECK(BSTypeCompatibility::check(target, source_type).requires_runtime_check);
+				BSTypeCompatibility::Options options;
+				options.allow_runtime_narrowing = false;
+				CHECK_FALSE(BSTypeCompatibility::check(target, source_type, options).compatible);
+			}
+			CHECK(consumer.get_depended_parsers().is_empty());
+		}
+	}
+	TEST_CASE("annotated_preload_aliases_keep_value_types_and_static_member_identity") {
+		StorageFixture fixture;
+		const String path = provider(fixture, "typed", "const A = 42\nstatic func text() -> String:\n\treturn \"OK\"\nfunc something() -> String:\n\treturn \"OK\"\nclass Nested:\n\tpass\n");
+		BS_TEST_REQUIRE(!path.is_empty());
+		BSParser consumer;
+		BS_TEST_REQUIRE(consumer.parse("const P: BaristaScript = preload(\"typed.barista\")\nconst Alias: BaristaScript = P\nvar resource: BaristaScript = Alias\nvar count := Alias.A\nvar text := Alias.text()\nvar nested: Alias.Nested\nfunc test():\n\tconst Local: BaristaScript = Alias\n\tvar instance: Local = Local.new()\n\tvar text: String = instance.something()\n\tprint(text)\n", "res://tests/x3/aliases.barista", false) == OK);
+		BSAnalyzer analyzer(&consumer);
+		CHECK(analyzer.analyze() == OK);
+		no_errors(consumer);
+		CHECK(consumer.get_tree()->get_member("resource").variable->initializer->get_datatype().kind == BSParser::DataType::NATIVE);
+		CHECK(consumer.get_tree()->get_member("count").get_datatype().builtin_type == Variant::INT);
+		CHECK(consumer.get_tree()->get_member("text").get_datatype().builtin_type == Variant::STRING);
+		BS_TEST_REQUIRE(consumer.get_depended_parsers().has(path));
+		auto *head = consumer.get_depended_parsers()[path]->get_parser()->get_tree();
+		CHECK(consumer.get_tree()->get_member("nested").get_datatype().class_type == head->get_member("Nested").m_class);
+		auto *body = consumer.get_tree()->get_member("test").function->body;
+		BS_TEST_REQUIRE(body->statements.size() == 4);
+		CHECK(body->statements[0]->get_datatype().kind == BSParser::DataType::NATIVE);
+		CHECK(body->statements[1]->get_datatype().class_type == head);
+		CHECK(static_cast<BSParser::VariableNode *>(body->statements[2])->initializer->get_datatype().builtin_type == Variant::STRING);
+	}
 	// Foundry c9d5e35 analyzer/features/preload_constant_types_are_inferred.fs
 	// and fs_to_preload.notest.fs: same constant producer; static analysis only.
 	TEST_CASE("relative_preload_retains_static_provider_and_infers_constant") {

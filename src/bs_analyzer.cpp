@@ -147,6 +147,34 @@ static const BSParser::ExpressionNode *_constant_origin(const BSParser::Expressi
 	return nullptr;
 }
 
+// Foundry c9d5e35:3131-3149,14461-14479 recovers the Script metatype from
+// the constant resource. M3 borrows the already-retained initializer instead.
+// Do not rewrite the declaration or ordinary resource-value expression type.
+static BSParser::DataType _static_receiver_type(const BSParser::ExpressionNode *p_expression) {
+	const auto declared = p_expression->get_datatype();
+	if (declared.kind == BSParser::DataType::NATIVE && !declared.is_meta_type && declared.native_type == SNAME("BaristaScript")) {
+		HashSet<const BSParser::ExpressionNode *> visited;
+		const auto *origin = _constant_origin(p_expression, visited);
+		if (_is_static_script_handle(origin) && origin->get_datatype().script_path.get_extension() == "barista") {
+			return origin->get_datatype();
+		}
+	}
+	return declared;
+}
+
+static BSParser::DataType _constant_type_handle(const BSParser::ConstantNode *p_constant) {
+	const auto declared = p_constant->get_datatype();
+	if (declared.kind == BSParser::DataType::NATIVE && !declared.is_meta_type && declared.native_type == SNAME("BaristaScript") &&
+			p_constant->initializer != nullptr && p_constant->initializer->is_constant) {
+		const auto handle = _static_receiver_type(p_constant->initializer);
+		if (handle.kind == BSParser::DataType::CLASS && handle.is_meta_type && handle.class_type != nullptr &&
+				handle.script_path.get_extension() == "barista") {
+			return handle;
+		}
+	}
+	return declared;
+}
+
 static bool _constant_key_equal(const BSParser::ExpressionNode *p_left, const BSParser::ExpressionNode *p_right, bool &r_known, const Variant *p_lookup_key = nullptr) {
 	const bool left_handle = _is_static_script_handle(p_left), right_handle = p_lookup_key == nullptr && _is_static_script_handle(p_right);
 	const bool left_value = BSAnalyzer::has_materialized_constant_value(p_left), right_value = p_lookup_key != nullptr || BSAnalyzer::has_materialized_constant_value(p_right);
@@ -1643,14 +1671,15 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 	BSParser::IdentifierNode *first_id = p_type_node->type_chain[0];
 	if (first_id->suite != nullptr && first_id->suite->has_local(name)) {
 		const auto &local = first_id->suite->get_local(name);
+		const auto local_type = local.type == BSParser::SuiteNode::Local::CONSTANT ? _constant_type_handle(local.constant) : local.get_datatype();
 		if (local.type != BSParser::SuiteNode::Local::CONSTANT) {
 			push_error(vformat(R"(Local %s "%s" cannot be used as a type.)", local.get_name(), name), first_id);
-		} else if (!local.get_datatype().is_set()) {
+		} else if (!local_type.is_set()) {
 			push_error(vformat(R"(Local constant "%s" is not resolved at this point.)", name), first_id);
-		} else if (!local.get_datatype().is_meta_type) {
+		} else if (!local_type.is_meta_type) {
 			push_error(vformat(R"(Local constant "%s" is not a valid type.)", name), first_id);
 		} else {
-			return resolve_nested(type_from_metatype(local.get_datatype()), 1);
+			return resolve_nested(type_from_metatype(local_type), 1);
 		}
 		result.kind = BSParser::DataType::VARIANT;
 		return result;
@@ -1808,8 +1837,9 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			}
 			if (member.type == BSParser::ClassNode::Member::CONSTANT) {
 				resolve_class_member(scope, name, p_type_node);
-				if (member.get_datatype().is_meta_type) {
-					result = type_from_metatype(member.get_datatype());
+				const auto handle = _constant_type_handle(member.constant);
+				if (handle.is_meta_type) {
+					result = type_from_metatype(handle);
 					result.is_nullable = result.is_nullable || p_type_node->is_nullable;
 					return result;
 				}
@@ -1912,8 +1942,9 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 					result.kind = BSParser::DataType::VARIANT;
 					return result;
 				}
-				if (member.get_datatype().is_meta_type) {
-					result = type_from_metatype(member.get_datatype());
+				const auto handle = _constant_type_handle(member.constant);
+				if (handle.is_meta_type) {
+					result = type_from_metatype(handle);
 					result.is_nullable = result.is_nullable || p_type_node->is_nullable;
 					return result;
 				}
@@ -2040,10 +2071,11 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			result.kind = BSParser::DataType::VARIANT;
 			return result;
 		}
+		const auto member_type = member.type == BSParser::ClassNode::Member::CONSTANT ? _constant_type_handle(member.constant) : member.get_datatype();
 		if (member.type == BSParser::ClassNode::Member::CLASS || member.type == BSParser::ClassNode::Member::ENUM ||
 				member.type == BSParser::ClassNode::Member::TUPLE ||
-				(member.type == BSParser::ClassNode::Member::CONSTANT && member.get_datatype().is_meta_type)) {
-			return resolve_nested(type_from_metatype(member.get_datatype()), 1);
+				(member.type == BSParser::ClassNode::Member::CONSTANT && member_type.is_meta_type)) {
+			return resolve_nested(type_from_metatype(member_type), 1);
 		}
 		push_error(vformat(R"("%s" is a %s but does not contain a type.)", lexical_name, member.get_type_name()), p_type_node);
 		result.kind = BSParser::DataType::VARIANT;
@@ -3551,6 +3583,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 		}
 		if (subscript != nullptr && subscript->is_attribute && subscript->attribute != nullptr) {
 			reduce_expression(subscript->base);
+			const auto static_receiver = _static_receiver_type(subscript->base);
 			const bool is_self = subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF;
 			auto record_static_instance = [&](bool is_static, const BSParser::DataType &receiver) {
 #ifdef DEBUG_ENABLED
@@ -3566,7 +3599,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 				p_call->function_name = subscript->attribute->name;
 			}
 
-			const BSParser::DataType file_type = subscript->base->get_datatype();
+			const BSParser::DataType file_type = static_receiver;
 			if (file_type.kind == BSParser::DataType::CLASS && file_type.is_meta_type && file_type.class_type != nullptr && file_type.class_type->is_enum_file) {
 				BSParser::ClassNode *head = file_type.class_type;
 				analyze_class_interface(head, subscript->attribute);
@@ -3587,7 +3620,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			// local constructor (`Left.Point(...)`) resolves against the precise class
 			// declaration before ordinary method lookup.
 			if (subscript->base != nullptr && p_call->function_name != StringName()) {
-				const BSParser::DataType owner_type = subscript->base->get_datatype();
+				const BSParser::DataType owner_type = static_receiver;
 				BSParser::DataType tuple_meta_type;
 				if (find_named_tuple_meta_type(owner_type, is_self, p_call->function_name, subscript->attribute, tuple_meta_type)) {
 					p_call->receiver_is_current_self = is_self;
@@ -3655,7 +3688,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 			// Foundry constructor admission @ c9d5e35:8805-8834,17037-17043. Native
 			// and local class handles construct their instance type before ordinary method lookup.
 			if (subscript->base != nullptr && p_call->function_name == SNAME("new")) {
-				const BSParser::DataType class_meta_type = subscript->base->get_datatype();
+				const BSParser::DataType class_meta_type = static_receiver;
 				if ((class_meta_type.kind == BSParser::DataType::CLASS || class_meta_type.kind == BSParser::DataType::NATIVE) && class_meta_type.is_meta_type) {
 					Engine *engine = Engine::get_singleton();
 					if (engine != nullptr && engine->has_singleton(class_meta_type.native_type)) {
@@ -3756,7 +3789,7 @@ void BSAnalyzer::reduce_call(BSParser::CallNode *p_call, bool p_is_await, bool p
 
 			// Native MethodInfo path on a typed native / class receiver (Foundry validate_call_arg(MethodInfo)).
 			if (subscript->base != nullptr && p_call->function_name != StringName()) {
-				const BSParser::DataType base_type = subscript->base->get_datatype();
+				const BSParser::DataType base_type = static_receiver;
 				StringName native_type;
 				if (base_type.kind == BSParser::DataType::NATIVE) {
 					native_type = base_type.native_type;
@@ -4629,7 +4662,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 	if (!engine_enum_base) {
 		reduce_expression(p_subscript->base);
 	}
-	const BSParser::DataType tuple_base_type = p_subscript->base->get_datatype();
+	const BSParser::DataType tuple_base_type = p_subscript->is_attribute ? _static_receiver_type(p_subscript->base) : p_subscript->base->get_datatype();
 	if (p_subscript->is_attribute && p_subscript->attribute) {
 		const auto receiver = tuple_base_type;
 		const auto name = p_subscript->attribute->name;
@@ -4785,7 +4818,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 		return;
 	}
 	if (p_subscript->is_attribute) {
-		const BSParser::DataType file_receiver = p_subscript->base->get_datatype();
+		const BSParser::DataType file_receiver = tuple_base_type;
 		BSParser::ClassNode *head = file_receiver.class_type;
 		if (file_receiver.kind == BSParser::DataType::CLASS && file_receiver.is_meta_type && head != nullptr &&
 				head->is_enum_file && head->enum_file_decl != nullptr && p_subscript->attribute != nullptr) {
@@ -4965,7 +4998,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 		// self/class-name path records frame-specific finality; this path supplies the same destination
 		// evidence for typed instances and inherited members, including readonly constants.
 		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr) {
-			BSParser::DataType receiver_type = p_subscript->base->get_datatype();
+			BSParser::DataType receiver_type = tuple_base_type;
 			if (_is_self_type_parameter(receiver_type) && !receiver_type.type_parameter_bound.is_empty()) {
 				receiver_type = receiver_type.type_parameter_bound[0];
 				receiver_type.is_meta_type = p_subscript->base->get_datatype().is_meta_type;
@@ -5064,7 +5097,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 		// Instance / class-handle / Self-handle `.Enum` for SelfFieldLeg spellings
 		// (`receiver.Message`, `Self.Message`) when the receiver is not the frame's own class_name.
 		if (p_subscript->attribute != nullptr && p_subscript->base != nullptr) {
-			BSParser::DataType base_type = p_subscript->base->get_datatype();
+			BSParser::DataType base_type = tuple_base_type;
 			BSParser::ClassNode *owner = nullptr;
 			if (base_type.kind == BSParser::DataType::CLASS && base_type.class_type != nullptr) {
 				owner = base_type.class_type;
@@ -5091,7 +5124,7 @@ void BSAnalyzer::reduce_subscript(BSParser::SubscriptNode *p_subscript, bool p_c
 				}
 			}
 		}
-		const BSParser::DataType receiver = p_subscript->base->get_datatype();
+		const BSParser::DataType receiver = tuple_base_type;
 		if ((receiver.kind == BSParser::DataType::CLASS || receiver.kind == BSParser::DataType::SCRIPT) && p_subscript->attribute != nullptr) {
 			// Engine properties/method values remain the final ordinary class surface.
 			const StringName name = p_subscript->attribute->name;
