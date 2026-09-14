@@ -69,14 +69,33 @@ class ResultTests(unittest.TestCase):
 
     def test_ci_requires_unsuppressed_whole_manifest_execution(self):
         import validate_ci
-        good = '  - name: Native tests\n    run: python3 tests/run_native_suites.py --godot "$godot_binary"\n'
+        header = "jobs:\n  build:\n    steps:\n"
+        good = header + '      - name: Native tests\n        run: python3 tests/run_native_suites.py --godot "$godot_binary"\n'
         self.assertIsNone(validate_ci.check_native_suite_wiring(good))
         for bad in (good.replace("--godot", "--list --godot"),
                     good.replace("--godot", "--suite tokenizer --godot"),
                     good.replace("--godot", "--case some_case --godot"),
                     good.replace('"$godot_binary"', '"$godot_binary" || true'),
-                    good.replace("    run:", "    continue-on-error: true\n    run:"), ""):
+                    good.replace("        run:", "        continue-on-error: true\n        run:"), ""):
             self.assertIsNotNone(validate_ci.check_native_suite_wiring(bad))
+
+    def test_ci_requires_a_potentially_reachable_native_runner(self):
+        import validate_ci
+        header = "jobs:\n  build:\n    steps:\n"
+        command = '        run: python3 tests/run_native_suites.py --godot "$godot_binary"\n'
+        for condition in ("false", "'false'", '\"false\"', "'  false  '", "${{ false }}",
+                          "'${{ false }}'", '\"${{   false   }}\"',
+                          '\"  ${{ false }}  \"', "false # disabled"):
+            with self.subTest(rejected=condition):
+                workflow = header + "      - if: %s\n" % condition + command
+                self.assertIsNotNone(validate_ci.check_native_suite_wiring(workflow))
+        for condition in (None, "true", "${{ true }}", "${{ matrix.enabled }}",
+                          "${{ false || matrix.enabled }}", "${{ 'false' }}"):
+            with self.subTest(accepted=condition):
+                if_line = "" if condition is None else "      - if: %s\n" % condition
+                run_line = command if condition is not None else "      - run:" + command.split("run:", 1)[1]
+                workflow = header + if_line + run_line
+                self.assertIsNone(validate_ci.check_native_suite_wiring(workflow))
 
     def test_unknown_manifest_suite_is_rejected(self):
         self.assertRaises(ValueError, runner.select_suites, ["missing"])
