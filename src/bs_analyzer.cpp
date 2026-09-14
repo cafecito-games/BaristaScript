@@ -6553,7 +6553,8 @@ bool BSAnalyzer::update_constant_expression_type(BSParser::ExpressionNode *p_exp
 		}
 		const BSParser::DataType &reported_type = declared_type.is_variant() ? comparison_type : declared_type;
 		push_error(vformat(R"*(Cannot %s a value of type "%s" as "%s".)*",
-						   p_usage, reported_type.to_string(), p_expected_type.to_string()),
+						   p_usage, reported_type.to_string(), p_expected_type.to_string()) +
+						BSParser::DataType::same_rendered_name_clause(reported_type, "value", p_expected_type, "target type"),
 				p_expression);
 		return false;
 	}
@@ -6858,7 +6859,8 @@ void BSAnalyzer::update_array_literal_element_type(BSParser::ArrayNode *p_array,
 			array_type.builtin_type = Variant::ARRAY;
 			array_type.container_element_types.push_back(p_element_type);
 			push_error(vformat(R"*(Cannot have an element of type "%s" in an array of type "%s".)*",
-							   element_type.to_string(), array_type.to_string()),
+							   element_type.to_string(), array_type.to_string()) +
+							BSParser::DataType::same_rendered_name_clause(element_type, "element", p_element_type, "array's element type"),
 					element_node);
 			return;
 		}
@@ -6888,7 +6890,8 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 				dictionary_type.container_element_types.push_back(p_key_type);
 				dictionary_type.container_element_types.push_back(p_value_type);
 				push_error(vformat(R"*(Cannot have a key of type "%s" in a dictionary of type "%s".)*",
-								   key_type.to_string(), dictionary_type.to_string()),
+								   key_type.to_string(), dictionary_type.to_string()) +
+								BSParser::DataType::same_rendered_name_clause(key_type, "key", p_key_type, "dictionary's key type"),
 						key_element_node);
 				return;
 			}
@@ -6923,7 +6926,8 @@ void BSAnalyzer::update_dictionary_literal_element_type(BSParser::DictionaryNode
 				dictionary_type.container_element_types.push_back(p_key_type);
 				dictionary_type.container_element_types.push_back(p_value_type);
 				push_error(vformat(R"*(Cannot have a value of type "%s" in a dictionary of type "%s".)*",
-								   value_type.to_string(), dictionary_type.to_string()),
+								   value_type.to_string(), dictionary_type.to_string()) +
+								BSParser::DataType::same_rendered_name_clause(value_type, "value", p_value_type, "dictionary's value type"),
 						value_element_node);
 				return;
 			}
