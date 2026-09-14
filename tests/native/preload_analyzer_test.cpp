@@ -6,6 +6,7 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+#include "barista_script.h"
 #include "bs_global_class.h"
 #include "storage_fixture.h"
 #include "test_require.h"
@@ -489,12 +490,78 @@ TEST_SUITE("preload_analyzer") {
 	TEST_CASE("file_handle_payload_call_requires_declared_enum_name") {
 		StorageFixture fixture;
 		BS_TEST_REQUIRE(!provider(fixture, "enum", "enum_name Packet:\n\tEmpty\n\tValue(value: int)\n").is_empty());
+		const String source = "const E = preload(\"enum.barista\")\nvar payload = E.Value(1)\nvar consumed: int = payload\n";
+		const String path = "res://tests/x3/consumer.barista";
 		BSParser consumer;
-		BS_TEST_REQUIRE(consumer.parse("const E = preload(\"enum.barista\")\nvar payload = E.Value(1)\n", "res://tests/x3/consumer.barista", false) == OK);
+		BS_TEST_REQUIRE(consumer.parse(source, path, false) == OK);
 		BSAnalyzer analyzer(&consumer);
 		CHECK(analyzer.analyze() != OK);
 		auto *call = static_cast<BSParser::CallNode *>(consumer.get_tree()->get_member("payload").variable->initializer);
-		diagnostic(consumer, "Enum case \"Packet.Value\" carries a payload and must be constructed through the enum name, e.g. \"Packet.Value(...)\".", static_cast<BSParser::SubscriptNode *>(call->callee)->attribute);
+		CHECK(call->get_datatype().kind == BSParser::DataType::VARIANT);
+		CHECK_FALSE(call->get_datatype().is_pseudo_type);
+		CHECK_FALSE(call->get_datatype().is_meta_type);
+		auto *callee = static_cast<BSParser::SubscriptNode *>(call->callee);
+		const BSParser::Node *sites[] = { callee, callee->attribute };
+		const String messages[] = {
+			"Name \"Value\" called as a function but is a \"Packet\".",
+			"Enum case \"Packet.Value\" carries a payload and must be constructed through the enum name, e.g. \"Packet.Value(...)\"."
+		};
+		const auto ordered = consumer.get_errors_in_source_order();
+		BS_TEST_REQUIRE(ordered.size() == 2);
+		String block;
+		for (int i = 0; i < 2; ++i) {
+			const auto &error = *ordered[i];
+			CHECK(error.message == messages[i]);
+			CHECK(error.line == sites[i]->start_line);
+			CHECK(error.column == sites[i]->start_column);
+			CHECK(error.end_line == sites[i]->end_line);
+			CHECK(error.end_column == sites[i]->end_column);
+			CHECK(error.line == 2);
+			CHECK(error.column == (i == 0 ? 15 : 17));
+			CHECK(error.end_line == 2);
+			CHECK(error.end_column == 22);
+			block += vformat(">> ERROR at line %d: %s\n", error.line, error.message);
+		}
+		CHECK(block == ">> ERROR at line 2: Name \"Value\" called as a function but is a \"Packet\".\n>> ERROR at line 2: Enum case \"Packet.Value\" carries a payload and must be constructed through the enum name, e.g. \"Packet.Value(...)\".\n");
+		const Dictionary validation = BaristaScriptLanguage::get_singleton()->_validate(source, path, true, true, true, true);
+		CHECK_FALSE(bool(validation.get("valid", true)));
+		const Array errors = validation["errors"];
+		BS_TEST_REQUIRE(errors.size() == 2);
+		for (int i = 0; i < 2; ++i) {
+			const Dictionary error = errors[i];
+			CHECK(String(error["message"]) == messages[i]);
+			CHECK(String(error["path"]) == path);
+			CHECK(int(error["line"]) == 2);
+			CHECK(int(error["column"]) == (i == 0 ? 15 : 17));
+		}
+		Ref<BaristaScript> script;
+		script.instantiate();
+		script->_set_source_code(source);
+		script->set_path(path);
+		CHECK_FALSE(script->_is_valid());
+	}
+	TEST_CASE("file_handle_empty_case_and_declared_enum_payload_call_remain_valid") {
+		StorageFixture fixture;
+		BS_TEST_REQUIRE(!provider(fixture, "enum", "enum_name Packet:\n\tEmpty\n\tValue(value: int)\n").is_empty());
+		const String source = "const E = preload(\"enum.barista\")\nvar empty = E.Empty\nvar payload = E.Packet.Value(1)\n";
+		const String path = "res://tests/x3/consumer.barista";
+		BSParser consumer;
+		BS_TEST_REQUIRE(consumer.parse(source, path, false) == OK);
+		BSAnalyzer analyzer(&consumer);
+		CHECK(analyzer.analyze() == OK);
+		no_errors(consumer);
+		for (const StringName &name : { StringName("empty"), StringName("payload") }) {
+			const auto type = consumer.get_tree()->get_member(name).variable->initializer->get_datatype();
+			CHECK(type.kind == BSParser::DataType::ENUM);
+			CHECK_FALSE(type.is_meta_type);
+			CHECK_FALSE(type.is_pseudo_type);
+		}
+		CHECK(bool(BaristaScriptLanguage::get_singleton()->_validate(source, path, true, true, true, true).get("valid", false)));
+		Ref<BaristaScript> script;
+		script.instantiate();
+		script->_set_source_code(source);
+		script->set_path(path);
+		CHECK(script->_is_valid());
 	}
 	TEST_CASE("semantic_preload_handles_do_not_fold_through_absent_runtime_payload") {
 		StorageFixture fixture;
