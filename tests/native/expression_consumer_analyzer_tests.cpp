@@ -155,6 +155,66 @@ void public_agrees(const String &source, const String &path, const BSParser &par
 }
 } // namespace
 TEST_SUITE("expression_consumer_analyzer") {
+	// Pinned Foundry c9d5e35 originals; only the importer-owned resource identities are projected.
+	TEST_CASE("original_errors_enum_same_name_same_basename_dictionary_enum_across_same_named_helpers") {
+		original("errors/enum_same_name_same_basename/dictionary_enum_across_same_named_helpers.barista",
+				"const HelperA = preload(\"./a/helper.notest.barista\")\nconst HelperB = preload(\"./b/helper.notest.barista\")\n\nfunc test() -> void:\n\tvar wrong: Dictionary[String, HelperB.Result] = {\"k\": HelperA.Result.OK}\n\tvar wrong_key: Dictionary[HelperB.Result, String] = {HelperA.Result.OK: \"k\"}\n\tprint(wrong, wrong_key)\n",
+				">> ERROR at line 5: Cannot include a value of type \"helper.notest.barista.Result\" as \"helper.notest.barista.Result\". The value is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the target type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\".\n"
+				">> ERROR at line 5: Cannot have a value of type \"helper.notest.barista.Result\" in a dictionary of type \"Dictionary[String, helper.notest.barista.Result]\". The value is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the dictionary's value type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\".\n"
+				">> ERROR at line 6: Cannot include a value of type \"helper.notest.barista.Result\" as \"helper.notest.barista.Result\". The value is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the target type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\".\n"
+				">> ERROR at line 6: Cannot have a key of type \"helper.notest.barista.Result\" in a dictionary of type \"Dictionary[helper.notest.barista.Result, String]\". The key is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the dictionary's key type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\".");
+	}
+	TEST_CASE("original_errors_enum_same_name_same_basename_include_enum_across_same_named_helpers") {
+		original("errors/enum_same_name_same_basename/include_enum_across_same_named_helpers.barista",
+				"extends RefCounted\n\nconst HelperA = preload(\"./a/helper.notest.barista\")\nconst HelperB = preload(\"./b/helper.notest.barista\")\n\nfunc test():\n\tvar wrong: Array[HelperB.Result] = [HelperA.Result.OK]\n\tprint(wrong)\n",
+				">> ERROR at line 7: Cannot include a value of type \"helper.notest.barista.Result\" as \"helper.notest.barista.Result\". The value is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the target type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\".\n"
+				">> ERROR at line 7: Cannot have an element of type \"helper.notest.barista.Result\" in an array of type \"Array[helper.notest.barista.Result]\". The element is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the array's element type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\".");
+	}
+	TEST_CASE("original_errors_enum_same_name_same_basename_assign_enum_across_same_named_helpers") {
+		original("errors/enum_same_name_same_basename/assign_enum_across_same_named_helpers.barista",
+				"extends RefCounted\n\nconst HelperA = preload(\"./a/helper.notest.barista\")\nconst HelperB = preload(\"./b/helper.notest.barista\")\n\nfunc test():\n\tvar wrong: HelperB.Result = HelperA.Result.OK\n\tprint(wrong)\n",
+				">> ERROR at line 7: Cannot assign a value of type helper.notest.barista.Result to variable \"wrong\" with specified type helper.notest.barista.Result. The value is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the specified type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\".");
+	}
+	TEST_CASE("ordinary_container_refusals_keep_wording_order_and_element_spans") {
+		struct Example {
+			const char *declaration;
+			const char *message;
+			bool dictionary_key;
+		};
+		for (const auto &example : {
+					 Example{ "Array[int] = ['bad']", "Cannot have an element of type \"String\" in an array of type \"Array[int]\".", false },
+					 Example{ "Dictionary[int, String] = {'bad': 'ok'}", "Cannot have a key of type \"String\" in a dictionary of type \"Dictionary[int, String]\".", true },
+					 Example{ "Dictionary[String, int] = {'ok': 'bad'}", "Cannot have a value of type \"String\" in a dictionary of type \"Dictionary[String, int]\".", false },
+			 }) {
+			StorageFixture storage;
+			TypeProfile profile;
+			BSParser parser;
+			const String source = String("func test():\n\tvar wrong: ") + example.declaration + "\n";
+			const String path = storage.path("ordinary_container.barista");
+			BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
+			BSAnalyzer analyzer(&parser);
+			CHECK(analyzer.analyze() != OK);
+			auto *variable = local(parser, "wrong");
+			BS_TEST_REQUIRE(variable && variable->initializer);
+			const auto *initializer = variable->initializer;
+			const BSParser::ExpressionNode *origin = nullptr;
+			if (initializer->type == BSParser::Node::ARRAY) {
+				const auto *array = static_cast<const BSParser::ArrayNode *>(initializer);
+				BS_TEST_REQUIRE(array->elements.size() == 1);
+				origin = array->elements[0];
+			} else {
+				BS_TEST_REQUIRE(initializer->type == BSParser::Node::DICTIONARY);
+				const auto *dictionary = static_cast<const BSParser::DictionaryNode *>(initializer);
+				BS_TEST_REQUIRE(dictionary->elements.size() == 1);
+				origin = example.dictionary_key ? dictionary->elements[0].key : dictionary->elements[0].value;
+			}
+			CHECK(parser.get_errors().size() == 2);
+			error_at(parser, 0, "Cannot include a value of type \"String\" as \"int\".", origin);
+			error_at(parser, 1, example.message, origin);
+			CHECK(parser.get_warnings().is_empty());
+			public_agrees(source, path, parser);
+		}
+	}
 	TEST_CASE("original_errors_enum_same_name_same_basename_cast_enum_across_same_named_helpers") { original("errors/enum_same_name_same_basename/cast_enum_across_same_named_helpers.barista", "extends RefCounted\n\nconst HelperA = preload(\"./a/helper.notest.barista\")\nconst HelperB = preload(\"./b/helper.notest.barista\")\n\nfunc test():\n\tvar wrong := HelperA.Result as HelperB.Result\n\tprint(wrong)\n", ">> ERROR at line 7: Cannot cast a value of type \"helper.notest.barista.Result\" as \"helper.notest.barista.Result\". The value is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista\"; the target type is declared in \"res://tests/corpus_staging/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista\"."); }
 	TEST_CASE("original_features_enum_assign_other_enum_cast_to_same_enum") { original("features/enum_assign_other_enum_cast_to_same_enum.barista", "enum MyEnum:\n\tENUM_VALUE_1 = 0\n\tENUM_VALUE_2 = ENUM_VALUE_1 + 1\nenum MyOtherEnum:\n\tOTHER_ENUM_VALUE_1 = 0\n\tOTHER_ENUM_VALUE_2 = OTHER_ENUM_VALUE_1 + 1\n\nvar class_var: MyEnum = MyOtherEnum.OTHER_ENUM_VALUE_1 as MyEnum\n\nfunc test():\n\tprint(class_var)\n\tclass_var = MyOtherEnum.OTHER_ENUM_VALUE_2 as MyEnum\n\tprint(class_var)\n\n\tvar local_var: MyEnum = MyOtherEnum.OTHER_ENUM_VALUE_1 as MyEnum\n\tprint(local_var)\n\tlocal_var = MyOtherEnum.OTHER_ENUM_VALUE_2 as MyEnum\n\tprint(local_var)\n", "BS_TEST_OK"); }
 	TEST_CASE("original_errors_use_value_of_void_function_custom_method") { original("errors/use_value_of_void_function_custom_method.barista", "func foo() -> void:\n\tpass\n\nfunc test():\n\tprint(foo()) # Custom method.\n", ">> ERROR at line 5: Cannot get return value of call to \"foo()\" because it returns \"void\"."); }
