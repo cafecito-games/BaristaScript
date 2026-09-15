@@ -51,8 +51,18 @@ class AnalyzerImport(unittest.TestCase):
         }
         self.policy['expectation_edits'] = {}
         self.policy['expectation_overrides'] = {}
-        self.policy['rewritten'].pop('features/lookup_class.barista')
-        self.policy['source_edits'].pop('analyzer/features/lookup_class.fs')
+        self.policy['rewritten'] = {
+            path: reason for path, reason in self.policy['rewritten'].items()
+            if path in fixture_cases
+        }
+        fixture_sources = {
+            path.relative_to(self.source).as_posix()
+            for path in self.source.rglob('*.fs')
+        }
+        self.policy['source_edits'] = {
+            path: edits for path, edits in self.policy['source_edits'].items()
+            if path in fixture_sources
+        }
 
     def inventory(self):
         return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus_staging/analyzer')
@@ -555,6 +565,89 @@ class FullPinned(unittest.TestCase):
             self.assertEqual(policy['owners'][path]['review_state'], 'source_reviewed_deferred')
         for path in excluded:
             self.assertEqual(policy['owners'][path]['review_state'], 'source_reviewed_excluded')
+
+        projected_cases = [
+            'errors/type_alias_not_inherited.barista',
+            'features/generic_tagged_union_namespaced.barista',
+            'features/retroactive_conformance_basic.norun.barista',
+            'features/retroactive_conformance_native.norun.barista',
+            'features/type_alias_explicit_type_argument_nearer_class_shadow.barista',
+            'features/type_alias_explicit_type_argument_witness.barista',
+        ]
+        reviewed_cases = sorted(projected_cases + ['features/use_preload_script_as_type.barista'])
+        self.assertEqual((len(projected_cases), case_list_sha(projected_cases)),
+                         (6, 'f4ae7b56a09a61a5b575ec96076598c1ef2ba184408ad794701a5eef78deb8ee'))
+        self.assertEqual((len(reviewed_cases), case_list_sha(reviewed_cases)),
+                         (7, 'c6a3ee1e94d74a0fd14915f597776dc6c83a1af426e262e1de8e3eb678a3945c'))
+        self.assertEqual(set(policy['rewritten']),
+                         set(reviewed_cases) | {'features/lookup_class.barista'})
+        projected_sources = {
+            'analyzer/errors/type_alias_not_inherited.fs':
+                ('d703f76f1f801aae337447301266d1648a9ad804bc83d4d84b7f540262215978',
+                 'eab13c8d7dc11a9750706bfd4e60dbcceff9b7631a3139fe992040309fc8bfc6'),
+            'analyzer/features/generic_tagged_union_global_values.notest.fs':
+                ('092dba1d8f5db2282c5f363be89218bd11a72ebb5b270b73bbc897bb6116d317',
+                 '207ca64f8be05b2cc2228b12d58cece03bc8b262dd6e5dd163e4433fcc037cb7'),
+            'analyzer/features/generic_tagged_union_namespaced.fs':
+                ('d14d1fc596ec4a0f4a1a68cfb06526deea272878cb318c062436e348638c22c0',
+                 'ee120028ef679c15c7334e4e829b5854630a023091eea06748169238492f3912'),
+            'analyzer/features/retroactive_conformance_basic.norun.fs':
+                ('0a91316704f9a48d2ac1c55daf8c705eb8d54a954433273ad5337f57bfd3b458',
+                 '59f4cb8d230655be0d4735b35138f285f3a41e38b6d939f1d33ec6b056c07dc7'),
+            'analyzer/features/retroactive_conformance_native.norun.fs':
+                ('aafb5eae9774e87f1791def9f493ad2a4ffa0507b4f68e2871785822ff3f1ac3',
+                 'e24347e4bcd0d66aee8f00ec11134bf72dfb37b41d6cc298ca5d1b66c74c90c6'),
+            'analyzer/features/type_alias_explicit_type_argument_nearer_class_shadow.fs':
+                ('36673ac7706595f8727b27c61ede9957b968db6b0f41c7da2adfcffa571036c0',
+                 'ce5c185e21cdc5e84527e1f9fa6cb7522b1ea40ec9df72afd13890aab1715cc9'),
+            'analyzer/features/type_alias_explicit_type_argument_witness_conformance.notest.fs':
+                ('adc16ce3f5816a865b006d8358667dec39495b697b20d736542cf335f07af722',
+                 '9f267e188fd4ac74b8ba8d7126672e36af1be1c70e9c672e3f1e202403741b1a'),
+        }
+        self.assertEqual(set(policy['source_edits']), set(projected_sources) | {
+            'analyzer/features/lookup_class.fs',
+            'analyzer/features/use_preload_script_as_type.fs',
+            'utils.notest.fs',
+        })
+        for path, (preimage_sha, projected_sha) in projected_sources.items():
+            data = (source / path).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), preimage_sha)
+            changes = importer.source_policy_changes(data, path, policy)
+            self.assertEqual(hashlib.sha256(importer.patch(data, changes, path)).hexdigest(),
+                             projected_sha)
+
+        records_by_case = {record['imported_path']: record for record in first['sources']
+                           if record['role'] == 'case'}
+        expected_outputs = {
+            'errors/type_alias_not_inherited.barista':
+                '56d11e99f733f3bb863795192e346a9340da4c8c6ed5f31809f31f128a5a4f7d',
+            'features/generic_tagged_union_namespaced.barista':
+                'a0c2235fe56e9b53017a36aac7ab8f7ca1e305aa6a52c8ef75eb11c11b554027',
+            'features/retroactive_conformance_basic.norun.barista':
+                'a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d',
+            'features/retroactive_conformance_native.norun.barista':
+                'a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d',
+            'features/type_alias_explicit_type_argument_nearer_class_shadow.barista':
+                'db661f52fcdac393885cad2edea733e09c5fc919e4b7c36649909b01490bbd03',
+            'features/type_alias_explicit_type_argument_witness.barista':
+                '3d24d399e21ef4bf3cbe74083192674f466680569a941c4de38e8c869ba53198',
+            'features/use_preload_script_as_type.barista':
+                '0ee9742d50b10ce2aa6a67702cf1626fb0c0afcb331baba163b0a943fd7bc78b',
+        }
+        for path in reviewed_cases:
+            record = records_by_case[path]
+            self.assertEqual(record['disposition'], 'rewritten')
+            self.assertEqual(record['expectation_sha256'], expected_outputs[path])
+            self.assertEqual(record['expectation_edits'], [])
+            if path.startswith('features/'):
+                self.assertEqual(record['expected_block'], 'BS_TEST_OK')
+        error_block = records_by_case['errors/type_alias_not_inherited.barista']['expected_block']
+        self.assertEqual(error_block.count('>> ERROR'), 2)
+        self.assertIn('Type alias "Element" is not in scope here.', error_block)
+        self.assertIn('Type alias "Meters" is not in scope here.', error_block)
+        namespaced = records_by_case['features/generic_tagged_union_namespaced.barista']
+        self.assertEqual(namespaced['imported_sha256'],
+                         'a797b55059066bda14a2c849e5338b289d97b5e37bdff16d1d9fc47b0c42ea8a')
 
         lookup_path = 'analyzer/features/lookup_class.fs'
         lookup_case = 'features/lookup_class.barista'

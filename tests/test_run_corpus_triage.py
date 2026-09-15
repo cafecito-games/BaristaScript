@@ -126,8 +126,20 @@ class ReportTests(unittest.TestCase):
                           owners={path: owner for path, owner in policy['owners'].items()
                                   if path in policy['deferred'] or path in policy['excluded']},
                           expectation_edits={}, expectation_overrides={})
-            policy['rewritten'].pop('features/lookup_class.barista')
-            policy['source_edits'].pop('analyzer/features/lookup_class.fs')
+            policy['rewritten'] = {
+                path: reason for path, reason in policy['rewritten'].items()
+                if path in fixture_cases
+            }
+            fixture_sources = {
+                path.relative_to(source).as_posix()
+                for path in source.rglob('*.fs')
+            }
+            policy['source_edits'] = {
+                path: edits for path, edits in policy['source_edits'].items()
+                if path in fixture_sources
+            }
+            self.assertLessEqual(set(policy['rewritten']), fixture_cases)
+            self.assertLessEqual(set(policy['source_edits']), fixture_sources)
             uri = 'res://tests/corpus_staging/analyzer'
             policy['counts'] = importer.inventory_sources(source, policy, uri)['counts']
             inventory = importer.inventory_sources(source, policy, uri)
