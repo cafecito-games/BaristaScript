@@ -413,6 +413,75 @@ func test():
 >> ERROR at line 9: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
 >> ERROR at line 10: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.)EXPECT");
 	}
+	TEST_CASE("self_union_in_typed_container_reports_exact_child_diagnostics") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		TypeProfile profile;
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(R"SOURCE(# A typed container validates its elements against exactly one runtime type, which a set of
+# alternatives cannot supply, so a union is not a container element type -- naming `Self` inside one
+# does not change that. This is what keeps the `Self` element rules free of a union case: element,
+# key, value, and nested element positions are all refused at the annotation.
+class Receiver:
+	func take(_items: Array[int | (int, Self)]) -> void:
+		pass
+
+	func take_value(_items: Dictionary[String, int | (int, Self)]) -> void:
+		pass
+
+	func take_key(_items: Dictionary[int | (int, Self), String]) -> void:
+		pass
+
+	func take_nested(_items: Array[Array[int | (int, Self)]]) -> void:
+		pass
+
+
+func test() -> void:
+	pass
+)SOURCE",
+								"res://tests/concrete_types/type_self_union_container_element_type_rejected.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		diagnostics(parser);
+		CHECK(error_block(parser) == R"EXPECT(>> ERROR at line 6: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.
+>> ERROR at line 9: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 12: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 15: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.)EXPECT");
+		CHECK(parser.get_warnings().is_empty());
+
+		const auto receiver_member = parser.get_tree()->get_member("Receiver");
+		BS_TEST_REQUIRE(receiver_member.type == BSParser::ClassNode::Member::CLASS && receiver_member.m_class);
+		for (const char *method_name : { "take", "take_value", "take_key" }) {
+			const auto method = receiver_member.m_class->get_member(method_name);
+			BS_TEST_REQUIRE(method.type == BSParser::ClassNode::Member::FUNCTION && method.function && method.function->parameters.size() == 1);
+			CHECK(method.function->parameters[0]->get_datatype().is_variant());
+			CHECK(method.function->parameters[0]->get_datatype().type_source == BSParser::DataType::INFERRED);
+		}
+		const auto nested_method = receiver_member.m_class->get_member("take_nested");
+		BS_TEST_REQUIRE(nested_method.type == BSParser::ClassNode::Member::FUNCTION && nested_method.function && nested_method.function->parameters.size() == 1);
+		const auto &nested_type = nested_method.function->parameters[0]->get_datatype();
+		CHECK(nested_type.builtin_type == Variant::ARRAY);
+		BS_TEST_REQUIRE(nested_type.container_element_types.size() == 1);
+		CHECK(nested_type.container_element_types[0].is_variant());
+
+		BSParser alias_parser;
+		BS_TEST_REQUIRE(alias_parser.parse("class Receiver:\n\ttype Element = int | (int, Self)\n\n\tfunc take_alias(_items: Array[Element]) -> void:\n\t\tpass\n",
+								"res://tests/concrete_types/type_self_union_container_alias.barista", false) == OK);
+		BSAnalyzer alias_analyzer(&alias_parser);
+		CHECK(alias_analyzer.analyze() != OK);
+		diagnostics(alias_parser);
+		CHECK(error_block(alias_parser) == R"EXPECT(>> ERROR at line 4: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.)EXPECT");
+		CHECK(alias_parser.get_warnings().is_empty());
+
+		BSParser valid_parser;
+		BS_TEST_REQUIRE(valid_parser.parse("class Receiver:\n\ttype Bound = Self\n\n\tfunc accept(_direct: Array[Self], _value: Dictionary[String, Self], _key: Dictionary[Self, String], _alias: Array[Bound]) -> void:\n\t\tpass\n\n\tfunc echo(value: int | (int, Self)) -> int | (int, Self):\n\t\treturn value\n",
+								"res://tests/concrete_types/type_self_union_container_valid_neighbors.barista", false) == OK);
+		BSAnalyzer valid_analyzer(&valid_parser);
+		CHECK(valid_analyzer.analyze() == OK);
+		diagnostics(valid_parser);
+		CHECK(valid_parser.get_errors().is_empty());
+		CHECK(valid_parser.get_warnings().is_empty());
+	}
 	TEST_CASE("typed_container_union_rejection_preserves_neighboring_type_forms") {
 		StorageFixture storage;
 		BSConformanceRegistry::ScopedCorpusState conformances;
@@ -427,7 +496,7 @@ func take(_value: int | String) -> void:
 	pass
 
 class Receiver:
-	func take_deferred(_items: Array[int | (int, Self)]) -> void:
+	func take_self(_items: Array[Self]) -> void:
 		pass
 
 func test():
@@ -451,9 +520,6 @@ func test():
 		diagnostics(parser);
 		CHECK(parser.get_errors().is_empty());
 		CHECK(parser.get_warnings().is_empty());
-		// The recursive Self-bearing container rule belongs to #138 and must not be
-		// promoted as an unowned side effect of the plain-union #141 packet.
-
 		BSParser nested_parser;
 		BS_TEST_REQUIRE(nested_parser.parse("func test():\n\tvar nested: Array[Dictionary[String, int | String]] = []\n",
 								"res://tests/concrete_types/nested_typed_container_union.barista", false) == OK);

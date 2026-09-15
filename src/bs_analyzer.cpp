@@ -1533,13 +1533,12 @@ BSParser::DataType BSAnalyzer::resolve_type_alias(BSParser::TypeAliasNode *p_typ
 
 bool BSAnalyzer::reject_union_container_element_type(const BSParser::DataType &p_element_type,
 		BSParser::TypeNode *p_element_node, const char *p_untyped_spelling) {
-	if (!p_element_type.is_union() || datatype_contains_self_type_parameter(p_element_type)) {
+	if (!p_element_type.is_union()) {
 		return false;
 	}
 	// A typed container validates its elements against exactly one Variant::Type at runtime,
 	// which a set of alternatives cannot supply. A single-alternative alias has already
-	// collapsed to its member and never reaches this branch. Recursive Self-bearing unions
-	// remain deferred to their separately owned #138 packet.
+	// collapsed to its member and never reaches this branch.
 	push_error(vformat(R"(A typed container cannot have the type union "%s" as an element type, because a container enforces exactly one element type at runtime. Use "%s" for a heterogeneous container.)",
 					   p_element_type.to_string(), String(p_untyped_spelling)),
 			p_element_node);
