@@ -220,7 +220,7 @@
     "features/generic_self_referential_inheritance.barista": "M5: The exact static relationship is between open parameters and applied types; concrete replacements bypass that producer rather than preserve its assertion. Dependency: case-local generic declarations -> use-site vectors/bounds -> inheritance/member/signature substitution",
     "features/generic_tagged_union_application.norun.barista": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
     "features/generic_tagged_union_bounds.norun.barista": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
-    "features/generic_tagged_union_cache_isolation.barista": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
+    "features/generic_tagged_union_cache_isolation.barista": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]. Retirement: when M5 enables generic enum application/substitution and shared-declaration specialization-cache isolation, remove this deferral and the concrete projected helper clone, then restore the original case/provider relationship.",
     "features/generic_tagged_union_cases.barista": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
     "features/generic_tagged_union_methods.barista": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
     "features/generic_tagged_union_patterns.barista": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
@@ -35123,13 +35123,13 @@
         42
       ],
       "primary_issue": 138,
-      "reason": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
+      "reason": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]. Retirement: when M5 enables generic enum application/substitution and shared-declaration specialization-cache isolation, remove this deferral and the concrete projected helper clone, then restore the original case/provider relationship.",
       "review_state": "source_reviewed_deferred",
       "source_review": {
         "advisory_report": "current-20260913-eb0e727-pending395-source-adjudication-v1.json",
         "advisory_report_sha256": "5b32b330631eb305177f7b55c56d742481b336f4476c51c5e0b3b1b6715e0a6d",
         "assertion": "Two GlobalResult specializations from one global provider must not contaminate cached payload schema. Two concrete enums eliminate shared-declaration specialization cache isolation.",
-        "final_disposition": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]",
+        "final_disposition": "M5: The targeted assertion is generic argument application/substitution/isolation/scope, not incidental concrete constructor or member legality. Dependency: local applied enum schema;307 import generic_union_fixture -> generic_tagged_union_global_values.notest.fs declaring GlobalResult[T,E]. Retirement: when M5 enables generic enum application/substitution and shared-declaration specialization-cache isolation, remove this deferral and the concrete projected helper clone, then restore the original case/provider relationship.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/features/generic_tagged_union_cache_isolation.fs",
         "scope_observation": "essential_M5_deferral"
       }
@@ -45409,6 +45409,7 @@
   },
   "rewritten": {
     "errors/type_alias_not_inherited.barista": "Concretize the incidental generic Base frame while preserving the exact two lexical alias visibility errors for Element and Meters in Derived and their complete static expectation.",
+    "features/generic_tagged_union_global.barista": "Project the shared provider's int/String schema plus a provenance-bound String/int helper clone, then remove only matching application vectors in the consumer. Preserve global, namespace-qualified, imported and preloaded lookup, enum construction, payload values, and unchanged BS_TEST_OK. Retire the clone when M5 supplies genuine specialization and cache isolation.",
     "features/generic_tagged_union_namespaced.barista": "Concretize the shared GlobalResult provider and remove only its application vectors in the consumer. Preserve namespace/import/preload lookup, enum construction, payload values, qualified access, and unchanged BS_TEST_OK.",
     "features/lookup_class.barista": "Rename incidental root class E and its use to G while preserving strict order-independent lexical-outer conflicts, Internal.E, inherited TARGET/WAITING, nested F, and unchanged BS_TEST_OK.",
     "features/retroactive_conformance_basic.norun.barista": "Replace only the generic bound helper with its concrete RtcPrintable parameter. Preserve the foreign witness body, trait assignment, is/as checks, concrete trait-typed call, and unchanged BS_TEST_OK.",
@@ -45417,7 +45418,7 @@
     "features/type_alias_explicit_type_argument_witness.barista": "Replace the helper's incidental generic WitnessBox carrier with Array[Meters] while preserving declaration-scope alias lookup, cross-file preload and conformance witness behavior, and unchanged BS_TEST_OK.",
     "features/use_preload_script_as_type.barista": "Translate the exact declared preload resource type FoundryScript to the registered BaristaScript class. Preserve the preload, type-use assertion, line positions and complete static success expectation."
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "source_edits": {
     "analyzer/errors/type_alias_not_inherited.fs": {
       "patches": [
@@ -45451,6 +45452,74 @@
       ],
       "sha256": "d703f76f1f801aae337447301266d1648a9ad804bc83d4d84b7f540262215978"
     },
+    "analyzer/features/generic_tagged_union_global.fs": {
+      "patches": [
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 319,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 306
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 347,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 334
+        },
+        {
+          "after": "GlobalFlippedResult",
+          "before": "GlobalResult[String, int]",
+          "end": 418,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 393
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 469,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 456
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 497,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 484
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 552,
+          "line": 11,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 539
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 580,
+          "line": 11,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 567
+        }
+      ],
+      "sha256": "b8c30ff7fbeeca9412e2e2f6bb5692dd62f10f3e935609d33e6aa0db4f8d17b5"
+    },
     "analyzer/features/generic_tagged_union_global_values.notest.fs": {
       "patches": [
         {
@@ -45481,6 +45550,39 @@
           "start": 89
         }
       ],
+      "projected_helper_clone": {
+        "patches": [
+          {
+            "after": "GlobalFlippedResult",
+            "before": "GlobalResult[T, E]",
+            "end": 61,
+            "line": 3,
+            "occurrences": 1,
+            "rule": "concrete-external-enum-flipped-provider",
+            "start": 43
+          },
+          {
+            "after": "String",
+            "before": "T",
+            "end": 75,
+            "line": 4,
+            "occurrences": 1,
+            "rule": "concrete-external-enum-flipped-provider",
+            "start": 74
+          },
+          {
+            "after": "int",
+            "before": "E",
+            "end": 90,
+            "line": 5,
+            "occurrences": 1,
+            "rule": "concrete-external-enum-flipped-provider",
+            "start": 89
+          }
+        ],
+        "target": "features/generic_tagged_union_global_flipped_values.notest.barista",
+        "transformed_sha256": "d418b676e9c1d2dc83b2b957ec40c1475c4d6f15bccb6a4916d01ad559c253e5"
+      },
       "sha256": "092dba1d8f5db2282c5f363be89218bd11a72ebb5b270b73bbc897bb6116d317"
     },
     "analyzer/features/generic_tagged_union_namespaced.fs": {

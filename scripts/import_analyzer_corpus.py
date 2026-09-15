@@ -131,10 +131,42 @@ def source_policy_changes(data: bytes, path: str, policy: dict) -> list[dict]:
     if path not in policy['source_edits']:
         return []
     edits = policy['source_edits'][path]
-    if set(edits) != {'sha256', 'patches'} or edits['sha256'] != sha(data):
+    if (not isinstance(edits, dict)
+            or set(edits) not in ({'sha256', 'patches'},
+                                  {'sha256', 'patches', 'projected_helper_clone'})
+            or edits.get('sha256') != sha(data)):
         raise ValueError(f'{path}: source edit hash preimage mismatch')
     patch(data, edits['patches'], path)
     return edits['patches']
+
+
+def projected_helper_clone(data: bytes, path: str, edits: dict, occupied: set[str]) -> dict | None:
+    """Validate one helper-only raw-source clone nested under its pinned provider."""
+    clone = edits.get('projected_helper_clone')
+    if clone is None:
+        return None
+    if not path.startswith('analyzer/') or not path.endswith('.notest.fs'):
+        raise ValueError(f'{path}: projected helper clone requires an analyzer helper provider')
+    if (not isinstance(clone, dict)
+            or set(clone) != {'target', 'transformed_sha256', 'patches'}
+            or not isinstance(clone.get('patches'), list) or not clone['patches']):
+        raise ValueError(f'{path}: invalid projected helper clone schema')
+    target = clone.get('target')
+    if (not isinstance(target, str) or not target.endswith('.notest.barista')
+            or target.startswith('/') or '\\' in target or str(PurePosixPath(target)) != target
+            or any(part in ('', '.', '..') for part in target.split('/'))
+            or target.split('/')[0] not in ('errors', 'features', 'warnings')):
+        raise ValueError(f'{path}: invalid projected helper clone target')
+    if target in occupied:
+        raise ValueError(f'{path}: projected helper clone target collision: {target}')
+    transformed = patch(data, clone['patches'], f'{path} projected helper clone')
+    if (not isinstance(clone.get('transformed_sha256'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', clone['transformed_sha256'])
+            or sha(transformed) != clone['transformed_sha256']):
+        raise ValueError(f'{path}: projected helper clone transformed hash mismatch')
+    identity = f'{SCRIPTS}/{path}#projected-helper-clone:{target}'
+    return {'target': target, 'identity': identity, 'patches': clone['patches'],
+            'transformed_sha256': clone['transformed_sha256']}
 
 
 def source_record(data, path, relative, role, changes, references):
@@ -203,7 +235,7 @@ def owner_candidates(source: str, expected: str, references: list):
 
 def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
     if set(policy) != {'schema_version', 'foundry_revision', 'counts', 'excluded', 'rewritten',
-                       'expectation_overrides', 'deferred', 'source_edits', 'expectation_edits', 'owners'} or type(policy['schema_version']) is not int or policy['schema_version'] != 1:
+                       'expectation_overrides', 'deferred', 'source_edits', 'expectation_edits', 'owners'} or type(policy['schema_version']) is not int or policy['schema_version'] != 2:
         raise ValueError('invalid analyzer policy schema')
     for field in ('excluded', 'rewritten', 'expectation_overrides', 'deferred', 'source_edits', 'expectation_edits', 'owners'):
         if not isinstance(policy[field], dict):
@@ -342,7 +374,22 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
         raise ValueError(f'pinned inventory count drift: expected {policy["counts"]}, actual {counts}')
     if set(policy['source_edits']) - set(sources + SUPPORT):
         raise ValueError('stale source edit policy')
+    imported_paths = {
+        barista_path(path) if path in SHARED_SUPPORT_ROOTS else
+        ('_support/' + barista_path(path) if path in SUPPORT else
+         barista_path(path.removeprefix('analyzer/')))
+        for path in sources + SUPPORT
+    }
+    clone_specs = {}
     for path in policy['source_edits']:
+        data = files[path]
+        source_policy_changes(data, path, policy)
+        clone = projected_helper_clone(data, path, policy['source_edits'][path], imported_paths)
+        if clone is not None:
+            if clone['identity'] in {item['identity'] for item in clone_specs.values()}:
+                raise ValueError(f'{path}: duplicate projected helper clone identity')
+            clone_specs[path] = clone
+            imported_paths.add(clone['target'])
         key = barista_path(path.removeprefix('analyzer/'))
         if key in cases and key not in triage['rewritten'] and key not in triage['expectation_overrides']:
             raise ValueError(f'{path}: source edit requires its disjoint rewrite or override disposition')
@@ -382,6 +429,7 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
             references.append({'kind': kind, 'literal': literal, 'target': target,
                                'relocated': after, 'intentional_missing': intentional})
             changes.append(change(data, start, end, after, 'resource-literal', target=target))
+        relocation_changes = list(changes)
         changes.extend(source_policy_changes(data, path, policy))
         record = source_record(data, path, relative, role, changes, references)
         if path in SHARED_SUPPORT_ROOTS:
@@ -407,6 +455,21 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                                                       'owners': owner_candidates(source, block, references)},
                            'semantic_owner': policy['owners'].get(relative)})
         records.append(record)
+        clone = clone_specs.get(path)
+        if clone is not None:
+            clone_changes = relocation_changes
+            clone_changes.extend(clone['patches'])
+            clone_record = source_record(data, path, clone['target'], 'helper', clone_changes, references)
+            clone_record.update({
+                'identity': clone['identity'],
+                'projection': {
+                    'kind': 'projected_helper_clone',
+                    'provider_identity': SCRIPTS + '/' + path,
+                    'provider_sha256': sha(data),
+                    'transformed_sha256': clone['transformed_sha256'],
+                },
+            })
+            records.append(clone_record)
     included = cases - set(triage['excluded']) - set(triage['deferred'])
     for record in records:
         if record.get('disposition') in ('excluded', 'deferred'):
@@ -419,7 +482,9 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                 raise ValueError(f'{record["identity"]}: required paired dependency removed by policy: {target}')
     ledger = {'root': uri, 'foundry_revision': policy['foundry_revision'], 'upstream_total': len(cases),
               'upstream_helpers': len(helpers) + len(SUPPORT), 'upstream_sources': len(sources) + len(SUPPORT),
-              'total': len(included), 'skipped': len(helpers) + len(SUPPORT) - len(SHARED_SUPPORT_ROOTS), 'expected_failures': [], 'triage': triage}
+              'total': len(included),
+              'skipped': len(helpers) + len(SUPPORT) - len(SHARED_SUPPORT_ROOTS) + len(clone_specs),
+              'expected_failures': [], 'triage': triage}
     complaint = validate_triage_ledger('analyzer staging', ledger, disk_cases=included,
                                       disk_helpers=helpers | {'_support/' + barista_path(p) for p in SUPPORT if p not in SHARED_SUPPORT_ROOTS})
     if complaint:
@@ -476,6 +541,7 @@ def generate(inv: dict, source: Path, destination: Path, *, project_root: Path |
         f'Foundry `{inv["foundry_revision"]}`. Full upstream inventory: {inv["counts"]["cases"]} cases, '
         f'{inv["counts"]["helpers"]} analyzer helpers; {inv["counts"]["support_helpers"]} support identities, '
         f'{len(SHARED_SUPPORT_ROOTS)} supplied by the existing external parser-owned delivery.\n'
+        f'Generated helper projections: {sum("projection" in record for record in inv["sources"])}.\n'
         'Execution selects cases; every included dependency remains available. No script body executes.\n')
 
 

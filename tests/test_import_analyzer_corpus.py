@@ -343,6 +343,120 @@ class AnalyzerImport(unittest.TestCase):
                 self.inventory()
             edit[key] = old
 
+    def test_projected_helper_clone_is_raw_bound_helper_only_and_deterministic(self):
+        before = self.inventory()
+        provider = self.source / 'analyzer/features/projected_provider.notest.fs'
+        provider.parent.mkdir(parents=True, exist_ok=True)
+        data = b'namespace projected_fixture\n\nenum_name RawResult[T, E]:\n\tOk(value: T)\n\tErr(error: E)\n'
+        provider.write_bytes(data)
+        name_start = data.index(b'RawResult[T, E]')
+        value_start = data.index(b'T)', name_start)
+        error_start = data.index(b'E)', value_start)
+        standard = [
+            self.m.change(data, name_start, name_start + len(b'RawResult[T, E]'), 'StandardResult', 'standard-provider'),
+            self.m.change(data, value_start, value_start + 1, 'int', 'standard-provider'),
+            self.m.change(data, error_start, error_start + 1, 'String', 'standard-provider'),
+        ]
+        clone_patches = [
+            self.m.change(data, name_start, name_start + len(b'RawResult[T, E]'), 'ProjectedResult', 'projected-provider'),
+            self.m.change(data, value_start, value_start + 1, 'String', 'projected-provider'),
+            self.m.change(data, error_start, error_start + 1, 'int', 'projected-provider'),
+        ]
+        clone_bytes = self.m.patch(data, clone_patches, 'fixture clone')
+        self.policy['source_edits']['analyzer/features/projected_provider.notest.fs'] = {
+            'sha256': self.m.sha(data),
+            'patches': standard,
+            'projected_helper_clone': {
+                'target': 'features/projected_flipped.notest.barista',
+                'transformed_sha256': self.m.sha(clone_bytes),
+                'patches': clone_patches,
+            },
+        }
+        inv = self.inventory()
+        records = {record['imported_path']: record for record in inv['sources']}
+        original = records['features/projected_provider.notest.barista']
+        clone = records['features/projected_flipped.notest.barista']
+        self.assertEqual(self.m.patch(data, original['transformations'], original['identity']),
+                         data.replace(b'RawResult[T, E]', b'StandardResult').replace(b'T)', b'int)').replace(b'E)', b'String)'))
+        self.assertEqual(self.m.patch(data, clone['transformations'], clone['identity']), clone_bytes)
+        self.assertEqual(clone['role'], 'helper')
+        self.assertEqual(clone['projection'], {
+            'kind': 'projected_helper_clone',
+            'provider_identity': self.m.SCRIPTS + '/analyzer/features/projected_provider.notest.fs',
+            'provider_sha256': self.m.sha(data),
+            'transformed_sha256': self.m.sha(clone_bytes),
+        })
+        self.assertEqual(len({record['identity'] for record in inv['sources']}), len(inv['sources']))
+        self.assertEqual(inv['counts']['cases'], before['counts']['cases'])
+        self.assertEqual(inv['ledger']['total'], before['ledger']['total'])
+        self.assertEqual(inv['ledger']['skipped'], before['ledger']['skipped'] + 2)
+        destination = self.root / 'projected-stage'
+        self.m.write_stage(inv, self.source, destination)
+        self.m.check_stage(inv, self.source, destination)
+        self.assertEqual((destination / original['imported_path']).read_bytes(),
+                         self.m.patch(data, standard, original['identity']))
+        self.assertEqual((destination / clone['imported_path']).read_bytes(), clone_bytes)
+        first = {path.relative_to(destination): path.read_bytes()
+                 for path in destination.rglob('*') if path.is_file()}
+        self.m.write_stage(inv, self.source, destination)
+        self.assertEqual(first, {path.relative_to(destination): path.read_bytes()
+                                 for path in destination.rglob('*') if path.is_file()})
+        self.assertEqual(provider.read_bytes(), data)
+
+    def test_projected_helper_clone_schema_and_provenance_fail_closed(self):
+        provider = self.source / 'analyzer/features/clone_guard.notest.fs'
+        provider.parent.mkdir(parents=True, exist_ok=True)
+        data = b'enum_name Guard[T]:\n\tValue(value: T)\n'
+        provider.write_bytes(data)
+        start = data.index(b'Guard[T]')
+        patches = [self.m.change(data, start, start + len(b'Guard[T]'), 'GuardInt', 'clone-guard')]
+        valid = {
+            'sha256': self.m.sha(data),
+            'patches': [],
+            'projected_helper_clone': {
+                'target': 'features/clone_guard_projected.notest.barista',
+                'transformed_sha256': self.m.sha(self.m.patch(data, patches, 'clone guard')),
+                'patches': patches,
+            },
+        }
+        key = 'analyzer/features/clone_guard.notest.fs'
+        self.policy['source_edits'][key] = valid
+        self.inventory()
+        mutations = (
+            ('unknown clone field', lambda item: item['projected_helper_clone'].__setitem__('extra', True), 'clone schema'),
+            ('missing clone field', lambda item: item['projected_helper_clone'].pop('patches'), 'clone schema'),
+            ('empty clone patches', lambda item: item['projected_helper_clone'].__setitem__('patches', []), 'clone schema'),
+            ('absolute target', lambda item: item['projected_helper_clone'].__setitem__('target', '/escape.notest.barista'), 'clone target'),
+            ('dot target', lambda item: item['projected_helper_clone'].__setitem__('target', 'features/../escape.notest.barista'), 'clone target'),
+            ('case target', lambda item: item['projected_helper_clone'].__setitem__('target', 'features/escape.barista'), 'clone target'),
+            ('wrong transformed hash', lambda item: item['projected_helper_clone'].__setitem__('transformed_sha256', '0' * 64), 'transformed hash'),
+            ('stale clone patch', lambda item: item['projected_helper_clone']['patches'][0].__setitem__('before', 'Wrong[T]'), 'preimage'),
+            ('stale provider hash', lambda item: item.__setitem__('sha256', '0' * 64), 'preimage'),
+        )
+        for label, mutate, complaint in mutations:
+            with self.subTest(label=label):
+                candidate = copy.deepcopy(valid)
+                mutate(candidate)
+                self.policy['source_edits'][key] = candidate
+                with self.assertRaisesRegex(ValueError, complaint):
+                    self.inventory()
+        self.policy['source_edits'][key] = copy.deepcopy(valid)
+        occupied = copy.deepcopy(valid)
+        occupied['projected_helper_clone']['target'] = 'errors/annotation_duplicate_in_imported_lib.notest.barista'
+        self.policy['source_edits'][key] = occupied
+        with self.assertRaisesRegex(ValueError, 'target collision'):
+            self.inventory()
+        case_path = 'analyzer/errors/preload_missing_relative_path.fs'
+        case_data = (self.source / case_path).read_bytes()
+        self.policy['source_edits'].pop(key)
+        self.policy['source_edits'][case_path] = {
+            'sha256': self.m.sha(case_data), 'patches': [],
+            'projected_helper_clone': copy.deepcopy(valid['projected_helper_clone']),
+        }
+        self.policy['rewritten']['errors/preload_missing_relative_path.barista'] = 'Clone role guard fixture.'
+        with self.assertRaisesRegex(ValueError, 'helper provider'):
+            self.inventory()
+
     def test_staging_validation_rejects_unlisted_files(self):
         import run_corpus_triage as triage
         inv = self.inventory()
@@ -580,7 +694,10 @@ class FullPinned(unittest.TestCase):
         self.assertEqual((len(reviewed_cases), case_list_sha(reviewed_cases)),
                          (7, 'c6a3ee1e94d74a0fd14915f597776dc6c83a1af426e262e1de8e3eb678a3945c'))
         self.assertEqual(set(policy['rewritten']),
-                         set(reviewed_cases) | {'features/lookup_class.barista'})
+                         set(reviewed_cases) | {
+                             'features/generic_tagged_union_global.barista',
+                             'features/lookup_class.barista',
+                         })
         projected_sources = {
             'analyzer/errors/type_alias_not_inherited.fs':
                 ('d703f76f1f801aae337447301266d1648a9ad804bc83d4d84b7f540262215978',
@@ -588,6 +705,9 @@ class FullPinned(unittest.TestCase):
             'analyzer/features/generic_tagged_union_global_values.notest.fs':
                 ('092dba1d8f5db2282c5f363be89218bd11a72ebb5b270b73bbc897bb6116d317',
                  '207ca64f8be05b2cc2228b12d58cece03bc8b262dd6e5dd163e4433fcc037cb7'),
+            'analyzer/features/generic_tagged_union_global.fs':
+                ('b8c30ff7fbeeca9412e2e2f6bb5692dd62f10f3e935609d33e6aa0db4f8d17b5',
+                 '52c8053dbae0faa33c415211dab555149a69eaf40172ffad68bd9d15c7c40fd0'),
             'analyzer/features/generic_tagged_union_namespaced.fs':
                 ('d14d1fc596ec4a0f4a1a68cfb06526deea272878cb318c062436e348638c22c0',
                  'ee120028ef679c15c7334e4e829b5854630a023091eea06748169238492f3912'),
@@ -648,6 +768,27 @@ class FullPinned(unittest.TestCase):
         namespaced = records_by_case['features/generic_tagged_union_namespaced.barista']
         self.assertEqual(namespaced['imported_sha256'],
                          'a797b55059066bda14a2c849e5338b289d97b5e37bdff16d1d9fc47b0c42ea8a')
+        global_case = records_by_case['features/generic_tagged_union_global.barista']
+        self.assertEqual(global_case['disposition'], 'rewritten')
+        self.assertEqual(global_case['expected_block'], 'BS_TEST_OK')
+        self.assertEqual(global_case['expectation_sha256'],
+                         '92fdfe7e37090831fdf953924a39ba8464cbf361c1294c9879f4b2d03d06b6a2')
+        self.assertEqual(global_case['imported_sha256'],
+                         '52b470071de8c8d7504b901f015be11cf7737aa3db16b446ad04fffbb677dc47')
+        clone = next(record for record in first['sources']
+                     if record['imported_path'] == 'features/generic_tagged_union_global_flipped_values.notest.barista')
+        self.assertEqual(clone['role'], 'helper')
+        self.assertEqual(clone['sha256'],
+                         '092dba1d8f5db2282c5f363be89218bd11a72ebb5b270b73bbc897bb6116d317')
+        self.assertEqual(clone['imported_sha256'],
+                         'd418b676e9c1d2dc83b2b957ec40c1475c4d6f15bccb6a4916d01ad559c253e5')
+        self.assertIn('#projected-helper-clone:', clone['identity'])
+        self.assertEqual(first['ledger']['skipped'], 252)
+        cache_isolation = 'features/generic_tagged_union_cache_isolation.barista'
+        self.assertIn(cache_isolation, policy['deferred'])
+        self.assertNotIn(cache_isolation, {record['imported_path'] for record in first['sources']
+                                           if record.get('disposition') not in ('deferred', 'excluded')})
+        self.assertIn('Retirement:', policy['deferred'][cache_isolation])
 
         lookup_path = 'analyzer/features/lookup_class.fs'
         lookup_case = 'features/lookup_class.barista'
