@@ -2398,10 +2398,12 @@ void BSAnalyzer::analyze_class_interface(BSParser::ClassNode *p_class, const BSP
 			// Foundry dispatches conflict policy by member kind
 			// (`fs_analyzer_surface.cpp:1755-2015` @ c9d5e35). Methods may override an
 			// inherited method or share a native/builtin spelling and only conflict with visible
-			// lexical outers. Type aliases have a dedicated type-namespace policy in their member arm.
+			// lexical outers. Type aliases have a dedicated type-namespace policy in their member arm;
+			// enum values keep their dedicated, lazy-safe conflict check in resolve_class_member.
 			if (member.type == BSParser::ClassNode::Member::FUNCTION) {
 				check_outer_class_member_name_conflict(p_class, name, member.get_source_node());
-			} else if (member.type != BSParser::ClassNode::Member::TYPE_ALIAS) {
+			} else if (member.type != BSParser::ClassNode::Member::TYPE_ALIAS &&
+					member.type != BSParser::ClassNode::Member::ENUM_VALUE) {
 				if (member.type == BSParser::ClassNode::Member::CLASS && member.m_class != nullptr &&
 						member.m_class->identifier != nullptr &&
 						(BSParser::is_builtin_data_type(name) || name == SNAME("AsyncCallable"))) {
