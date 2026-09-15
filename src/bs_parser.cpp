@@ -7036,6 +7036,19 @@ BSParser::TypeNode *BSParser::parse_type_member(bool p_allow_void, CompletionTyp
 			return type;
 		}
 
+		const bool is_array_type = type->type_chain.size() == 1 && type_element->name == SNAME("Array");
+		const bool is_dictionary_type = type->type_chain.size() == 1 && type_element->name == SNAME("Dictionary");
+		if ((is_array_type || is_dictionary_type) && check(BSTokenizer::Token::BRACKET_CLOSE)) {
+			push_error(is_array_type ? R"(Typed arrays require exactly one collection element type.)" : R"(Typed dictionaries require exactly two collection element types.)");
+			pop_multiline();
+			advance();
+			if (match(BSTokenizer::Token::QUESTION_MARK)) {
+				type->is_nullable = true;
+			}
+			complete_extents(type);
+			return type;
+		}
+
 		// Typed collection (like Array[int], Dictionary[String, int]).
 		parse_collection_type_arguments();
 		if (type == nullptr) {
