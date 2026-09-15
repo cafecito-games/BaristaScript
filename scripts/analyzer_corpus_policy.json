@@ -45408,11 +45408,131 @@
     }
   },
   "rewritten": {
+    "errors/type_alias_not_inherited.barista": "Concretize the incidental generic Base frame while preserving the exact two lexical alias visibility errors for Element and Meters in Derived and their complete static expectation.",
+    "features/generic_tagged_union_namespaced.barista": "Concretize the shared GlobalResult provider and remove only its application vectors in the consumer. Preserve namespace/import/preload lookup, enum construction, payload values, qualified access, and unchanged BS_TEST_OK.",
     "features/lookup_class.barista": "Rename incidental root class E and its use to G while preserving strict order-independent lexical-outer conflicts, Internal.E, inherited TARGET/WAITING, nested F, and unchanged BS_TEST_OK.",
+    "features/retroactive_conformance_basic.norun.barista": "Replace only the generic bound helper with its concrete RtcPrintable parameter. Preserve the foreign witness body, trait assignment, is/as checks, concrete trait-typed call, and unchanged BS_TEST_OK.",
+    "features/retroactive_conformance_native.norun.barista": "Replace only the generic bound helper with its concrete RtcNativeCounter parameter. Preserve native ClassDB witness lookup, trait assignment, is/as checks, concrete trait-typed call, and unchanged BS_TEST_OK.",
+    "features/type_alias_explicit_type_argument_nearer_class_shadow.barista": "Replace the incidental generic Holder carrier with Array[Shadowed] while preserving nearest-scope class shadowing, construction, member lookup, and unchanged BS_TEST_OK.",
+    "features/type_alias_explicit_type_argument_witness.barista": "Replace the helper's incidental generic WitnessBox carrier with Array[Meters] while preserving declaration-scope alias lookup, cross-file preload and conformance witness behavior, and unchanged BS_TEST_OK.",
     "features/use_preload_script_as_type.barista": "Translate the exact declared preload resource type FoundryScript to the registered BaristaScript class. Preserve the preload, type-use assertion, line positions and complete static success expectation."
   },
   "schema_version": 1,
   "source_edits": {
+    "analyzer/errors/type_alias_not_inherited.fs": {
+      "patches": [
+        {
+          "after": "class Base:",
+          "before": "class Base[T]:",
+          "end": 307,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-lexical-alias-provider",
+          "start": 293
+        },
+        {
+          "after": "Array[int]",
+          "before": "Array[T]",
+          "end": 332,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-lexical-alias-provider",
+          "start": 324
+        },
+        {
+          "after": "Base",
+          "before": "Base[int]",
+          "end": 387,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-lexical-alias-provider",
+          "start": 378
+        }
+      ],
+      "sha256": "d703f76f1f801aae337447301266d1648a9ad804bc83d4d84b7f540262215978"
+    },
+    "analyzer/features/generic_tagged_union_global_values.notest.fs": {
+      "patches": [
+        {
+          "after": "GlobalResult",
+          "before": "GlobalResult[T, E]",
+          "end": 61,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-provider",
+          "start": 43
+        },
+        {
+          "after": "int",
+          "before": "T",
+          "end": 75,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-provider",
+          "start": 74
+        },
+        {
+          "after": "String",
+          "before": "E",
+          "end": 90,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-provider",
+          "start": 89
+        }
+      ],
+      "sha256": "092dba1d8f5db2282c5f363be89218bd11a72ebb5b270b73bbc897bb6116d317"
+    },
+    "analyzer/features/generic_tagged_union_namespaced.fs": {
+      "patches": [
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 200,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 187
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 228,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 215
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 300,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 287
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 356,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 343
+        },
+        {
+          "after": "",
+          "before": "[int, String]",
+          "end": 384,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-external-enum-consumer",
+          "start": 371
+        }
+      ],
+      "sha256": "d14d1fc596ec4a0f4a1a68cfb06526deea272878cb318c062436e348638c22c0"
+    },
     "analyzer/features/lookup_class.fs": {
       "patches": [
         {
@@ -45435,6 +45555,116 @@
         }
       ],
       "sha256": "df86ab03fb9a399ab518538b0382a6bb69e62143531fed246d48a00d7a8c012b"
+    },
+    "analyzer/features/retroactive_conformance_basic.norun.fs": {
+      "patches": [
+        {
+          "after": "func use_bound(value: RtcPrintable) -> bool:",
+          "before": "func use_bound[T: RtcPrintable](value: T) -> bool:",
+          "end": 716,
+          "line": 15,
+          "occurrences": 1,
+          "rule": "concrete-retroactive-trait-admission",
+          "start": 666
+        }
+      ],
+      "sha256": "0a91316704f9a48d2ac1c55daf8c705eb8d54a954433273ad5337f57bfd3b458"
+    },
+    "analyzer/features/retroactive_conformance_native.norun.fs": {
+      "patches": [
+        {
+          "after": "func use_bound(value: RtcNativeCounter) -> bool:",
+          "before": "func use_bound[T: RtcNativeCounter](value: T) -> bool:",
+          "end": 825,
+          "line": 16,
+          "occurrences": 1,
+          "rule": "concrete-retroactive-trait-admission",
+          "start": 771
+        }
+      ],
+      "sha256": "aafb5eae9774e87f1791def9f493ad2a4ffa0507b4f68e2871785822ff3f1ac3"
+    },
+    "analyzer/features/type_alias_explicit_type_argument_nearer_class_shadow.fs": {
+      "patches": [
+        {
+          "after": "\n",
+          "before": "\tclass Holder[T]:\n\t\tvar value: T",
+          "end": 443,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "builtin-array-nearest-lexical-type",
+          "start": 411
+        },
+        {
+          "after": "var holder: Array[Shadowed] = [Shadowed.new()]",
+          "before": "var holder := Holder[Shadowed].new()",
+          "end": 516,
+          "line": 16,
+          "occurrences": 1,
+          "rule": "builtin-array-nearest-lexical-type",
+          "start": 480
+        },
+        {
+          "after": "\n",
+          "before": "\t\tholder.value = Shadowed.new()\n",
+          "end": 549,
+          "line": 17,
+          "occurrences": 1,
+          "rule": "builtin-array-nearest-lexical-type",
+          "start": 517
+        },
+        {
+          "after": "holder[0].label",
+          "before": "holder.value.label",
+          "end": 576,
+          "line": 18,
+          "occurrences": 1,
+          "rule": "builtin-array-nearest-lexical-type",
+          "start": 558
+        }
+      ],
+      "sha256": "36673ac7706595f8727b27c61ede9957b968db6b0f41c7da2adfcffa571036c0"
+    },
+    "analyzer/features/type_alias_explicit_type_argument_witness_conformance.notest.fs": {
+      "patches": [
+        {
+          "after": "\n",
+          "before": "class WitnessBox[T]:\n\tvar value: T",
+          "end": 244,
+          "line": 6,
+          "occurrences": 1,
+          "rule": "builtin-array-witness-declaration-scope",
+          "start": 210
+        },
+        {
+          "after": "var box: Array[Meters] = [1.5]",
+          "before": "var box := WitnessBox[Meters].new()",
+          "end": 351,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "builtin-array-witness-declaration-scope",
+          "start": 316
+        },
+        {
+          "after": "\n",
+          "before": "\t\tbox.value = 1.5\n",
+          "end": 370,
+          "line": 13,
+          "occurrences": 1,
+          "rule": "builtin-array-witness-declaration-scope",
+          "start": 352
+        },
+        {
+          "after": "str(box[0])",
+          "before": "str(box.value)",
+          "end": 405,
+          "line": 14,
+          "occurrences": 1,
+          "rule": "builtin-array-witness-declaration-scope",
+          "start": 391
+        }
+      ],
+      "sha256": "adc16ce3f5816a865b006d8358667dec39495b697b20d736542cf335f07af722"
     },
     "analyzer/features/use_preload_script_as_type.fs": {
       "patches": [
