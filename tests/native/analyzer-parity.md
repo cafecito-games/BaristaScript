@@ -6,11 +6,12 @@ This inventory is reconciled with `project/tests/analyzer_test.gd` at merged mai
 Callable-member changes at `4c9c561c6096e020440483328c13fc0fcbd3aa71` (PR #201).
 The legacy source remains byte-identical at `a20b9fe5c8d42053b8fe9445a19a1e605817479e`
 (PR #202), integrated by normal merge `29885c269c2a823c98c9b681d55ebc27ad1fc68e`.
-The suite still invokes exactly
-90 unique scenarios. A normal merge at `fbc37cad2a4aa2e20694863f8b79106810617379`
-preserves the original migration commits `9c5e203`, `19085cd`, and `14343b9`.
+The suite now invokes exactly 91 unique scenarios after the source-branch current-main
+reconciliation through `11227aed5f7bd040b9e52210a81f47d2ca704a62`. The current additive
+integration is the normal merge `f0af375fdac7b1cd21f604e85c2b10ae89fc938a`, which preserves the
+source branch's 26 commits, including `9c5e203`, `19085cd`, and `14343b9`.
 
-The legacy suite remains enabled: all 90 scenarios have explicit native equivalents.
+The legacy suite remains enabled: all 91 scenarios have explicit native equivalents.
 Retirement is held until #45 merges and its live consumers are reconciled. No analyzer, cache, index, public, corpus, or triage adapter
 has been removed. Counts in the historical checkpoint sections describe those checkpoints;
 current execution evidence is recorded separately below.
@@ -90,7 +91,7 @@ duplicated here. Their responsibility map is:
 The exact `TEST_CASE` registrations in those five issue-owned source files remain the authoritative
 #140 case-name inventory. This checkpoint neither edits nor copies them.
 
-## Current 90-function inventory
+## Current 91-function inventory
 
 `native #139` means this checkpoint has an explicit equivalent case above. `legacy + #140` means
 #140 has related typed coverage but the legacy function still contains distinct assertions. Rows marked with another native suite have an explicit same-name native case. The remaining
@@ -181,13 +182,23 @@ legacy rows retain distinct assertions and cannot be deleted based on related se
 | 81 | `_test_steps_1_5_repair_regressions` | expressions/calls | native `analyzer_calls` |
 | 82 | `_test_steps_1_5_repair2_self_signatures` | expressions/calls | native `analyzer_calls` |
 | 83 | `_test_local_enum_value_cycles` | declarations | native `analyzer_declarations` |
-| 84 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | native `analyzer_constants` |
-| 85 | `_test_pure_literal_constant_materialization` | expressions/calls | native `analyzer_constants` |
-| 86 | `_test_pure_constant_review_regressions` | expressions/calls | native `analyzer_constants` |
-| 87 | `_test_constant_dictionary_key_conversion` | expressions/calls | native `analyzer_constants` |
-| 88 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | native `analyzer_constants` |
-| 89 | `_test_folded_tuple_child_and_failed_contextual_materialization` | expressions/calls | native `analyzer_constants` |
-| 90 | `_test_constant_producer_child_evidence` | expressions/calls | native `analyzer_constants` |
+| 84 | `_test_typed_container_union_rejection` | declarations | native `concrete_type_analyzer` |
+| 85 | `_test_concrete_cast_ternary_and_type_test_reduction` | expressions/calls | native `analyzer_constants` |
+| 86 | `_test_pure_literal_constant_materialization` | expressions/calls | native `analyzer_constants` |
+| 87 | `_test_pure_constant_review_regressions` | expressions/calls | native `analyzer_constants` |
+| 88 | `_test_constant_dictionary_key_conversion` | expressions/calls | native `analyzer_constants` |
+| 89 | `_test_nested_constant_evidence_and_contextual_casts` | expressions/calls | native `analyzer_constants` |
+| 90 | `_test_folded_tuple_child_and_failed_contextual_materialization` | expressions/calls | native `analyzer_constants` |
+| 91 | `_test_constant_producer_child_evidence` | expressions/calls | native `analyzer_constants` |
+
+Row 84 is jointly pinned to the four `concrete_type_analyzer` registrations
+`type_union_in_typed_container_reports_exact_child_diagnostics`,
+`self_union_in_typed_container_reports_exact_child_diagnostics`,
+`typed_container_union_rejection_preserves_neighboring_type_forms`, and
+`malformed_typed_container_arity_reports_once_and_recovers`. Together they preserve the exact
+ordinary and Self-bearing union diagnostics, public repeat/semantic-validity agreement, the
+separate `Type[Scalar]` union-handle diagnostic, neighboring valid forms, nested rejection, and
+malformed Array/Dictionary arity recovery.
 
 ## Current-main additive checkpoint
 
@@ -211,9 +222,9 @@ The main reconciliation updates only three native flow fixture expectations: the
 finality error, and `narrow_2948_assignment_source` uses main's nullable-specific message.
 Their source strings, phases, positions, repeat checks and settings remain intact.
 
-The main manifest's 29 suites, including every addition through PRs #186–191 and
-#197–199, remain registered and unchanged. The inherited 3 migration suites plus the
-6 new groups are additive. Production `BSParserRef`, current cache/declaration fixtures,
+The current-main manifest's 35 suites through `11227aed` remain registered in their original
+order. The source branch's 15 migration suites are inserted at their reviewed positions for an
+exact ordered 50-suite union. Production `BSParserRef`, current cache/declaration fixtures,
 `evaluate_corpus`, and all public/corpus/triage adapters remain live.
 
 Baseline evidence: `fbc37ca-native-baseline.log` records the full 32-suite inventory,
@@ -373,7 +384,7 @@ The verifier now creates its outer `StorageFixture` before changing the ambient 
 `isolation-outer-cache-green-run.log` records 8 cache cases / 3,921 assertions with zero failures,
 including preservation of the caller's original parser identity. No production code changed.
 
-## Final additive parity checkpoint (90/90; retirement held)
+## Final additive parity checkpoint (91/91; retirement held)
 
 `analyzer_tuple::local_tuple_and_literal_consumers` preserves all 12 literal sources from
 the current-main legacy scenario, its derived positive union source, 12 exact ordered errors
@@ -390,6 +401,21 @@ case passed with `BS_NATIVE_RESULT`: 2 cases, 830 assertions, zero failures
 head with a dirty source state; final clean-head dual-build evidence is recorded externally.
 PR #202's new `declaration_cycle_analyzer` registration and all existing native suites remain
 enabled. The original three migration commits remain ancestors of the normal merge.
+
+The current-main `_test_typed_container_union_rejection` scenario present at `11227aed` is
+covered by four `concrete_type_analyzer` registrations. They preserve exact plain- and
+Self-bearing union diagnostics, public repeat and semantic-validity agreement, the distinct
+union-handle diagnostic, valid neighboring type forms, and exact malformed-arity diagnostics
+and recovery. The mechanical parity test compares all 91 `_init()` invocations with this table
+in order, resolves every documented status to an actual registration, and pins those four
+aggregate registrations and their diagnostic contracts. Registration discovery is anchored to
+live-looking `TEST_CASE` lines, so ordinary line-commented names cannot satisfy parity; all current
+registrations were also verified by focused execution. No duplicate scenario or documentation-only
+parity claim can satisfy the inventory check.
+
+The same reconciliation refreshes the two `pure_constant_review_regressions` selection sources
+that current main changed from a union-typed Array to exact legal `Array[String]` and `Array[int]`
+controls. Their selected-type and consumer-diagnostic predicates remain unchanged in purpose.
 
 No deletion is authorized at this checkpoint. After #45 merges, normally integrate its final
 promotion, reconcile every newly merged scenario and remaining public/smoke/corpus/triage

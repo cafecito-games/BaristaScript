@@ -209,7 +209,7 @@ void scenario_pure_constant_review_regressions() {
 	};
 	const std::vector<Selection> selections = {
 		{ "const BASE: Array[Variant] = [0]\nvar probe_expression = BASE[0]\n", "int", 0 },
-		{ "const BASE: Array[int | String] = [0]\nvar probe_expression = BASE[0]\n", "int", 0 },
+		{ "const BASE: Array[String] = [\"selected\"]\nvar probe_expression = BASE[0]\n", "String", "selected" },
 		{ "const BASE: Dictionary[String, int] = {\"x\": 1}\nvar probe_expression = BASE[&\"x\"]\n", "int", 1 },
 		{ "const BASE: Array[Array[int]] = [[0]]\nvar probe_expression = BASE[0]\n", "Array[int]", array_value({ 0 }) },
 		{ "const BASE: Array[(int, String)] = [(0, \"x\")]\nvar probe_expression = BASE[0]\n", "(int, String)", array_value({ 0, "x" }) },
@@ -232,7 +232,7 @@ void scenario_pure_constant_review_regressions() {
 	};
 	const std::vector<Consumer> consumers = {
 		{ "const BASE: Array[Variant] = [0]\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 5 },
-		{ "const BASE: Array[int | String] = [0]\nfunc test():\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 4 },
+		{ "const BASE: Array[int] = [0]\nfunc test():\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 4 },
 		{ "const BASE: Dictionary[String, Variant] = {\"x\": 0}\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tvar sub := BASE[\"x\"]\n\tif sub is String: pass\n", 5 },
 	};
 	for (const auto &sample : consumers) {

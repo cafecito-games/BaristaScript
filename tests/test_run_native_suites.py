@@ -9,6 +9,7 @@
 import argparse
 import json
 import hashlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,93 @@ import run_native_suites as runner
 
 GODOT = None
 BUILD_DIR = runner.DEFAULT_BUILD_DIR
+
+
+class AnalyzerParityInventoryTests(unittest.TestCase):
+    def test_manifest_is_exact_unique_additive_50_suite_union(self):
+        suites = json.loads((runner.ROOT / "tests/native_suites.json").read_text())["suites"]
+        expected = [
+            "tokenizer", "parser", "warnings", "platform", "cache", "declaration_index",
+            "global_class", "cross_file_analyzer", "provider_analyzer", "preload_analyzer",
+            "refresh_analyzer", "analyzer_flow", "analyzer_cache", "analyzer_dependency",
+            "analyzer_diagnostics", "analyzer_calls", "analyzer_finality",
+            "analyzer_declarations", "analyzer_operations", "analyzer_conformance",
+            "analyzer_members", "analyzer_enum", "analyzer_constants",
+            "analyzer_type_compatibility", "source_analyzer", "autoload_analyzer",
+            "trait_surface_analyzer", "witness_scope_analyzer", "variadic_callable_analyzer",
+            "builtin_metadata_analyzer", "get_node_analyzer", "numeric_consumer_analyzer",
+            "warning_producer_analyzer", "concrete_type_analyzer", "value_consumer_analyzer",
+            "expression_consumer_analyzer", "abstract_contract_analyzer",
+            "parent_contract_analyzer", "provider_phase_analyzer", "namespace_annotation_analyzer",
+            "declaration_context_analyzer", "enum_call_dispatch_analyzer",
+            "call_admission_analyzer", "analyzer_resolution", "declaration_cycle_analyzer",
+            "analyzer_tuple", "provider_failure_replay_analyzer", "base_outer_analyzer",
+            "external_enum_constant_analyzer", "top_level_enum_analyzer",
+        ]
+        self.assertEqual(expected, suites)
+        self.assertEqual(len(expected), len(set(suites)))
+
+    def test_current_analyzer_inventory_maps_all_91_legacy_scenarios(self):
+        legacy = (runner.ROOT / "project/tests/analyzer_test.gd").read_text()
+        init = legacy.split("func _init() -> void:", 1)[1].split("\n\nfunc ", 1)[0]
+        invoked = re.findall(r"^\s*(_test_[a-z0-9_]+)\(failures\)\s*$", init, re.MULTILINE)
+        parity = (runner.ROOT / "tests/native/analyzer-parity.md").read_text()
+        rows = re.findall(
+            r"^\|\s*\d+\s*\|\s*`(_test_[a-z0-9_]+)`\s*\|[^|]*\|\s*([^|]+?)\s*\|$",
+            parity,
+            re.MULTILINE,
+        )
+        documented = [function for function, _status in rows]
+
+        self.assertEqual(91, len(invoked))
+        self.assertEqual(91, len(set(invoked)))
+        self.assertEqual(invoked, documented)
+
+        registrations = {}
+        for source_path in (runner.ROOT / "tests/native").glob("*.cpp"):
+            source = source_path.read_text()
+            suites = re.findall(r'TEST_SUITE\("([a-z0-9_]+)"\)', source)
+            if len(suites) == 1:
+                registrations.setdefault(suites[0], set()).update(
+                    re.findall(r'^\s*TEST_CASE\("([a-z0-9_]+)"\)', source, re.MULTILINE)
+                )
+
+        typed_container_cases = {
+            "type_union_in_typed_container_reports_exact_child_diagnostics",
+            "self_union_in_typed_container_reports_exact_child_diagnostics",
+            "typed_container_union_rejection_preserves_neighboring_type_forms",
+            "malformed_typed_container_arity_reports_once_and_recovers",
+        }
+        concrete_source = (runner.ROOT / "tests/native/concrete_type_analyzer_tests.cpp").read_text()
+        typed_container_contracts = (
+            'CHECK_FALSE(bool(first_public_report.get("valid", true)))',
+            '_validate(source, path, true, true, true, false) == first_public_report',
+            'CHECK_FALSE(source_analyzes(source, path))',
+            'A type handle cannot represent the type union "String | int"',
+            'Typed arrays require exactly one collection element type.',
+            'Typed dictionaries require exactly two collection element types.',
+            '{ "Typed arrays require exactly one collection element type.", 2, 23 }',
+            '{ "Typed dictionaries require exactly two collection element types.", 2, 28 }',
+            '{ "Typed dictionaries require exactly two collection element types.", 2, 27 }',
+            '{ "Typed arrays require exactly one collection element type.", 3, 20 }',
+            '{ "Typed dictionaries require exactly two collection element types.", 4, 25 }',
+            '{ "Typed dictionaries require exactly two collection element types.", 5, 30 }',
+        )
+        for contract in typed_container_contracts:
+            self.assertIn(contract, concrete_source)
+        for function, status in rows:
+            if function == "_test_typed_container_union_rejection":
+                self.assertEqual("native `concrete_type_analyzer`", status)
+                self.assertTrue(typed_container_cases <= registrations["concrete_type_analyzer"])
+                continue
+            if status == "native #139":
+                suite = "analyzer_flow"
+            else:
+                match = re.fullmatch(r"native\s+`?([a-z0-9_]+)`?", status)
+                self.assertIsNotNone(match, f"unrecognized parity status for {function}: {status}")
+                suite = match.group(1)
+            case = function.removeprefix("_test_")
+            self.assertIn(case, registrations.get(suite, set()), f"{function} is not registered in {suite}")
 
 
 class StagingTests(unittest.TestCase):

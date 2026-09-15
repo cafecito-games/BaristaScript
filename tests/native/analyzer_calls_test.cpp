@@ -17,6 +17,10 @@ using namespace barista_script::native_tests;
 
 // Sources and every condition migrated from analyzer_test.gd at 4b2439f (PR #199).
 namespace {
+constexpr const char *GENERIC_SPECIALIZATION_M5_DIAGNOSTIC =
+		"Generic type specialization is not available "
+		"until M5.";
+
 void scenario_call_arity_and_types() {
 	StorageFixture fixture;
 	BSConformanceRegistry::ScopedCorpusState registry;
@@ -573,7 +577,7 @@ void scenario_coroutine_annotation_decode() {
 		if (message.contains("Coroutine[T]") && (message.contains("expects") || message.contains("single") || message.contains("exactly one"))) {
 			saw_arity_empty = true;
 		}
-		if (message.contains("Generic type specialization is not available until M5")) {
+		if (message.contains(GENERIC_SPECIALIZATION_M5_DIAGNOSTIC)) {
 			saw_m5_on_coro = true;
 		}
 	}
@@ -599,7 +603,7 @@ void scenario_coroutine_annotation_decode() {
 	bool saw_m5_other = false;
 	for (const auto &error : other_generic_report.parser->get_errors()) {
 		const String &message = error.message;
-		if (message.contains("Generic type specialization is not available until M5")) {
+		if (message.contains(GENERIC_SPECIALIZATION_M5_DIAGNOSTIC)) {
 			saw_m5_other = true;
 		}
 	}

@@ -6,6 +6,8 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+#include "analyzer_helpers.h"
+#include "barista_script_language.h"
 #include "bs_conformance_registry.h"
 #include "bs_type.h"
 #include "storage_fixture.h"
@@ -55,6 +57,15 @@ String error_block(const BSParser &parser) {
 		block += vformat(">> ERROR at line %d: %s", e.line, e.message);
 	}
 	return block;
+}
+void exact_errors(const BSParser &parser, const std::vector<ExpectedError> &expected) {
+	const auto errors = parser.get_errors_in_source_order();
+	BS_TEST_REQUIRE(errors.size() == expected.size());
+	for (uint32_t i = 0; i < errors.size(); ++i) {
+		CHECK(errors[i]->message == expected[i].message.c_str());
+		CHECK(errors[i]->line == expected[i].line);
+		CHECK(errors[i]->column == expected[i].column);
+	}
 }
 void original(const char *name, const char *source, const char *expected) {
 	StorageFixture storage;
@@ -417,8 +428,7 @@ func test():
 		StorageFixture storage;
 		BSConformanceRegistry::ScopedCorpusState conformances;
 		TypeProfile profile;
-		BSParser parser;
-		BS_TEST_REQUIRE(parser.parse(R"SOURCE(# A typed container validates its elements against exactly one runtime type, which a set of
+		const String source = R"SOURCE(# A typed container validates its elements against exactly one runtime type, which a set of
 # alternatives cannot supply, so a union is not a container element type -- naming `Self` inside one
 # does not change that. This is what keeps the `Self` element rules free of a union case: element,
 # key, value, and nested element positions are all refused at the annotation.
@@ -438,8 +448,10 @@ class Receiver:
 
 func test() -> void:
 	pass
-)SOURCE",
-								"res://tests/concrete_types/type_self_union_container_element_type_rejected.barista", false) == OK);
+)SOURCE";
+		const String path = "res://tests/concrete_types/type_self_union_container_element_type_rejected.barista";
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(source, path, false) == OK);
 		BSAnalyzer analyzer(&parser);
 		CHECK(analyzer.analyze() != OK);
 		diagnostics(parser);
@@ -448,6 +460,12 @@ func test() -> void:
 >> ERROR at line 12: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
 >> ERROR at line 15: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.)EXPECT");
 		CHECK(parser.get_warnings().is_empty());
+
+		const Dictionary first_public_report = BaristaScriptLanguage::get_singleton()->_validate(source, path, true, true, true, false);
+		CHECK_FALSE(bool(first_public_report.get("valid", true)));
+		CHECK(Array(first_public_report.get("warnings", Array())).is_empty());
+		CHECK(BaristaScriptLanguage::get_singleton()->_validate(source, path, true, true, true, false) == first_public_report);
+		CHECK_FALSE(source_analyzes(source, path));
 
 		const auto receiver_member = parser.get_tree()->get_member("Receiver");
 		BS_TEST_REQUIRE(receiver_member.type == BSParser::ClassNode::Member::CLASS && receiver_member.m_class);
@@ -527,6 +545,9 @@ func test():
 		CHECK(nested_analyzer.analyze() != OK);
 		diagnostics(nested_parser);
 		CHECK(error_block(nested_parser) == R"EXPECT(>> ERROR at line 2: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.)EXPECT");
+
+		original("type_union_handle_control", "type Scalar = int | String\nvar invalid_handle: Type[Scalar]\n",
+				R"EXPECT(>> ERROR at line 2: A type handle cannot represent the type union "String | int", because a handle names exactly one type at runtime. Use a handle of one alternative instead.)EXPECT");
 	}
 	TEST_CASE("malformed_typed_container_arity_reports_once_and_recovers") {
 		StorageFixture storage;
@@ -539,16 +560,19 @@ func test():
 					  "res://tests/concrete_types/missing_array_element_type.barista", false) != OK);
 		diagnostics(empty_array_parser);
 		CHECK(error_block(empty_array_parser) == R"EXPECT(>> ERROR at line 2: Typed arrays require exactly one collection element type.)EXPECT");
+		exact_errors(empty_array_parser, { { "Typed arrays require exactly one collection element type.", 2, 23 } });
 
 		BSParser empty_dictionary_parser;
 		CHECK(empty_dictionary_parser.parse("func test():\n\tvar missing: Dictionary[] = {}\n",
 					  "res://tests/concrete_types/missing_dictionary_element_types.barista", false) != OK);
 		diagnostics(empty_dictionary_parser);
 		CHECK(error_block(empty_dictionary_parser) == R"EXPECT(>> ERROR at line 2: Typed dictionaries require exactly two collection element types.)EXPECT");
+		exact_errors(empty_dictionary_parser, { { "Typed dictionaries require exactly two collection element types.", 2, 28 } });
 
 		// Nonempty lists reach the analyzer. Each malformed declaration must produce one
 		// arity error, recover as Variant, and leave following declarations analyzable.
-		original("malformed_typed_container_arity", R"SOURCE(func test():
+		BSParser malformed_parser;
+		BS_TEST_REQUIRE(malformed_parser.parse(R"SOURCE(func test():
 	var missing_dictionary: Dictionary[int] = {}
 	var extra_array: Array[int, String] = []
 	var extra_dictionary: Dictionary[int, String, float] = {}
@@ -556,10 +580,17 @@ func test():
 	var recovered: Array[int] = []
 	print(recovered)
 )SOURCE",
-				R"EXPECT(>> ERROR at line 2: Typed dictionaries require exactly two collection element types.
->> ERROR at line 3: Typed arrays require exactly one collection element type.
->> ERROR at line 4: Typed dictionaries require exactly two collection element types.
->> ERROR at line 5: Typed dictionaries require exactly two collection element types.)EXPECT");
+								"res://tests/concrete_types/malformed_typed_container_arity.barista", false) == OK);
+		BSAnalyzer malformed_analyzer(&malformed_parser);
+		CHECK(malformed_analyzer.analyze() != OK);
+		diagnostics(malformed_parser);
+		exact_errors(malformed_parser, {
+											   { "Typed dictionaries require exactly two collection element types.", 2, 27 },
+											   { "Typed arrays require exactly one collection element type.", 3, 20 },
+											   { "Typed dictionaries require exactly two collection element types.", 4, 25 },
+											   { "Typed dictionaries require exactly two collection element types.", 5, 30 },
+									   });
+		CHECK(malformed_parser.get_warnings().is_empty());
 	}
 
 	TEST_CASE("legacy_null_returns_preserve_strict_and_nullable_boundaries") {
