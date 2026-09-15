@@ -154,6 +154,12 @@ class ReportTests(unittest.TestCase):
                 destination = root / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / name, destination)
+            api_source = build_config.api_path(build_config.load_config(), ROOT)
+            api_relative = api_source.relative_to(ROOT)
+            api_destination = root / api_relative
+            api_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(api_source, api_destination)
+            self.assertEqual(api_source.read_bytes(), api_destination.read_bytes())
             importer.write_stage(inventory, source, corpus, project_root=root / 'project')
             (root / 'scripts/analyzer_corpus_policy.json').write_text(json.dumps(policy))
             library = root / 'project/bin/macos/lib.template_debug.dylib'
@@ -195,6 +201,9 @@ class ReportTests(unittest.TestCase):
                 project = Path(command[command.index('--path') + 1])
                 projects.append(project)
                 self.assertNotEqual(project, root / 'project')
+                selected_api = build_config.api_path(build_config.load_config(), root)
+                staged_api = project.parent / selected_api.relative_to(root)
+                self.assertEqual(selected_api.read_bytes(), staged_api.read_bytes())
                 self.assertIn('debug = "res://bin/native.dylib"', (project / 'bin/barista_script.gdextension').read_text())
                 self.assertIn('release = "res://bin/native.dylib"', (project / 'bin/barista_script.gdextension').read_text())
                 self.assertEqual(list((project / 'bin').glob('*.dylib')), [project / 'bin/native.dylib'])

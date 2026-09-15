@@ -25,7 +25,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from native_test_build import build_identity
-from build_config import load_config, parse_json, require_equal
+from build_config import api_path, load_config, parse_json, require_equal
 from build_metadata import create_metadata, inspect_artifact, verify_identity
 
 DEFAULT_BUILD_DIR = ROOT / "build/native-scons"
@@ -122,6 +122,13 @@ def staged_project(artifact):
         project = Path(temporary) / "project"
         shutil.copytree(ROOT / "project", project,
                         ignore=shutil.ignore_patterns(".godot", "bin"))
+        # Analyzer parity reads the pinned producer JSON, never generated analyzer metadata.
+        # Preserve res://../godot-cpp/gdextension while copying only the selected API input.
+        config = load_config()
+        api_source = api_path(config, ROOT)
+        api_destination = Path(temporary) / "godot-cpp/gdextension" / api_source.name
+        api_destination.parent.mkdir(parents=True)
+        shutil.copy2(api_source, api_destination)
         # Stock Godot checks for a main scene before instantiating a native --main-loop.
         # This empty scene supplies project selection only; it contains no test bootstrap.
         descriptor = project / "project.godot"
@@ -136,7 +143,7 @@ def staged_project(artifact):
         shutil.copy2(library, destination)
         (project / "bin/barista_script.gdextension").write_text(
             '[configuration]\nentry_symbol = "barista_script_library_init"\n'
-            f'compatibility_minimum = "{load_config()["godot_api"]}"\nreloadable = false\n\n[libraries]\n'
+            f'compatibility_minimum = "{config["godot_api"]}"\nreloadable = false\n\n[libraries]\n'
             f'debug = "res://bin/{destination.name}"\nrelease = "res://bin/{destination.name}"\n')
         (project / ".godot").mkdir()
         shutil.copy2(ROOT / "project/.godot/extension_list.cfg", project / ".godot/extension_list.cfg")
