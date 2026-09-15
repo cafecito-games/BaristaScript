@@ -93,7 +93,7 @@ def resource_spans(data: bytes, path: str):
         yield token.start() + 1, token.end() - 1, literal, kind
 
 
-def patch(data: bytes, changes: list[dict], path: str) -> bytes:
+def _patch(data: bytes, changes: list[dict], path: str, allow_newline_changes: bool) -> bytes:
     end = 0
     required = {'start', 'end', 'line', 'before', 'after', 'rule', 'occurrences'}
     for item in changes:
@@ -104,7 +104,8 @@ def patch(data: bytes, changes: list[dict], path: str) -> bytes:
                 or type(item['line']) is not int
                 or type(item['occurrences']) is not int or item['occurrences'] != 1
                 or type(item['start']) is not int or type(item['end']) is not int
-                or item['before'].count('\n') != item['after'].count('\n')):
+                or (not allow_newline_changes
+                    and item['before'].count('\n') != item['after'].count('\n'))):
             raise ValueError(f'{path}: invalid patch provenance')
     for change in sorted(changes, key=lambda item: item['start']):
         start, stop = change['start'], change['end']
@@ -118,6 +119,17 @@ def patch(data: bytes, changes: list[dict], path: str) -> bytes:
     for change in sorted(changes, key=lambda item: item['start'], reverse=True):
         data = data[:change['start']] + change['after'].encode('utf-8') + data[change['end']:]
     return data
+
+
+def patch(data: bytes, changes: list[dict], path: str) -> bytes:
+    """Apply a source/resource patch while preserving its exact line structure."""
+    return _patch(data, changes, path, False)
+
+
+def expectation_patch(data: bytes, changes: list[dict], path: str) -> bytes:
+    """Apply a pinned expectation-only patch, permitting complete-block line changes."""
+    checked_text(data, path)
+    return _patch(data, changes, path, True)
 
 
 def change(data, start, end, after, rule, **extra):
@@ -445,7 +457,7 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                 if set(edit) != {'sha256', 'patches'} or sha(expectation_data) != edit['sha256']:
                     raise ValueError(f'{output}: expectation edit hash preimage mismatch')
                 expectation_edits = edit['patches']
-                expectation_data = patch(expectation_data, expectation_edits, output)
+                expectation_data = expectation_patch(expectation_data, expectation_edits, output)
             block, projections = ('', []) if status in ('FS_TEST_COMPILER_ERROR', 'FS_TEST_RUNTIME_ERROR') else expected_projection(extract_static_block(expectation_data, output), mapping, output)
             record.update({'expectation_identity': SCRIPTS + '/' + output, 'expectation_sha256': sha(files[output]),
                            'status': status, 'stage': 'analyzer', 'disposition': disposition,
