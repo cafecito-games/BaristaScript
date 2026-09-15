@@ -218,11 +218,24 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                 or any(type(n) is not int or n not in (42, 45, 60, 138, 139, 140, 141) for n in owner['prerequisites'])
                 or len(set(owner['prerequisites'])) != len(owner['prerequisites'])
                 or owner['primary_issue'] in owner['prerequisites']
-                or owner.get('review_state') not in ('source_slice_pending_execution', 'execution_reviewed', 'source_reviewed_deferred')):
+                or owner.get('review_state') not in ('source_slice_pending_execution', 'execution_reviewed',
+                                                     'source_reviewed_deferred', 'source_reviewed_excluded')):
             raise ValueError(f'invalid bounded owner record: {path}')
-        if owner['review_state'] == 'source_reviewed_deferred' and path not in policy['deferred']:
-            raise ValueError(f'invalid deferred owner: {path}')
-        if owner['review_state'] == 'execution_reviewed':
+        review = owner.get('source_review')
+        expected_identity = f'{SCRIPTS}/analyzer/{path.removesuffix(".barista")}.fs'
+        if (not isinstance(review, dict)
+                or not isinstance(review.get('advisory_report'), str)
+                or Path(review['advisory_report']).name != review['advisory_report']
+                or not isinstance(review.get('advisory_report_sha256'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', review['advisory_report_sha256'])
+                or not isinstance(review.get('assertion'), str) or not review['assertion'].strip()
+                or not isinstance(review.get('final_disposition'), str) or not review['final_disposition'].strip()
+                or review.get('identity') != expected_identity
+                or not isinstance(review.get('scope_observation'), str) or not review['scope_observation'].strip()):
+            raise ValueError(f'invalid owner source review: {path}')
+        requires_execution = (owner['review_state'] in ('execution_reviewed', 'source_reviewed_excluded')
+                              or (owner['review_state'] == 'source_reviewed_deferred' and path not in LATER))
+        if requires_execution or 'execution_evidence' in owner:
             evidence = owner.get('execution_evidence')
             hashes = ('report_sha256', 'source_sha256', 'staged_source_sha256',
                       'expectation_sha256', 'expected_block_sha256', 'actual_block_sha256')
@@ -236,8 +249,6 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                     or evidence.get('terminal') not in ('passed', 'mismatch', 'crash', 'timeout', 'malformed_result', 'missing_guard', 'missing_summary', 'infrastructure_error')
                     or type(evidence.get('guard')) is not bool
                     or (evidence['terminal'] in ('passed', 'mismatch') and not evidence['guard'])
-                    or not isinstance(owner.get('source_review'), dict)
-                    or not owner['source_review'].get('assertion')
                     or not isinstance(owner.get('code_symbols'), list) or not owner['code_symbols']):
                 raise ValueError(f'invalid reviewed owner execution evidence: {path}')
     files = {}
@@ -307,6 +318,21 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                 raise ValueError(f'empty policy reason: {path}')
             seen.add(path)
         triage[disposition] = table
+    for path, owner in policy['owners'].items():
+        expected_state = ('source_reviewed_deferred' if path in triage['deferred'] else
+                          'source_reviewed_excluded' if path in triage['excluded'] else None)
+        if expected_state is not None and owner['review_state'] != expected_state:
+            raise ValueError(f'{expected_state.removeprefix("source_reviewed_")} policy requires matching owner state: {path}')
+        if (expected_state is not None
+                and (owner['reason'] != triage[expected_state.removeprefix('source_reviewed_')][path]
+                     or owner['source_review']['final_disposition'] != triage[expected_state.removeprefix('source_reviewed_')][path])):
+            raise ValueError(f'{expected_state.removeprefix("source_reviewed_")} disposition rationale mismatch: {path}')
+        if expected_state is None and owner['review_state'] in ('source_reviewed_deferred', 'source_reviewed_excluded'):
+            raise ValueError(f'orphan reviewed disposition owner: {path}')
+    for disposition in ('deferred', 'excluded'):
+        missing = set(triage[disposition]) - set(policy['owners'])
+        if missing:
+            raise ValueError(f'{disposition} policy requires owner records: {sorted(missing)[0]}')
     if set(policy['owners']) - cases:
         raise ValueError('stale owner policy')
     counts = {'sources': len(sources), 'cases': len(cases), 'helpers': len(helpers),

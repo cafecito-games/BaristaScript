@@ -112,7 +112,20 @@ class ReportTests(unittest.TestCase):
             source = base / 'input'
             shutil.copytree(ROOT / 'tests/fixtures/analyzer_import/scripts', source)
             policy = importer.default_policy()
-            policy.update(counts=None, owners={}, expectation_edits={}, expectation_overrides={})
+            fixture_cases = {
+                path.relative_to(source / 'analyzer').as_posix().removesuffix('.fs') + '.barista'
+                for path in (source / 'analyzer').rglob('*.fs') if not path.name.endswith('.notest.fs')
+            }
+            policy['deferred'] = {
+                path: reason for path, reason in policy['deferred'].items() if path in fixture_cases
+            }
+            policy['excluded'] = {
+                path: reason for path, reason in policy['excluded'].items() if path in fixture_cases
+            }
+            policy.update(counts=None,
+                          owners={path: owner for path, owner in policy['owners'].items()
+                                  if path in policy['deferred'] or path in policy['excluded']},
+                          expectation_edits={}, expectation_overrides={})
             policy['rewritten'].pop('features/lookup_class.barista')
             policy['source_edits'].pop('analyzer/features/lookup_class.fs')
             uri = 'res://tests/corpus_staging/analyzer'
