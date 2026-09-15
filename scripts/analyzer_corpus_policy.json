@@ -400,6 +400,112 @@
         }
       ],
       "sha256": "0f7d9ec6acfd4c47194615c6ab1a3aafa1c25f51a157b94ae3644245fd67887d"
+    },
+    "analyzer/errors/type_union_as_type_handle.out": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 277,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 273
+        }
+      ],
+      "sha256": "1dd350196faf904f14eb5d052351f23d21743d3f5bffde627a476752234cf575"
+    },
+    "analyzer/errors/type_union_export_rejected.out": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 79,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 75
+        }
+      ],
+      "sha256": "b568e51aa92cd7d2ff8f3c1ddb4369c83b37480fc312028b99422fdd820a6d68"
+    },
+    "analyzer/errors/type_union_in_typed_container.out": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 99,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 95
+        },
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 315,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 311
+        },
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 545,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 541
+        },
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 776,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 772
+        }
+      ],
+      "sha256": "5b5f73698e432e3f7b13fcac8b083a64fe2dad4ff0bab52b86bc506d8d71b42c"
+    },
+    "analyzer/errors/type_union_runtime_type_operations.out": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 89,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 85
+        },
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 223,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 219
+        }
+      ],
+      "sha256": "85c1d496b0e2279865582aa5aaf4ab0759cebaf2177c9526f529c3b7b9c07667"
+    },
+    "analyzer/features/type_alias_union_export_single_member_retains_type.out": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "uint",
+          "end": 118,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "d1-diagnostic-spelling-projection",
+          "start": 114
+        }
+      ],
+      "sha256": "09e65a45537df2baf76eb986b8fe0cf945fe3efd3db9a0a756f48b55b5a67251"
     }
   },
   "expectation_overrides": {
@@ -409,7 +515,12 @@
     "errors/named_call_argument_on_native_method.barista": "Hard-fork language identity: only the exact pinned diagnostic FoundryScript/Foundry Script brand becomes BaristaScript/Barista Script; semantic text and source unchanged.",
     "errors/named_call_argument_on_non_gdscript.barista": "Hard-fork language identity: only the exact pinned diagnostic FoundryScript/Foundry Script brand becomes BaristaScript/Barista Script; semantic text and source unchanged.",
     "errors/named_call_argument_on_unresolved_method.barista": "Hard-fork language identity: only the exact pinned diagnostic FoundryScript/Foundry Script brand becomes BaristaScript/Barista Script; semantic text and source unchanged.",
-    "errors/retroactive_conformance_enum_target.barista": "Translate the exact pinned language name Foundry Script to the registered BaristaScript name; preserve every static diagnostic and source span."
+    "errors/retroactive_conformance_enum_target.barista": "Translate the exact pinned language name Foundry Script to the registered BaristaScript name; preserve every static diagnostic and source span.",
+    "errors/type_union_as_type_handle.barista": "Left|Right at line 14 is a retained closed union that cannot name one runtime class handle. uint in the independent inline union is incidental; replace that arm with String so line 15 remains multi-alternative and keep the separate int-as-value errors.",
+    "errors/type_union_export_rejected.barista": "Export rejects Scalar because it is multi-member, not because one arm is uint. An int|String alias retains the single-runtime-type export constraint.",
+    "errors/type_union_in_typed_container.barista": "All four diagnostics reject a multi-alternative union in Array element or Dictionary key/value positions. uint is incidental; int|String preserves the heterogeneous union constraint at every position.",
+    "errors/type_union_runtime_type_operations.barista": "is/as reject Scalar because no multi-alternative runtime carrier exists. Replace incidental uint by String, retaining a closed int|String union and both static prohibitions.",
+    "features/type_alias_union_export_single_member_retains_type.barista": "Single-member aliases preserve export metadata and carrier tests for float and an unsigned count; the count can use retained int."
   },
   "foundry_revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6",
   "owners": {
@@ -45408,18 +45519,79 @@
     }
   },
   "rewritten": {
+    "errors/assign_narrowed_match_bind.barista": "A match/case payload bind is read-only, and a type test narrowing it must not weaken that: typing the bind's own identifier node against the narrowing (needed for a compound op's implicit read; see `FSAnalyzer::reduce_assignment()`) must still mark it constant, or this assignment goes unreported. Line 11: b = 5U => Cannot assign a new value to a constant.",
+    "errors/named_call_argument_rest_parameter.barista": "Line 5: print(collect(1, rest = 2)) => The rest parameter \"rest\" cannot be passed by name.",
+    "errors/type_alias_not_an_expression.barista": "Scalar is an alias used as a value and call at lines 11–12, and Only is used as a value through new at line 13. uint is incidental to Scalar naming no value; replace its union arm by a retained String arm while preserving all four alias errors.",
     "errors/type_alias_not_inherited.barista": "Concretize the incidental generic Base frame while preserving the exact two lexical alias visibility errors for Element and Meters in Derived and their complete static expectation.",
+    "errors/typed_rest_parameter_external_argument.barista": "Provider collect has prefix String and rest Array[int]; consumer line 5 supplies String at argument 3. Provider long return types are incidental to this rest-argument mismatch; line-preserving helper rewrites retain the exact consumer block.",
+    "errors/typed_rest_parameter_override_narrowing.barista": "Narrower changes Array[Animal] to Array[Dog], while TypedTail changes gradual Array to Array[int]. Both rest-tail narrowing errors are independent of the four long returns; map those return annotations to int without changing the asserted tail types.",
     "features/generic_tagged_union_global.barista": "Project the shared provider's int/String schema plus a provenance-bound String/int helper clone, then remove only matching application vectors in the consumer. Preserve global, namespace-qualified, imported and preloaded lookup, enum construction, payload values, and unchanged BS_TEST_OK. Retire the clone when M5 supplies genuine specialization and cache isolation.",
     "features/generic_tagged_union_namespaced.barista": "Concretize the shared GlobalResult provider and remove only its application vectors in the consumer. Preserve namespace/import/preload lookup, enum construction, payload values, qualified access, and unchanged BS_TEST_OK.",
     "features/lookup_class.barista": "Rename incidental root class E and its use to G while preserving strict order-independent lexical-outer conflicts, Internal.E, inherited TARGET/WAITING, nested F, and unchanged BS_TEST_OK.",
     "features/retroactive_conformance_basic.norun.barista": "Replace only the generic bound helper with its concrete RtcPrintable parameter. Preserve the foreign witness body, trait assignment, is/as checks, concrete trait-typed call, and unchanged BS_TEST_OK.",
     "features/retroactive_conformance_native.norun.barista": "Replace only the generic bound helper with its concrete RtcNativeCounter parameter. Preserve native ClassDB witness lookup, trait assignment, is/as checks, concrete trait-typed call, and unchanged BS_TEST_OK.",
+    "features/tuple_destructure_typing.norun.barista": "Tuple destructuring preserves named/unnamed field types and skipped slots; only a size-derived return annotation spells long.",
     "features/type_alias_explicit_type_argument_nearer_class_shadow.barista": "Replace the incidental generic Holder carrier with Array[Shadowed] while preserving nearest-scope class shadowing, construction, member lookup, and unchanged BS_TEST_OK.",
     "features/type_alias_explicit_type_argument_witness.barista": "Replace the helper's incidental generic WitnessBox carrier with Array[Meters] while preserving declaration-scope alias lookup, cross-file preload and conformance witness behavior, and unchanged BS_TEST_OK.",
+    "features/type_self_callable_matching_width_parameter.barista": "Equal fixed callable prefix types permit reconciliation of the remaining Self tail; long is incidental to the retained equality rule.",
+    "features/typed_rest_parameter_concrete.barista": "Typed rest arguments accept concrete/nested/nullable/gradual element types; size-derived long return annotations are incidental.",
+    "features/typed_rest_parameter_external.barista": "An external provider preserves String plus Array[int] rest-tail callable metadata; all long result positions can consistently become int.",
+    "features/typed_rest_parameter_override_variance.barista": "Rest-tail override parameters are contravariant, with same/broader/gradual tails and added tails for fixed bases; long result types are incidental.",
     "features/use_preload_script_as_type.barista": "Translate the exact declared preload resource type FoundryScript to the registered BaristaScript class. Preserve the preload, type-use assertion, line positions and complete static success expectation."
   },
   "schema_version": 2,
   "source_edits": {
+    "analyzer/errors/assign_narrowed_match_bind.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "uint",
+          "end": 409,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 405
+        },
+        {
+          "after": "5",
+          "before": "5U",
+          "end": 421,
+          "line": 11,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 419
+        }
+      ],
+      "sha256": "9f1146b824a9e443ac350e24e3db438bd50295a03772057534d0d2ab28b14217"
+    },
+    "analyzer/errors/named_call_argument_rest_parameter.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 48,
+          "line": 1,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 44
+        }
+      ],
+      "sha256": "596b25172a04c718338bce6c21ed0380a66ed441c32c2511c503a9a089cd8058"
+    },
+    "analyzer/errors/type_alias_not_an_expression.fs": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 171,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 167
+        }
+      ],
+      "sha256": "38562ffee2911c2c00e250c186233af400d004799d649360ffc31ef60e8546d4"
+    },
     "analyzer/errors/type_alias_not_inherited.fs": {
       "patches": [
         {
@@ -45451,6 +45623,112 @@
         }
       ],
       "sha256": "d703f76f1f801aae337447301266d1648a9ad804bc83d4d84b7f540262215978"
+    },
+    "analyzer/errors/type_union_as_type_handle.fs": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 243,
+          "line": 15,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 239
+        }
+      ],
+      "sha256": "16fa805325a0de8664525bea65224d8ef73213d3e46fc0e06fbd5e27e94f906a"
+    },
+    "analyzer/errors/type_union_export_rejected.fs": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 219,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 215
+        }
+      ],
+      "sha256": "6573bb24530dd562583fb8a8e111f8dd2c8e9e40c06c9b231eb7b1576243e7dd"
+    },
+    "analyzer/errors/type_union_in_typed_container.fs": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 135,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 131
+        },
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 303,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 299
+        }
+      ],
+      "sha256": "5e3ec8468cc9a43cac2e8611334e00b84fe3b9c93e8cc5e90db208321b694b98"
+    },
+    "analyzer/errors/type_union_runtime_type_operations.fs": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 121,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 117
+        }
+      ],
+      "sha256": "a71d2a46f32d8d4bf05d4618360a06484c7c1444e4443541a04503f925d8dfa5"
+    },
+    "analyzer/errors/typed_rest_parameter_override_narrowing.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 384,
+          "line": 16,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 380
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 480,
+          "line": 23,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 476
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 561,
+          "line": 28,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 557
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 669,
+          "line": 35,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 665
+        }
+      ],
+      "sha256": "83825f64f880cf7077b9a104b186bda40a8c1a042f6132dc76185397a1e48e83"
     },
     "analyzer/features/generic_tagged_union_global.fs": {
       "patches": [
@@ -45686,6 +45964,20 @@
       ],
       "sha256": "aafb5eae9774e87f1791def9f493ad2a4ffa0507b4f68e2871785822ff3f1ac3"
     },
+    "analyzer/features/tuple_destructure_typing.norun.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 214,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 210
+        }
+      ],
+      "sha256": "dc01d4d4e2d4bf93880f7a9569aee8e5c24783b12ba87848204c0c7154cf13c0"
+    },
     "analyzer/features/type_alias_explicit_type_argument_nearer_class_shadow.fs": {
       "patches": [
         {
@@ -45767,6 +46059,225 @@
         }
       ],
       "sha256": "adc16ce3f5816a865b006d8358667dec39495b697b20d736542cf335f07af722"
+    },
+    "analyzer/features/type_alias_union_export_single_member_retains_type.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "uint",
+          "end": 322,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 318
+        },
+        {
+          "after": "7",
+          "before": "7U",
+          "end": 391,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 389
+        },
+        {
+          "after": "int",
+          "before": "uint",
+          "end": 610,
+          "line": 17,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 606
+        }
+      ],
+      "sha256": "4e6abeee1b4c5cc8963d29202e1ff4e539f8ab5ebb03844312e04d3feb044a3d"
+    },
+    "analyzer/features/type_self_callable_matching_width_parameter.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 213,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 209
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 314,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 310
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 435,
+          "line": 11,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 431
+        }
+      ],
+      "sha256": "25dfacf995b96562d3d6d238e2c39e6b31d8948b48a840c3a9d96f565823c28d"
+    },
+    "analyzer/features/typed_rest_parameter_concrete.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 68,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 64
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 242,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 238
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 323,
+          "line": 13,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 319
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 397,
+          "line": 16,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 393
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 460,
+          "line": 19,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 456
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 541,
+          "line": 22,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 537
+        }
+      ],
+      "sha256": "7556627e8ff2347209c6b6c736dd4a15ef3e296bb7156d43258091daea73c48b"
+    },
+    "analyzer/features/typed_rest_parameter_external.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 255,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 251
+        }
+      ],
+      "sha256": "e2d479b2388ea9669edd5c79094401965eee9fb9476dee25a3b61690aa29f559"
+    },
+    "analyzer/features/typed_rest_parameter_external_provider.notest.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 59,
+          "line": 1,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-provider-projection",
+          "start": 55
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 159,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-provider-projection",
+          "start": 155
+        }
+      ],
+      "sha256": "63ec633ac970fa3690990531f325038e9dfaf73ba147c5b61efb8aa59060aebe"
+    },
+    "analyzer/features/typed_rest_parameter_override_variance.fs": {
+      "patches": [
+        {
+          "after": "int",
+          "before": "long",
+          "end": 460,
+          "line": 17,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 456
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 559,
+          "line": 24,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 555
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 669,
+          "line": 31,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 665
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 768,
+          "line": 38,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 764
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 877,
+          "line": 43,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 873
+        },
+        {
+          "after": "int",
+          "before": "long",
+          "end": 966,
+          "line": 49,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 962
+        }
+      ],
+      "sha256": "fb55c56da2ab77c5cbd2ff5a3fc45ddc028fce26d5755fcedd069e373afeba03"
     },
     "analyzer/features/use_preload_script_as_type.fs": {
       "patches": [

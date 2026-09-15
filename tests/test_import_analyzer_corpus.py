@@ -638,8 +638,440 @@ class TriageGuard(unittest.TestCase):
 
 FOUNDRY = None
 
+D1_SELECTED_CASES = ('errors/assign_narrowed_match_bind.barista',
+ 'errors/named_call_argument_rest_parameter.barista',
+ 'errors/type_alias_not_an_expression.barista',
+ 'errors/type_union_as_type_handle.barista',
+ 'errors/type_union_export_rejected.barista',
+ 'errors/type_union_in_typed_container.barista',
+ 'errors/type_union_runtime_type_operations.barista',
+ 'errors/typed_rest_parameter_external_argument.barista',
+ 'errors/typed_rest_parameter_override_narrowing.barista',
+ 'features/tuple_destructure_typing.norun.barista',
+ 'features/type_alias_union_export_single_member_retains_type.barista',
+ 'features/type_self_callable_matching_width_parameter.barista',
+ 'features/typed_rest_parameter_concrete.barista',
+ 'features/typed_rest_parameter_external.barista',
+ 'features/typed_rest_parameter_override_variance.barista')
+D1_REWRITTEN_CASES = frozenset({'errors/assign_narrowed_match_bind.barista',
+           'errors/named_call_argument_rest_parameter.barista',
+           'errors/type_alias_not_an_expression.barista',
+           'errors/typed_rest_parameter_external_argument.barista',
+           'errors/typed_rest_parameter_override_narrowing.barista',
+           'features/tuple_destructure_typing.norun.barista',
+           'features/type_self_callable_matching_width_parameter.barista',
+           'features/typed_rest_parameter_concrete.barista',
+           'features/typed_rest_parameter_external.barista',
+           'features/typed_rest_parameter_override_variance.barista'})
+D1_EXPECTATION_OVERRIDE_CASES = frozenset({'errors/type_union_as_type_handle.barista',
+           'errors/type_union_export_rejected.barista',
+           'errors/type_union_in_typed_container.barista',
+           'errors/type_union_runtime_type_operations.barista',
+           'features/type_alias_union_export_single_member_retains_type.barista'})
+D1_SOURCE_EDIT_PATHS = frozenset({'analyzer/errors/assign_narrowed_match_bind.fs',
+           'analyzer/errors/named_call_argument_rest_parameter.fs',
+           'analyzer/errors/type_alias_not_an_expression.fs',
+           'analyzer/errors/type_union_as_type_handle.fs',
+           'analyzer/errors/type_union_export_rejected.fs',
+           'analyzer/errors/type_union_in_typed_container.fs',
+           'analyzer/errors/type_union_runtime_type_operations.fs',
+           'analyzer/errors/typed_rest_parameter_override_narrowing.fs',
+           'analyzer/features/tuple_destructure_typing.norun.fs',
+           'analyzer/features/type_alias_union_export_single_member_retains_type.fs',
+           'analyzer/features/type_self_callable_matching_width_parameter.fs',
+           'analyzer/features/typed_rest_parameter_concrete.fs',
+           'analyzer/features/typed_rest_parameter_external.fs',
+           'analyzer/features/typed_rest_parameter_external_provider.notest.fs',
+           'analyzer/features/typed_rest_parameter_override_variance.fs'})
+D1_EXPECTATION_EDIT_PATHS = frozenset({'analyzer/errors/type_union_as_type_handle.out',
+           'analyzer/errors/type_union_export_rejected.out',
+           'analyzer/errors/type_union_in_typed_container.out',
+           'analyzer/errors/type_union_runtime_type_operations.out',
+           'analyzer/features/type_alias_union_export_single_member_retains_type.out'})
+
 
 class FullPinned(unittest.TestCase):
+    def test_explicit_d1_projection_contract_and_fail_closed(self):
+        if FOUNDRY is None:
+            self.skipTest('full producer requires --foundry; byte-faithful miniature tests ran')
+        import import_analyzer_corpus as importer
+
+        def canonical_sha(value):
+            payload = json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                 ensure_ascii=False).encode()
+            return hashlib.sha256(payload).hexdigest()
+
+        def case_list_sha(paths):
+            return hashlib.sha256(('\n'.join(paths) + '\n').encode()).hexdigest()
+
+        source_specs = {'analyzer/errors/assign_narrowed_match_bind.fs': ('c5fdeb008ada9bbb8459a9e4c338cd8a7d7159b58f1588a9a9691e5e669e0a2f',
+                                                   '9f1146b824a9e443ac350e24e3db438bd50295a03772057534d0d2ab28b14217',
+                                                   'd9e6b3c1bbcedcfc8af1c10ed5d2488aced86ce8d76cad0fc675ee80c4806312'),
+ 'analyzer/errors/named_call_argument_rest_parameter.fs': ('736e4ebec421306204015f21491e83a195576023cf4aa561433b0c5e8ff40a55',
+                                                           '596b25172a04c718338bce6c21ed0380a66ed441c32c2511c503a9a089cd8058',
+                                                           'c10cb978dd121308a0467c039108d40b07e484c450b2a1f606653eb578cc8f1f'),
+ 'analyzer/errors/type_alias_not_an_expression.fs': ('1afdc244ccb192446c046f0d7f9dea7afff19361839d58594527bf0056f5a9b4',
+                                                     '38562ffee2911c2c00e250c186233af400d004799d649360ffc31ef60e8546d4',
+                                                     'd9d1d3c440d66036d78afc26651171e8369ea0b3582125bf01f32493b194d3b3'),
+ 'analyzer/errors/type_union_as_type_handle.fs': ('d58551c3def3d0925758cd725de200b1344c1f60bb4a181310249594c4871a3b',
+                                                  '16fa805325a0de8664525bea65224d8ef73213d3e46fc0e06fbd5e27e94f906a',
+                                                  '1182da14b603ba118c1ba937a4a28db2f3f93708b12caaa6f822ce1fcd7d1ac0'),
+ 'analyzer/errors/type_union_export_rejected.fs': ('06164c91a858163ad02ab2915d2c452b1ff442f011b8f9989f0add5b0fe1dab7',
+                                                   '6573bb24530dd562583fb8a8e111f8dd2c8e9e40c06c9b231eb7b1576243e7dd',
+                                                   'bd04e439d2c54a700d9d6008ae87d257e387bde3b30a877cd3ed7c361d16a658'),
+ 'analyzer/errors/type_union_in_typed_container.fs': ('8c49b6868e5679acaf9f208ee4f923365783dbbaefe83cc0b7b71bd52c2c883c',
+                                                      '5e3ec8468cc9a43cac2e8611334e00b84fe3b9c93e8cc5e90db208321b694b98',
+                                                      'c4aa3e17d857c4e740f1abb0490d3de89068d9b2a03f3c09af14af809d69a6ec'),
+ 'analyzer/errors/type_union_runtime_type_operations.fs': ('77c308045f0fd5beedfbb1f0793bb1965ce8c525762cdecc63788fd98da2c171',
+                                                           'a71d2a46f32d8d4bf05d4618360a06484c7c1444e4443541a04503f925d8dfa5',
+                                                           'aa7b28dd5c4fd3f1dc20d104ef95de434c2a9f91b424a7674598558b83889c24'),
+ 'analyzer/errors/typed_rest_parameter_override_narrowing.fs': ('029bdd50f72763dfa0ca74a044006873ef91e9f53dcc77dddb8d3d93c5d9fec2',
+                                                                '83825f64f880cf7077b9a104b186bda40a8c1a042f6132dc76185397a1e48e83',
+                                                                '232c4db678fc16e2a73503332bdc49fd48e958a55fedab240517b9566906e313'),
+ 'analyzer/features/tuple_destructure_typing.norun.fs': ('6f19dbd75d376c02ad54d5bbdcf6e68b72269a276c5ae79fc5f81cae94f64ce2',
+                                                         'dc01d4d4e2d4bf93880f7a9569aee8e5c24783b12ba87848204c0c7154cf13c0',
+                                                         '6313ca04cca9b1436eb0d7cf396ef56b0813ea418b15e454f6f70206f113acf8'),
+ 'analyzer/features/type_alias_union_export_single_member_retains_type.fs': ('c5b8a244789d0c4b8bd3d5e277ed4059705776023bcc142190444912b28c6c72',
+                                                                             '4e6abeee1b4c5cc8963d29202e1ff4e539f8ab5ebb03844312e04d3feb044a3d',
+                                                                             '7099936c1baaf791b674fddf9f580aebe085feddbad3d28f8c5bb72a250fb1d1'),
+ 'analyzer/features/type_self_callable_matching_width_parameter.fs': ('23b5ed3867a8726940a4023ed6dcf02d0fc7674f7cf74e184a6678d510bbb296',
+                                                                      '25dfacf995b96562d3d6d238e2c39e6b31d8948b48a840c3a9d96f565823c28d',
+                                                                      '2a7f3179b261922677761e23df076e70cfff21e097945e2ed55e43f8a19a175e'),
+ 'analyzer/features/typed_rest_parameter_concrete.fs': ('47ca2cba4c9e35eb0a6d71f228778951d1882256c33009787945626ce166f52a',
+                                                        '7556627e8ff2347209c6b6c736dd4a15ef3e296bb7156d43258091daea73c48b',
+                                                        '23af8478a42c015abff6436e663addef60bffc4a31f9d4211c07047a933ee330'),
+ 'analyzer/features/typed_rest_parameter_external.fs': ('7edaa5f5e3769473db32fb6139e099635f6f9c3ee874247dc4e62a03f6a91106',
+                                                        'e2d479b2388ea9669edd5c79094401965eee9fb9476dee25a3b61690aa29f559',
+                                                        'cc6c154f02163c6f9c180873e5f223894cda1fa2bff06ac959992c048b6e8d28'),
+ 'analyzer/features/typed_rest_parameter_override_variance.fs': ('5f36c8bddb2b14e18019ad8b1586a777e217c534ef07f4f48460564c5d9c7268',
+                                                                 'fb55c56da2ab77c5cbd2ff5a3fc45ddc028fce26d5755fcedd069e373afeba03',
+                                                                 'f4199aa95b0914e3ad32fc963704c52349d4a8346e0c655f671c318b3325a815')}
+        expectation_specs = {'analyzer/errors/type_union_as_type_handle.out': ('28fe10479a8e18b14b0a0eee9c74af52ce9f129e9caf939dc46194dcded27080',
+                                                   '1dd350196faf904f14eb5d052351f23d21743d3f5bffde627a476752234cf575',
+                                                   '43fdfe70f9fc9eafa1bfea115392ee9fd6f263b2866d5e0b727d586fc27bd5a0'),
+ 'analyzer/errors/type_union_export_rejected.out': ('f2f6a75e327cc59d82604b9776699b5265029bc32137f97610d78128b781694c',
+                                                    'b568e51aa92cd7d2ff8f3c1ddb4369c83b37480fc312028b99422fdd820a6d68',
+                                                    '5652db3b2eee843398255ac5e098658d6070ca7d87d6d8112524a66c09371f77'),
+ 'analyzer/errors/type_union_in_typed_container.out': ('897a4b4fda981c7902c275757b7299f560ef112859e67d36620d79461c75ad29',
+                                                       '5b5f73698e432e3f7b13fcac8b083a64fe2dad4ff0bab52b86bc506d8d71b42c',
+                                                       'a567e5ae6cc82010bcd2ea80c37ce264f1137272ce025657ba6930d4f7f87aad'),
+ 'analyzer/errors/type_union_runtime_type_operations.out': ('3986eb71e035597714a72c77993e4fdf2ec8a56b52a18878587a341ade4da4b0',
+                                                            '85c1d496b0e2279865582aa5aaf4ab0759cebaf2177c9526f529c3b7b9c07667',
+                                                            '2fd2388d1388313c9d80256126168f242a1393d8c8fcaad194c788ec51f9c423'),
+ 'analyzer/features/type_alias_union_export_single_member_retains_type.out': ('6d6689ed1a411f79e719d0a29a9cf8d76c9753a4260836c7ffb79e9535aa129b',
+                                                                              '09e65a45537df2baf76eb986b8fe0cf945fe3efd3db9a0a756f48b55b5a67251',
+                                                                              '3e259e6c42f9d7ff916d732f5d10e892e3bd06b1780ad9724d1d546d279ffcd6')}
+        case_specs = {'errors/assign_narrowed_match_bind.barista': ('rewritten',
+                                               'analyzer/errors/assign_narrowed_match_bind.fs',
+                                               '9f1146b824a9e443ac350e24e3db438bd50295a03772057534d0d2ab28b14217',
+                                               'd9e6b3c1bbcedcfc8af1c10ed5d2488aced86ce8d76cad0fc675ee80c4806312',
+                                               'analyzer/errors/assign_narrowed_match_bind.out',
+                                               '80539efbf1a78e1775257824bb370a9b50c7fc72536d4e5adc5088ae95b974df',
+                                               '35455f5dfaee07ee3673bedc2e3f6fb4ab44d8204b0db6407e9b748f4f484a68',
+                                               2,
+                                               0),
+ 'errors/named_call_argument_rest_parameter.barista': ('rewritten',
+                                                       'analyzer/errors/named_call_argument_rest_parameter.fs',
+                                                       '596b25172a04c718338bce6c21ed0380a66ed441c32c2511c503a9a089cd8058',
+                                                       'c10cb978dd121308a0467c039108d40b07e484c450b2a1f606653eb578cc8f1f',
+                                                       'analyzer/errors/named_call_argument_rest_parameter.out',
+                                                       'a5fa42855fe98467627246ff3d39abf6b6d5574171b562ef5d60c3b181d7e13e',
+                                                       '04babc5c5964886fb7fa352c400c5544177e335508ef8d2bd71bce1c16b8609a',
+                                                       1,
+                                                       0),
+ 'errors/type_alias_not_an_expression.barista': ('rewritten',
+                                                 'analyzer/errors/type_alias_not_an_expression.fs',
+                                                 '38562ffee2911c2c00e250c186233af400d004799d649360ffc31ef60e8546d4',
+                                                 'd9d1d3c440d66036d78afc26651171e8369ea0b3582125bf01f32493b194d3b3',
+                                                 'analyzer/errors/type_alias_not_an_expression.out',
+                                                 '35d29f71a91e593e24891282d1db66bf88efcb042a2739551b7364dc607207d9',
+                                                 'ac0b01bfe2bcab6ffff8dd297ef7347229250a5a2acbc27d9bacf8ff01db4c01',
+                                                 1,
+                                                 0),
+ 'errors/type_union_as_type_handle.barista': ('expectation_overrides',
+                                              'analyzer/errors/type_union_as_type_handle.fs',
+                                              '16fa805325a0de8664525bea65224d8ef73213d3e46fc0e06fbd5e27e94f906a',
+                                              '1182da14b603ba118c1ba937a4a28db2f3f93708b12caaa6f822ce1fcd7d1ac0',
+                                              'analyzer/errors/type_union_as_type_handle.out',
+                                              '43fdfe70f9fc9eafa1bfea115392ee9fd6f263b2866d5e0b727d586fc27bd5a0',
+                                              '142271725698a78b4d9e1c8b3b130068ca443395e1a567289ed286cd2ac312d7',
+                                              1,
+                                              1),
+ 'errors/type_union_export_rejected.barista': ('expectation_overrides',
+                                               'analyzer/errors/type_union_export_rejected.fs',
+                                               '6573bb24530dd562583fb8a8e111f8dd2c8e9e40c06c9b231eb7b1576243e7dd',
+                                               'bd04e439d2c54a700d9d6008ae87d257e387bde3b30a877cd3ed7c361d16a658',
+                                               'analyzer/errors/type_union_export_rejected.out',
+                                               '5652db3b2eee843398255ac5e098658d6070ca7d87d6d8112524a66c09371f77',
+                                               '6b996254183dd3e121d396f5137beebc6ab39335069b8574140ae5d36d2a0f44',
+                                               1,
+                                               1),
+ 'errors/type_union_in_typed_container.barista': ('expectation_overrides',
+                                                  'analyzer/errors/type_union_in_typed_container.fs',
+                                                  '5e3ec8468cc9a43cac2e8611334e00b84fe3b9c93e8cc5e90db208321b694b98',
+                                                  'c4aa3e17d857c4e740f1abb0490d3de89068d9b2a03f3c09af14af809d69a6ec',
+                                                  'analyzer/errors/type_union_in_typed_container.out',
+                                                  'a567e5ae6cc82010bcd2ea80c37ce264f1137272ce025657ba6930d4f7f87aad',
+                                                  'cefbe3bb0f52fff8531f9cbed50a1403a070b5c5f8dd5b2b96a652a0a10fbde4',
+                                                  2,
+                                                  4),
+ 'errors/type_union_runtime_type_operations.barista': ('expectation_overrides',
+                                                       'analyzer/errors/type_union_runtime_type_operations.fs',
+                                                       'a71d2a46f32d8d4bf05d4618360a06484c7c1444e4443541a04503f925d8dfa5',
+                                                       'aa7b28dd5c4fd3f1dc20d104ef95de434c2a9f91b424a7674598558b83889c24',
+                                                       'analyzer/errors/type_union_runtime_type_operations.out',
+                                                       '2fd2388d1388313c9d80256126168f242a1393d8c8fcaad194c788ec51f9c423',
+                                                       '037b534e3f4aba7a0f349bea81f8621c0932253c8f15f4009b4e67aaab7bf92a',
+                                                       1,
+                                                       2),
+ 'errors/typed_rest_parameter_external_argument.barista': ('rewritten',
+                                                           'analyzer/errors/typed_rest_parameter_external_argument.fs',
+                                                           'f8f13b3c8720621801be93094310a99c809ab56a9f9d0a7c7e8d337a2c4ade2f',
+                                                           '3c46acd0f9dfe8469561c9ac667c853ca39b60a95ddfd6f1a1189405c411916e',
+                                                           'analyzer/errors/typed_rest_parameter_external_argument.out',
+                                                           '26e92a367b345a049d69cc07ad2e3867153ddc9c506a098830ee311bded51b28',
+                                                           '24bb0076caa70ec3cc14f4500147d5a3f72e20af5047238e41cbd86e24fee2d2',
+                                                           1,
+                                                           0),
+ 'errors/typed_rest_parameter_override_narrowing.barista': ('rewritten',
+                                                            'analyzer/errors/typed_rest_parameter_override_narrowing.fs',
+                                                            '83825f64f880cf7077b9a104b186bda40a8c1a042f6132dc76185397a1e48e83',
+                                                            '232c4db678fc16e2a73503332bdc49fd48e958a55fedab240517b9566906e313',
+                                                            'analyzer/errors/typed_rest_parameter_override_narrowing.out',
+                                                            'de958416daad622de169bd4c705336df602c595aa41c38caa9eac00aad6fc147',
+                                                            '09b752c033a8d5b5a66d9c4c63317cb24f2fa5b733e9635b4ad1e9c7b9a577e7',
+                                                            4,
+                                                            0),
+ 'features/tuple_destructure_typing.norun.barista': ('rewritten',
+                                                     'analyzer/features/tuple_destructure_typing.norun.fs',
+                                                     'dc01d4d4e2d4bf93880f7a9569aee8e5c24783b12ba87848204c0c7154cf13c0',
+                                                     '6313ca04cca9b1436eb0d7cf396ef56b0813ea418b15e454f6f70206f113acf8',
+                                                     'analyzer/features/tuple_destructure_typing.norun.out',
+                                                     'a79326b2c94dcb1410e12f6b774c756388a4eedb3f9066b078a3b45c5574cb1d',
+                                                     '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+                                                     1,
+                                                     0),
+ 'features/type_alias_union_export_single_member_retains_type.barista': ('expectation_overrides',
+                                                                         'analyzer/features/type_alias_union_export_single_member_retains_type.fs',
+                                                                         '4e6abeee1b4c5cc8963d29202e1ff4e539f8ab5ebb03844312e04d3feb044a3d',
+                                                                         '7099936c1baaf791b674fddf9f580aebe085feddbad3d28f8c5bb72a250fb1d1',
+                                                                         'analyzer/features/type_alias_union_export_single_member_retains_type.out',
+                                                                         '3e259e6c42f9d7ff916d732f5d10e892e3bd06b1780ad9724d1d546d279ffcd6',
+                                                                         '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+                                                                         3,
+                                                                         1),
+ 'features/type_self_callable_matching_width_parameter.barista': ('rewritten',
+                                                                  'analyzer/features/type_self_callable_matching_width_parameter.fs',
+                                                                  '25dfacf995b96562d3d6d238e2c39e6b31d8948b48a840c3a9d96f565823c28d',
+                                                                  '2a7f3179b261922677761e23df076e70cfff21e097945e2ed55e43f8a19a175e',
+                                                                  'analyzer/features/type_self_callable_matching_width_parameter.out',
+                                                                  '2027f455f04398fbb0f446cb1b655f2cf6f4086fbfcae752254480fb76bfe560',
+                                                                  '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+                                                                  3,
+                                                                  0),
+ 'features/typed_rest_parameter_concrete.barista': ('rewritten',
+                                                    'analyzer/features/typed_rest_parameter_concrete.fs',
+                                                    '7556627e8ff2347209c6b6c736dd4a15ef3e296bb7156d43258091daea73c48b',
+                                                    '23af8478a42c015abff6436e663addef60bffc4a31f9d4211c07047a933ee330',
+                                                    'analyzer/features/typed_rest_parameter_concrete.out',
+                                                    'f27a1eced2676eb49ec04e2c4f21a43b39a68a632687185ffa136b1d1c737b5c',
+                                                    '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+                                                    6,
+                                                    0),
+ 'features/typed_rest_parameter_external.barista': ('rewritten',
+                                                    'analyzer/features/typed_rest_parameter_external.fs',
+                                                    'e2d479b2388ea9669edd5c79094401965eee9fb9476dee25a3b61690aa29f559',
+                                                    'd30a67ade150c58950e7ae8eba258e680cd922fa994f73309afe6510446b4683',
+                                                    'analyzer/features/typed_rest_parameter_external.out',
+                                                    'e8bd154eafdb88f63d8dede48d0c8e3377dbb84598de0e4315e25f7b0fb84ef5',
+                                                    '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+                                                    2,
+                                                    0),
+ 'features/typed_rest_parameter_override_variance.barista': ('rewritten',
+                                                             'analyzer/features/typed_rest_parameter_override_variance.fs',
+                                                             'fb55c56da2ab77c5cbd2ff5a3fc45ddc028fce26d5755fcedd069e373afeba03',
+                                                             'f4199aa95b0914e3ad32fc963704c52349d4a8346e0c655f671c318b3325a815',
+                                                             'analyzer/features/typed_rest_parameter_override_variance.out',
+                                                             '062c22dc15e1e66f38b91ca393653042427d804d39cd29b8e78ed9a5d233a5da',
+                                                             '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+                                                             6,
+                                                             0)}
+        provider_path = 'analyzer/features/typed_rest_parameter_external_provider.notest.fs'
+        provider_spec = ('938b3f53dd393bb68583fb6d8ff97a9a72402f3cf94dce16bb2d5f2b31b39c1f',
+                         '63ec633ac970fa3690990531f325038e9dfaf73ba147c5b61efb8aa59060aebe',
+                         '34c1547378a704872f079c57e06f953ceff0ab75d35bb265fa3f2a449ffadc62')
+        policy = importer.default_policy()
+        source = FOUNDRY / importer.SCRIPTS
+        uri = 'res://tests/corpus_staging/analyzer'
+
+        self.assertEqual(policy['schema_version'], 2)
+        self.assertEqual(hashlib.sha256(importer.POLICY.read_bytes()).hexdigest(),
+                         'a772d9bba4b98cae462a249bf20a44fdfa61ce66695edb12a808b3e1bf5c5674')
+        self.assertEqual((len(D1_SELECTED_CASES), case_list_sha(D1_SELECTED_CASES)),
+                         (15, 'a7e7e701f3a9bc5cedc396ea8b949e97635c09cd49f7f13bf588ec9529bc330c'))
+        self.assertEqual(set(case_specs), set(D1_SELECTED_CASES))
+        self.assertEqual(set(source_specs) | {provider_path}, D1_SOURCE_EDIT_PATHS)
+        self.assertEqual(len(source_specs), 14)
+        self.assertNotIn(provider_path, source_specs)
+        self.assertEqual(set(expectation_specs), D1_EXPECTATION_EDIT_PATHS)
+        self.assertEqual({case for case in D1_SELECTED_CASES if case in policy['rewritten']},
+                         D1_REWRITTEN_CASES)
+        self.assertEqual({case for case in D1_SELECTED_CASES
+                          if case in policy['expectation_overrides']},
+                         D1_EXPECTATION_OVERRIDE_CASES)
+        self.assertEqual((len(D1_REWRITTEN_CASES), len(D1_EXPECTATION_OVERRIDE_CASES)), (10, 5))
+        self.assertEqual(sum(len(policy['source_edits'][path]['patches']) for path in source_specs), 33)
+        self.assertEqual(len(policy['source_edits'][provider_path]['patches']), 2)
+        self.assertEqual(sum(len(policy['expectation_edits'][path]['patches'])
+                             for path in expectation_specs), 9)
+
+        for path, (entry_sha, raw_sha, transformed_sha) in source_specs.items():
+            with self.subTest(source=path):
+                entry = policy['source_edits'][path]
+                self.assertEqual(canonical_sha(entry), entry_sha)
+                data = (source / path).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), raw_sha)
+                changes = importer.source_policy_changes(data, path, policy)
+                self.assertEqual(hashlib.sha256(importer.patch(data, changes, path)).hexdigest(),
+                                 transformed_sha)
+        for path, (entry_sha, raw_sha, projected_sha) in expectation_specs.items():
+            with self.subTest(expectation=path):
+                entry = policy['expectation_edits'][path]
+                self.assertEqual(canonical_sha(entry), entry_sha)
+                data = (source / path).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), raw_sha)
+                self.assertEqual(hashlib.sha256(importer.patch(data, entry['patches'], path)).hexdigest(),
+                                 projected_sha)
+
+        first = importer.inventory_sources(source, policy, uri)
+        self.assertEqual(first['schema_version'], 1)
+        self.assertEqual(hashlib.sha256(importer.encoded(first)).hexdigest(),
+                         'c008aed9e496a7d1029d1ad132e4d7af19be32dc784e979a9a0a5c2a15f0efa3')
+        self.assertEqual((first['counts']['sources'], first['counts']['cases'],
+                          first['counts']['helpers'], first['counts']['support_helpers']),
+                         (1596, 1346, 250, 2))
+        self.assertEqual((first['ledger']['total'], first['ledger']['skipped']), (1078, 252))
+        records = {record['imported_path']: record for record in first['sources']
+                   if record.get('role') == 'case'}
+        for case, expected in case_specs.items():
+            with self.subTest(case=case):
+                (disposition, upstream_path, raw_sha, imported_sha, output_path,
+                 expectation_sha, expected_block_sha, transformations, expectation_edits) = expected
+                record = records[case]
+                self.assertEqual(record['disposition'], disposition)
+                self.assertEqual(record['upstream_path'], upstream_path)
+                self.assertEqual(record['sha256'], raw_sha)
+                self.assertEqual(record['imported_sha256'], imported_sha)
+                self.assertEqual(record['expectation_identity'], importer.SCRIPTS + '/' + output_path)
+                raw_expectation_sha = (expectation_specs[output_path][1]
+                                       if output_path in expectation_specs else expectation_sha)
+                self.assertEqual(record['expectation_sha256'], raw_expectation_sha)
+                self.assertEqual(hashlib.sha256(record['expected_block'].encode()).hexdigest(),
+                                 expected_block_sha)
+                self.assertEqual(len(record['transformations']), transformations)
+                self.assertEqual(len(record['expectation_edits']), expectation_edits)
+
+        provider = next(record for record in first['sources']
+                        if record['upstream_path'] == provider_path)
+        provider_entry_sha, provider_raw_sha, provider_transformed_sha = provider_spec
+        self.assertEqual(canonical_sha(policy['source_edits'][provider_path]), provider_entry_sha)
+        self.assertEqual(provider['role'], 'helper')
+        self.assertEqual(provider['sha256'], provider_raw_sha)
+        self.assertEqual(provider['imported_sha256'], provider_transformed_sha)
+        self.assertNotIn('#projected-helper-clone:', provider['identity'])
+        self.assertNotIn('projected_helper_clone', policy['source_edits'][provider_path])
+        self.assertEqual(sum(record['imported_path'] == provider['imported_path']
+                             for record in first['sources']), 1)
+        consumers = {case: records[case]['references'] for case in (
+            'errors/typed_rest_parameter_external_argument.barista',
+            'features/typed_rest_parameter_external.barista',
+        )}
+        self.assertEqual(consumers, {
+            'errors/typed_rest_parameter_external_argument.barista': [{
+                'intentional_missing': False,
+                'kind': 'preload',
+                'literal': '../features/typed_rest_parameter_external_provider.notest.fs',
+                'relocated': '../features/typed_rest_parameter_external_provider.notest.barista',
+                'target': provider_path,
+            }],
+            'features/typed_rest_parameter_external.barista': [{
+                'intentional_missing': False,
+                'kind': 'preload',
+                'literal': 'typed_rest_parameter_external_provider.notest.fs',
+                'relocated': 'typed_rest_parameter_external_provider.notest.barista',
+                'target': provider_path,
+            }],
+        })
+
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary) / 'stage'
+            importer.write_stage(first, source, stage)
+            importer.check_stage(first, source, stage)
+            before = {path.relative_to(stage): path.read_bytes()
+                      for path in stage.rglob('*') if path.is_file()}
+            importer.write_stage(first, source, stage)
+            self.assertEqual(before, {path.relative_to(stage): path.read_bytes()
+                                      for path in stage.rglob('*') if path.is_file()})
+            self.assertEqual(len(before), 2411)
+            self.assertEqual(hashlib.sha256((stage / 'inventory.json').read_bytes()).hexdigest(),
+                             'c008aed9e496a7d1029d1ad132e4d7af19be32dc784e979a9a0a5c2a15f0efa3')
+            self.assertEqual(hashlib.sha256((stage / 'case_stages.json').read_bytes()).hexdigest(),
+                             '3ad070abe3df618bcb3e01bc6c5cdc753884b9e30819c606eae5a2e515ff9202')
+            tree = hashlib.sha256()
+            for path in sorted(candidate for candidate in stage.rglob('*') if candidate.is_file()):
+                tree.update(hashlib.sha256(path.read_bytes()).hexdigest().encode())
+                tree.update(b'  ./')
+                tree.update(path.relative_to(stage).as_posix().encode())
+                tree.update(b'\n')
+            self.assertEqual(tree.hexdigest(),
+                             'b552302628d22b4e45c73445ae45db64f1d6304ab1b984bb64a2bd48607bb674')
+
+        def expect_inventory_failure(mutator, pattern):
+            candidate = copy.deepcopy(policy)
+            mutator(candidate)
+            with self.assertRaisesRegex(ValueError, pattern):
+                importer.inventory_sources(source, candidate, uri)
+
+        source_case = 'errors/assign_narrowed_match_bind.barista'
+        source_path = 'analyzer/errors/assign_narrowed_match_bind.fs'
+        expectation_case = 'errors/type_union_as_type_handle.barista'
+        expectation_path = 'analyzer/errors/type_union_as_type_handle.out'
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path].__setitem__('sha256', '0' * 64),
+            'source edit hash preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'][0].__setitem__(
+                'start', candidate['source_edits'][source_path]['patches'][0]['start'] + 1),
+            'preimage|span')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'][0].__setitem__(
+                'line', candidate['source_edits'][source_path]['patches'][0]['line'] + 1),
+            'line preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'][0].__setitem__(
+                'before', 'wrong'), 'preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'].append(
+                copy.deepcopy(candidate['source_edits'][source_path]['patches'][0])),
+            'overlapping')
+        expect_inventory_failure(
+            lambda candidate: candidate['rewritten'].pop(source_case),
+            'disposition')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_edits'][expectation_path].__setitem__(
+                'sha256', '0' * 64), 'expectation edit hash preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_overrides'].pop(expectation_case),
+            'override disposition')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][provider_path].__setitem__('sha256', '0' * 64),
+            'source edit hash preimage mismatch')
+
+        missing = copy.deepcopy(policy['source_edits'][source_path])
+        missing['patches'].pop()
+        with self.assertRaises(AssertionError):
+            self.assertEqual(canonical_sha(missing), source_specs[source_path][0])
+
     def test_complete_producer_inventory_and_staging(self):
         if FOUNDRY is None:
             self.skipTest('full producer requires --foundry; byte-faithful miniature tests ran')
@@ -694,7 +1126,7 @@ class FullPinned(unittest.TestCase):
         self.assertEqual((len(reviewed_cases), case_list_sha(reviewed_cases)),
                          (7, 'c6a3ee1e94d74a0fd14915f597776dc6c83a1af426e262e1de8e3eb678a3945c'))
         self.assertEqual(set(policy['rewritten']),
-                         set(reviewed_cases) | {
+                         set(reviewed_cases) | D1_REWRITTEN_CASES | {
                              'features/generic_tagged_union_global.barista',
                              'features/lookup_class.barista',
                          })
@@ -724,7 +1156,8 @@ class FullPinned(unittest.TestCase):
                 ('adc16ce3f5816a865b006d8358667dec39495b697b20d736542cf335f07af722',
                  '9f267e188fd4ac74b8ba8d7126672e36af1be1c70e9c672e3f1e202403741b1a'),
         }
-        self.assertEqual(set(policy['source_edits']), set(projected_sources) | {
+        self.assertEqual(set(policy['source_edits']),
+                         set(projected_sources) | D1_SOURCE_EDIT_PATHS | {
             'analyzer/features/lookup_class.fs',
             'analyzer/features/use_preload_script_as_type.fs',
             'utils.notest.fs',
