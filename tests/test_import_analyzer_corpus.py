@@ -581,6 +581,76 @@ class AnalyzerImport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'preimage'):
             self.inventory()
 
+    def test_expectation_patch_is_line_flexible_but_fail_closed_and_isolated(self):
+        output = 'analyzer/errors/preload_missing_relative_path.out'
+        case = 'errors/preload_missing_relative_path.barista'
+        path = self.source / output
+        data = path.read_bytes()
+        before = data[data.index(b'>> ERROR'):].decode().rstrip('\n')
+        after = (before + '\n'
+                 '>> ERROR at line 4: Exact expectation-only second diagnostic.')
+        edit = self.m.change(data, data.index(b'>> ERROR'), len(data) - 1, after,
+                             'expectation-line-count-control')
+
+        with self.assertRaisesRegex(ValueError, 'invalid patch provenance'):
+            self.m.patch(data, [edit], output)
+        projected = self.m.expectation_patch(data, [edit], output)
+        self.assertEqual(projected.count(b'>> ERROR'), 2)
+        self.policy['expectation_edits'][output] = {
+            'sha256': self.m.sha(data),
+            'patches': [edit],
+        }
+        self.policy['expectation_overrides'][case] = (
+            'Exact expectation-only line-count transport control.')
+        record = next(record for record in self.inventory()['sources']
+                      if record['upstream_path'] == output.removesuffix('.out') + '.fs')
+        self.assertEqual(record['expected_block'].count('>> ERROR'), 2)
+        self.assertIn('Exact expectation-only second diagnostic.', record['expected_block'])
+        self.assertIn('res://tests/corpus_staging/analyzer/', record['expected_block'])
+        self.assertEqual(record['expectation_edits'], [edit])
+
+        def expect_failure(mutator, pattern):
+            candidate = copy.deepcopy(self.policy)
+            mutator(candidate['expectation_edits'][output]['patches'])
+            original = self.policy
+            self.policy = candidate
+            try:
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self.inventory()
+            finally:
+                self.policy = original
+
+        expect_failure(lambda patches: patches[0].pop('rule'), 'invalid patch provenance')
+        expect_failure(lambda patches: patches[0].__setitem__('start', patches[0]['start'] + 1),
+                       'preimage|span')
+        expect_failure(lambda patches: patches[0].__setitem__('line', patches[0]['line'] + 1),
+                       'line preimage mismatch')
+        expect_failure(lambda patches: patches[0].__setitem__('before', 'wrong'),
+                       'preimage mismatch')
+        expect_failure(lambda patches: patches.append(copy.deepcopy(patches[0])), 'overlapping')
+
+        self.policy['expectation_overrides'].pop(case)
+        with self.assertRaisesRegex(ValueError, 'override disposition'):
+            self.inventory()
+        self.policy['expectation_overrides'][case] = 'Exact expectation-only control.'
+        self.policy['expectation_edits']['analyzer/errors/unlisted.out'] = copy.deepcopy(
+            self.policy['expectation_edits'][output])
+        with self.assertRaisesRegex(ValueError, 'stale expectation edit policy'):
+            self.inventory()
+        self.policy['expectation_edits'].pop('analyzer/errors/unlisted.out')
+
+        for malformed, pattern in (
+                (b'FS_TEST_ANALYZER_ERROR\nnot a diagnostic\n', 'malformed'),
+                (data.replace(b'Preload', b'Pre\rload'), 'CR'),
+                (data.replace(b'Preload', b'Pre\0load'), 'NUL'),
+                (data.rstrip(b'\n'), 'final LF')):
+            with self.subTest(malformed=pattern):
+                path.write_bytes(malformed)
+                self.policy['expectation_edits'][output]['sha256'] = self.m.sha(malformed)
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self.inventory()
+        path.write_bytes(data)
+
     def test_atomic_failure_preserves_previous_stage(self):
         from unittest.mock import patch
         inv = self.inventory()
@@ -638,8 +708,286 @@ class TriageGuard(unittest.TestCase):
 
 FOUNDRY = None
 
+D1_SELECTED_CASES = (
+    'errors/assign_narrowed_match_bind.barista',
+    'errors/named_call_argument_rest_parameter.barista',
+    'errors/type_alias_not_an_expression.barista',
+    'errors/type_union_as_type_handle.barista',
+    'errors/type_union_export_rejected.barista',
+    'errors/type_union_runtime_type_operations.barista',
+    'errors/typed_rest_parameter_external_argument.barista',
+    'errors/typed_rest_parameter_override_narrowing.barista',
+    'features/tuple_destructure_typing.norun.barista',
+    'features/type_alias_union_export_single_member_retains_type.barista',
+    'features/type_self_callable_matching_width_parameter.barista',
+    'features/typed_rest_parameter_concrete.barista',
+    'features/typed_rest_parameter_external.barista',
+    'features/typed_rest_parameter_override_variance.barista',
+)
+D1_REWRITTEN_CASES = frozenset({
+    'errors/assign_narrowed_match_bind.barista',
+    'errors/named_call_argument_rest_parameter.barista',
+    'errors/typed_rest_parameter_external_argument.barista',
+    'errors/typed_rest_parameter_override_narrowing.barista',
+    'features/tuple_destructure_typing.norun.barista',
+    'features/type_self_callable_matching_width_parameter.barista',
+    'features/typed_rest_parameter_concrete.barista',
+    'features/typed_rest_parameter_external.barista',
+    'features/typed_rest_parameter_override_variance.barista',
+})
+D1_EXPECTATION_OVERRIDE_CASES = frozenset({
+    'errors/type_alias_not_an_expression.barista',
+    'errors/type_union_as_type_handle.barista',
+    'errors/type_union_export_rejected.barista',
+    'errors/type_union_runtime_type_operations.barista',
+    'features/type_alias_union_export_single_member_retains_type.barista',
+})
+D1_SOURCE_EDIT_PATHS = frozenset({
+    'analyzer/errors/assign_narrowed_match_bind.fs',
+    'analyzer/errors/named_call_argument_rest_parameter.fs',
+    'analyzer/errors/type_alias_not_an_expression.fs',
+    'analyzer/errors/type_union_as_type_handle.fs',
+    'analyzer/errors/type_union_export_rejected.fs',
+    'analyzer/errors/type_union_runtime_type_operations.fs',
+    'analyzer/errors/typed_rest_parameter_override_narrowing.fs',
+    'analyzer/features/tuple_destructure_typing.norun.fs',
+    'analyzer/features/type_alias_union_export_single_member_retains_type.fs',
+    'analyzer/features/type_self_callable_matching_width_parameter.fs',
+    'analyzer/features/typed_rest_parameter_concrete.fs',
+    'analyzer/features/typed_rest_parameter_external.fs',
+    'analyzer/features/typed_rest_parameter_external_provider.notest.fs',
+    'analyzer/features/typed_rest_parameter_override_variance.fs',
+})
+D1_EXPECTATION_EDIT_PATHS = frozenset({
+    'analyzer/errors/type_alias_not_an_expression.out',
+    'analyzer/errors/type_union_as_type_handle.out',
+    'analyzer/errors/type_union_export_rejected.out',
+    'analyzer/errors/type_union_runtime_type_operations.out',
+    'analyzer/features/type_alias_union_export_single_member_retains_type.out',
+})
+
 
 class FullPinned(unittest.TestCase):
+    def test_explicit_d1_projection_contract_and_fail_closed(self):
+        if FOUNDRY is None:
+            self.skipTest('full producer requires --foundry; byte-faithful miniature tests ran')
+        import import_analyzer_corpus as importer
+
+        def canonical_sha(value):
+            payload = json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                 ensure_ascii=False).encode()
+            return hashlib.sha256(payload).hexdigest()
+
+        def case_list_sha(paths):
+            return hashlib.sha256(('\n'.join(paths) + '\n').encode()).hexdigest()
+
+        policy = importer.default_policy()
+        source = FOUNDRY / importer.SCRIPTS
+        uri = 'res://tests/corpus_staging/analyzer'
+        provider_path = 'analyzer/features/typed_rest_parameter_external_provider.notest.fs'
+        removed_case = 'errors/type_union_in_typed_container.barista'
+        removed_source = 'analyzer/errors/type_union_in_typed_container.fs'
+        removed_expectation = 'analyzer/errors/type_union_in_typed_container.out'
+
+        self.assertEqual(policy['schema_version'], 2)
+        self.assertEqual(hashlib.sha256(importer.POLICY.read_bytes()).hexdigest(),
+                         'd8c271da7577a26a739c147f54f01193d82f0117293f186b1ba23951306b091e')
+        self.assertEqual((len(D1_SELECTED_CASES), case_list_sha(D1_SELECTED_CASES)),
+                         (14, 'e9fdfd464a5bd5f0dcf4e78c5c05210ca14429442e332b4bbed3201b488ca798'))
+        self.assertEqual((len(D1_REWRITTEN_CASES), case_list_sha(sorted(D1_REWRITTEN_CASES))),
+                         (9, 'a5480469575b6c04fccaae5fd433447af909440c16db52179837eec4fd03915b'))
+        self.assertEqual((len(D1_EXPECTATION_OVERRIDE_CASES),
+                          case_list_sha(sorted(D1_EXPECTATION_OVERRIDE_CASES))),
+                         (5, '367404a4be34a2fc52b0f6c9137a6226546f5c97cb929d6e748e58536471ef27'))
+        self.assertEqual((len(D1_SOURCE_EDIT_PATHS), case_list_sha(sorted(D1_SOURCE_EDIT_PATHS))),
+                         (14, 'cb9bc11fb8163f3df77c09659b45ab2ed94b35f35a6502f17c698d8ed04627bd'))
+        self.assertEqual((len(D1_EXPECTATION_EDIT_PATHS),
+                          case_list_sha(sorted(D1_EXPECTATION_EDIT_PATHS))),
+                         (5, '8972a7f89b9f467886e15558693f261887e2a2af7522fb52735c69b4d1431644'))
+        self.assertEqual({case for case in D1_SELECTED_CASES if case in policy['rewritten']},
+                         D1_REWRITTEN_CASES)
+        self.assertEqual({case for case in D1_SELECTED_CASES
+                          if case in policy['expectation_overrides']},
+                         D1_EXPECTATION_OVERRIDE_CASES)
+        self.assertTrue(D1_SOURCE_EDIT_PATHS <= set(policy['source_edits']))
+        self.assertTrue(D1_EXPECTATION_EDIT_PATHS <= set(policy['expectation_edits']))
+        direct_sources = D1_SOURCE_EDIT_PATHS - {provider_path}
+        self.assertEqual(sum(len(policy['source_edits'][path]['patches'])
+                             for path in direct_sources), 31)
+        self.assertEqual(len(policy['source_edits'][provider_path]['patches']), 2)
+        self.assertEqual(sum(len(policy['expectation_edits'][path]['patches'])
+                             for path in D1_EXPECTATION_EDIT_PATHS), 7)
+
+        for table, key in ((policy['rewritten'], removed_case),
+                           (policy['expectation_overrides'], removed_case),
+                           (policy['source_edits'], removed_source),
+                           (policy['expectation_edits'], removed_expectation)):
+            self.assertNotIn(key, table)
+        self.assertEqual(canonical_sha(policy['owners'][removed_case]),
+                         '2dd4cc2d7daef48cdaef4d662c9a135323ed3cfdd31408077f4e2dd8dff5131f')
+        self.assertEqual(canonical_sha(policy['owners']['errors/type_alias_not_an_expression.barista']),
+                         'f5acf00fc7eb000b622ac6607b6bb15376556d4d8f865a3e794549fbb80a5e07')
+        self.assertEqual(canonical_sha(policy['owners']['errors/type_union_as_type_handle.barista']),
+                         'f1e42ab31f07a3917f648538689332c668cdf7d7be22e40c0addb3f0f2057e96')
+
+        expectation_specs = {
+            'analyzer/errors/type_alias_not_an_expression.out':
+                ('c4e0feeae2cb17aad0e8b262b1600a059a724c33bbd71a38706fe429b34dc853',
+                 '35d29f71a91e593e24891282d1db66bf88efcb042a2739551b7364dc607207d9',
+                 'd7a665b89214ff82f53b05d8c428f7ace39996d4389222b654aa5e84e1840d44'),
+            'analyzer/errors/type_union_as_type_handle.out':
+                ('d8646e1ad2680961c49f4c4c495f79fb55545f6acd972d700eb1e3ecd09267e7',
+                 '1dd350196faf904f14eb5d052351f23d21743d3f5bffde627a476752234cf575',
+                 'fa0229bfd6e37ecbf464e3612b8bb973ec6ed6b9470098fd99fb52e872a9e86c'),
+            'analyzer/errors/type_union_export_rejected.out':
+                ('a6bb75d9dad1eed2a73892e465e689072577d780670014995c9dc006999d6078',
+                 'b568e51aa92cd7d2ff8f3c1ddb4369c83b37480fc312028b99422fdd820a6d68',
+                 'e72a241a3294a2ef646e36f6c3ec832089ae2ab1d9e7313ec0ebd3d9bb00a093'),
+            'analyzer/errors/type_union_runtime_type_operations.out':
+                ('e396f768df411cf1fa57f589500087ac45318d182d27f1228565d0022255032c',
+                 '85c1d496b0e2279865582aa5aaf4ab0759cebaf2177c9526f529c3b7b9c07667',
+                 'ff15a50e9a5d86b13fe6e9406291e0900265567505d4ec586d0ff6697297f52e'),
+            'analyzer/features/type_alias_union_export_single_member_retains_type.out':
+                ('6d6689ed1a411f79e719d0a29a9cf8d76c9753a4260836c7ffb79e9535aa129b',
+                 '09e65a45537df2baf76eb986b8fe0cf945fe3efd3db9a0a756f48b55b5a67251',
+                 '3e259e6c42f9d7ff916d732f5d10e892e3bd06b1780ad9724d1d546d279ffcd6'),
+        }
+        line_changing = set()
+        for path, (entry_sha, raw_sha, projected_sha) in expectation_specs.items():
+            with self.subTest(expectation=path):
+                entry = policy['expectation_edits'][path]
+                self.assertEqual(canonical_sha(entry), entry_sha)
+                data = (source / path).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), raw_sha)
+                projected = importer.expectation_patch(data, entry['patches'], path)
+                self.assertEqual(hashlib.sha256(projected).hexdigest(), projected_sha)
+                if any(change['before'].count('\n') != change['after'].count('\n')
+                       for change in entry['patches']):
+                    line_changing.add(path)
+                    with self.assertRaisesRegex(ValueError, 'invalid patch provenance'):
+                        importer.patch(data, entry['patches'], path)
+        self.assertEqual(line_changing, {
+            'analyzer/errors/type_alias_not_an_expression.out',
+            'analyzer/errors/type_union_as_type_handle.out',
+        })
+
+        first = importer.inventory_sources(source, policy, uri)
+        self.assertEqual(first, importer.inventory_sources(source, policy, uri))
+        self.assertEqual(first['schema_version'], 1)
+        self.assertEqual(hashlib.sha256(importer.encoded(first)).hexdigest(),
+                         '11ceb389e9a46294ed61d69d82a55365387dc34665a4e471353ed77267ed8c15')
+        self.assertEqual((first['counts']['sources'], first['counts']['cases'],
+                          first['counts']['helpers'], first['counts']['support_helpers']),
+                         (1596, 1346, 250, 2))
+        self.assertEqual((first['ledger']['total'], first['ledger']['skipped']), (1078, 252))
+        records = {record['imported_path']: record for record in first['sources']
+                   if record.get('role') == 'case'}
+        for case in D1_SELECTED_CASES:
+            with self.subTest(case=case):
+                record = records[case]
+                expected_disposition = ('rewritten' if case in D1_REWRITTEN_CASES
+                                        else 'expectation_overrides')
+                self.assertEqual(record['disposition'], expected_disposition)
+                self.assertEqual(record['upstream_path'],
+                                 'analyzer/' + case.removesuffix('.barista') + '.fs')
+                self.assertTrue(record['expected_block'])
+        removed = records[removed_case]
+        self.assertEqual(removed['disposition'], 'imported')
+        self.assertEqual(removed['sha256'],
+                         '5e3ec8468cc9a43cac2e8611334e00b84fe3b9c93e8cc5e90db208321b694b98')
+        self.assertEqual(removed['imported_sha256'], removed['sha256'])
+        self.assertEqual(removed['expectation_sha256'],
+                         '5b5f73698e432e3f7b13fcac8b083a64fe2dad4ff0bab52b86bc506d8d71b42c')
+        self.assertEqual(hashlib.sha256(removed['expected_block'].encode()).hexdigest(),
+                         '7095d7882483d8b4eb69bdde5112dc0341820fa95ebf1104c38c36b11ee97867')
+        self.assertEqual((removed['transformations'], removed['expectation_edits']), ([], []))
+
+        provider = next(record for record in first['sources']
+                        if record['upstream_path'] == provider_path)
+        self.assertEqual((provider['role'], provider['sha256'], provider['imported_sha256']),
+                         ('helper',
+                          '63ec633ac970fa3690990531f325038e9dfaf73ba147c5b61efb8aa59060aebe',
+                          '34c1547378a704872f079c57e06f953ceff0ab75d35bb265fa3f2a449ffadc62'))
+        self.assertNotIn('projected_helper_clone', policy['source_edits'][provider_path])
+        self.assertEqual(sum(record['imported_path'] == provider['imported_path']
+                             for record in first['sources']), 1)
+        self.assertEqual(sum(provider_path == reference.get('target')
+                             for record in first['sources']
+                             for reference in record.get('references', [])), 2)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary) / 'stage'
+            importer.write_stage(first, source, stage)
+            importer.check_stage(first, source, stage)
+            before = {path.relative_to(stage): path.read_bytes()
+                      for path in stage.rglob('*') if path.is_file()}
+            importer.write_stage(first, source, stage)
+            self.assertEqual(before, {path.relative_to(stage): path.read_bytes()
+                                      for path in stage.rglob('*') if path.is_file()})
+            self.assertEqual(len(before), 2411)
+            self.assertEqual(hashlib.sha256((stage / 'inventory.json').read_bytes()).hexdigest(),
+                             '11ceb389e9a46294ed61d69d82a55365387dc34665a4e471353ed77267ed8c15')
+            self.assertEqual(hashlib.sha256((stage / 'case_stages.json').read_bytes()).hexdigest(),
+                             '3ad070abe3df618bcb3e01bc6c5cdc753884b9e30819c606eae5a2e515ff9202')
+            tree = hashlib.sha256()
+            for path in sorted(candidate for candidate in stage.rglob('*') if candidate.is_file()):
+                tree.update(hashlib.sha256(path.read_bytes()).hexdigest().encode())
+                tree.update(b'  ./')
+                tree.update(path.relative_to(stage).as_posix().encode())
+                tree.update(b'\n')
+            self.assertEqual(tree.hexdigest(),
+                             '852b65de7baa00769b6805db0dd8de95d8d2a3a24f302df973e44c166da4c007')
+
+        def expect_inventory_failure(mutator, pattern):
+            candidate = copy.deepcopy(policy)
+            mutator(candidate)
+            with self.assertRaisesRegex(ValueError, pattern):
+                importer.inventory_sources(source, candidate, uri)
+
+        source_case = 'errors/assign_narrowed_match_bind.barista'
+        source_path = 'analyzer/errors/assign_narrowed_match_bind.fs'
+        expectation_case = 'errors/type_alias_not_an_expression.barista'
+        expectation_path = 'analyzer/errors/type_alias_not_an_expression.out'
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path].__setitem__('sha256', '0' * 64),
+            'source edit hash preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'][0].__setitem__(
+                'start', candidate['source_edits'][source_path]['patches'][0]['start'] + 1),
+            'preimage|span')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'][0].__setitem__(
+                'line', candidate['source_edits'][source_path]['patches'][0]['line'] + 1),
+            'line preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'][0].__setitem__(
+                'before', 'wrong'), 'preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][source_path]['patches'].append(
+                copy.deepcopy(candidate['source_edits'][source_path]['patches'][0])), 'overlapping')
+        expect_inventory_failure(lambda candidate: candidate['rewritten'].pop(source_case),
+                                 'disposition')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_edits'][expectation_path].__setitem__(
+                'sha256', '0' * 64), 'expectation edit hash preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_edits'][expectation_path]['patches'][0].__setitem__(
+                'line', candidate['expectation_edits'][expectation_path]['patches'][0]['line'] + 1),
+            'line preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_edits'][expectation_path]['patches'][0].__setitem__(
+                'before', 'wrong'), 'preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_edits'][expectation_path]['patches'].append(
+                copy.deepcopy(candidate['expectation_edits'][expectation_path]['patches'][0])),
+            'overlapping')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_overrides'].pop(expectation_case),
+            'override disposition')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][provider_path].__setitem__('sha256', '0' * 64),
+            'source edit hash preimage mismatch')
+
     def test_complete_producer_inventory_and_staging(self):
         if FOUNDRY is None:
             self.skipTest('full producer requires --foundry; byte-faithful miniature tests ran')
@@ -694,7 +1042,7 @@ class FullPinned(unittest.TestCase):
         self.assertEqual((len(reviewed_cases), case_list_sha(reviewed_cases)),
                          (7, 'c6a3ee1e94d74a0fd14915f597776dc6c83a1af426e262e1de8e3eb678a3945c'))
         self.assertEqual(set(policy['rewritten']),
-                         set(reviewed_cases) | {
+                         set(reviewed_cases) | D1_REWRITTEN_CASES | {
                              'features/generic_tagged_union_global.barista',
                              'features/lookup_class.barista',
                          })
@@ -724,7 +1072,8 @@ class FullPinned(unittest.TestCase):
                 ('adc16ce3f5816a865b006d8358667dec39495b697b20d736542cf335f07af722',
                  '9f267e188fd4ac74b8ba8d7126672e36af1be1c70e9c672e3f1e202403741b1a'),
         }
-        self.assertEqual(set(policy['source_edits']), set(projected_sources) | {
+        self.assertEqual(set(policy['source_edits']),
+                         set(projected_sources) | D1_SOURCE_EDIT_PATHS | {
             'analyzer/features/lookup_class.fs',
             'analyzer/features/use_preload_script_as_type.fs',
             'utils.notest.fs',
