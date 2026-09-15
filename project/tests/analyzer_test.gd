@@ -4820,10 +4820,39 @@ func _test_typed_container_union_rejection(failures: PackedStringArray) -> void:
 		exact = exact and str(errors[i].get("message", "")) == expected[i][0] and errors[i].get("line") == expected[i][1]
 	_expect(failures, exact, "typed-container unions produce the exact ordered four-message block: %s" % [errors])
 
-	var valid_neighbors := "type Scalar = int\n\nfunc echo(value: int | String) -> int | String:\n\treturn value\nfunc take(_value: int | String) -> void:\n\tpass\nclass Receiver:\n\tfunc take_deferred(_items: Array[int | (int, Self)]) -> void:\n\t\tpass\nfunc test():\n\tvar typed_array: Array[int] = []\n\tvar typed_dictionary: Dictionary[String, int] = {}\n\tvar raw_array: Array = []\n\tvar raw_dictionary: Dictionary = {}\n\tvar variant_array: Array[Variant] = []\n\tvar variant_dictionary: Dictionary[Variant, Variant] = {}\n\tvar aliases: Array[Scalar] = []\n\tvar alias_dictionary: Dictionary[Scalar, Scalar] = {}\n\tvar ordinary: int | String = 1\n\ttake(ordinary)\n\tvar returned: int | String = echo(ordinary)\n\tprints(typed_array, typed_dictionary, raw_array, raw_dictionary, variant_array, variant_dictionary, aliases, alias_dictionary, returned)\n"
+	var self_source := "# A typed container validates its elements against exactly one runtime type, which a set of\n# alternatives cannot supply, so a union is not a container element type -- naming `Self` inside one\n# does not change that. This is what keeps the `Self` element rules free of a union case: element,\n# key, value, and nested element positions are all refused at the annotation.\nclass Receiver:\n\tfunc take(_items: Array[int | (int, Self)]) -> void:\n\t\tpass\n\n\tfunc take_value(_items: Dictionary[String, int | (int, Self)]) -> void:\n\t\tpass\n\n\tfunc take_key(_items: Dictionary[int | (int, Self), String]) -> void:\n\t\tpass\n\n\tfunc take_nested(_items: Array[Array[int | (int, Self)]]) -> void:\n\t\tpass\n\n\nfunc test() -> void:\n\tpass\n"
+	var self_report: Dictionary = probe.validate_source(self_source, "res://tests/type_self_union_container_element_type_rejected.barista", false)
+	var self_errors: Array = self_report.get("errors", [])
+	var self_expected := [
+		['A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.', 6],
+		['A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.', 9],
+		['A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.', 12],
+		['A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.', 15],
+	]
+	var self_exact := self_errors.size() == self_expected.size()
+	for i in range(mini(self_errors.size(), self_expected.size())):
+		self_exact = self_exact and str(self_errors[i].get("message", "")) == self_expected[i][0] and self_errors[i].get("line") == self_expected[i][1]
+	_expect(failures, self_exact and not self_report.get("valid", true) and self_report.get("warnings", []).is_empty(),
+		"Self-bearing typed-container unions produce the exact ordered four-message block: %s" % [self_report])
+	_expect(failures, not probe.is_semantically_valid(self_source, "res://tests/type_self_union_container_element_type_rejected.barista") and
+		probe.validate_source(self_source, "res://tests/type_self_union_container_element_type_rejected.barista", false) == self_report,
+		"Self-bearing typed-container rejection is semantically invalid and cache-stable")
+
+	var self_alias_source := "class Receiver:\n\ttype Element = int | (int, Self)\n\n\tfunc take_alias(_items: Array[Element]) -> void:\n\t\tpass\n"
+	var self_alias_errors: Array = probe.validate_source(self_alias_source, "res://tests/type_self_union_container_alias.barista", false).get("errors", [])
+	_expect(failures, self_alias_errors.size() == 1 and
+		str(self_alias_errors[0].get("message", "")) == self_expected[0][0] and self_alias_errors[0].get("line") == 4,
+		"an alias-backed Self union rejects once at its direct container slot: %s" % [self_alias_errors])
+
+	var valid_self_neighbors := "class Receiver:\n\ttype Bound = Self\n\n\tfunc accept(_direct: Array[Self], _value: Dictionary[String, Self], _key: Dictionary[Self, String], _alias: Array[Bound]) -> void:\n\t\tpass\n\n\tfunc echo(value: int | (int, Self)) -> int | (int, Self):\n\t\treturn value\n"
+	var valid_self_report: Dictionary = probe.validate_source(valid_self_neighbors, "res://tests/type_self_union_container_valid_neighbors.barista", false)
+	_expect(failures, valid_self_report.get("valid", false) and valid_self_report.get("errors", []).is_empty() and valid_self_report.get("warnings", []).is_empty(),
+		"Self-only container slots and non-container Self-bearing unions remain valid: %s" % [valid_self_report])
+
+	var valid_neighbors := "type Scalar = int\n\nfunc echo(value: int | String) -> int | String:\n\treturn value\nfunc take(_value: int | String) -> void:\n\tpass\nclass Receiver:\n\tfunc take_self(_items: Array[Self]) -> void:\n\t\tpass\nfunc test():\n\tvar typed_array: Array[int] = []\n\tvar typed_dictionary: Dictionary[String, int] = {}\n\tvar raw_array: Array = []\n\tvar raw_dictionary: Dictionary = {}\n\tvar variant_array: Array[Variant] = []\n\tvar variant_dictionary: Dictionary[Variant, Variant] = {}\n\tvar aliases: Array[Scalar] = []\n\tvar alias_dictionary: Dictionary[Scalar, Scalar] = {}\n\tvar ordinary: int | String = 1\n\ttake(ordinary)\n\tvar returned: int | String = echo(ordinary)\n\tprints(typed_array, typed_dictionary, raw_array, raw_dictionary, variant_array, variant_dictionary, aliases, alias_dictionary, returned)\n"
 	var valid_report: Dictionary = probe.validate_source(valid_neighbors, "res://tests/typed_container_union_valid_neighbors.barista", false)
 	_expect(failures, valid_report.get("valid", false) and valid_report.get("errors", []).is_empty(),
-		"ordinary containers, single-member aliases, non-container unions and the separately owned recursive-Self case remain valid: %s" % [valid_report])
+		"ordinary containers, single-member aliases, non-container unions and Self-only slots remain valid: %s" % [valid_report])
 
 	var nested := "func test():\n\tvar nested_value: Array[Dictionary[String, int | String]] = []\n"
 	var nested_errors: Array = probe.validate_source(nested, "res://tests/nested_typed_container_union.barista", false).get("errors", [])
