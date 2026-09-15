@@ -133,11 +133,130 @@ def test_manifest_matches_the_repository(failures: list) -> None:
 WORKFLOW_HEADER = "jobs:\n  build:\n    steps:\n"
 
 
+def runner_step(condition: str | None = None, name: str = "Run the GDScript suites") -> str:
+    step = f"      - name: {name}\n"
+    if condition is not None:
+        step += f"        if: {condition}\n"
+    return step + '        run: python tests/run_gdscript_suites.py --godot "$godot_binary"\n'
+
+
+def workflow_with_job_condition(condition: str | None) -> str:
+    workflow = "jobs:\n  build:\n"
+    if condition is not None:
+        workflow += f"    if: {condition}\n"
+    return workflow + "    steps:\n" + runner_step()
+
+
 def test_the_workflow_must_actually_run_the_suite_runner(failures: list) -> None:
     complaint = validate_ci.check_gdscript_suite_wiring(
         WORKFLOW_HEADER + '      - run: echo "no suites here"\n'
     )
     check(complaint is not None, "a workflow that runs no suite at all was accepted", failures)
+
+
+def test_constant_false_runner_steps_are_unreachable(failures: list) -> None:
+    unreachable_conditions = [
+        "false",
+        "'false'",
+        '\"false\"',
+        "'  false  '",
+        "${{ false }}",
+        "'${{ false }}'",
+        '\"${{    false    }}\"',
+        '\"  ${{ false }}  \"',
+        "false # disabled",
+    ]
+    for condition in unreachable_conditions:
+        complaint = validate_ci.check_gdscript_suite_wiring(
+            WORKFLOW_HEADER + runner_step(condition)
+        )
+        check(
+            complaint is not None,
+            "an unreachable runner step was accepted for if: %s" % condition,
+            failures,
+        )
+
+
+def test_potentially_reachable_runner_conditions_are_allowed(failures: list) -> None:
+    reachable_conditions = [
+        None,
+        "true",
+        "${{ true }}",
+        "${{ matrix.target.platform == 'linux' }}",
+        "${{ matrix.target.platform == 'windows' || matrix.target.platform == 'macos' }}",
+        "${{ false || matrix.enabled }}",
+        "${{ 'false' }}",
+    ]
+    for condition in reachable_conditions:
+        complaint = validate_ci.check_gdscript_suite_wiring(
+            WORKFLOW_HEADER + runner_step(condition)
+        )
+        check(
+            complaint is None,
+            "a potentially reachable runner step was rejected for if: %s (%s)"
+            % (condition, complaint),
+            failures,
+        )
+
+
+def test_one_reachable_runner_is_enough_and_false_text_elsewhere_is_ignored(failures: list) -> None:
+    workflow = (
+        WORKFLOW_HEADER
+        + runner_step("false")
+        + runner_step("${{ matrix.enabled }}", "false is documentation, not a condition")
+    )
+    complaint = validate_ci.check_gdscript_suite_wiring(workflow)
+    check(
+        complaint is None,
+        "a reachable runner was hidden by an unreachable runner or unrelated false text: %s"
+        % complaint,
+        failures,
+    )
+
+
+def test_constant_false_runner_jobs_are_unreachable(failures: list) -> None:
+    unreachable_conditions = [
+        "false",
+        "'false'",
+        '\"false\"',
+        "'  false  '",
+        "${{ false }}",
+        "'${{ false }}'",
+        '\"${{    false    }}\"',
+        '\"  ${{ false }}  \"',
+        "false # disabled",
+    ]
+    for condition in unreachable_conditions:
+        complaint = validate_ci.check_gdscript_suite_wiring(
+            workflow_with_job_condition(condition)
+        )
+        check(
+            complaint is not None,
+            "an unreachable runner job was accepted for if: %s" % condition,
+            failures,
+        )
+
+
+def test_potentially_reachable_runner_job_conditions_are_allowed(failures: list) -> None:
+    reachable_conditions = [
+        None,
+        "true",
+        "${{ true }}",
+        "${{ matrix.target.platform == 'linux' }}",
+        "${{ matrix.target.platform == 'windows' || matrix.target.platform == 'macos' }}",
+        "${{ false || matrix.enabled }}",
+        "${{ 'false' }}",
+    ]
+    for condition in reachable_conditions:
+        complaint = validate_ci.check_gdscript_suite_wiring(
+            workflow_with_job_condition(condition)
+        )
+        check(
+            complaint is None,
+            "a potentially reachable runner job was rejected for if: %s (%s)"
+            % (condition, complaint),
+            failures,
+        )
 
 
 def test_a_commented_out_runner_is_not_evidence_the_suites_run(failures: list) -> None:

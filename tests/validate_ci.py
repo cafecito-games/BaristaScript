@@ -35,77 +35,141 @@ COMMAND_LINE_PREFIX = re.compile(r"^\s*(?:-\s*)?(?:run:\s*[|>]?[-+]?\s*)?")
 # Where one shell command ends and the next begins, with the operator kept.
 COMMAND_SEPARATOR = re.compile(r"(\|\||&&|[;|])")
 
-# The runner run as a command, not merely named as an argument to some other command: the
-# segment has to start with the interpreter, allowing only leading environment assignments.
-SUITE_RUNNER_COMMAND = re.compile(
-    r"""^(?:\w+=\S*\s+)*(?:python3?|py)\s+['"]?[^\s'"]*"""
-    + re.escape(SUITE_RUNNER)
-    + r"""(?P<arguments>\s.*|$)"""
-)
-
 # `|| true`, `; true` and friends turn the runner's non-zero exit into a green step.
 SUPPRESSED_STATUS = re.compile(r"\|\||;\s*true\b|&&\s*true\b")
 
-# Anything but an explicit `false` lets the step's failure through as a success, including the
-# `${{ true }}` expression form GitHub Actions accepts.
-CONTINUE_ON_ERROR = re.compile(r"continue-on-error:\s*(?!false\b|'false'|\"false\")\S")
-
-STEP_START = re.compile(r"^(\s*)-\s")
+CONSTANT_FALSE_EXPRESSION = re.compile(r"\$\{\{\s*false\s*\}\}")
 
 
-def executable_lines(workflow: str) -> list[str]:
-    """The workflow's lines with their comments -- whole-line and inline -- removed.
+def executable_lines(command: str) -> list[str]:
+    """A run scalar's lines with whole-line and inline shell comments removed.
 
     A commented-out command is text a substring search would still find, so the
     wiring checks below must not read one as evidence that CI runs anything.
     """
-    return [COMMENT_TAIL.sub("", line) for line in workflow.splitlines()]
+    return [COMMENT_TAIL.sub("", line) for line in command.splitlines()]
 
 
-def line_invocations(line: str) -> list[str]:
+def line_invocations(line: str, runner_path: str = SUITE_RUNNER) -> list[str]:
     """The text following each command in `line` that actually runs the suite runner.
 
     The returned text is the rest of the shell line, so a caller can see both the
     runner's own arguments and whatever the line does with its exit status.
     """
+    runner_command = re.compile(
+        r"""^(?:\w+=\S*\s+)*(?:python3?|py)\s+['"]?[^\s'"]*"""
+        + re.escape(runner_path)
+        + r"""(?P<arguments>\s.*|$)"""
+    )
     body = COMMAND_LINE_PREFIX.sub("", line)
     pieces = COMMAND_SEPARATOR.split(body)
     invocations: list[str] = []
     for index in range(0, len(pieces), 2):
-        match = SUITE_RUNNER_COMMAND.match(pieces[index].strip())
+        match = runner_command.match(pieces[index].strip())
         if match is not None:
             invocations.append(match.group("arguments") + "".join(pieces[index + 1 :]))
     return invocations
 
 
-def enclosing_step(lines: list[str], index: int) -> str:
-    """The workflow step containing `lines[index]`, as its own text block."""
-    start = index
-    indent = 0
-    while start >= 0:
-        match = STEP_START.match(lines[start])
-        if match is not None:
-            indent = len(match.group(1))
-            break
-        start -= 1
-    if start < 0:
-        start = index
-    end = start + 1
-    while end < len(lines):
-        match = STEP_START.match(lines[end])
-        if match is not None and len(match.group(1)) <= indent:
-            break
-        end += 1
-    return "\n".join(lines[start:end])
+def workflow_steps(workflow: str) -> list[tuple[dict, dict]]:
+    """Return each parsed step together with its enclosing job mapping."""
+    try:
+        import yaml
+    except ImportError as error:
+        raise ValueError(
+            "CI audit requires PyYAML: python3 -m pip install -r tests/requirements.txt"
+        ) from error
+
+    try:
+        document = yaml.load(workflow, Loader=yaml.BaseLoader)
+    except yaml.YAMLError as error:
+        raise ValueError(f"invalid CI YAML: {error}") from error
+    if not isinstance(document, dict):
+        raise ValueError("CI workflow must be a mapping")
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        raise ValueError("CI jobs must be a mapping")
+
+    parsed: list[tuple[dict, dict]] = []
+    for job in jobs.values():
+        if not isinstance(job, dict) or "steps" not in job:
+            continue
+        steps = job["steps"]
+        if not isinstance(steps, list):
+            raise ValueError("CI job steps must be a list")
+        parsed.extend((job, step) for step in steps if isinstance(step, dict))
+    return parsed
 
 
-def runner_invocations(lines: list[str]) -> list[tuple[str, str]]:
-    """Every suite-runner command, paired with the workflow step that holds it."""
-    invocations: list[tuple[str, str]] = []
-    for index, line in enumerate(lines):
-        for arguments in line_invocations(line):
-            invocations.append((arguments, enclosing_step(lines, index)))
+def runner_invocations(
+    job_steps: list[tuple[dict, dict]], runner_path: str
+) -> list[tuple[str, dict, dict]]:
+    """Every suite-runner command, paired with its parsed job and step."""
+    invocations: list[tuple[str, dict, dict]] = []
+    for job, step in job_steps:
+        command = step.get("run")
+        if not isinstance(command, str):
+            continue
+        for line in executable_lines(command):
+            for arguments in line_invocations(line, runner_path):
+                invocations.append((arguments, job, step))
     return invocations
+
+
+def condition_is_unreachable(owner: dict) -> bool:
+    """Whether a job or step condition is exactly a normalized constant false."""
+    condition = owner.get("if")
+    if not isinstance(condition, str):
+        return False
+    condition = condition.strip()
+    return condition == "false" or CONSTANT_FALSE_EXPRESSION.fullmatch(condition) is not None
+
+
+def step_continues_on_error(step: dict) -> bool:
+    """Match the existing policy: only a literal false preserves failure propagation."""
+    value = step.get("continue-on-error", "false")
+    return not isinstance(value, str) or value.strip() != "false"
+
+
+def check_suite_runner_wiring(
+    workflow: str, runner_path: str, suite_name: str, require_whole_manifest: bool = False
+) -> str | None:
+    """Require a reachable runner step whose failure can make the job fail."""
+    try:
+        job_steps = workflow_steps(workflow)
+    except ValueError as error:
+        return str(error)
+
+    invocations = [
+        (arguments, job, step)
+        for arguments, job, step in runner_invocations(job_steps, runner_path)
+        if "--godot" in arguments and "--list" not in arguments
+    ]
+    if not invocations:
+        return (
+            f"CI must run the {suite_name} suites through {runner_path} --godot <binary>; "
+            "naming the runner, or running it in --list mode, launches no suite"
+        )
+
+    effective = [
+        arguments
+        for arguments, job, step in invocations
+        if not SUPPRESSED_STATUS.search(arguments)
+        and not step_continues_on_error(step)
+        and not condition_is_unreachable(job)
+        and not condition_is_unreachable(step)
+    ]
+    if not effective:
+        return (
+            f"CI must let {runner_path} fail the job from a potentially reachable job and step; "
+            "its exit status is the guard, so no effective invocation may be suppressed, "
+            "continue on error, or use a constant-false condition"
+        )
+    if require_whole_manifest and not any(
+        not re.search(r"--(?:suite|case)\b", arguments) for arguments in effective
+    ):
+        return "CI must execute the complete native suite manifest without --suite/--case filters"
+    return None
 
 
 def check_gdscript_suite_wiring(workflow: str) -> str | None:
@@ -117,8 +181,16 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
     sentinel that only an executed suite can print, and the runner's own exit
     status must be allowed to fail the job.
     """
-    lines = executable_lines(workflow)
-    active = "\n".join(lines)
+    try:
+        job_steps = workflow_steps(workflow)
+    except ValueError as error:
+        return str(error)
+    active = "\n".join(
+        line
+        for _job, step in job_steps
+        if isinstance(step.get("run"), str)
+        for line in executable_lines(step["run"])
+    )
 
     direct_invocations = DIRECT_SUITE_INVOCATION.findall(active)
     if direct_invocations:
@@ -128,49 +200,14 @@ def check_gdscript_suite_wiring(workflow: str) -> str | None:
             f"run it through {SUITE_RUNNER} so a parse error cannot pass as green"
         )
 
-    invocations = [
-        (arguments, step)
-        for arguments, step in runner_invocations(lines)
-        if "--godot" in arguments and "--list" not in arguments
-    ]
-    if not invocations:
-        return (
-            f"CI must run the GDScript suites through {SUITE_RUNNER} --godot <binary>; "
-            "naming the runner, or running it in --list mode, launches no suite"
-        )
-
-    # A guard whose non-zero status is swallowed is no guard at all, so at least one
-    # invocation must be able to fail the job: unsuppressed in the shell, and in a step
-    # that does not continue on error.
-    effective = [
-        arguments
-        for arguments, step in invocations
-        if not SUPPRESSED_STATUS.search(arguments) and not CONTINUE_ON_ERROR.search(step)
-    ]
-    if not effective:
-        return (
-            f"CI must let {SUITE_RUNNER} fail the job; its exit status is the guard, so no "
-            "invocation may be followed by ||, ; true, or sit in a continue-on-error step"
-        )
-
-    return None
+    return check_suite_runner_wiring(workflow, SUITE_RUNNER, "GDScript")
 
 
 def check_native_suite_wiring(workflow: str) -> str | None:
-    """Reuse the guarded shell audit and require the entire native manifest, never a subset."""
-    native_runner = "tests/run_native_suites.py"
-    translated = workflow.replace(SUITE_RUNNER, "legacy-suite-runner")
-    translated = translated.replace(native_runner, SUITE_RUNNER)
-    complaint = check_gdscript_suite_wiring(translated)
-    if complaint:
-        return complaint.replace(SUITE_RUNNER, native_runner).replace("GDScript", "native")
-    effective = [arguments for arguments, step in runner_invocations(executable_lines(translated))
-                 if "--godot" in arguments and "--list" not in arguments
-                 and not re.search(r"--(?:suite|case)\b", arguments)
-                 and not SUPPRESSED_STATUS.search(arguments) and not CONTINUE_ON_ERROR.search(step)]
-    if not effective:
-        return "CI must execute the complete native suite manifest without --suite/--case filters"
-    return None
+    """Require a reachable unsuppressed execution of the complete native manifest."""
+    return check_suite_runner_wiring(
+        workflow, "tests/run_native_suites.py", "native", require_whole_manifest=True
+    )
 
 
 def check_corpus_baseline() -> str | None:
