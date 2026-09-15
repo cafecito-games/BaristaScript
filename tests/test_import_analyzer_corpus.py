@@ -770,7 +770,297 @@ TYPED_CONTAINER_SOURCE_PATH = 'analyzer/errors/type_union_in_typed_container.fs'
 TYPED_CONTAINER_EXPECTATION_PATH = 'analyzer/errors/type_union_in_typed_container.out'
 
 
+
+# Reviewed safe subset of #45's contextual tagged-union packet. Each tuple pins
+# real Foundry source, projected source, raw output, and complete static block.
+CONTEXTUAL_SPECS = {
+    'errors/contextual_tagged_union_is_non_union_operand.barista': (
+        '75f5d2e9ae3879da8ac2ac6ba103e875d85af73ec513f3d91cb9810fde82d289',
+        'b99845e1400c03a1f1d62cbd587484e1e1c1e2dc7a24b01349f729a65b2aa38b',
+        '252ec3eabd35b9858f8188ca8f0fd7340f40ff9ec5684e0810a96603a1215045',
+        '58dacf93313bd06e504523b559aa38e9e33cfa475d3bb7eb48bf6e86e31f4ba2',
+    ),
+    'errors/contextual_tagged_union_is_undeclared_operand.barista': (
+        '7c7823d8b58ae76b05c023c8fa2fa44fc3390ea59220488082da2dd82d30e856',
+        '094b97340bb25c0dc436853d2d397d88220c12c8a6faeecc2ba4ecedc2169499',
+        '799c10905793243562fe470754a5c04db5ab130c3db068cdd0f3b533d7ffcad4',
+        '3ab0d287fbacf1b7c80c7bbc542cd090f6b18695234bb45804d17db0628abb49',
+    ),
+    'errors/contextual_tagged_union_is_unknown_case.barista': (
+        '74ac2263970bf1e3210ea7d6fbd539c126b0d18a576f866f559d2315795ccc6f',
+        '080c341cc9bfaf803014b41325800d3cc030550456b124044dc40cf35bfcc4be',
+        '4dfa7a584d5611577bff0456d0b2df858d96fc926c01a1fc3a5880100dd61d2e',
+        'eb4b6c7864f8c6fbb90ffca6071b5f7cd034321189a206a4053f03210586e390',
+    ),
+    'errors/contextual_tagged_union_pattern_non_union_subject.barista': (
+        '9356cf3cd1129f9f8874e3b9319fafedbf23280aca64b40aac1d92ffa849a039',
+        '66f851525dfc71675d4122f844a5392031a715ed6ff26d1d1990ebc4dc8ed666',
+        'ff054cd93971b026dad7febc182e59d3b23ad9e5ff90e86898989d8e3ec18fb8',
+        'ab9db825c7a13d6772a3f2405df5c428e343578c7faf128b560f9f4ab6cd73c8',
+    ),
+    'errors/contextual_tagged_union_pattern_payload_form.barista': (
+        '6809bfb8f6da2f08b3094e60d50e381252f22a5a41636ad8217700efbdd64d2d',
+        '4eaca933f5504565eadaebce84e9f1acaa285873e3307228a31c1ed6de2ba15c',
+        '5fc5cdb631b572d795254883b03ba9a97b558bee3aada67e6ac7bb3b74216f36',
+        'e74e770033097a3adb00eb25fa8bb122dcc275b3d815f351f515204b44813d4c',
+    ),
+    'errors/contextual_tagged_union_pattern_undeclared_subject.barista': (
+        '8a3c5c1ecfc0897bbd3f26b33bc8423beeb30774e4943ebfc6fdad9eeba6218c',
+        '1df18100952301ea43cd23077ae274b250773273c4378e514a4bc4692538c4a5',
+        '11d029d61dac75296c7efe037ed7caa3603e0442b470cfe76023ca58fd6695a5',
+        'd5db9aa9119b75091401e405e4e737bbddf73008535fa47d856cf073f61281de',
+    ),
+    'errors/contextual_tagged_union_pattern_unknown_case.barista': (
+        '4818185ce73dee22de534353acde099f13777d3c5b7c3d294a3ea5f52f4d37e2',
+        '4f285c1019d50d30b3abff6cf4c489c5d9492332f1c682c56126e17ff6a11a8e',
+        '02f62ccc265505bdcbef26a700dd1787f57e251587ce2a501d23256bf8a348ac',
+        '7bc7435cfffaa3dceff670f7f401af1839195302af8b81961ecaec284d7a9626',
+    ),
+    'errors/contextual_tagged_union_pattern_variant_subject.barista': (
+        '11e11d2a0c4c1f191f7d97da51c59ef5fadfe8eca75862ab0d780f82720c1298',
+        'ab93c893003c4c8412c1ed154c0c4bec557b6a2d1609abaf40f93d23dd2d3108',
+        '6f57bf32aa92793521b3f23e8a3e9563cb0c13912911d12c1a6db5e671dc0ed1',
+        'c1a17682ffadec1c4142be481f502b5293383a05e114130ab62d7a3bdea81459',
+    ),
+    'errors/contextual_tagged_union_payload_arity.barista': (
+        '088f5dbeeb040096923dfe28fe55e02b969192ea61fd1dbc7d82109b51d9dd99',
+        'b04ba2a1705cd03398d6c9c33b0a5b84716ca5b3bc496f4e7ecf18f3fddd53a7',
+        'f577b127b970efcfd73597b323309ff7be41cc6b63c7fa6a3dd89cbe1531e394',
+        'ec9bed201c43881aedfbf9b61ce61c05a18f4e108529861189756fe5fce47b25',
+    ),
+    'errors/contextual_tagged_union_payload_form_mismatch.barista': (
+        '33c78a6f4b5cae96ea5b144faddb62fe359c943c087c0d963d7bb4e1f6828b2c',
+        '4780a097cb7a4161275bf8b7e0fe7585049925d0610b69e7ef990818f8c3f06d',
+        '4cc56da1b30bf08849a7a72370ab42dc382806b85a5a05e0b6ad99154e794f9e',
+        'bb97e5f89897be44512920d4ca5d3c7a61aecdb67484ebaebe36f8e1664e1c9c',
+    ),
+    'errors/contextual_tagged_union_unknown_case.barista': (
+        'ff8134e0e5ba8cfae9e679ea6d30ed6cf377f99f3428374af6b08ce6868ea0eb',
+        '54d675584eabc982b8cb57026c4a7e98267e3cb7d94ea1d6f87eb25962fdb327',
+        '4dfa7a584d5611577bff0456d0b2df858d96fc926c01a1fc3a5880100dd61d2e',
+        'eb4b6c7864f8c6fbb90ffca6071b5f7cd034321189a206a4053f03210586e390',
+    ),
+    'features/contextual_tagged_union_argument.barista': (
+        '7ce252d5ec68062c95518ba7af3491054a9dd8dac567529f602659923e666874',
+        '95dd800f552ee4262ff38688dc1263ffc35299ee2e6ca737724921f9c9b1656b',
+        '6e81fd7cf7f28493f472c633b76d170f2db78f409bd8ccf0539de8c02b3dd43f',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_assignment.barista': (
+        '2abdc5ee879692f54155880972da028391114f9655f6833d9c03b4c1e109f1ea',
+        'e28680d48437ff093de226fcc03dac9fe4394841e99456ff7441b2e0b288ec05',
+        'a63c87e7b8a074fdfa8595bb115d867178e617370f67ce57aaf635db14968ce1',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_default_value.barista': (
+        '0543bcfe745c23a0d90d6509173143510ee0fac9668bd9d9da1fad4a7c36305a',
+        'fe0fb73cadfc00681350e85a5d2f5190152eb40e59dd6e53d0d8bba809daf908',
+        '0afa3b1585224f8084e7d5c9537f2f1890cbd1ab55443d0188bb9b50e84eedb9',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_dictionary_entry.barista': (
+        '6658562981880b644775fa591fb47f943108286d94ae09660f3bce77a068ef89',
+        '4521609a437a46b5654978b5c59830f6a7e751293f20ddf8761715f5dae5b8d1',
+        'cfd3ad2cf78c00fbfd19381cfb4d089e0c6c9cad291aed8bfad2574992a3e78d',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_exhaustive_match.barista': (
+        'd7bcf22de6e9e5eca62773d6e0aaa8c5e44e9018167861adae1b8c19644c0429',
+        '4dcbbd6ce21cdd7faf01aa92e6ff159d5c6dfb72e77ec8a6b4f0161c78825054',
+        '5ba0c0b0f12b4ba818123482aaa982616ce6b2d5130dc1cc37d3a8f2d6d8807c',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_is_pattern.barista': (
+        'e0c97e4f4d8765ed186475cd2016ff2ac2efd48b1f444a2576fc37d3367204d8',
+        'a1fe8e20280a8733cb1c5338fed96b1e0b157ab4573750a50fa0a010e9c61790',
+        '62746eca3913bf58b11f2c3ae4a0267819b766e985097d38bdab5489092044cf',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_match_pattern.barista': (
+        'b98e1824e748df998c16138484e1d4de7cbd89e267cc9317a83d652812c57020',
+        '831b419d2e6fc2712ebcf2d09483e07312cb14f139edff52e74df60120296173',
+        'c05daf06623348791a9d2329341c3f0659f6b01c6d67479bd9d914a94bb1787d',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_payloadless.barista': (
+        '4003173820815399c2533ed614218ff88e2ce2192dd49b2a50c88fba49e24f2e',
+        '8f990d5c498138cf33e5b1025b27da8122755049d3e45b5a2481bc19f5fb865a',
+        '11aa67f4ac23894f0f83cbdc7231337bd54c9b5f3549440f15d6a50c9effd5e8',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_return.barista': (
+        '6e686c8fdcb1477bc032bd3c9c3bd60832851a0f434945a4e84fb907ee35e0c5',
+        '880381bcbe0e9de1684e4954e1d89631bd18b4ca0c913e21aa777683b8f328ea',
+        '647d0d6c863f92f6bd3a59aa1798da339a76e2a633c0b6f5b2a92057abb6f1fc',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'features/contextual_tagged_union_ternary.barista': (
+        'a64e4c656304f32e60fb6ef26e0938803146f65fcc1c21662d2acfba901885da',
+        'a25fca307d5772ca4b97f963bafb250a9d1c2ca20bde63d2eccbab59b5b583a9',
+        '28e8ba98d810dd69214efada7b35694bce15c0fbc4ab247063ddadf7abdc27a2',
+        '369e7ec368d13a45f0fb1b13f89d6bb20829f1cf8901065dfba26bfc99b89735',
+    ),
+    'warnings/contextual_tagged_union_match_nullable_subject.barista': (
+        'ef5c69ab5e53fa7ad5ea24bbaf95ba5e211811396445751f8d97a6b1ff1327bc',
+        '9f0f409a41872b82f16e782a78d8556c21b6ea87a2646b4c5db6faf0189aec18',
+        '2d3da5c5fe7b4a3a8b9f0c8ab12bc3a9a6126c4e709066fa3c7ac0948b960200',
+        '9862246ee82c032ae1f421995d4d99eb99342758a2635f0f1e91fa0e28e81fa4',
+    ),
+}
+CONTEXTUAL_SELECTED_CASES = tuple(CONTEXTUAL_SPECS)
+CONTEXTUAL_SOURCE_PATHS = frozenset(
+    'analyzer/' + case.removesuffix('.barista') + '.fs'
+    for case in CONTEXTUAL_SELECTED_CASES
+)
+
+
 class FullPinned(unittest.TestCase):
+    def assert_safe_contextual_policy(self, policy):
+        import import_analyzer_corpus as importer
+
+        selected = set(CONTEXTUAL_SELECTED_CASES)
+        self.assertTrue(selected <= set(policy['rewritten']))
+        self.assertTrue(CONTEXTUAL_SOURCE_PATHS <= set(policy['source_edits']))
+        edits = {path: policy['source_edits'][path]
+                 for path in sorted(CONTEXTUAL_SOURCE_PATHS)}
+        self.assertEqual(hashlib.sha256(json.dumps(
+            edits, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest(),
+            '12209f98420de0259041d308fe91137464e68eddc75b84194dfabc6a3b38fe8a')
+        self.assertEqual(sum(len(entry['patches']) for entry in edits.values()), 137)
+        for case in selected:
+            self.assertEqual(policy['rewritten'][case], policy['owners'][case]['reason'])
+
+        # Removing exactly this packet recovers every prior table byte-for-byte:
+        # owner/source review, expectations, helper/provider, and dispositions.
+        predecessor = copy.deepcopy(policy)
+        for case in selected:
+            predecessor['rewritten'].pop(case)
+        for path in CONTEXTUAL_SOURCE_PATHS:
+            predecessor['source_edits'].pop(path)
+        self.assertEqual(hashlib.sha256(importer.encoded(predecessor)).hexdigest(),
+                         '01e2364afa4ccca921aa16911c128b45aa5284d4a2e8e80a0b028ee675af272b')
+
+    def test_safe_contextual_policy_contract_and_negative_controls(self):
+        import import_analyzer_corpus as importer
+
+        policy = importer.default_policy()
+        self.assert_safe_contextual_policy(policy)
+        case_list_sha = lambda paths: hashlib.sha256(('\n'.join(paths) + '\n').encode()).hexdigest()
+        self.assertEqual(CONTEXTUAL_SELECTED_CASES, tuple(sorted(CONTEXTUAL_SELECTED_CASES)))
+        self.assertEqual((len(CONTEXTUAL_SELECTED_CASES), case_list_sha(CONTEXTUAL_SELECTED_CASES)),
+                         (22, 'b3fa2ad2bb9be82c3fa46bda49b605679a0195b1a7b37cc9c4fdb57b4ca558fb'))
+        self.assertEqual(case_list_sha(sorted(CONTEXTUAL_SOURCE_PATHS)),
+                         '727c4e5f82ab1333891b7bbe91e2c21c20b774132834177530bb1f6aba7608ab')
+        self.assertEqual(collections.Counter(case.split('/')[0] for case in CONTEXTUAL_SELECTED_CASES),
+                         {'errors': 11, 'features': 10, 'warnings': 1})
+
+        case = CONTEXTUAL_SELECTED_CASES[0]
+        path = 'analyzer/' + case.removesuffix('.barista') + '.fs'
+        # Valid schema alone cannot authorize a different semantic projection.
+        mutations = [
+            ('source hash', lambda p: p['source_edits'][path].__setitem__('sha256', '0' * 64)),
+            ('missing source', lambda p: p['source_edits'].pop(path)),
+            ('missing patch', lambda p: p['source_edits'][path]['patches'].pop()),
+            ('overlap/extra patch', lambda p: p['source_edits'][path]['patches'].append(
+                copy.deepcopy(p['source_edits'][path]['patches'][0]))),
+            ('missing disposition', lambda p: p['rewritten'].pop(case)),
+            ('wrong disposition', lambda p: p['rewritten'].__setitem__(case, 'different assertion')),
+            ('expectation edit', lambda p: p['expectation_edits'].__setitem__(
+                path.removesuffix('.fs') + '.out', {'sha256': '0' * 64, 'patches': []})),
+            ('expectation override', lambda p: p['expectation_overrides'].__setitem__(case, 'override')),
+            ('owner', lambda p: p['owners'][case].__setitem__('primary_issue', 139)),
+            ('provider/helper', lambda p: p['source_edits'].__setitem__(
+                'analyzer/features/unreviewed.notest.fs', {'sha256': '0' * 64, 'patches': []})),
+            ('helper clone', lambda p: p['source_edits'][path].__setitem__(
+                'projected_helper_clone', {})),
+            ('diagnostic-sensitive boundary', lambda p: p['rewritten'].__setitem__(
+                'errors/contextual_tagged_union_no_expected_type.barista', 'unsafe projection')),
+            ('remaining contextual boundary', lambda p: p['rewritten'].__setitem__(
+                'features/contextual_tagged_union_nested_generic.barista', 'out of packet')),
+            ('near-name boundary', lambda p: p['rewritten'].__setitem__(
+                'errors/named_tuple_contextual_case_non_union_field.barista', 'out of packet')),
+        ]
+        for field, value in (('start', 0), ('end', 1), ('line', 1), ('before', 'wrong'),
+                             ('after', 'enum Different:'), ('rule', 'unreviewed-rule'),
+                             ('occurrences', 2)):
+            mutations.append((field, lambda p, field=field, value=value:
+                              p['source_edits'][path]['patches'][0].__setitem__(field, value)))
+        for label, mutate in mutations:
+            with self.subTest(mutation=label):
+                candidate = copy.deepcopy(policy)
+                mutate(candidate)
+                with self.assertRaises(AssertionError):
+                    self.assert_safe_contextual_policy(candidate)
+
+    def test_safe_contextual_real_producer_projection_and_preimages(self):
+        if FOUNDRY is None:
+            self.skipTest('full producer requires --foundry; policy lock negative controls ran')
+        import import_analyzer_corpus as importer
+        import corpus_registry
+
+        registry = corpus_registry.validate_registration(ROOT)
+        corpus_registry.verify_checkout(FOUNDRY, registry, registry['revision'])
+        policy = importer.default_policy()
+        self.assert_safe_contextual_policy(policy)
+        source = FOUNDRY / importer.SCRIPTS
+        inventory = importer.inventory_sources(source, policy, 'res://tests/corpus_staging/analyzer')
+        records = {record['imported_path']: record for record in inventory['sources']
+                   if record['role'] == 'case'}
+        for case, (raw_sha, projected_sha, output_sha, block_sha) in CONTEXTUAL_SPECS.items():
+            with self.subTest(case=case):
+                path = 'analyzer/' + case.removesuffix('.barista') + '.fs'
+                data = (source / path).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), raw_sha)
+                entry = policy['source_edits'][path]
+                self.assertEqual(set(entry), {'sha256', 'patches'})
+                changes = importer.source_policy_changes(data, path, policy)
+                projected = importer.patch(data, changes, path)
+                self.assertEqual(hashlib.sha256(projected).hexdigest(), projected_sha)
+                self.assertEqual(data.count(b'\n'), projected.count(b'\n'))
+                # These local declarations contain no quoted '#'; all comments,
+                # including examples of generic syntax, remain exact.
+                comments = lambda text: [line.partition(b'#')[2] for line in text.splitlines()]
+                self.assertEqual(comments(data), comments(projected))
+                executable = b'\n'.join(line.partition(b'#')[0] for line in projected.splitlines())
+                self.assertNotRegex(executable, rb'(?:Result|Option|Nested)\s*\[')
+                for change in changes:
+                    prefix = data[:change['start']].rsplit(b'\n', 1)[-1]
+                    self.assertNotIn(b'#', prefix)
+                output = (source / (path.removesuffix('.fs') + '.out')).read_bytes()
+                self.assertEqual(hashlib.sha256(output).hexdigest(), output_sha)
+                record = records[case]
+                self.assertEqual((record['disposition'], record['stage']), ('rewritten', 'analyzer'))
+                self.assertEqual(record['sha256'], raw_sha)
+                self.assertEqual(record['imported_sha256'], projected_sha)
+                self.assertEqual(record['expectation_sha256'], output_sha)
+                self.assertEqual(hashlib.sha256(record['expected_block'].encode()).hexdigest(), block_sha)
+                self.assertNotRegex(record['expected_block'], r'(?:Result|Option|Nested)\s*\[')
+                self.assertEqual(record['references'], [])
+                self.assertEqual(record['expectation_edits'], [])
+                self.assertEqual(record['transformations'], entry['patches'])
+                self.assertEqual(record['semantic_owner'], policy['owners'][case])
+
+        path = 'analyzer/errors/contextual_tagged_union_is_non_union_operand.fs'
+        data = (source / path).read_bytes()
+        for field, value, pattern in (
+                ('start', 0, 'preimage'), ('end', 1, 'span'),
+                ('line', 1, 'line preimage'), ('before', 'wrong', 'preimage'),
+                ('rule', '', 'invalid patch provenance'),
+                ('occurrences', 2, 'invalid patch provenance')):
+            with self.subTest(importer_rejection=field):
+                candidate = copy.deepcopy(policy)
+                candidate['source_edits'][path]['patches'][0][field] = value
+                with self.assertRaisesRegex(ValueError, pattern):
+                    importer.source_policy_changes(data, path, candidate)
+        # An exact span in a comment is mechanically legal but outside the
+        # reviewed patch contract; prove the packet lock rejects that addition.
+        comment_start = data.index(b'#')
+        comment = importer.change(data, comment_start, comment_start + 1, '#', 'comment-only')
+        candidate = copy.deepcopy(policy)
+        candidate['source_edits'][path]['patches'].append(comment)
+        with self.assertRaises(AssertionError):
+            self.assert_safe_contextual_policy(candidate)
+
     def test_explicit_d1_projection_contract_and_fail_closed(self):
         if FOUNDRY is None:
             self.skipTest('full producer requires --foundry; byte-faithful miniature tests ran')
@@ -794,7 +1084,7 @@ class FullPinned(unittest.TestCase):
 
         self.assertEqual(policy['schema_version'], 2)
         self.assertEqual(hashlib.sha256(importer.POLICY.read_bytes()).hexdigest(),
-                         '01e2364afa4ccca921aa16911c128b45aa5284d4a2e8e80a0b028ee675af272b')
+                         '81dec9f94b89918de026b8860da127495e02546ebb0290242c0084c9b10718c1')
         self.assertEqual((len(D1_SELECTED_CASES), case_list_sha(D1_SELECTED_CASES)),
                          (14, 'e9fdfd464a5bd5f0dcf4e78c5c05210ca14429442e332b4bbed3201b488ca798'))
         self.assertEqual((len(D1_REWRITTEN_CASES), case_list_sha(sorted(D1_REWRITTEN_CASES))),
@@ -895,7 +1185,7 @@ class FullPinned(unittest.TestCase):
         self.assertEqual(first, importer.inventory_sources(source, policy, uri))
         self.assertEqual(first['schema_version'], 1)
         self.assertEqual(hashlib.sha256(importer.encoded(first)).hexdigest(),
-                         '90f2921397435c99a4935e71b2f454af205231e84c67110a5fc99f68ba233d41')
+                         'f6da2d5169ba888f892ac1040245e8081078412249e126300005dd91bd93c234')
         self.assertEqual((first['counts']['sources'], first['counts']['cases'],
                           first['counts']['helpers'], first['counts']['support_helpers']),
                          (1596, 1346, 250, 2))
@@ -948,7 +1238,7 @@ class FullPinned(unittest.TestCase):
                                       for path in stage.rglob('*') if path.is_file()})
             self.assertEqual(len(before), 2411)
             self.assertEqual(hashlib.sha256((stage / 'inventory.json').read_bytes()).hexdigest(),
-                             '90f2921397435c99a4935e71b2f454af205231e84c67110a5fc99f68ba233d41')
+                             'f6da2d5169ba888f892ac1040245e8081078412249e126300005dd91bd93c234')
             self.assertEqual(hashlib.sha256((stage / 'case_stages.json').read_bytes()).hexdigest(),
                              '3ad070abe3df618bcb3e01bc6c5cdc753884b9e30819c606eae5a2e515ff9202')
             tree = hashlib.sha256()
@@ -958,7 +1248,7 @@ class FullPinned(unittest.TestCase):
                 tree.update(path.relative_to(stage).as_posix().encode())
                 tree.update(b'\n')
             self.assertEqual(tree.hexdigest(),
-                             '667a29b5f8573992f70a2496ba2ca19d8172e54b2ce8bc1627506e1c563fb4da')
+                             '0b5e21050c72cd20bab737465afbe6611fbfc942045ba18b98d75be9aae38107')
 
         def expect_inventory_failure(mutator, pattern):
             candidate = copy.deepcopy(policy)
@@ -1073,7 +1363,7 @@ class FullPinned(unittest.TestCase):
         self.assertEqual((len(reviewed_cases), case_list_sha(reviewed_cases)),
                          (7, 'c6a3ee1e94d74a0fd14915f597776dc6c83a1af426e262e1de8e3eb678a3945c'))
         self.assertEqual(set(policy['rewritten']),
-                         set(reviewed_cases) | D1_REWRITTEN_CASES | {
+                         set(reviewed_cases) | D1_REWRITTEN_CASES | set(CONTEXTUAL_SELECTED_CASES) | {
                              'features/generic_tagged_union_global.barista',
                              'features/lookup_class.barista',
                          })
@@ -1104,7 +1394,7 @@ class FullPinned(unittest.TestCase):
                  '9f267e188fd4ac74b8ba8d7126672e36af1be1c70e9c672e3f1e202403741b1a'),
         }
         self.assertEqual(set(policy['source_edits']),
-                         set(projected_sources) | D1_SOURCE_EDIT_PATHS | {
+                         set(projected_sources) | D1_SOURCE_EDIT_PATHS | CONTEXTUAL_SOURCE_PATHS | {
             TYPED_CONTAINER_SOURCE_PATH,
             'analyzer/features/lookup_class.fs',
             'analyzer/features/use_preload_script_as_type.fs',

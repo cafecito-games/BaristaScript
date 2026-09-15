@@ -45544,10 +45544,31 @@
   },
   "rewritten": {
     "errors/assign_narrowed_match_bind.barista": "A match/case payload bind is read-only, and a type test narrowing it must not weaken that: typing the bind's own identifier node against the narrowing (needed for a compound op's implicit read; see `FSAnalyzer::reduce_assignment()`) must still mark it constant, or this assignment goes unreported. Line 11: b = 5U => Cannot assign a new value to a constant.",
+    "errors/contextual_tagged_union_is_non_union_operand.barista": "The expected block asserts contextual expected-type, case-name, or payload-arity/form validation. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_is_undeclared_operand.barista": "The expected block asserts contextual expected-type, case-name, or payload-arity/form validation. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_is_unknown_case.barista": "The expected block asserts contextual expected-type, case-name, or payload-arity/form validation. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_pattern_non_union_subject.barista": "The expected block asserts match subject/case-name/payload-form qualification. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_pattern_payload_form.barista": "The expected block asserts match subject/case-name/payload-form qualification. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_pattern_undeclared_subject.barista": "The expected block asserts match subject/case-name/payload-form qualification. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_pattern_unknown_case.barista": "The expected block asserts match subject/case-name/payload-form qualification. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_pattern_variant_subject.barista": "The expected block asserts match subject/case-name/payload-form qualification. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_payload_arity.barista": "The expected block asserts contextual expected-type, case-name, or payload-arity/form validation. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_payload_form_mismatch.barista": "The expected block asserts contextual expected-type, case-name, or payload-arity/form validation. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
+    "errors/contextual_tagged_union_unknown_case.barista": "The expected block asserts contextual expected-type, case-name, or payload-arity/form validation. No expected diagnostic depends on inferring T/E, differing applied payload types, or comparing specializations. Concrete declaration preserves the same case names, payload counts and local context.",
     "errors/named_call_argument_rest_parameter.barista": "Line 5: print(collect(1, rest = 2)) => The rest parameter \"rest\" cannot be passed by name.",
     "errors/type_alias_not_inherited.barista": "Concretize the incidental generic Base frame while preserving the exact two lexical alias visibility errors for Element and Meters in Derived and their complete static expectation.",
     "errors/typed_rest_parameter_external_argument.barista": "Provider collect has prefix String and rest Array[int]; consumer line 5 supplies String at argument 3. Provider long return types are incidental to this rest-argument mismatch; line-preserving helper rewrites retain the exact consumer block.",
     "errors/typed_rest_parameter_override_narrowing.barista": "Narrower changes Array[Animal] to Array[Dog], while TypedTail changes gradual Array to Array[int]. Both rest-tail narrowing errors are independent of the four long returns; map those return annotations to int without changing the asserted tail types.",
+    "features/contextual_tagged_union_argument.barista": "Lines 21-30 assert argument-context and nested-payload shorthand qualification. Result has only int/String and Nested only int bindings. Concretizing both declarations retains both payload nesting and static acceptance; no comparison between specializations is asserted.",
+    "features/contextual_tagged_union_assignment.barista": "Lines 9,12,16-25 assert local/member/receiver assignment shorthand against the same Result[int,String]. Concretizing Result retains each assignment target and payload type.",
+    "features/contextual_tagged_union_default_value.barista": "Lines 13,17,21 assert payload/default constant admission and explicit/shorthand equivalence. Result is used only with int/String and Option only int; concrete declarations retain the exact defaults and calls at 26-30.",
+    "features/contextual_tagged_union_dictionary_entry.barista": "Lines 9 and 13 assert shorthand in Dictionary value and key positions, both Result[int,String]. Concrete Result preserves both structural contexts and all payload types.",
+    "features/contextual_tagged_union_exhaustive_match.barista": "Lines 14-35 assert exhaustive shorthand/mixed spelling/payloadless matches with no trailing return. Only Result[int,String] and Option[int] occur; concrete substitution keeps the same case sets and int returns.",
+    "features/contextual_tagged_union_is_pattern.barista": "Lines 13-51 assert concrete payload binds under if/and/while/assert and tag tests. Every Result binding is int/String and every Option binding int; concrete declarations preserve bind arithmetic/String methods and the flow constructs.",
+    "features/contextual_tagged_union_match_pattern.barista": "Lines 14-33 assert shorthand/qualified match equivalence, guards and concrete payload binds. Only one binding per declaration occurs; concrete Result and Option preserve all guards and field operations.",
+    "features/contextual_tagged_union_payloadless.barista": "Lines 8-25 assert payloadless singleton shorthand in parameter/return/local/assignment contexts. The sole Option[int] application can become a concrete Option with Some(int), preserving None and Some controls.",
+    "features/contextual_tagged_union_return.barista": "Lines 8-21 assert return-context shorthand, including a lambda. All return types are Result[int,String]; a concrete Result preserves enclosing signatures and payload checks.",
+    "features/contextual_tagged_union_ternary.barista": "Lines 8-42 assert recursive contextual qualification of conditional branches in return, initializer, argument, element, assignment and cast positions. Every application is Result[int,String]; concrete Result retains the full context matrix.",
     "features/generic_tagged_union_global.barista": "Project the shared provider's int/String schema plus a provenance-bound String/int helper clone, then remove only matching application vectors in the consumer. Preserve global, namespace-qualified, imported and preloaded lookup, enum construction, payload values, and unchanged BS_TEST_OK. Retire the clone when M5 supplies genuine specialization and cache isolation.",
     "features/generic_tagged_union_namespaced.barista": "Concretize the shared GlobalResult provider and remove only its application vectors in the consumer. Preserve namespace/import/preload lookup, enum construction, payload values, qualified access, and unchanged BS_TEST_OK.",
     "features/lookup_class.barista": "Rename incidental root class E and its use to G while preserving strict order-independent lexical-outer conflicts, Internal.E, inherited TARGET/WAITING, nested F, and unchanged BS_TEST_OK.",
@@ -45560,7 +45581,8 @@
     "features/typed_rest_parameter_concrete.barista": "Typed rest arguments accept concrete/nested/nullable/gradual element types; size-derived long return annotations are incidental.",
     "features/typed_rest_parameter_external.barista": "An external provider preserves String plus Array[int] rest-tail callable metadata; all long result positions can consistently become int.",
     "features/typed_rest_parameter_override_variance.barista": "Rest-tail override parameters are contravariant, with same/broader/gradual tails and added tails for fixed bases; long result types are incidental.",
-    "features/use_preload_script_as_type.barista": "Translate the exact declared preload resource type FoundryScript to the registered BaristaScript class. Preserve the preload, type-use assertion, line positions and complete static success expectation."
+    "features/use_preload_script_as_type.barista": "Translate the exact declared preload resource type FoundryScript to the registered BaristaScript class. Preserve the preload, type-use assertion, line positions and complete static success expectation.",
+    "warnings/contextual_tagged_union_match_nullable_subject.barista": "All generic uses are Result[int,String]. Concrete Result(Ok:int,Err:String) retains nullable subject:7, match:8, case coverage:9-12 and null call:16. The exact warning names Result and unhandled null at line 8; no type parameter or specialization distinction is asserted by that warning."
   },
   "schema_version": 2,
   "source_edits": {
@@ -45586,6 +45608,394 @@
         }
       ],
       "sha256": "9f1146b824a9e443ac350e24e3db438bd50295a03772057534d0d2ab28b14217"
+    },
+    "analyzer/errors/contextual_tagged_union_is_non_union_operand.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 112,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 94
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 126,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 114
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 141,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 128
+        }
+      ],
+      "sha256": "75f5d2e9ae3879da8ac2ac6ba103e875d85af73ec513f3d91cb9810fde82d289"
+    },
+    "analyzer/errors/contextual_tagged_union_is_undeclared_operand.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 114,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 96
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 128,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 116
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 143,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 130
+        }
+      ],
+      "sha256": "7c7823d8b58ae76b05c023c8fa2fa44fc3390ea59220488082da2dd82d30e856"
+    },
+    "analyzer/errors/contextual_tagged_union_is_unknown_case.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 110,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 92
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 124,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 112
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 139,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 126
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 179,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 160
+        }
+      ],
+      "sha256": "74ac2263970bf1e3210ea7d6fbd539c126b0d18a576f866f559d2315795ccc6f"
+    },
+    "analyzer/errors/contextual_tagged_union_pattern_non_union_subject.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 120,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 102
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 134,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 122
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 149,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 136
+        }
+      ],
+      "sha256": "9356cf3cd1129f9f8874e3b9319fafedbf23280aca64b40aac1d92ffa849a039"
+    },
+    "analyzer/errors/contextual_tagged_union_pattern_payload_form.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 113,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 95
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 127,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 115
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 142,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 129
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 182,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 163
+        }
+      ],
+      "sha256": "6809bfb8f6da2f08b3094e60d50e381252f22a5a41636ad8217700efbdd64d2d"
+    },
+    "analyzer/errors/contextual_tagged_union_pattern_undeclared_subject.fs": {
+      "patches": [
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 115,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 100
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 137,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 123
+        }
+      ],
+      "sha256": "8a3c5c1ecfc0897bbd3f26b33bc8423beeb30774e4943ebfc6fdad9eeba6218c"
+    },
+    "analyzer/errors/contextual_tagged_union_pattern_unknown_case.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 111,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 93
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 125,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 113
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 140,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 127
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 180,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 161
+        }
+      ],
+      "sha256": "4818185ce73dee22de534353acde099f13777d3c5b7c3d294a3ea5f52f4d37e2"
+    },
+    "analyzer/errors/contextual_tagged_union_pattern_variant_subject.fs": {
+      "patches": [
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 110,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 95
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 132,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 118
+        }
+      ],
+      "sha256": "11e11d2a0c4c1f191f7d97da51c59ef5fadfe8eca75862ab0d780f82720c1298"
+    },
+    "analyzer/errors/contextual_tagged_union_payload_arity.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 136,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 118
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 150,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 138
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 165,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 152
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 212,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 193
+        }
+      ],
+      "sha256": "088f5dbeeb040096923dfe28fe55e02b969192ea61fd1dbc7d82109b51d9dd99"
+    },
+    "analyzer/errors/contextual_tagged_union_payload_form_mismatch.fs": {
+      "patches": [
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 151,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 136
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 173,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 159
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 215,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 204
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 248,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 237
+        }
+      ],
+      "sha256": "33c78a6f4b5cae96ea5b144faddb62fe359c943c087c0d963d7bb4e1f6828b2c"
+    },
+    "analyzer/errors/contextual_tagged_union_unknown_case.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 90,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 72
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 104,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 92
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 119,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 106
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 166,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 147
+        }
+      ],
+      "sha256": "ff8134e0e5ba8cfae9e679ea6d30ed6cf377f99f3428374af6b08ce6868ea0eb"
     },
     "analyzer/errors/named_call_argument_rest_parameter.fs": {
       "patches": [
@@ -45752,6 +46162,911 @@
         }
       ],
       "sha256": "83825f64f880cf7077b9a104b186bda40a8c1a042f6132dc76185397a1e48e83"
+    },
+    "analyzer/features/contextual_tagged_union_argument.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 171,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 153
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 185,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 173
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 200,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 187
+        },
+        {
+          "after": "enum Nested:",
+          "before": "enum Nested[T]:",
+          "end": 218,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 203
+        },
+        {
+          "after": "Wrap(inner: Result)",
+          "before": "Wrap(inner: Result[T, String])",
+          "end": 250,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 220
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 293,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 274
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 375,
+          "line": 16,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 356
+        },
+        {
+          "after": "Nested",
+          "before": "Nested[int]",
+          "end": 624,
+          "line": 26,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 613
+        },
+        {
+          "after": "Nested",
+          "before": "Nested[int]",
+          "end": 739,
+          "line": 30,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 728
+        }
+      ],
+      "sha256": "7ce252d5ec68062c95518ba7af3491054a9dd8dac567529f602659923e666874"
+    },
+    "analyzer/features/contextual_tagged_union_assignment.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 201,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 183
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 215,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 203
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 230,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 217
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 278,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 259
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 300,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 281
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 349,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 330
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 371,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 352
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 431,
+          "line": 16,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 412
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 453,
+          "line": 16,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 434
+        }
+      ],
+      "sha256": "2abdc5ee879692f54155880972da028391114f9655f6833d9c03b4c1e109f1ea"
+    },
+    "analyzer/features/contextual_tagged_union_default_value.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 216,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 198
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 230,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 218
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 245,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 232
+        },
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 263,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 248
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 285,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 271
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 332,
+          "line": 13,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 313
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 414,
+          "line": 17,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 403
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 501,
+          "line": 21,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 482
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 523,
+          "line": 21,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 504
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 638,
+          "line": 27,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 619
+        }
+      ],
+      "sha256": "0543bcfe745c23a0d90d6509173143510ee0fac9668bd9d9da1fad4a7c36305a"
+    },
+    "analyzer/features/contextual_tagged_union_dictionary_entry.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 163,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 145
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 177,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 165
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 192,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 179
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 255,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 236
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 337,
+          "line": 11,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 318
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 389,
+          "line": 13,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 370
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 464,
+          "line": 15,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 445
+        }
+      ],
+      "sha256": "6658562981880b644775fa591fb47f943108286d94ae09660f3bce77a068ef89"
+    },
+    "analyzer/features/contextual_tagged_union_exhaustive_match.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 304,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 286
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 318,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 306
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 333,
+          "line": 6,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 320
+        },
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 351,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 336
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 373,
+          "line": 11,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 359
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 424,
+          "line": 14,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 405
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 554,
+          "line": 22,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 535
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 631,
+          "line": 26,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 612
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 692,
+          "line": 30,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 681
+        }
+      ],
+      "sha256": "d7bcf22de6e9e5eca62773d6e0aaa8c5e44e9018167861adae1b8c19644c0429"
+    },
+    "analyzer/features/contextual_tagged_union_is_pattern.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 176,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 158
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 190,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 178
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 205,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 192
+        },
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 223,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 208
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 245,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 231
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 290,
+          "line": 13,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 271
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 483,
+          "line": 21,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 472
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 556,
+          "line": 25,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 545
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 636,
+          "line": 29,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 617
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 863,
+          "line": 36,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 844
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1040,
+          "line": 41,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1021
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1222,
+          "line": 49,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1203
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1553,
+          "line": 65,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1534
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1577,
+          "line": 65,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1558
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1604,
+          "line": 65,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1585
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1631,
+          "line": 65,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1612
+        }
+      ],
+      "sha256": "e0c97e4f4d8765ed186475cd2016ff2ac2efd48b1f444a2576fc37d3367204d8"
+    },
+    "analyzer/features/contextual_tagged_union_match_pattern.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 274,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 256
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 288,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 276
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 303,
+          "line": 6,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 290
+        },
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 321,
+          "line": 9,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 306
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 343,
+          "line": 11,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 329
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 388,
+          "line": 14,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 369
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 549,
+          "line": 20,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 530
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 659,
+          "line": 26,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 648
+        }
+      ],
+      "sha256": "b98e1824e748df998c16138484e1d4de7cbd89e267cc9317a83d652812c57020"
+    },
+    "analyzer/features/contextual_tagged_union_payloadless.fs": {
+      "patches": [
+        {
+          "after": "enum Option:",
+          "before": "enum Option[T]:",
+          "end": 198,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 183
+        },
+        {
+          "after": "Some(value: int)",
+          "before": "Some(value: T)",
+          "end": 220,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 206
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 251,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 240
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 314,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 303
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 368,
+          "line": 17,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 357
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 418,
+          "line": 19,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 407
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 454,
+          "line": 21,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 443
+        },
+        {
+          "after": "Option",
+          "before": "Option[int]",
+          "end": 468,
+          "line": 21,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 457
+        }
+      ],
+      "sha256": "4003173820815399c2533ed614218ff88e2ce2192dd49b2a50c88fba49e24f2e"
+    },
+    "analyzer/features/contextual_tagged_union_return.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 155,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 137
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 169,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 157
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 184,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 171
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 224,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 205
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 281,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 262
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 401,
+          "line": 20,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 382
+        }
+      ],
+      "sha256": "6e686c8fdcb1477bc032bd3c9c3bd60832851a0f434945a4e84fb907ee35e0c5"
+    },
+    "analyzer/features/contextual_tagged_union_ternary.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 171,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 153
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 185,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 173
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 200,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 187
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 254,
+          "line": 8,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 235
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 341,
+          "line": 12,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 322
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 442,
+          "line": 17,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 423
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 663,
+          "line": 23,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 644
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 710,
+          "line": 23,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 691
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 993,
+          "line": 30,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 974
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1087,
+          "line": 33,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1068
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1109,
+          "line": 33,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1090
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1307,
+          "line": 38,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1288
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 1551,
+          "line": 42,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 1532
+        }
+      ],
+      "sha256": "a64e4c656304f32e60fb6ef26e0938803146f65fcc1c21662d2acfba901885da"
     },
     "analyzer/features/generic_tagged_union_global.fs": {
       "patches": [
@@ -46315,6 +47630,56 @@
         }
       ],
       "sha256": "e0d2e61f5512d5479a67a949c4476165644ffc8d4426c0f744896148c1516ef7"
+    },
+    "analyzer/warnings/contextual_tagged_union_match_nullable_subject.fs": {
+      "patches": [
+        {
+          "after": "enum Result:",
+          "before": "enum Result[T, E]:",
+          "end": 181,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 163
+        },
+        {
+          "after": "Ok(value: int)",
+          "before": "Ok(value: T)",
+          "end": 195,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 183
+        },
+        {
+          "after": "Err(error: String)",
+          "before": "Err(error: E)",
+          "end": 210,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 197
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 254,
+          "line": 7,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 235
+        },
+        {
+          "after": "Result",
+          "before": "Result[int, String]",
+          "end": 386,
+          "line": 15,
+          "occurrences": 1,
+          "rule": "concrete-contextual-tagged-union-projection",
+          "start": 367
+        }
+      ],
+      "sha256": "ef5c69ab5e53fa7ad5ea24bbaf95ba5e211811396445751f8d97a6b1ff1327bc"
     },
     "utils.notest.fs": {
       "patches": [
