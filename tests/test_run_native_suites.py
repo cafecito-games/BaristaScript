@@ -13,12 +13,73 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import run_native_suites as runner
 
 GODOT = None
 BUILD_DIR = runner.DEFAULT_BUILD_DIR
+
+
+class StagingTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "checkout"
+        self.data = Path(self.temporary.name) / "data"
+        self.data.mkdir()
+        project = self.root / "project"
+        (project / ".godot").mkdir(parents=True)
+        (project / "project.godot").write_text("[application]\nconfig/name=\"fixture\"\n")
+        (project / ".godot/extension_list.cfg").write_text("res://bin/barista_script.gdextension\n")
+        self.library = self.root / "native.so"
+        self.library.write_bytes(b"selected test artifact")
+        self.api_dir = self.root / "godot-cpp/gdextension"
+        self.api_dir.mkdir(parents=True)
+        self.api_bytes = {"4.6": b'{"producer":"pinned-4.6"}', "4.7": b'{"producer":"pinned-4.7"}'}
+        for version, content in self.api_bytes.items():
+            (self.api_dir / ("extension_api-" + version.replace(".", "-") + ".json")).write_bytes(content)
+        self.enterContext(mock.patch.object(runner, "ROOT", self.root))
+        self.enterContext(mock.patch.object(runner, "godot_data_path", return_value=self.data))
+        self.config = self.enterContext(mock.patch.object(runner, "load_config", return_value={"godot_api": "4.7"}))
+
+    def test_only_selected_pinned_api_is_copied_and_cleaned(self):
+        for version, content in self.api_bytes.items():
+            with self.subTest(version=version):
+                self.config.return_value = {"godot_api": version}
+                with runner.staged_project({"library": str(self.library)}) as project:
+                    api_dir = project.parent / "godot-cpp/gdextension"
+                    expected = api_dir / ("extension_api-" + version.replace(".", "-") + ".json")
+                    self.assertEqual(content, expected.read_bytes())
+                    self.assertEqual([expected], list(api_dir.iterdir()))
+                    self.assertEqual(b"selected test artifact", (project / "bin/native.so").read_bytes())
+                self.assertFalse(project.parent.exists())
+                self.assertEqual([], list(self.data.iterdir()))
+        for version, content in self.api_bytes.items():
+            self.assertEqual(content, (self.api_dir / ("extension_api-" + version.replace(".", "-") + ".json")).read_bytes())
+
+    def test_missing_selected_api_fails_without_fallback_and_cleans(self):
+        (self.api_dir / "extension_api-4-7.json").unlink()
+        with self.assertRaises(FileNotFoundError):
+            with runner.staged_project({"library": str(self.library)}):
+                pass
+        self.assertEqual([], list(self.data.iterdir()))
+        self.assertTrue((self.api_dir / "extension_api-4-6.json").is_file())
+
+    def test_api_copy_failure_cleans_disposable_project(self):
+        copy2 = runner.shutil.copy2
+
+        def fail_api_copy(source, destination, *args, **kwargs):
+            if Path(source) == self.api_dir / "extension_api-4-7.json":
+                raise OSError("selected API copy failed")
+            return copy2(source, destination, *args, **kwargs)
+
+        with mock.patch.object(runner.shutil, "copy2", side_effect=fail_api_copy):
+            with self.assertRaisesRegex(OSError, "selected API copy failed"):
+                with runner.staged_project({"library": str(self.library)}):
+                    pass
+        self.assertEqual([], list(self.data.iterdir()))
 
 
 class ResultTests(unittest.TestCase):
