@@ -489,6 +489,23 @@ TEST_SUITE("base_outer_analyzer") {
 		}
 	}
 
+	TEST_CASE("inherited_unnamed_enum_value_emits_the_parent_conflict_exactly_once") {
+		StorageFixture storage;
+		const String source = "class A:\n"
+							  "\tenum:\n"
+							  "\t\tV = 0\n\n"
+							  "class B extends A:\n"
+							  "\tenum:\n"
+							  "\t\tV = 0\n\n"
+							  "func test():\n"
+							  "\tpass\n";
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(source, storage.path("enum_shadows_base_enum.barista"), false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() != OK);
+		CHECK(error_block(parser) == ">> ERROR at line 7: The member \"V\" already exists in parent class A.");
+	}
+
 	TEST_CASE("later_declared_lexical_outer_surfaces_still_conflict_deterministically") {
 		struct Conflict {
 			const char *name;
