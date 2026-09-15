@@ -452,6 +452,47 @@
       ],
       "sha256": "b568e51aa92cd7d2ff8f3c1ddb4369c83b37480fc312028b99422fdd820a6d68"
     },
+    "analyzer/errors/type_union_in_typed_container.out": {
+      "patches": [
+        {
+          "after": "String | int",
+          "before": "int | uint",
+          "end": 99,
+          "line": 2,
+          "occurrences": 1,
+          "rule": "d1-canonical-union-diagnostic-order",
+          "start": 89
+        },
+        {
+          "after": "String | int",
+          "before": "int | uint",
+          "end": 315,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "d1-canonical-union-diagnostic-order",
+          "start": 305
+        },
+        {
+          "after": "String | int",
+          "before": "int | uint",
+          "end": 545,
+          "line": 4,
+          "occurrences": 1,
+          "rule": "d1-canonical-union-diagnostic-order",
+          "start": 535
+        },
+        {
+          "after": "String | int",
+          "before": "int | uint",
+          "end": 776,
+          "line": 5,
+          "occurrences": 1,
+          "rule": "d1-canonical-union-diagnostic-order",
+          "start": 766
+        }
+      ],
+      "sha256": "5b5f73698e432e3f7b13fcac8b083a64fe2dad4ff0bab52b86bc506d8d71b42c"
+    },
     "analyzer/errors/type_union_runtime_type_operations.out": {
       "patches": [
         {
@@ -501,6 +542,7 @@
     "errors/type_alias_not_an_expression.barista": "Scalar is read and called at lines 11–12, and Only is used as a value through new at line 13. Barista reports one no-value diagnostic at each use and suppresses Foundry’s redundant call/not-found cascade; replacing uint with String preserves those three alias-value prohibitions.",
     "errors/type_union_as_type_handle.barista": "Both Type[Either] and Type[int | String] remain invalid because a handle represents exactly one runtime type. Barista canonicalizes the concrete union as String | int and treats the initializer int as its builtin metatype, so it intentionally emits only the two union-handle errors without Foundry’s builtin-name cascade.",
     "errors/type_union_export_rejected.barista": "Export rejects Scalar because it is multi-member, not because one arm is uint. An int|String alias retains the single-runtime-type export constraint.",
+    "errors/type_union_in_typed_container.barista": "All four diagnostics reject a multi-alternative union in Array element or Dictionary key/value positions. Replacing uint with String preserves those four positions; Barista canonicalizes the concrete union diagnostic as String | int.",
     "errors/type_union_runtime_type_operations.barista": "is/as reject Scalar because no multi-alternative runtime carrier exists. Replace incidental uint by String, retaining a closed int|String union and both static prohibitions.",
     "features/type_alias_union_export_single_member_retains_type.barista": "Single-member aliases preserve export metadata and carrier tests for float and an unsigned count; the count can use retained int."
   },
@@ -27193,13 +27235,13 @@
         45
       ],
       "primary_issue": 141,
-      "reason": "All four diagnostics reject a multi-alternative union in Array element or Dictionary key/value positions. uint is incidental; int|String preserves the heterogeneous union constraint at every position.",
+      "reason": "All four diagnostics reject a multi-alternative union in Array element or Dictionary key/value positions. Replacing uint with String preserves those four positions; Barista canonicalizes the concrete union diagnostic as String | int.",
       "review_state": "execution_reviewed",
       "source_review": {
         "adaptation_boundary": "Retain concrete M3 assertions separately. Any later source rewrite requires exact preimages, equivalent retained assertions and real execution; unchanged discovery does not prove that adaptation.",
         "advisory_report": "45-source-errors_remaining_b.json",
         "advisory_report_sha256": "16068f49d8aa488900a274a7f3e5b2b294e8a6db2c2d247fe818ca28468e6fb0",
-        "assertion": "All four diagnostics reject a multi-alternative union in Array element or Dictionary key/value positions. uint is incidental; int|String preserves the heterogeneous union constraint at every position.",
+        "assertion": "All four diagnostics reject a multi-alternative union in Array element or Dictionary key/value positions. Replacing uint with String preserves those four positions; Barista canonicalizes the concrete union diagnostic as String | int.",
         "final_disposition": "No final eligibility decision; all static cases remain staged and executed.",
         "identity": "modules/foundry_script/tests/scripts/analyzer/errors/type_union_in_typed_container.fs",
         "scope_observation": "D1_incidental_rewrite_candidate"
@@ -45632,6 +45674,29 @@
         }
       ],
       "sha256": "6573bb24530dd562583fb8a8e111f8dd2c8e9e40c06c9b231eb7b1576243e7dd"
+    },
+    "analyzer/errors/type_union_in_typed_container.fs": {
+      "patches": [
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 135,
+          "line": 3,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 131
+        },
+        {
+          "after": "String",
+          "before": "uint",
+          "end": 303,
+          "line": 10,
+          "occurrences": 1,
+          "rule": "d1-explicit-retained-projection",
+          "start": 299
+        }
+      ],
+      "sha256": "5e3ec8468cc9a43cac2e8611334e00b84fe3b9c93e8cc5e90db208321b694b98"
     },
     "analyzer/errors/type_union_runtime_type_operations.fs": {
       "patches": [

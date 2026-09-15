@@ -614,6 +614,9 @@ private:
 	bool resolve_class_member(BSParser::ClassNode *p_class, const StringName &p_name, const BSParser::Node *p_source = nullptr);
 	bool resolve_class_member(BSParser::ClassNode *p_class, int p_index, const BSParser::Node *p_source = nullptr);
 	void resolve_datatype(BSParser::DataType &r_type, BSParser::Node *p_source);
+	/** Report and reject a multi-member union in one runtime typed-container slot. */
+	bool reject_union_container_element_type(const BSParser::DataType &p_element_type,
+			BSParser::TypeNode *p_element_node, const char *p_untyped_spelling);
 	BSParser::DataType datatype_from_type_node(BSParser::TypeNode *p_type_node);
 	BSParser::TypeAliasNode *find_type_alias_in_scope(const StringName &p_name) const;
 	BSParser::DataType resolve_type_alias(BSParser::TypeAliasNode *p_type_alias);

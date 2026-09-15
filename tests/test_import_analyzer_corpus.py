@@ -765,6 +765,9 @@ D1_EXPECTATION_EDIT_PATHS = frozenset({
     'analyzer/errors/type_union_runtime_type_operations.out',
     'analyzer/features/type_alias_union_export_single_member_retains_type.out',
 })
+TYPED_CONTAINER_CASE = 'errors/type_union_in_typed_container.barista'
+TYPED_CONTAINER_SOURCE_PATH = 'analyzer/errors/type_union_in_typed_container.fs'
+TYPED_CONTAINER_EXPECTATION_PATH = 'analyzer/errors/type_union_in_typed_container.out'
 
 
 class FullPinned(unittest.TestCase):
@@ -785,13 +788,13 @@ class FullPinned(unittest.TestCase):
         source = FOUNDRY / importer.SCRIPTS
         uri = 'res://tests/corpus_staging/analyzer'
         provider_path = 'analyzer/features/typed_rest_parameter_external_provider.notest.fs'
-        removed_case = 'errors/type_union_in_typed_container.barista'
-        removed_source = 'analyzer/errors/type_union_in_typed_container.fs'
-        removed_expectation = 'analyzer/errors/type_union_in_typed_container.out'
+        reintroduced_case = TYPED_CONTAINER_CASE
+        reintroduced_source = TYPED_CONTAINER_SOURCE_PATH
+        reintroduced_expectation = TYPED_CONTAINER_EXPECTATION_PATH
 
         self.assertEqual(policy['schema_version'], 2)
         self.assertEqual(hashlib.sha256(importer.POLICY.read_bytes()).hexdigest(),
-                         'd8c271da7577a26a739c147f54f01193d82f0117293f186b1ba23951306b091e')
+                         '01e2364afa4ccca921aa16911c128b45aa5284d4a2e8e80a0b028ee675af272b')
         self.assertEqual((len(D1_SELECTED_CASES), case_list_sha(D1_SELECTED_CASES)),
                          (14, 'e9fdfd464a5bd5f0dcf4e78c5c05210ca14429442e332b4bbed3201b488ca798'))
         self.assertEqual((len(D1_REWRITTEN_CASES), case_list_sha(sorted(D1_REWRITTEN_CASES))),
@@ -818,13 +821,30 @@ class FullPinned(unittest.TestCase):
         self.assertEqual(sum(len(policy['expectation_edits'][path]['patches'])
                              for path in D1_EXPECTATION_EDIT_PATHS), 7)
 
-        for table, key in ((policy['rewritten'], removed_case),
-                           (policy['expectation_overrides'], removed_case),
-                           (policy['source_edits'], removed_source),
-                           (policy['expectation_edits'], removed_expectation)):
-            self.assertNotIn(key, table)
-        self.assertEqual(canonical_sha(policy['owners'][removed_case]),
-                         '2dd4cc2d7daef48cdaef4d662c9a135323ed3cfdd31408077f4e2dd8dff5131f')
+        self.assertNotIn(reintroduced_case, policy['rewritten'])
+        self.assertEqual(policy['expectation_overrides'][reintroduced_case],
+                         'All four diagnostics reject a multi-alternative union in Array element or Dictionary key/value positions. Replacing uint with String preserves those four positions; Barista canonicalizes the concrete union diagnostic as String | int.')
+        self.assertEqual(canonical_sha(policy['owners'][reintroduced_case]),
+                         '2ad342f04b877be404406b0d1e9c04b8f8a0fed1d167d8b8b61974b156f75154')
+        source_entry = policy['source_edits'][reintroduced_source]
+        self.assertEqual(canonical_sha(source_entry),
+                         '8c49b6868e5679acaf9f208ee4f923365783dbbaefe83cc0b7b71bd52c2c883c')
+        source_data = (source / reintroduced_source).read_bytes()
+        self.assertEqual(hashlib.sha256(source_data).hexdigest(),
+                         '5e3ec8468cc9a43cac2e8611334e00b84fe3b9c93e8cc5e90db208321b694b98')
+        self.assertEqual(hashlib.sha256(importer.patch(
+            source_data, importer.source_policy_changes(source_data, reintroduced_source, policy),
+            reintroduced_source)).hexdigest(),
+            'c4aa3e17d857c4e740f1abb0490d3de89068d9b2a03f3c09af14af809d69a6ec')
+        expectation_entry = policy['expectation_edits'][reintroduced_expectation]
+        self.assertEqual(canonical_sha(expectation_entry),
+                         '08924e7803c7f29e751ccb410dc8d0de541399550d64c9f68ffe81f4dd1f64ea')
+        expectation_data = (source / reintroduced_expectation).read_bytes()
+        self.assertEqual(hashlib.sha256(expectation_data).hexdigest(),
+                         '5b5f73698e432e3f7b13fcac8b083a64fe2dad4ff0bab52b86bc506d8d71b42c')
+        self.assertEqual(hashlib.sha256(importer.expectation_patch(
+            expectation_data, expectation_entry['patches'], reintroduced_expectation)).hexdigest(),
+            '3360d3bb3175069e23f40081fce6d7508a8b39c2fbfe5975716e3a798dc34509')
         self.assertEqual(canonical_sha(policy['owners']['errors/type_alias_not_an_expression.barista']),
                          'f5acf00fc7eb000b622ac6607b6bb15376556d4d8f865a3e794549fbb80a5e07')
         self.assertEqual(canonical_sha(policy['owners']['errors/type_union_as_type_handle.barista']),
@@ -875,7 +895,7 @@ class FullPinned(unittest.TestCase):
         self.assertEqual(first, importer.inventory_sources(source, policy, uri))
         self.assertEqual(first['schema_version'], 1)
         self.assertEqual(hashlib.sha256(importer.encoded(first)).hexdigest(),
-                         '11ceb389e9a46294ed61d69d82a55365387dc34665a4e471353ed77267ed8c15')
+                         '90f2921397435c99a4935e71b2f454af205231e84c67110a5fc99f68ba233d41')
         self.assertEqual((first['counts']['sources'], first['counts']['cases'],
                           first['counts']['helpers'], first['counts']['support_helpers']),
                          (1596, 1346, 250, 2))
@@ -891,16 +911,18 @@ class FullPinned(unittest.TestCase):
                 self.assertEqual(record['upstream_path'],
                                  'analyzer/' + case.removesuffix('.barista') + '.fs')
                 self.assertTrue(record['expected_block'])
-        removed = records[removed_case]
-        self.assertEqual(removed['disposition'], 'imported')
-        self.assertEqual(removed['sha256'],
+        reintroduced = records[reintroduced_case]
+        self.assertEqual(reintroduced['disposition'], 'expectation_overrides')
+        self.assertEqual(reintroduced['sha256'],
                          '5e3ec8468cc9a43cac2e8611334e00b84fe3b9c93e8cc5e90db208321b694b98')
-        self.assertEqual(removed['imported_sha256'], removed['sha256'])
-        self.assertEqual(removed['expectation_sha256'],
+        self.assertEqual(reintroduced['imported_sha256'],
+                         'c4aa3e17d857c4e740f1abb0490d3de89068d9b2a03f3c09af14af809d69a6ec')
+        self.assertEqual(reintroduced['expectation_sha256'],
                          '5b5f73698e432e3f7b13fcac8b083a64fe2dad4ff0bab52b86bc506d8d71b42c')
-        self.assertEqual(hashlib.sha256(removed['expected_block'].encode()).hexdigest(),
-                         '7095d7882483d8b4eb69bdde5112dc0341820fa95ebf1104c38c36b11ee97867')
-        self.assertEqual((removed['transformations'], removed['expectation_edits']), ([], []))
+        self.assertEqual(hashlib.sha256(reintroduced['expected_block'].encode()).hexdigest(),
+                         '8cba00062f01b2751e8e9bc996dde2fc4000d3b0dfb21303eea5c1efb5fabd73')
+        self.assertEqual((len(reintroduced['transformations']),
+                          len(reintroduced['expectation_edits'])), (2, 4))
 
         provider = next(record for record in first['sources']
                         if record['upstream_path'] == provider_path)
@@ -926,7 +948,7 @@ class FullPinned(unittest.TestCase):
                                       for path in stage.rglob('*') if path.is_file()})
             self.assertEqual(len(before), 2411)
             self.assertEqual(hashlib.sha256((stage / 'inventory.json').read_bytes()).hexdigest(),
-                             '11ceb389e9a46294ed61d69d82a55365387dc34665a4e471353ed77267ed8c15')
+                             '90f2921397435c99a4935e71b2f454af205231e84c67110a5fc99f68ba233d41')
             self.assertEqual(hashlib.sha256((stage / 'case_stages.json').read_bytes()).hexdigest(),
                              '3ad070abe3df618bcb3e01bc6c5cdc753884b9e30819c606eae5a2e515ff9202')
             tree = hashlib.sha256()
@@ -936,7 +958,7 @@ class FullPinned(unittest.TestCase):
                 tree.update(path.relative_to(stage).as_posix().encode())
                 tree.update(b'\n')
             self.assertEqual(tree.hexdigest(),
-                             '852b65de7baa00769b6805db0dd8de95d8d2a3a24f302df973e44c166da4c007')
+                             '667a29b5f8573992f70a2496ba2ca19d8172e54b2ce8bc1627506e1c563fb4da')
 
         def expect_inventory_failure(mutator, pattern):
             candidate = copy.deepcopy(policy)
@@ -987,6 +1009,15 @@ class FullPinned(unittest.TestCase):
         expect_inventory_failure(
             lambda candidate: candidate['source_edits'][provider_path].__setitem__('sha256', '0' * 64),
             'source edit hash preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['source_edits'][reintroduced_source].__setitem__(
+                'sha256', '0' * 64), 'source edit hash preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_edits'][reintroduced_expectation].__setitem__(
+                'sha256', '0' * 64), 'expectation edit hash preimage mismatch')
+        expect_inventory_failure(
+            lambda candidate: candidate['expectation_overrides'].pop(reintroduced_case),
+            'override disposition')
 
     def test_complete_producer_inventory_and_staging(self):
         if FOUNDRY is None:
@@ -1074,6 +1105,7 @@ class FullPinned(unittest.TestCase):
         }
         self.assertEqual(set(policy['source_edits']),
                          set(projected_sources) | D1_SOURCE_EDIT_PATHS | {
+            TYPED_CONTAINER_SOURCE_PATH,
             'analyzer/features/lookup_class.fs',
             'analyzer/features/use_preload_script_as_type.fs',
             'utils.notest.fs',

@@ -393,6 +393,108 @@ var bad_type: Type[Type[User]]
 )SOURCE",
 				R"EXPECT(>> ERROR at line 4: Type[T] requires an object, script, class, trait, or type-parameter argument.)EXPECT");
 	}
+	TEST_CASE("type_union_in_typed_container_reports_exact_child_diagnostics") {
+		// Foundry c9d5e35: analyzer/errors/type_union_in_typed_container.fs with the
+		// reviewed D1 uint-to-String projection. Every error belongs to its child TypeNode.
+		original("type_union_in_typed_container", R"SOURCE(# A typed container enforces exactly one element type at runtime, which a set of alternatives
+# cannot supply.
+type Scalar = int | String
+
+
+func test():
+	var values: Array[Scalar] = []
+	var by_name: Dictionary[String, Scalar] = {}
+	var by_key: Dictionary[Scalar, String] = {}
+	var inline: Array[int | String] = []
+	prints(values, by_name, by_key, inline)
+)SOURCE",
+				R"EXPECT(>> ERROR at line 7: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.
+>> ERROR at line 8: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 9: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 10: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.)EXPECT");
+	}
+	TEST_CASE("typed_container_union_rejection_preserves_neighboring_type_forms") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		TypeProfile profile;
+		BSParser parser;
+		BS_TEST_REQUIRE(parser.parse(R"SOURCE(type Scalar = int
+
+func echo(value: int | String) -> int | String:
+	return value
+
+func take(_value: int | String) -> void:
+	pass
+
+class Receiver:
+	func take_deferred(_items: Array[int | (int, Self)]) -> void:
+		pass
+
+func test():
+	var typed_array: Array[int] = []
+	var typed_dictionary: Dictionary[String, int] = {}
+	var raw_array: Array = []
+	var raw_dictionary: Dictionary = {}
+	var variant_array: Array[Variant] = []
+	var variant_dictionary: Dictionary[Variant, Variant] = {}
+	var aliases: Array[Scalar] = []
+	var alias_dictionary: Dictionary[Scalar, Scalar] = {}
+	var ordinary: int | String = 1
+	take(ordinary)
+	var returned: int | String = echo(ordinary)
+	prints(typed_array, typed_dictionary, raw_array, raw_dictionary, variant_array,
+			variant_dictionary, aliases, alias_dictionary, returned)
+)SOURCE",
+								"res://tests/concrete_types/typed_container_union_valid_neighbors.barista", false) == OK);
+		BSAnalyzer analyzer(&parser);
+		CHECK(analyzer.analyze() == OK);
+		diagnostics(parser);
+		CHECK(parser.get_errors().is_empty());
+		CHECK(parser.get_warnings().is_empty());
+		// The recursive Self-bearing container rule belongs to #138 and must not be
+		// promoted as an unowned side effect of the plain-union #141 packet.
+
+		BSParser nested_parser;
+		BS_TEST_REQUIRE(nested_parser.parse("func test():\n\tvar nested: Array[Dictionary[String, int | String]] = []\n",
+								"res://tests/concrete_types/nested_typed_container_union.barista", false) == OK);
+		BSAnalyzer nested_analyzer(&nested_parser);
+		CHECK(nested_analyzer.analyze() != OK);
+		diagnostics(nested_parser);
+		CHECK(error_block(nested_parser) == R"EXPECT(>> ERROR at line 2: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.)EXPECT");
+	}
+	TEST_CASE("malformed_typed_container_arity_reports_once_and_recovers") {
+		StorageFixture storage;
+		BSConformanceRegistry::ScopedCorpusState conformances;
+		TypeProfile profile;
+
+		// Empty type lists are rejected by the parser before analyzer type resolution.
+		BSParser empty_array_parser;
+		CHECK(empty_array_parser.parse("func test():\n\tvar missing: Array[]? = null\n\tvar recovered: Array[int] = []\n",
+					  "res://tests/concrete_types/missing_array_element_type.barista", false) != OK);
+		diagnostics(empty_array_parser);
+		CHECK(error_block(empty_array_parser) == R"EXPECT(>> ERROR at line 2: Typed arrays require exactly one collection element type.)EXPECT");
+
+		BSParser empty_dictionary_parser;
+		CHECK(empty_dictionary_parser.parse("func test():\n\tvar missing: Dictionary[] = {}\n",
+					  "res://tests/concrete_types/missing_dictionary_element_types.barista", false) != OK);
+		diagnostics(empty_dictionary_parser);
+		CHECK(error_block(empty_dictionary_parser) == R"EXPECT(>> ERROR at line 2: Typed dictionaries require exactly two collection element types.)EXPECT");
+
+		// Nonempty lists reach the analyzer. Each malformed declaration must produce one
+		// arity error, recover as Variant, and leave following declarations analyzable.
+		original("malformed_typed_container_arity", R"SOURCE(func test():
+	var missing_dictionary: Dictionary[int] = {}
+	var extra_array: Array[int, String] = []
+	var extra_dictionary: Dictionary[int, String, float] = {}
+	var nested_missing: Array[Dictionary[int]] = []
+	var recovered: Array[int] = []
+	print(recovered)
+)SOURCE",
+				R"EXPECT(>> ERROR at line 2: Typed dictionaries require exactly two collection element types.
+>> ERROR at line 3: Typed arrays require exactly one collection element type.
+>> ERROR at line 4: Typed dictionaries require exactly two collection element types.
+>> ERROR at line 5: Typed dictionaries require exactly two collection element types.)EXPECT");
+	}
 
 	TEST_CASE("legacy_null_returns_preserve_strict_and_nullable_boundaries") {
 		StorageFixture storage;

@@ -1531,6 +1531,21 @@ BSParser::DataType BSAnalyzer::resolve_type_alias(BSParser::TypeAliasNode *p_typ
 	return resolved;
 }
 
+bool BSAnalyzer::reject_union_container_element_type(const BSParser::DataType &p_element_type,
+		BSParser::TypeNode *p_element_node, const char *p_untyped_spelling) {
+	if (!p_element_type.is_union() || datatype_contains_self_type_parameter(p_element_type)) {
+		return false;
+	}
+	// A typed container validates its elements against exactly one Variant::Type at runtime,
+	// which a set of alternatives cannot supply. A single-alternative alias has already
+	// collapsed to its member and never reaches this branch. Recursive Self-bearing unions
+	// remain deferred to their separately owned #138 packet.
+	push_error(vformat(R"(A typed container cannot have the type union "%s" as an element type, because a container enforces exactly one element type at runtime. Use "%s" for a heterogeneous container.)",
+					   p_element_type.to_string(), String(p_untyped_spelling)),
+			p_element_node);
+	return true;
+}
+
 BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_type_node) {
 	BSParser::DataType result;
 	if (p_type_node == nullptr) {
@@ -1617,8 +1632,35 @@ BSParser::DataType BSAnalyzer::datatype_from_type_node(BSParser::TypeNode *p_typ
 			result.kind = BSParser::DataType::BUILTIN;
 			result.builtin_type = head == SNAME("Array") ? Variant::ARRAY : Variant::DICTIONARY;
 			result.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
-			for (int i = 0; i < p_type_node->container_types.size(); i++) {
-				result.container_element_types.push_back(datatype_from_type_node(p_type_node->container_types[i]));
+			BSParser::DataType bad_type;
+			bad_type.kind = BSParser::DataType::VARIANT;
+			bad_type.type_source = BSParser::DataType::INFERRED;
+			const int expected_element_count = head == SNAME("Array") ? 1 : 2;
+			if (p_type_node->container_types.size() != expected_element_count) {
+				push_error(head == SNAME("Array") ? R"(Typed arrays require exactly one collection element type.)" : R"(Typed dictionaries require exactly two collection element types.)",
+						p_type_node);
+				return bad_type;
+			}
+			if (head == SNAME("Array")) {
+				BSParser::TypeNode *element_node = p_type_node->container_types[0];
+				BSParser::DataType element_type = datatype_from_type_node(element_node);
+				if (reject_union_container_element_type(element_type, element_node, "Array[Variant]")) {
+					return bad_type;
+				}
+				result.container_element_types.push_back(element_type);
+			} else {
+				BSParser::TypeNode *key_node = p_type_node->container_types[0];
+				BSParser::DataType key_type = datatype_from_type_node(key_node);
+				if (reject_union_container_element_type(key_type, key_node, "Dictionary[Variant, Variant]")) {
+					return bad_type;
+				}
+				result.container_element_types.push_back(key_type);
+				BSParser::TypeNode *value_node = p_type_node->container_types[1];
+				BSParser::DataType value_type = datatype_from_type_node(value_node);
+				if (reject_union_container_element_type(value_type, value_node, "Dictionary[Variant, Variant]")) {
+					return bad_type;
+				}
+				result.container_element_types.push_back(value_type);
 			}
 			return result;
 		}

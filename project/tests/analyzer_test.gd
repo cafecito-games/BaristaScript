@@ -96,6 +96,7 @@ func _init() -> void:
 	_test_steps_1_5_repair_regressions(failures)
 	_test_steps_1_5_repair2_self_signatures(failures)
 	_test_local_enum_value_cycles(failures)
+	_test_typed_container_union_rejection(failures)
 	_test_concrete_cast_ternary_and_type_test_reduction(failures)
 	_test_pure_literal_constant_materialization(failures)
 	_test_pure_constant_review_regressions(failures)
@@ -4804,6 +4805,60 @@ func _test_local_enum_value_cycles(failures: PackedStringArray) -> void:
 		"legal recursive tagged payload remains valid while int-backed value cycles are rejected")
 
 
+func _test_typed_container_union_rejection(failures: PackedStringArray) -> void:
+	var probe := BaristaScriptAnalyzerProbe.new()
+	var source := "# A typed container enforces exactly one element type at runtime, which a set of alternatives\n# cannot supply.\ntype Scalar = int | String\n\n\nfunc test():\n\tvar values: Array[Scalar] = []\n\tvar by_name: Dictionary[String, Scalar] = {}\n\tvar by_key: Dictionary[Scalar, String] = {}\n\tvar inline: Array[int | String] = []\n\tprints(values, by_name, by_key, inline)\n"
+	var errors: Array = probe.validate_source(source, "res://tests/type_union_in_typed_container.barista", false).get("errors", [])
+	var expected := [
+		['A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.', 7],
+		['A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.', 8],
+		['A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.', 9],
+		['A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.', 10],
+	]
+	var exact := errors.size() == expected.size()
+	for i in range(mini(errors.size(), expected.size())):
+		exact = exact and str(errors[i].get("message", "")) == expected[i][0] and errors[i].get("line") == expected[i][1]
+	_expect(failures, exact, "typed-container unions produce the exact ordered four-message block: %s" % [errors])
+
+	var valid_neighbors := "type Scalar = int\n\nfunc echo(value: int | String) -> int | String:\n\treturn value\nfunc take(_value: int | String) -> void:\n\tpass\nclass Receiver:\n\tfunc take_deferred(_items: Array[int | (int, Self)]) -> void:\n\t\tpass\nfunc test():\n\tvar typed_array: Array[int] = []\n\tvar typed_dictionary: Dictionary[String, int] = {}\n\tvar raw_array: Array = []\n\tvar raw_dictionary: Dictionary = {}\n\tvar variant_array: Array[Variant] = []\n\tvar variant_dictionary: Dictionary[Variant, Variant] = {}\n\tvar aliases: Array[Scalar] = []\n\tvar alias_dictionary: Dictionary[Scalar, Scalar] = {}\n\tvar ordinary: int | String = 1\n\ttake(ordinary)\n\tvar returned: int | String = echo(ordinary)\n\tprints(typed_array, typed_dictionary, raw_array, raw_dictionary, variant_array, variant_dictionary, aliases, alias_dictionary, returned)\n"
+	var valid_report: Dictionary = probe.validate_source(valid_neighbors, "res://tests/typed_container_union_valid_neighbors.barista", false)
+	_expect(failures, valid_report.get("valid", false) and valid_report.get("errors", []).is_empty(),
+		"ordinary containers, single-member aliases, non-container unions and the separately owned recursive-Self case remain valid: %s" % [valid_report])
+
+	var nested := "func test():\n\tvar nested_value: Array[Dictionary[String, int | String]] = []\n"
+	var nested_errors: Array = probe.validate_source(nested, "res://tests/nested_typed_container_union.barista", false).get("errors", [])
+	_expect(failures, nested_errors.size() == 1 and
+		str(nested_errors[0].get("message", "")) == expected[1][0] and nested_errors[0].get("line") == 2,
+		"nested rejection reports once at the innermost union-bearing child: %s" % [nested_errors])
+
+	var handle := "type Scalar = int | String\nvar invalid_handle: Type[Scalar]\n"
+	var handle_errors: Array = probe.validate_source(handle, "res://tests/type_union_handle_control.barista", false).get("errors", [])
+	_expect(failures, handle_errors.size() == 1 and
+		str(handle_errors[0].get("message", "")) == 'A type handle cannot represent the type union "String | int", because a handle names exactly one type at runtime. Use a handle of one alternative instead.' and
+		handle_errors[0].get("line") == 2,
+		"Type[T] union rejection remains byte-exact and separate from typed containers: %s" % [handle_errors])
+
+	var missing_array := "func test():\n\tvar missing: Array[]? = null\n\tvar recovered: Array[int] = []\n"
+	var missing_array_errors: Array = probe.validate_source(missing_array, "res://tests/missing_array_element_type.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(missing_array_errors, [
+		["Typed arrays require exactly one collection element type.", 2, 23],
+	]), "an empty Array type list reports once at the parser boundary without trapping: %s" % [missing_array_errors])
+	var missing_dictionary := "func test():\n\tvar missing: Dictionary[] = {}\n"
+	var missing_dictionary_errors: Array = probe.validate_source(missing_dictionary, "res://tests/missing_dictionary_element_types.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(missing_dictionary_errors, [
+		["Typed dictionaries require exactly two collection element types.", 2, 28],
+	]), "an empty Dictionary type list reports once at the parser boundary without trapping: %s" % [missing_dictionary_errors])
+
+	var malformed_arity := "func test():\n\tvar missing_dictionary: Dictionary[int] = {}\n\tvar extra_array: Array[int, String] = []\n\tvar extra_dictionary: Dictionary[int, String, float] = {}\n\tvar nested_missing: Array[Dictionary[int]] = []\n\tvar recovered: Array[int] = []\n\tprint(recovered)\n"
+	var malformed_arity_errors: Array = probe.validate_source(malformed_arity, "res://tests/malformed_typed_container_arity.barista", false).get("errors", [])
+	_expect(failures, _errors_are_exact(malformed_arity_errors, [
+		["Typed dictionaries require exactly two collection element types.", 2, 27],
+		["Typed arrays require exactly one collection element type.", 3, 20],
+		["Typed dictionaries require exactly two collection element types.", 4, 25],
+		["Typed dictionaries require exactly two collection element types.", 5, 30],
+	]), "malformed nonempty Array/Dictionary arities report once each, reject extras, and recover without cascades: %s" % [malformed_arity_errors])
+
+
 func _test_concrete_cast_ternary_and_type_test_reduction(failures: PackedStringArray) -> void:
 	# Foundry reduce_cast / finalize_ternary_op_type / reduce_type_test @ c9d5e35.
 	# These adaptations preserve the pinned producer line layout and use .barista paths.
@@ -5237,7 +5292,7 @@ func _test_pure_constant_review_regressions(failures: PackedStringArray) -> void
 			_expect(failures, values.is_read_only() and (typeof(values[0]) != TYPE_ARRAY or values[0].is_read_only()), "converted constant and nested carriers are read-only: %s" % source)
 	for control: Array in [
 		["const BASE: Array[Variant] = [0]\nvar probe_expression = BASE[0]\n", "int", 0],
-		["const BASE: Array[int | String] = [0]\nvar probe_expression = BASE[0]\n", "int", 0],
+		["const BASE: Array[String] = [\"selected\"]\nvar probe_expression = BASE[0]\n", "String", "selected"],
 		['const BASE: Dictionary[String, int] = {"x": 1}\nvar probe_expression = BASE[&"x"]\n', "int", 1],
 		["const BASE: Array[Array[int]] = [[0]]\nvar probe_expression = BASE[0]\n", "Array[int]", [0]],
 		["const BASE: Array[(int, String)] = [(0, \"x\")]\nvar probe_expression = BASE[0]\n", "(int, String)", [0, "x"]],
@@ -5249,7 +5304,7 @@ func _test_pure_constant_review_regressions(failures: PackedStringArray) -> void
 		_expect(failures, _inspection_is_valid(observed) and observed.get("is_constant", false) and observed.get("datatype") == control[1] and observed.get("value") == control[2], "constant selected value retains the correct datatype: %s" % [observed])
 	for control: Array in [
 		["const BASE: Array[Variant] = [0]\nfunc test():\n\t@warning_ignore(\"inference_on_variant\")\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 5],
-		["const BASE: Array[int | String] = [0]\nfunc test():\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 4],
+		["const BASE: Array[int] = [0]\nfunc test():\n\tvar sub := BASE[0]\n\tif sub is String: pass\n", 4],
 		['const BASE: Dictionary[String, Variant] = {"x": 0}\nfunc test():\n\t@warning_ignore("inference_on_variant")\n\tvar sub := BASE["x"]\n\tif sub is String: pass\n', 5],
 	]:
 		var report: Dictionary = probe.validate_source(control[0], "res://tests/review_selected_consumer.barista", true)
