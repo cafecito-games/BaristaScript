@@ -50,7 +50,8 @@
     "base_outer_analyzer",
     "external_enum_constant_analyzer",
     "top_level_enum_analyzer",
-    "corpus_evaluation"
+    "corpus_evaluation",
+    "analyzer_corpus"
   ],
   "editor_import": [
     "global_class"
