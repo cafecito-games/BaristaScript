@@ -1031,7 +1031,7 @@ TEST_SUITE("analyzer_corpus") {
 			return;
 		}
 		const CorpusWholeRunReport run = run_whole_corpus();
-		// Per-case corpus outcomes are deliberately not asserted here. A residual failure is
+		// Per-case corpus outcomes are deliberately not asserted here. An expected failure is
 		// adjudicated against the committed pin by the supervisor, so this case must stay
 		// green -- and the process must stay exit-zero -- while emitting failing records.
 		CHECK_MESSAGE(run.error.is_empty(), run.error.utf8().get_data());
