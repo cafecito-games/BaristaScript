@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
 import signal
 import shutil
@@ -213,11 +216,14 @@ def main(argv=None):
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--case', action='append', default=[])
     parser.add_argument('--timeout', type=float, default=30.0)
+    parser.add_argument('--jobs', type=int, default=1, help='number of cases to execute concurrently')
     args = parser.parse_args(argv)
     report = None
     try:
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ValueError('timeout must be finite and positive')
+        if args.jobs < 1:
+            raise ValueError('jobs must be a positive integer')
         if args.corpus != 'res://tests/corpus_staging/analyzer':
             raise ValueError('discovery triage requires the importer-owned analyzer staging root')
         root = local_path(ROOT, 'project/' + args.corpus.removeprefix('res://'))
@@ -250,18 +256,20 @@ def main(argv=None):
                                               ROOT / 'project/tests/corpus_harness.gd', ROOT / 'src/bs_analyzer_probe.cpp',
                                               ROOT / 'src/bs_analyzer_probe.h', ROOT / 'scripts/analyzer_corpus_policy.json'])},
                   'godot': str(args.godot), 'godot_version': version, 'timeout_seconds': args.timeout,
+                  'jobs': args.jobs,
                   'complete_population': not bool(args.case), 'selected_cases': selected,
                   'deferred_cases': [r['identity'] for r in inventory['sources'] if r.get('disposition') == 'deferred'],
                   'completed': False, 'results': []}
         atomic_report(args.report, report)
-        with staged_project({'library': str(library)}) as project:
-            prepare_triage_project(project)
-            copied = project / 'bin' / ('native' + library.suffix)
-            validate_staging(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
-            for name in ('corpus_runner.gd', 'corpus_harness.gd'):
-                require_equal('staged execution script ' + name, report['execution_files']['project/tests/' + name],
-                              digest(project / 'tests' / name))
-            for index, case in enumerate(selected):
+        # Concurrent Godot processes must not share a staged project: each one owns the writable
+        # engine state, descriptor and library copy that the artifact bracket below hashes.
+        worker_count = max(1, min(args.jobs, len(selected)))
+        idle_projects = queue.SimpleQueue()
+
+        def run_case(case):
+            project = idle_projects.get()
+            try:
+                copied = project / 'bin' / ('native' + library.suffix)
                 before = digest(copied)
                 require_equal('staged library before case', artifact_sha, before)
                 nonce = uuid.uuid4().hex
@@ -283,12 +291,48 @@ def main(argv=None):
                                'expectation_sha256': records[case]['expectation_sha256'],
                                'semantic_owner': records[case]['semantic_owner'],
                                'candidate_observations': records[case]['candidate_observations'], 'command': command})
-                report['results'].append(record)
-                if record['build_info'] is not None:
-                    report['build_info'] = record['build_info']
-                # Each completed record is durable even if the supervisor is interrupted.
+                return record
+            finally:
+                idle_projects.put(project)
+
+        with ExitStack() as stack:
+            for _ in range(worker_count):
+                project = stack.enter_context(staged_project({'library': str(library)}))
+                prepare_triage_project(project)
+                validate_staging(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
+                for name in ('corpus_runner.gd', 'corpus_harness.gd'):
+                    require_equal('staged execution script ' + name, report['execution_files']['project/tests/' + name],
+                                  digest(project / 'tests' / name))
+                idle_projects.put(project)
+            # Only this thread touches the report, so every write stays a consistent snapshot.
+            finished = {}
+
+            def publish_finished_records():
+                # Case order, not completion order, and the newest loaded identity that survives it.
+                report['results'] = [finished[name] for name in selected if name in finished]
+                for candidate in report['results']:
+                    if candidate['build_info'] is not None:
+                        report['build_info'] = candidate['build_info']
                 atomic_report(args.report, report)
-                print(f'{index + 1}/{len(selected)} {record["terminal"]} {case}', flush=True)
+
+            pool = stack.enter_context(ThreadPoolExecutor(max_workers=worker_count))
+            futures = {pool.submit(run_case, case): case for case in selected}
+            try:
+                for index, future in enumerate(as_completed(futures)):
+                    case = futures[future]
+                    finished[case] = future.result()
+                    # Each completed record is durable even if the supervisor is interrupted.
+                    publish_finished_records()
+                    print(f'{index + 1}/{len(selected)} {finished[case]["terminal"]} {case}', flush=True)
+            except BaseException:
+                # A failing or interrupted run must not keep spawning further case processes,
+                # while the cases that did finish stay recorded.
+                pool.shutdown(wait=True, cancel_futures=True)
+                for future, case in futures.items():
+                    if case not in finished and not future.cancelled() and future.done() and future.exception() is None:
+                        finished[case] = future.result()
+                publish_finished_records()
+                raise
         report['completed'] = True
         report['summary'] = dict(sorted(Counter(r['terminal'] for r in report['results']).items()))
         report['unowned_failures'] = [r['case'] for r in report['results'] if not r['passed'] and not r['semantic_owner']]

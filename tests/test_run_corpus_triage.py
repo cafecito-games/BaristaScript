@@ -7,13 +7,15 @@
 
 """Corpus execution retains same-process build identity and durable partial reports."""
 import argparse
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, redirect_stderr
+import io
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -104,7 +106,7 @@ class IdentityTests(unittest.TestCase):
 
 class ReportTests(unittest.TestCase):
     @contextmanager
-    def fixture(self):
+    def fixture(self, case_limit=2):
         import import_analyzer_corpus as importer
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -171,7 +173,7 @@ class ReportTests(unittest.TestCase):
             for command in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                                                         'commit', '-qm', 'fixture']):
                 subprocess.run(['git', '-C', str(root), *command], check=True, capture_output=True)
-            cases = sorted(triage.validate_staging(corpus, inventory, project_root=root / 'project'))[:2]
+            cases = sorted(triage.validate_staging(corpus, inventory, project_root=root / 'project'))[:case_limit]
             report = base / 'report.json'
             checkout = dict(source=dict(revision='c' * 40, state='dirty'), config_sha256='d' * 64)
             real_run = subprocess.run
@@ -191,8 +193,8 @@ class ReportTests(unittest.TestCase):
                 stack.enter_context(patch.object(triage.subprocess, 'run', side_effect=command_run))
                 yield root, library, report, inventory, cases, checkout
 
-    def exercise(self, mode):
-        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+    def exercise(self, mode, *, jobs=1, case_limit=2, staggered=False):
+        with self.fixture(case_limit) as (root, library, report_path, inventory, cases, checkout):
             records = {r['imported_path']: r for r in inventory['sources'] if r['role'] == 'case'}
             original_hashes = {str(p.relative_to(root)): triage.digest(p) for p in root.rglob('*') if p.is_file() and '.git' not in p.parts}
             projects = []
@@ -209,6 +211,9 @@ class ReportTests(unittest.TestCase):
                 self.assertEqual(list((project / 'bin').glob('*.dylib')), [project / 'bin/native.dylib'])
                 case = command[command.index('--case') + 1]
                 nonce = command[command.index('--build-info-nonce') + 1]
+                if staggered:
+                    # Reversed delays make completion order disagree with case order.
+                    time.sleep(0.05 * (len(cases) - cases.index(case)))
                 if mode == 'interrupt' and case == cases[1]:
                     raise KeyboardInterrupt()
                 expected = records[case]['expected_block']
@@ -220,10 +225,19 @@ class ReportTests(unittest.TestCase):
                     (project / 'bin/native.dylib').write_bytes(b'replaced')
                 return dict(output=output, exit_code=0, timed_out=False, duration_seconds=0.001)
 
-            arguments = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'], '--report', str(report_path)]
+            arguments = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
+                         '--report', str(report_path), '--jobs', str(jobs)]
             for case in cases:
                 arguments += ['--case', case]
-            with patch.object(triage, 'supervise', side_effect=case_process):
+            snapshots = []
+            real_atomic_report = triage.atomic_report
+
+            def recording_atomic_report(path, document):
+                snapshots.append([record['case'] for record in document['results']])
+                real_atomic_report(path, document)
+
+            with patch.object(triage, 'supervise', side_effect=case_process), \
+                    patch.object(triage, 'atomic_report', side_effect=recording_atomic_report):
                 if mode == 'interrupt':
                     self.assertRaises(KeyboardInterrupt, triage.main, arguments)
                     result = None
@@ -248,6 +262,8 @@ class ReportTests(unittest.TestCase):
                                             ('semantic_owner', 'semantic_owner'), ('candidate_observations', 'candidate_observations')):
                     self.assertEqual(record[field], source[source_field])
             self.assertEqual(original_hashes, {str(p.relative_to(root)): triage.digest(p) for p in root.rglob('*') if p.is_file() and '.git' not in p.parts})
+            self.staged_projects = list(projects)
+            self.report_snapshots = snapshots
             return result, report
 
     def test_complete_report_preserves_population_hashes_and_stale_loaded_identity(self):
@@ -276,6 +292,48 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(len(report['results']), 1)
         self.assertEqual(report['results'][0]['terminal'], 'artifact_changed')
         self.assertIn('staged library before case', report['infrastructure_error'])
+
+    @staticmethod
+    def comparable(report):
+        """Reduce a report to the recorded outcomes, dropping per-process timing and paths."""
+        volatile = ('duration_seconds', 'command', 'output')
+        outcomes = [{key: value for key, value in record.items() if key not in volatile}
+                    for record in report['results']]
+        return dict(completed=report['completed'], summary=report['summary'], results=outcomes,
+                    selected_cases=report['selected_cases'], unowned_failures=report['unowned_failures'],
+                    build_info=report['build_info'])
+
+    def test_concurrent_jobs_reproduce_serial_outcomes_in_case_order(self):
+        serial_result, serial = self.exercise('complete', case_limit=6)
+        serial_projects = set(self.staged_projects)
+        parallel_result, parallel = self.exercise('complete', jobs=4, case_limit=6, staggered=True)
+        parallel_projects, snapshots = set(self.staged_projects), self.report_snapshots
+        self.assertEqual(serial_result, 0)
+        self.assertEqual(parallel_result, 0)
+        self.assertEqual(len(serial['results']), 6)
+        self.assertEqual([record['case'] for record in parallel['results']], parallel['selected_cases'])
+        self.assertEqual(self.comparable(serial), self.comparable(parallel))
+        self.assertEqual(parallel['jobs'], 4)
+        self.assertEqual(len(serial_projects), 1)
+        self.assertEqual(len(parallel_projects), 4, 'each concurrent worker needs its own staged project')
+        # Every case completion writes the report (the last write is the completed summary),
+        # and completion order is genuinely not case order.
+        populated = [snapshot for snapshot in snapshots if snapshot]
+        self.assertEqual([len(snapshot) for snapshot in populated], [1, 2, 3, 4, 5, 6, 6])
+        self.assertTrue(all(snapshot == sorted(snapshot) for snapshot in populated))
+        self.assertNotEqual(populated[0], parallel['selected_cases'][:1],
+                            'staggered cases did not actually complete out of order')
+
+    def test_non_positive_jobs_is_rejected(self):
+        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+            arguments = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
+                         '--report', str(report_path)]
+            for value in ('0', '-3'):
+                stream = io.StringIO()
+                with redirect_stderr(stream):
+                    self.assertEqual(triage.main(arguments + ['--jobs', value]), 2)
+                self.assertIn('jobs', stream.getvalue())
+                self.assertFalse(report_path.exists())
 
 
 @unittest.skipUnless(GODOT and LIBRARY, 'pass --godot and --library for actual same-process corpus transport')

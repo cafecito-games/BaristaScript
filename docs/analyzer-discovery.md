@@ -72,7 +72,13 @@ limit; `--timeout SECONDS` explicitly overrides and records it. It requires the
 exact `BS_CASE_RAN` guard, one machine-readable result, the aggregate guard,
 full block equality, and successful exit. Crashes, timeouts, malformed results,
 missing guards, infrastructure errors, and semantic mismatches remain distinct
-failed records. A nonzero complete report is useful discovery evidence, not a
+failed records. `--jobs N` executes N cases concurrently, each in its own
+staged project so no two case processes share writable engine state, and
+records the requested count; the default of one case at a time is unchanged.
+Results stay ordered by case and the report is still rewritten after every
+completion, whatever order the cases finish in.
+
+A nonzero complete report is useful discovery evidence, not a
 passing baseline. Reports record source/expectation hashes, source pin,
 BaristaScript revision and source-file hashes, debug-library hashes, official
 engine version, full expected/actual blocks, owner/prerequisite observations,
