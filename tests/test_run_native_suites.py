@@ -24,7 +24,7 @@ BUILD_DIR = runner.DEFAULT_BUILD_DIR
 
 
 class AnalyzerParityInventoryTests(unittest.TestCase):
-    def test_manifest_is_exact_unique_additive_50_suite_union(self):
+    def test_manifest_is_exact_unique_additive_51_suite_union(self):
         suites = json.loads((runner.ROOT / "tests/native_suites.json").read_text())["suites"]
         expected = [
             "tokenizer", "parser", "warnings", "platform", "cache", "declaration_index",
@@ -43,6 +43,7 @@ class AnalyzerParityInventoryTests(unittest.TestCase):
             "call_admission_analyzer", "analyzer_resolution", "declaration_cycle_analyzer",
             "analyzer_tuple", "provider_failure_replay_analyzer", "base_outer_analyzer",
             "external_enum_constant_analyzer", "top_level_enum_analyzer",
+            "corpus_evaluation",
         ]
         self.assertEqual(expected, suites)
         self.assertEqual(len(expected), len(set(suites)))
