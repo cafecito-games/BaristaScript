@@ -340,6 +340,68 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
     return None
 
 
+CORPUS_TRIAGE_STEP = {
+    "if": "${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}",
+    "shell": "bash",
+    "env": {"GODOT_VERSION": "${{ steps.versions.outputs.godot_runtime }}"},
+    "run": 'python3 scripts/run_corpus_triage.py'
+           ' --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
+           ' --corpus res://tests/corpus/analyzer'
+           ' --report "$RUNNER_TEMP/analyzer-corpus-triage.json"'
+           ' --jobs 4'
+           ' --timeout 90',
+}
+
+
+def check_corpus_triage_wiring(workflow: str) -> str | None:
+    """Require CI to execute the whole analyzer corpus against its residual-failure pin.
+
+    Two committed guards already refuse a tampered pin, but both compare the pin against
+    other committed bytes and neither evaluates a case. Only scripts/run_corpus_triage.py
+    binds the pin to what the analyzer actually does, and it reports through its exit
+    status, so the pinned command must select the complete population -- an exact --case
+    selection judges only the cases it names -- and must stay free to fail its job.
+    """
+    try:
+        job_steps = workflow_steps(workflow)
+    except ValueError as error:
+        return str(error)
+
+    matches = [
+        (job, step)
+        for job, step in job_steps
+        if isinstance(step.get("run"), str)
+        and any("scripts/run_corpus_triage.py" in line for line in executable_lines(step["run"]))
+    ]
+    if len(matches) != 1:
+        return (
+            "CI must run the analyzer corpus triage from exactly one step; "
+            "scripts/run_corpus_triage.py is the only check that executes the cases the "
+            "committed residual-failure pin describes"
+        )
+    job, step = matches[0]
+    actual = {
+        key: value.strip() if key == "run" and isinstance(value, str) else value
+        for key, value in step.items()
+        if key != "name"
+    }
+    if actual != CORPUS_TRIAGE_STEP:
+        return (
+            "the analyzer corpus triage step must retain its validated inputs and its exact "
+            "whole-population command"
+        )
+    if (
+        step_continues_on_error(step)
+        or condition_is_unreachable(job)
+        or condition_is_unreachable(step)
+    ):
+        return (
+            "the analyzer corpus triage must be able to fail its job: its exit status is the "
+            "only check that every residual failure is still declared and owned"
+        )
+    return None
+
+
 def check_static_checks_wiring(workflow: str) -> str | None:
     """Require a single, unconditional read-only static job consuming the shared tool pin."""
     try:
@@ -510,6 +572,11 @@ def main() -> int:
     native_complaint = check_native_suite_wiring(workflow)
     if native_complaint is not None:
         print(native_complaint)
+        return 1
+
+    triage_complaint = check_corpus_triage_wiring(workflow)
+    if triage_complaint is not None:
+        print(triage_complaint)
         return 1
 
     baseline_complaint = check_corpus_baseline()

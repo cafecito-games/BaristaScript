@@ -264,6 +264,23 @@ jobs:
           cmake --build build/native-cmake --parallel 2
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
 
+      # Two committed guards already refuse a tampered residual-failure pin, but both compare the
+      # pin against other committed bytes. This step is the only place that executes the cases the
+      # pin describes, and it exits non-zero on an undeclared failure, an unowned failure, or a
+      # pinned case that has started passing.
+      - name: Triage the complete analyzer corpus against its residual-failure pin
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: >-
+          python3 scripts/run_corpus_triage.py
+          --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          --corpus res://tests/corpus/analyzer
+          --report "$RUNNER_TEMP/analyzer-corpus-triage.json"
+          --jobs 4
+          --timeout 90
+
       # Focused desktop debug import + SuiteGuard runners for #21 platform evidence. Linux keeps the
       # heavier cmake on/off matrix above; Windows/macOS debug get import + gdscript + native suites
       # without a second harness or SuiteGuard bypass. iOS remains compile-only via the matrix build.
