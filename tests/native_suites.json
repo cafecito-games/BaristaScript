@@ -49,7 +49,8 @@
     "provider_failure_replay_analyzer",
     "base_outer_analyzer",
     "external_enum_constant_analyzer",
-    "top_level_enum_analyzer"
+    "top_level_enum_analyzer",
+    "corpus_evaluation"
   ],
   "editor_import": [
     "global_class"
