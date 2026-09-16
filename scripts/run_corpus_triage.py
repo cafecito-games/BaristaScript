@@ -59,13 +59,18 @@ def digest(path):
 
 
 def permitted_corpus_roots():
-    """The only roots a case may be evaluated from, refused by intent rather than by accident.
+    """The roots trusted to carry a case_stages.json manifest.
 
     The native suite reads case_stages.json from whatever root it is handed, so a root
     outside this set could carry a planted manifest that evaluates a case at a stage it
     was never adjudicated for and silently turn a failing case into a passing one. Only
     the registry's own destinations and the importer-owned staging root are trusted to
     carry that manifest.
+
+    Discovery triage additionally accepts only the staging root, which today is the narrower
+    restriction and the one that actually refuses a planted root. This set is what remains
+    once a promoted corpus destination becomes acceptable too, so the threat above is the
+    reason this guard exists rather than the reason today's run is safe.
     """
     destinations = {record['destination'] for record in load_registry(ROOT)['corpora'].values()}
     return {'res://' + destination.removeprefix('project/') for destination in destinations} | {STAGING_ROOT}
@@ -206,6 +211,18 @@ def unique_result_pairs(pairs):
     return result
 
 
+def completion_agrees(completion, result):
+    """Whether the native completion record describes this payload's own run.
+
+    The suite runs exactly one case and asserts the very outcome the payload reports, so the
+    record must show one executed case, at least one assertion, and a failure reported when
+    and only when the payload did not pass. Anything else describes a different run.
+    """
+    suite_reported_failure = bool(completion['failed_cases'] or completion['failed_assertions'])
+    payload_passed = bool(result.get('passed'))
+    return completion['cases'] == 1 and completion['assertions'] >= 1 and suite_reported_failure != payload_passed
+
+
 def result_record(process, case, corpus, expected, completion):
     lines = process['output'].splitlines()
     payloads = [line.removeprefix('BS_CASE_RESULT ') for line in lines if line.startswith('BS_CASE_RESULT ')]
@@ -229,11 +246,7 @@ def result_record(process, case, corpus, expected, completion):
         terminal = 'crash'
     elif not ran:
         terminal = 'malformed_result' if malformed else 'missing_guard'
-    elif completion is not None and (completion['cases'] != 1 or completion['assertions'] < 1
-                                     or bool(completion['failed_cases'] or completion['failed_assertions'])
-                                     == bool(result.get('passed'))):
-        # The suite runs exactly this case and asserts the very outcome the payload reports,
-        # so a completion record that disagrees with the payload describes a different run.
+    elif completion is not None and not completion_agrees(completion, result):
         terminal = 'inconsistent_completion'
     elif result.get('passed') and actual == expected and process['exit_code'] == 0:
         terminal = 'passed'
@@ -300,6 +313,8 @@ def main(argv=None):
             raise ValueError('jobs must be a positive integer')
         if args.corpus not in permitted_corpus_roots():
             raise ValueError('corpus root must be a registered corpus destination or the analyzer staging root')
+        # Narrower than the set above while the analyzer corpus is still staged rather than
+        # promoted; relaxing this leaves permitted_corpus_roots as the operative restriction.
         if args.corpus != STAGING_ROOT:
             raise ValueError('discovery triage requires the importer-owned analyzer staging root')
         root = local_path(ROOT, 'project/' + args.corpus.removeprefix('res://'))
@@ -325,8 +340,13 @@ def main(argv=None):
         if args.library is None:
             # Without an operator-pinned library, the build that recorded the descriptor is
             # the only one this run may host: a stale sibling artifact is an error, not a
-            # fallback. An explicit --library pins a build the operator already chose.
+            # fallback. An explicit --library pins a build the operator already chose, and
+            # carries no descriptor to check here; its build id is still pinned, but only
+            # once the first case process reports it, which costs a run to discover.
             descriptor = read_json(build_directory / 'native-artifact.json')
+            for key in ('sha256', 'build_id'):
+                if not isinstance(descriptor.get(key), str):
+                    raise ValueError(f'native test artifact descriptor is missing {key}')
             require_equal('native test artifact', descriptor['sha256'], artifact_sha)
             require_equal('native build id', expected_build_id, descriptor['build_id'])
         report = {'schema_version': 1, 'checkpoint': 'discovery', 'corpus': args.corpus,
@@ -342,7 +362,8 @@ def main(argv=None):
                                               ROOT / 'tests/native/analyzer_corpus_test.cpp',
                                               ROOT / 'tests/native/native_test_runner.cpp', ROOT / 'tests/native/native_test_runner.h',
                                               ROOT / 'tests/native/native_corpus_arguments.cpp', ROOT / 'tests/native/native_corpus_arguments.h',
-                                              ROOT / 'src/bs_corpus_evaluation.cpp', ROOT / 'src/bs_corpus_evaluation.h'])},
+                                              ROOT / 'src/bs_corpus_evaluation.cpp', ROOT / 'src/bs_corpus_evaluation.h',
+                                              ROOT / 'src/bs_corpus_sentinels.h'])},
                   'native_build_id': expected_build_id,
                   'godot': str(args.godot), 'godot_version': version, 'timeout_seconds': args.timeout,
                   'jobs': args.jobs,

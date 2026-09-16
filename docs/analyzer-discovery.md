@@ -60,18 +60,28 @@ For one exact reproducer append, for example,
 arguments preserve the requested order for comparisons across separate processes (duplicates are
 rejected; A→B→A restoration is checked in-process by the oracle suite). Selection controls execution, not dependency availability.
 Every case is analyzer-stage, including upstream parser errors, which stop
-before analysis. The debug raw probe populates the existing scoped declaration
-index from production parser/head APIs, retaining full namespace identities,
-annotation-only and conformance-only declarations. It does not register flat
+before analysis. The native corpus evaluator populates the existing scoped
+declaration index from production parser/head APIs, retaining full namespace
+identities, annotation-only and conformance-only declarations. It does not register flat
 Godot global classes, resolve dependencies in Python, or execute `.barista`
 bodies. Each result includes the actual temporary fixture-index counts.
 
-Triage starts a fresh Godot process for each case, with a finite 30-second
-limit; `--timeout SECONDS` explicitly overrides and records it. It requires the
-exact `BS_CASE_RAN` guard, one machine-readable result, the aggregate guard,
-full block equality, and successful exit. Crashes, timeouts, malformed results,
-missing guards, infrastructure errors, and semantic mismatches remain distinct
-failed records. `--jobs N` executes N cases concurrently, each in its own
+Each case runs the native `analyzer_corpus` suite in a fresh Godot process,
+with a finite 30-second limit; `--timeout SECONDS` explicitly overrides and
+records it. That suite exists only in a `barista_tests` build, so triage refuses
+an ordinary debug library outright rather than running it; build with
+`scons target=template_debug barista_tests=yes` and let triage select the
+recorded artifact under `build/native-scons/`. A `native build id` mismatch
+means a native source changed since that library was linked: rebuild, because
+the report would otherwise hash sources the run never executed.
+
+Triage requires the exact `BS_CASE_RAN` guard, one machine-readable result, the
+native completion record of that same process, full block equality, and
+successful exit. Crashes, timeouts, malformed results, missing guards,
+completion records inconsistent with the result they accompany, infrastructure
+errors, and semantic mismatches remain distinct failed records.
+
+`--jobs N` executes N cases concurrently, each in its own
 staged project so no two case processes share writable engine state, and
 records the requested count; the default of one case at a time is unchanged.
 Results stay ordered by case and the report is still rewritten after every

@@ -74,6 +74,8 @@ class IdentityTests(unittest.TestCase):
                 triage.select_library(library, [library])
 
     def test_only_registered_and_staging_roots_may_carry_a_stage_manifest(self):
+        # Discovery triage is narrower still and accepts only the staging root, so this set is
+        # what will refuse a planted root once a promoted corpus destination becomes acceptable.
         roots = triage.permitted_corpus_roots()
         self.assertEqual(roots, {'res://tests/corpus/parser', 'res://tests/corpus/analyzer', triage.STAGING_ROOT})
         for planted in ('res://tests/corpus_staging', 'res://tests/planted/analyzer',
@@ -332,6 +334,7 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(set(report['execution_files']),
                              {'scripts/run_corpus_triage.py', 'scripts/analyzer_corpus_policy.json',
                               'src/bs_corpus_evaluation.cpp', 'src/bs_corpus_evaluation.h',
+                              'src/bs_corpus_sentinels.h',
                               'tests/native/corpus_helpers.cpp', 'tests/native/corpus_helpers.h',
                               'tests/native/analyzer_corpus_test.cpp',
                               'tests/native/native_test_runner.cpp', 'tests/native/native_test_runner.h',
@@ -512,6 +515,20 @@ class ReportTests(unittest.TestCase):
         result, report = self.exercise('complete', explicit_library=False)
         self.assertEqual(result, 0)
         self.assertEqual(report['selected_artifact']['build_info']['build']['native_tests'], True)
+
+    def test_a_malformed_native_artifact_descriptor_is_an_infrastructure_error(self):
+        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+            descriptor = root / triage.NATIVE_BUILD_DIRECTORY / 'native-artifact.json'
+            arguments = ['--godot', 'fake-godot', '--corpus', inventory['root'], '--report', str(report_path)]
+            for document in (dict(library=str(library)), dict(library=str(library), sha256=triage.digest(library)),
+                             dict(library=str(library), sha256=triage.digest(library), build_id=None)):
+                descriptor.write_text(json.dumps(document))
+                stream = io.StringIO()
+                with patch.object(triage, 'supervise', side_effect=AssertionError('no case may run')), \
+                        redirect_stderr(stream):
+                    # Exit 2 is an infrastructure error; exit 1 would claim the corpus itself failed.
+                    self.assertEqual(triage.main(arguments), 2)
+                self.assertIn('descriptor is missing', stream.getvalue())
 
     def test_a_library_the_native_artifact_descriptor_does_not_name_is_refused(self):
         with self.fixture() as (root, library, report_path, inventory, cases, checkout):

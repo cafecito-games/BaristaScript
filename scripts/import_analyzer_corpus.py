@@ -290,7 +290,7 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                     or not re.fullmatch(r'[0-9a-f]{40}', evidence['revision'])
                     or not isinstance(evidence.get('report'), str)
                     or Path(evidence['report']).name != evidence['report']
-                    or evidence.get('terminal') not in ('passed', 'mismatch', 'crash', 'timeout', 'malformed_result', 'missing_guard', 'missing_summary', 'infrastructure_error')
+                    or evidence.get('terminal') not in ('passed', 'mismatch', 'crash', 'timeout', 'malformed_result', 'missing_guard', 'inconsistent_completion', 'infrastructure_error')
                     or type(evidence.get('guard')) is not bool
                     or (evidence['terminal'] in ('passed', 'mismatch') and not evidence['guard'])
                     or not isinstance(owner.get('code_symbols'), list) or not owner['code_symbols']):
