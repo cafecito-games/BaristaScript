@@ -278,8 +278,8 @@ jobs:
           --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           --corpus res://tests/corpus/analyzer
           --report "$RUNNER_TEMP/analyzer-corpus-triage.json"
-          --jobs 4
-          --timeout 90
+          --execution fast
+          --timeout 1800
 
       # Focused desktop debug import + SuiteGuard runners for #21 platform evidence. Linux keeps the
       # heavier cmake on/off matrix above; Windows/macOS debug get import + gdscript + native suites

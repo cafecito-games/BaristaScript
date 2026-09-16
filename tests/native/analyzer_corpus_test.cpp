@@ -980,7 +980,8 @@ TEST_SUITE("analyzer_corpus") {
 
 	TEST_CASE("selected_corpus_case_emits_guards") {
 		// Ordinary suite runs pass no corpus selection and this case is a no-op beyond the
-		// assertion that no selection was made.
+		// assertion that no selection was made. A whole-corpus run selects the case below
+		// instead, so this one never observes a root without a case.
 		if (corpus_case().is_empty()) {
 			CHECK(corpus_root().is_empty());
 			return;
@@ -991,5 +992,21 @@ TEST_SUITE("analyzer_corpus") {
 		CHECK(report.selected);
 		CHECK_MESSAGE(report.error.is_empty(), report.error.utf8().get_data());
 		CHECK_MESSAGE(report.outcome.passed, report.outcome.message.utf8().get_data());
+	}
+
+	TEST_CASE("whole_corpus_emits_guarded_records") {
+		if (!whole_corpus_selected()) {
+			// Outside a whole-corpus run the runner pairs the two corpus arguments: either an
+			// ordinary run passed neither, or an exact-case run passed both.
+			CHECK(corpus_root().is_empty() == corpus_case().is_empty());
+			return;
+		}
+		const CorpusWholeRunReport run = run_whole_corpus();
+		// Per-case corpus outcomes are deliberately not asserted here. A residual failure is
+		// adjudicated against the committed pin by the supervisor, so this case must stay
+		// green -- and the process must stay exit-zero -- while emitting failing records.
+		CHECK_MESSAGE(run.error.is_empty(), run.error.utf8().get_data());
+		CHECK(run.planned > 0);
+		CHECK(run.completed == run.planned);
 	}
 }

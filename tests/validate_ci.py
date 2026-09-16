@@ -348,8 +348,8 @@ CORPUS_TRIAGE_STEP = {
            ' --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
            ' --corpus res://tests/corpus/analyzer'
            ' --report "$RUNNER_TEMP/analyzer-corpus-triage.json"'
-           ' --jobs 4'
-           ' --timeout 90',
+           ' --execution fast'
+           ' --timeout 1800',
 }
 
 
@@ -361,6 +361,12 @@ def check_corpus_triage_wiring(workflow: str) -> str | None:
     binds the pin to what the analyzer actually does, and it reports through its exit
     status, so the pinned command must select the complete population -- an exact --case
     selection judges only the cases it names -- and must stay free to fail its job.
+
+    The pinned command runs the whole corpus in one process. That is safe only because the
+    supervisor refuses a run whose own completion evidence does not account for every case
+    the imported ledger declares, so a truncated run is an infrastructure error rather than
+    a shorter baseline; the execution mode is part of the exact comparison below for that
+    reason.
     """
     try:
         job_steps = workflow_steps(workflow)

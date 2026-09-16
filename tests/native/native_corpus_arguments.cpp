@@ -33,6 +33,14 @@ String &case_storage() {
 	}
 	return *name;
 }
+
+String &order_storage() {
+	static String *order = nullptr;
+	if (order == nullptr) {
+		order = memnew(String);
+	}
+	return *order;
+}
 } //namespace
 
 const String &corpus_root() {
@@ -43,9 +51,18 @@ const String &corpus_case() {
 	return case_storage();
 }
 
-void set_corpus_arguments(const String &p_root, const String &p_case) {
+const String &corpus_order() {
+	return order_storage();
+}
+
+bool whole_corpus_selected() {
+	return !corpus_root().is_empty() && corpus_case().is_empty();
+}
+
+void set_corpus_arguments(const String &p_root, const String &p_case, const String &p_order) {
 	root_storage() = p_root;
 	case_storage() = p_case;
+	order_storage() = p_order;
 }
 
 } //namespace barista_script::native_tests

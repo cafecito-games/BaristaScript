@@ -3,9 +3,13 @@
 The analyzer corpus is imported: `corpora.analyzer.imported=true` at
 `project/tests/corpus/analyzer`, with 1,078 cases, 252 helpers and a pinned
 residual-failure set of 168 cases. It is triage-supervised rather than
-GDScript-supervised: `scripts/run_corpus_triage.py` runs its cases one process at
-a time and enforces that pin in both directions, so the corpus claims no runner
-invocation in `tests/gdscript_suites.json`. `project/tests/corpus_runner.gd`
+GDScript-supervised: `scripts/run_corpus_triage.py` runs its cases and enforces
+that pin in both directions, so the corpus claims no runner invocation in
+`tests/gdscript_suites.json`. By default it evaluates the whole corpus in one
+Godot process and refuses any run whose own completion evidence does not account
+for every case the ledger declares. `--execution isolated` gives each case its own
+process instead, which is how a case that crashes or hangs the engine is
+pinpointed; `--case` and `--jobs` belong to that path. `project/tests/corpus_runner.gd`
 defaults to the parser corpus for the same reason, and the parser corpus stays
 pinned to 340/340 with two skipped parser helpers.
 
@@ -56,8 +60,18 @@ Run from the repository root with a clean checkout of the registered source:
 python3 scripts/import_analyzer_corpus.py --foundry /path/to/Foundry --revision c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 --inventory /tmp/analyzer-inventory.json
 python3 scripts/import_analyzer_corpus.py --foundry /path/to/Foundry --revision c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 --write-tree project/tests/corpus/analyzer --execution-report /tmp/analyzer-results.json
 scons api_version=4.7 target=template_debug barista_tests=yes
-python3 scripts/run_corpus_triage.py --godot /path/to/godot --corpus res://tests/corpus/analyzer --report /tmp/analyzer-results.json --jobs 8
+python3 scripts/run_corpus_triage.py --godot /path/to/godot --corpus res://tests/corpus/analyzer --report /tmp/analyzer-results.json
 ```
+
+To attribute a failure, a crash or a hang to a single case, rerun that case alone:
+
+```
+python3 scripts/run_corpus_triage.py --godot /path/to/godot --corpus res://tests/corpus/analyzer --report /tmp/analyzer-isolated.json --execution isolated --case errors/some_case.barista
+```
+
+The fast path prints that command for every case it complains about. Passing
+`--order reverse` reruns the whole corpus in the opposite order; a case whose outcome
+changes is a contamination bug, not a corpus result.
 
 The destination is importer-owned. Generation validates into temporary storage
 before replacing it, restoring the previous tree if publication fails, and

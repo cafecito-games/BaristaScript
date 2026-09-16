@@ -11,8 +11,8 @@ const Harness = preload("res://tests/corpus_harness.gd")
 ##
 ## Only the GDScript-supervised parser corpus, not the res://tests/corpus parent it
 ## sits under. The analyzer corpus beside it is triage-supervised by
-## scripts/run_corpus_triage.py, which runs its cases one process at a time and holds
-## them to a pinned residual-failure set; collecting it here would make the aggregate
+## scripts/run_corpus_triage.py, which runs its whole population in one process and
+## holds it to a pinned residual-failure set; collecting it here would make the aggregate
 ## summary line report those pinned failures as a red run.
 const DEFAULT_CORPUS_ROOT := "res://tests/corpus/parser"
 

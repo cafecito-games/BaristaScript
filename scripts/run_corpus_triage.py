@@ -5,16 +5,31 @@
 # This file is part of BaristaScript, a Godot GDExtension.
 # SPDX-License-Identifier: MIT
 
-"""Supervise static corpus cases in isolated Godot processes (30s per case).
+"""Supervise static corpus cases with the native analyzer_corpus suite hosted by stock Godot.
 
-Each case is evaluated by the native analyzer_corpus suite hosted by stock Godot, so the
-library must be a barista_tests build. Cases run one at a time by default; --jobs runs
-several at once, each in its own staged project. Concurrency changes only timing, never a
-recorded outcome or its ordering.
+Two execution paths adjudicate every case identically and differ only in how many Godot
+processes do it.
 
-Exit zero requires each selected case's JSON result, exact-case execution guard, the
-native completion record of the same process, full expected/actual block agreement and a
-successful process. Nonzero reports are discovery evidence, never passing corpus baselines.
+--execution fast (the default) evaluates the whole corpus in one process. It removes nearly
+all of the engine startup, extension load and staged-tree cost that a per-case run pays once
+per case, which on the analyzer corpus is most of the system time and a large share of the
+user time the isolated path spends. The process cannot
+report a partial run as a whole one: it announces the population it discovered, emits the
+same guarded record per case the isolated path emits, and announces its completion only
+after the last planned case, so a crash, a hang or an early exit is missing the completion
+line and is refused here.
+
+--execution isolated evaluates one case per Godot process, which is what pinpoints a case
+that crashes or hangs the engine: the blast radius is that one case. --jobs runs several at
+once, each in its own staged project, and --case narrows the run to named cases. Only this
+path can bracket the staged library hash around each individual case; the fast path brackets
+it once around the whole run, and says so in its report.
+
+Exit zero requires every selected case's JSON result, its execution guard, the native
+completion record of the process that produced it, full expected/actual block agreement, a
+successful process, and -- on the fast path -- completion evidence matching the population
+the imported ledger declares. Nonzero reports are discovery evidence, never passing corpus
+baselines.
 """
 from __future__ import annotations
 
@@ -28,8 +43,9 @@ import math
 import os
 from pathlib import Path
 import queue
-import signal
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -50,7 +66,16 @@ from run_native_suites import PROTOCOL_VERSION, RESULT_FIELDS, RESULT_PREFIX, st
 NATIVE_SUITE = 'analyzer_corpus'
 # The one registered analyzer_corpus case that evaluates a single externally selected case.
 NATIVE_CORPUS_CASE = 'selected_corpus_case_emits_guards'
+# The one registered analyzer_corpus case that evaluates the whole corpus in its own process.
+NATIVE_WHOLE_CORPUS_CASE = 'whole_corpus_emits_guarded_records'
 NATIVE_BUILD_DIRECTORY = 'build/native-scons'
+CASE_RESULT_PREFIX = 'BS_CASE_RESULT '
+CASE_GUARD_PREFIX = 'BS_CASE_RAN '
+CORPUS_PLAN_PREFIX = 'BS_CORPUS_PLAN '
+CORPUS_COMPLETE_PREFIX = 'BS_CORPUS_COMPLETE '
+# A whole-corpus process analyzes every case, so its ceiling is a run, not a case.
+ISOLATED_CASE_TIMEOUT = 30.0
+FAST_RUN_TIMEOUT = 1800.0
 
 
 def digest(path):
@@ -102,11 +127,11 @@ def prepare_triage_project(project):
     shutil.copy2(ROOT / 'scripts/corpus_sources.json', scripts / 'corpus_sources.json')
 
 
-def native_completion(output, nonce, expected, expected_build_id):
-    """Parse the one native completion record the case process emits about its own run.
+def native_completion(output, nonce, expected, expected_build_id, native_case=NATIVE_CORPUS_CASE):
+    """Parse the one native completion record the process emits about its own run.
 
     The recorded build id is a content fingerprint of the native sources, so pinning it binds
-    this case process to the very sources the report attests to rather than to a stale library
+    this process to the very sources the report attests to rather than to a stale library
     that merely happens to still carry the artifact hash the descriptor recorded.
     """
     records = [line.removeprefix(RESULT_PREFIX) for line in output.splitlines() if line.startswith(RESULT_PREFIX)]
@@ -116,7 +141,7 @@ def native_completion(output, nonce, expected, expected_build_id):
     if type(record) is not dict or set(record) != RESULT_FIELDS:
         raise ValueError('native completion fields do not match the shared protocol')
     for key, expectation in (('protocol', PROTOCOL_VERSION), ('suite', NATIVE_SUITE),
-                             ('case', NATIVE_CORPUS_CASE), ('nonce', nonce),
+                             ('case', native_case), ('nonce', nonce),
                              ('build_id', expected_build_id)):
         if type(record[key]) is not type(expectation) or record[key] != expectation:
             raise ValueError(f'native completion {key} does not match {expectation!r}')
@@ -222,8 +247,8 @@ def completion_agrees(completion, result):
 
 def result_record(process, case, corpus, expected, completion):
     lines = process['output'].splitlines()
-    payloads = [line.removeprefix('BS_CASE_RESULT ') for line in lines if line.startswith('BS_CASE_RESULT ')]
-    guards = [line for line in lines if line.startswith('BS_CASE_RAN ')]
+    payloads = [line.removeprefix(CASE_RESULT_PREFIX) for line in lines if line.startswith(CASE_RESULT_PREFIX)]
+    guards = [line for line in lines if line.startswith(CASE_GUARD_PREFIX)]
     result = None
     malformed = False
     if len(payloads) == 1:
@@ -235,7 +260,7 @@ def result_record(process, case, corpus, expected, completion):
                 malformed = True
         except ValueError:
             malformed = True
-    ran = guards == ['BS_CASE_RAN ' + case] and len(payloads) == 1 and not malformed
+    ran = guards == [CASE_GUARD_PREFIX + case] and len(payloads) == 1 and not malformed
     actual = result.get('actual') if isinstance(result, dict) else None
     if process['timed_out']:
         terminal = 'timeout'
@@ -253,6 +278,102 @@ def result_record(process, case, corpus, expected, completion):
         terminal = 'mismatch'
     return {**process, 'terminal': terminal, 'guard': ran, 'expected_block': expected,
             'actual_block': actual, 'frontend_result': result, 'passed': terminal == 'passed'}
+
+
+def parse_whole_corpus_stream(output):
+    """Pair the guarded lines a whole-corpus process emits, in emission order.
+
+    The wire format is deliberately the isolated one repeated: the same BS_CASE_RESULT
+    payload followed by the same BS_CASE_RAN guard, emitted by the same C++ function, so a
+    record cannot mean one thing in one process count and another in the other. What is added
+    around them is the plan/completion bracket, which is the only thing a single process can
+    offer in place of "one process, therefore one case".
+    """
+    plan = completion = None
+    pairs = []
+    pending = None
+    for line in output.splitlines():
+        if line.startswith(CASE_RESULT_PREFIX):
+            if pending is not None:
+                raise ValueError('a whole-corpus case result was emitted without its execution guard')
+            pending = line.removeprefix(CASE_RESULT_PREFIX)
+        elif line.startswith(CASE_GUARD_PREFIX):
+            if pending is None:
+                raise ValueError('a whole-corpus execution guard was emitted without its case result')
+            pairs.append((line.removeprefix(CASE_GUARD_PREFIX), pending))
+            pending = None
+        elif line.startswith(CORPUS_PLAN_PREFIX):
+            if plan is not None:
+                raise ValueError('the whole-corpus run announced more than one plan')
+            plan = parse_json(line.removeprefix(CORPUS_PLAN_PREFIX))
+        elif line.startswith(CORPUS_COMPLETE_PREFIX):
+            if completion is not None:
+                raise ValueError('the whole-corpus run announced more than one completion')
+            completion = parse_json(line.removeprefix(CORPUS_COMPLETE_PREFIX))
+    if pending is not None:
+        raise ValueError('a whole-corpus case result was emitted without its execution guard')
+    return plan, completion, pairs
+
+
+def require_whole_corpus_completion(plan, completion, pairs, corpus, order, selected, ledger_total):
+    """Refuse a whole-corpus run that did not demonstrably evaluate the whole corpus.
+
+    A process that evaluates every case keeps on stdout whatever it printed before it died,
+    so a crash, a hang or an early exit is otherwise indistinguishable from a short run that
+    finished. Three independent counts must agree before any record here is believed: what
+    the process planned, what it reports completing, and what the imported ledger says the
+    corpus holds. Absent evidence is refused, never assumed complete.
+
+    The counted checks deliberately overlap the final set comparison, which subsumes them:
+    they exist to name which count went wrong rather than to add coverage.
+    """
+    if not isinstance(plan, dict) or set(plan) != {'planned', 'order', 'root'}:
+        raise ValueError('the whole-corpus run emitted no usable plan; it did not reach its first case')
+    if not isinstance(completion, dict) or set(completion) != {'planned', 'completed'}:
+        raise ValueError('the whole-corpus run emitted no completion record; it stopped before its last case')
+    for record, key in ((plan, 'planned'), (completion, 'planned'), (completion, 'completed')):
+        if type(record[key]) is not int or record[key] < 0:
+            raise ValueError(f'invalid whole-corpus {key} count')
+    if plan['root'] != corpus:
+        raise ValueError(f'the whole-corpus run evaluated {plan["root"]!r}, not the requested root')
+    if plan['order'] != order:
+        raise ValueError(f'the whole-corpus run used {plan["order"]!r}, not the requested order')
+    if completion['planned'] != plan['planned'] or completion['completed'] != plan['planned']:
+        raise ValueError(f'the whole-corpus run completed {completion["completed"]} of '
+                         f'{completion["planned"]} planned cases; a truncated run is not a result')
+    if plan['planned'] != ledger_total:
+        raise ValueError(f'the whole-corpus run planned {plan["planned"]} cases; the imported '
+                         f'ledger declares {ledger_total}')
+    cases = [case for case, _ in pairs]
+    if len(cases) != plan['planned']:
+        raise ValueError(f'the whole-corpus run planned {plan["planned"]} cases but emitted '
+                         f'{len(cases)} guarded records')
+    if sorted(cases) != sorted(selected):
+        raise ValueError('the whole-corpus run did not evaluate exactly the declared population')
+    return cases
+
+
+def whole_corpus_completion_agrees(completion):
+    """Whether the native completion record describes a whole-corpus run that succeeded.
+
+    The suite case asserts only infrastructure soundness, never a per-case corpus outcome, so
+    the process exits zero while emitting the residual failures the pin declares. That makes
+    any reported doctest failure a whole-run refusal rather than a per-case verdict.
+    """
+    return (completion['cases'] == 1 and completion['assertions'] >= 1
+            and completion['failed_cases'] == 0 and completion['failed_assertions'] == 0)
+
+
+def pinpoint_command(args, case):
+    """The exact command that re-runs one case in its own Godot process."""
+    return ' '.join([
+        'python3 scripts/run_corpus_triage.py',
+        '--godot ' + shlex.quote(str(args.godot)),
+        '--corpus ' + shlex.quote(args.corpus),
+        '--report ' + shlex.quote(str(args.report.with_suffix('.isolated.json'))),
+        '--execution isolated',
+        '--case ' + shlex.quote(case),
+    ])
 
 
 def owned_failure(record):
@@ -339,16 +460,33 @@ def main(argv=None):
     parser.add_argument('--library', type=Path, help='explicit native-test debug library; otherwise require one current-host candidate')
     parser.add_argument('--corpus', required=True)
     parser.add_argument('--report', type=Path, required=True)
-    parser.add_argument('--case', action='append', default=[])
-    parser.add_argument('--timeout', type=float, default=30.0)
-    parser.add_argument('--jobs', type=int, default=1, help='number of cases to execute concurrently')
+    parser.add_argument('--case', action='append', default=[],
+                        help='exact case to evaluate; requires --execution isolated')
+    parser.add_argument('--execution', choices=('fast', 'isolated'), default='fast',
+                        help='fast evaluates the whole corpus in one process; isolated gives each case its own')
+    parser.add_argument('--order', choices=('ascending', 'reverse'), default='ascending',
+                        help='fast-path case order; reverse proves an outcome does not depend on what ran before it')
+    parser.add_argument('--timeout', type=float, default=None,
+                        help=f'seconds per case when isolated (default {ISOLATED_CASE_TIMEOUT}), '
+                             f'or for the whole run when fast (default {FAST_RUN_TIMEOUT})')
+    parser.add_argument('--jobs', type=int, default=1,
+                        help='number of cases to execute concurrently; isolated only')
     args = parser.parse_args(argv)
+    if args.timeout is None:
+        args.timeout = ISOLATED_CASE_TIMEOUT if args.execution == 'isolated' else FAST_RUN_TIMEOUT
     report = None
     try:
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ValueError('timeout must be finite and positive')
         if args.jobs < 1:
             raise ValueError('jobs must be a positive integer')
+        # A narrowed or concurrent selection is a property of per-case processes. Refusing it
+        # here rather than silently switching paths keeps the report's execution field equal
+        # to what the operator asked for.
+        if args.execution != 'isolated' and (args.case or args.jobs != 1):
+            raise ValueError('--case and --jobs require --execution isolated')
+        if args.execution != 'fast' and args.order != 'ascending':
+            raise ValueError('--order applies only to --execution fast')
         if args.corpus not in permitted_corpus_roots():
             raise ValueError('corpus root must be a triage-supervised registered corpus destination')
         root = local_path(ROOT, 'project/' + args.corpus.removeprefix('res://'))
@@ -400,83 +538,207 @@ def main(argv=None):
                                               ROOT / 'src/bs_corpus_sentinels.h'])},
                   'native_build_id': expected_build_id,
                   'godot': str(args.godot), 'godot_version': version, 'timeout_seconds': args.timeout,
-                  'jobs': args.jobs,
+                  'jobs': args.jobs, 'execution': args.execution, 'order': args.order,
+                  # The fast path evaluates every case in one process, so the staged library
+                  # can only be hashed once around the whole run rather than around each case.
+                  'library_bracket_scope': 'per_case' if args.execution == 'isolated' else 'whole_run',
                   'complete_population': not bool(args.case), 'selected_cases': selected,
                   'deferred_cases': [r['identity'] for r in inventory['sources'] if r.get('disposition') == 'deferred'],
                   'completed': False, 'results': [], 'stopped_cases': []}
         atomic_report(args.report, report)
-        # Concurrent Godot processes must not share a staged project: each one owns the writable
-        # engine state, descriptor and library copy that the artifact bracket below hashes.
-        worker_count = max(1, min(args.jobs, len(selected)))
-        idle_projects = queue.SimpleQueue()
-        # A worker cannot see an interruption raised on the supervising thread, so a stop is
-        # published here: no further case starts, and any case process still alive is killed.
-        stop_requested = threading.Event()
-        live_processes = set()
-        killed_processes = set()
-        live_lock = threading.Lock()
+        if args.execution == 'isolated':
+            # Concurrent Godot processes must not share a staged project: each one owns the writable
+            # engine state, descriptor and library copy that the artifact bracket below hashes.
+            worker_count = max(1, min(args.jobs, len(selected)))
+            idle_projects = queue.SimpleQueue()
+            # A worker cannot see an interruption raised on the supervising thread, so a stop is
+            # published here: no further case starts, and any case process still alive is killed.
+            stop_requested = threading.Event()
+            live_processes = set()
+            killed_processes = set()
+            live_lock = threading.Lock()
 
-        def kill_and_record(process):
-            killed_processes.add(process)
-            kill_process_group(process)
+            def kill_and_record(process):
+                killed_processes.add(process)
+                kill_process_group(process)
 
-        def note_process(process):
-            with live_lock:
-                live_processes.add(process)
+            def note_process(process):
+                with live_lock:
+                    live_processes.add(process)
+                    if stop_requested.is_set():
+                        kill_and_record(process)
+
+            def forget_process(process):
+                with live_lock:
+                    live_processes.discard(process)
+
+            def was_killed(process):
+                with live_lock:
+                    return process in killed_processes
+
+            def request_stop():
+                with live_lock:
+                    # Setting the event under the same lock note_process holds closes the window in
+                    # which a process registers after the sweep below has already read the set.
+                    stop_requested.set()
+                    for process in list(live_processes):
+                        kill_and_record(process)
+
+            def run_case(case):
                 if stop_requested.is_set():
-                    kill_and_record(process)
+                    return None
+                project = idle_projects.get()
+                case_processes = []
 
-        def forget_process(process):
-            with live_lock:
-                live_processes.discard(process)
+                def remember_process(process):
+                    case_processes.append(process)
+                    note_process(process)
 
-        def was_killed(process):
-            with live_lock:
-                return process in killed_processes
+                try:
+                    copied = project / 'bin' / ('native' + library.suffix)
+                    before = digest(copied)
+                    require_equal('staged library before case', artifact_sha, before)
+                    nonce = uuid.uuid4().hex
+                    command = [str(args.godot), '--headless', '--path', str(project), '--main-loop',
+                               'BaristaNativeTestRunner', '--', f'--native-suite={NATIVE_SUITE}',
+                               f'--native-case={NATIVE_CORPUS_CASE}', f'--native-nonce={nonce}',
+                               f'--corpus-root={args.corpus}', f'--corpus-case={case}']
+                    process = supervise(command, args.timeout, started=remember_process, finished=forget_process)
+                    if any(was_killed(child) for child in case_processes):
+                        # Only a process the stop actually killed produces unusable output. A case
+                        # that finished on its own keeps its result even if a sibling then failed.
+                        return KILLED_BY_STOP
+                    try:
+                        completion = native_completion(process['output'], nonce, inspected_info, expected_build_id)
+                        completion_error = None
+                    except ValueError as error:
+                        completion, completion_error = None, str(error)
+                    record = result_record(process, case, args.corpus, records[case]['expected_block'], completion)
+                    attach_build_info(record, completion, completion_error)
+                    after = digest(copied) if copied.is_file() else None
+                    record.update(library_sha256_before=before, library_sha256_after=after)
+                    if after != artifact_sha:
+                        record['artifact_error'] = 'staged library changed during case execution'
+                        record['passed'] = False
+                        if record['terminal'] == 'passed':
+                            record['terminal'] = 'artifact_changed'
+                    record.update({'case': case, 'identity': records[case]['identity'], 'source_sha256': records[case]['sha256'],
+                                   'staged_source_sha256': records[case]['imported_sha256'],
+                                   'expectation_sha256': records[case]['expectation_sha256'],
+                                   'semantic_owner': records[case]['semantic_owner'],
+                                   'candidate_observations': records[case]['candidate_observations'], 'command': command})
+                    return record
+                except BaseException:
+                    # This set must stay here rather than move into the supervising thread's handler:
+                    # that thread only observes the exception after the pool has already handed this
+                    # worker the next case, so the worker itself is the last point still ahead of the
+                    # next dequeue. Setting it outside live_lock is safe because request_stop sets it
+                    # again under the lock before sweeping live_processes.
+                    stop_requested.set()
+                    raise
+                finally:
+                    idle_projects.put(project)
 
-        def request_stop():
-            with live_lock:
-                # Setting the event under the same lock note_process holds closes the window in
-                # which a process registers after the sweep below has already read the set.
-                stop_requested.set()
-                for process in list(live_processes):
-                    kill_and_record(process)
+            with ExitStack() as stack:
+                for _ in range(worker_count):
+                    project = stack.enter_context(staged_project({'library': str(library)}))
+                    prepare_triage_project(project)
+                    validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
+                    idle_projects.put(project)
+                # Only this thread touches the report, so every write stays a consistent snapshot.
+                finished = {}
+                stopped = set()
 
-        def run_case(case):
-            if stop_requested.is_set():
-                return None
-            project = idle_projects.get()
-            case_processes = []
+                def absorb(case, outcome):
+                    if outcome is KILLED_BY_STOP:
+                        stopped.add(case)
+                    elif outcome is not None:
+                        finished[case] = outcome
 
-            def remember_process(process):
-                case_processes.append(process)
-                note_process(process)
+                def publish_finished_records():
+                    # Case order, not completion order, and the newest loaded identity that survives it.
+                    report['results'] = [finished[name] for name in selected if name in finished]
+                    # Selected cases absent from both lists were never dispatched, which a consumer
+                    # cannot otherwise tell apart from a case this run killed mid-flight.
+                    report['stopped_cases'] = sorted(stopped)
+                    for candidate in report['results']:
+                        if candidate['build_info'] is not None:
+                            report['build_info'] = candidate['build_info']
+                    atomic_report(args.report, report)
 
-            try:
+                pool = stack.enter_context(ThreadPoolExecutor(max_workers=worker_count))
+                futures = {pool.submit(run_case, case): case for case in selected}
+                try:
+                    for future in as_completed(futures):
+                        case = futures[future]
+                        outcome = future.result()
+                        absorb(case, outcome)
+                        if case not in finished:
+                            continue
+                        # Each completed record is durable even if the supervisor is interrupted.
+                        publish_finished_records()
+                        print(f'{len(finished)}/{len(selected)} {outcome["terminal"]} {case}', flush=True)
+                except BaseException:
+                    # A failing or interrupted run must not keep spawning further case processes,
+                    # and must not leave one behind; the cases that did finish stay recorded.
+                    request_stop()
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    for future, case in futures.items():
+                        if case in finished or case in stopped or future.cancelled() or not future.done():
+                            continue
+                        if future.exception() is None:
+                            absorb(case, future.result())
+                    publish_finished_records()
+                    raise
+        else:
+            # One process, one staged project, one library bracket. The per-case bracket the
+            # isolated path records is not available here and is not faked: what changed the
+            # library mid-run cannot be attributed to a case, so the report says the bracket
+            # covers the whole run.
+            with ExitStack() as stack:
+                project = stack.enter_context(staged_project({'library': str(library)}))
+                prepare_triage_project(project)
+                validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
                 copied = project / 'bin' / ('native' + library.suffix)
                 before = digest(copied)
-                require_equal('staged library before case', artifact_sha, before)
+                require_equal('staged library before run', artifact_sha, before)
                 nonce = uuid.uuid4().hex
                 command = [str(args.godot), '--headless', '--path', str(project), '--main-loop',
                            'BaristaNativeTestRunner', '--', f'--native-suite={NATIVE_SUITE}',
-                           f'--native-case={NATIVE_CORPUS_CASE}', f'--native-nonce={nonce}',
-                           f'--corpus-root={args.corpus}', f'--corpus-case={case}']
-                process = supervise(command, args.timeout, started=remember_process, finished=forget_process)
-                if any(was_killed(child) for child in case_processes):
-                    # Only a process the stop actually killed produces unusable output. A case
-                    # that finished on its own keeps its result even if a sibling then failed.
-                    return KILLED_BY_STOP
-                try:
-                    completion = native_completion(process['output'], nonce, inspected_info, expected_build_id)
-                    completion_error = None
-                except ValueError as error:
-                    completion, completion_error = None, str(error)
-                record = result_record(process, case, args.corpus, records[case]['expected_block'], completion)
-                attach_build_info(record, completion, completion_error)
+                           f'--native-case={NATIVE_WHOLE_CORPUS_CASE}', f'--native-nonce={nonce}',
+                           f'--corpus-root={args.corpus}', f'--corpus-order={args.order}']
+                process = supervise(command, args.timeout)
                 after = digest(copied) if copied.is_file() else None
+            report.update(command=command, run_duration_seconds=process['duration_seconds'],
+                          library_sha256_before=before, library_sha256_after=after)
+            plan, whole_completion, pairs = parse_whole_corpus_stream(process['output'])
+            report['whole_corpus_plan'] = plan
+            report['whole_corpus_completion'] = whole_completion
+            if process['timed_out']:
+                raise ValueError('the whole-corpus run exceeded its timeout; rerun the suspect cases with '
+                                 '--execution isolated to find which one hangs')
+            if process['exit_code'] != 0:
+                raise ValueError(f'the whole-corpus run exited {process["exit_code"]}; rerun with '
+                                 '--execution isolated to attribute it to a case')
+            require_whole_corpus_completion(plan, whole_completion, pairs, args.corpus, args.order,
+                                            selected, inventory['ledger']['total'])
+            completion = native_completion(process['output'], nonce, inspected_info, expected_build_id,
+                                           native_case=NATIVE_WHOLE_CORPUS_CASE)
+            if not whole_corpus_completion_agrees(completion):
+                raise ValueError('the native completion record does not describe a clean whole-corpus run')
+            report['build_info'] = completion['build_info']
+            built = {}
+            for case, payload in pairs:
+                # Each record is rebuilt from its own two guarded lines through the same
+                # classifier the isolated path uses, so neither path can classify differently.
+                case_process = {'exit_code': process['exit_code'], 'timed_out': False,
+                                'duration_seconds': None,
+                                'output': CASE_RESULT_PREFIX + payload + '\n' + CASE_GUARD_PREFIX + case + '\n'}
+                record = result_record(case_process, case, args.corpus, records[case]['expected_block'], None)
+                attach_build_info(record, completion, None)
                 record.update(library_sha256_before=before, library_sha256_after=after)
                 if after != artifact_sha:
-                    record['artifact_error'] = 'staged library changed during case execution'
+                    record['artifact_error'] = 'staged library changed during the whole-corpus run'
                     record['passed'] = False
                     if record['terminal'] == 'passed':
                         record['terminal'] = 'artifact_changed'
@@ -485,69 +747,9 @@ def main(argv=None):
                                'expectation_sha256': records[case]['expectation_sha256'],
                                'semantic_owner': records[case]['semantic_owner'],
                                'candidate_observations': records[case]['candidate_observations'], 'command': command})
-                return record
-            except BaseException:
-                # This set must stay here rather than move into the supervising thread's handler:
-                # that thread only observes the exception after the pool has already handed this
-                # worker the next case, so the worker itself is the last point still ahead of the
-                # next dequeue. Setting it outside live_lock is safe because request_stop sets it
-                # again under the lock before sweeping live_processes.
-                stop_requested.set()
-                raise
-            finally:
-                idle_projects.put(project)
-
-        with ExitStack() as stack:
-            for _ in range(worker_count):
-                project = stack.enter_context(staged_project({'library': str(library)}))
-                prepare_triage_project(project)
-                validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
-                idle_projects.put(project)
-            # Only this thread touches the report, so every write stays a consistent snapshot.
-            finished = {}
-            stopped = set()
-
-            def absorb(case, outcome):
-                if outcome is KILLED_BY_STOP:
-                    stopped.add(case)
-                elif outcome is not None:
-                    finished[case] = outcome
-
-            def publish_finished_records():
-                # Case order, not completion order, and the newest loaded identity that survives it.
-                report['results'] = [finished[name] for name in selected if name in finished]
-                # Selected cases absent from both lists were never dispatched, which a consumer
-                # cannot otherwise tell apart from a case this run killed mid-flight.
-                report['stopped_cases'] = sorted(stopped)
-                for candidate in report['results']:
-                    if candidate['build_info'] is not None:
-                        report['build_info'] = candidate['build_info']
-                atomic_report(args.report, report)
-
-            pool = stack.enter_context(ThreadPoolExecutor(max_workers=worker_count))
-            futures = {pool.submit(run_case, case): case for case in selected}
-            try:
-                for future in as_completed(futures):
-                    case = futures[future]
-                    outcome = future.result()
-                    absorb(case, outcome)
-                    if case not in finished:
-                        continue
-                    # Each completed record is durable even if the supervisor is interrupted.
-                    publish_finished_records()
-                    print(f'{len(finished)}/{len(selected)} {outcome["terminal"]} {case}', flush=True)
-            except BaseException:
-                # A failing or interrupted run must not keep spawning further case processes,
-                # and must not leave one behind; the cases that did finish stay recorded.
-                request_stop()
-                pool.shutdown(wait=True, cancel_futures=True)
-                for future, case in futures.items():
-                    if case in finished or case in stopped or future.cancelled() or not future.done():
-                        continue
-                    if future.exception() is None:
-                        absorb(case, future.result())
-                publish_finished_records()
-                raise
+                built[case] = record
+            report['results'] = [built[case] for case in selected]
+            atomic_report(args.report, report)
         report['completed'] = True
         report['summary'] = dict(sorted(Counter(r['terminal'] for r in report['results']).items()))
         report['unowned_failures'] = [r['case'] for r in report['results'] if not r['passed'] and not owned_failure(r)]
@@ -557,6 +759,13 @@ def main(argv=None):
         print(json.dumps(report['summary'], sort_keys=True))
         for complaint in complaints:
             print(f'corpus triage: {complaint}', file=sys.stderr)
+        if complaints and args.execution == 'fast':
+            # A whole-corpus process cannot attribute a crash or a hang to a case, and a
+            # reader chasing one complaint should not have to find the isolated path in the
+            # source. Name the cases and print the command that reruns each on its own.
+            print('corpus triage: rerun each complained-about case in its own Godot process:', file=sys.stderr)
+            for case in dict.fromkeys(complaint.split(':', 1)[0] for complaint in complaints):
+                print('  ' + pinpoint_command(args, case), file=sys.stderr)
         return 1 if complaints else 0
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         if report is not None:

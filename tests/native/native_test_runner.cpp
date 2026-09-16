@@ -58,7 +58,7 @@ bool BaristaNativeTestRunner::_process(double) {
 		return false;
 	}
 	ran = true;
-	godot::String suite, case_name, nonce, corpus_root_argument, corpus_case_argument;
+	godot::String suite, case_name, nonce, corpus_root_argument, corpus_case_argument, corpus_order_argument;
 	bool listing = false;
 	for (const godot::String &argument : godot::OS::get_singleton()->get_cmdline_user_args()) {
 		if (argument.begins_with("--native-suite=")) {
@@ -73,6 +73,8 @@ bool BaristaNativeTestRunner::_process(double) {
 			corpus_root_argument = argument.trim_prefix("--corpus-root=");
 		} else if (argument.begins_with("--corpus-case=")) {
 			corpus_case_argument = argument.trim_prefix("--corpus-case=");
+		} else if (argument.begins_with("--corpus-order=")) {
+			corpus_order_argument = argument.trim_prefix("--corpus-order=");
 		} else {
 			std::cerr << "Unknown native runner argument: " << argument.utf8().get_data() << std::endl;
 			quit(2);
@@ -84,12 +86,22 @@ bool BaristaNativeTestRunner::_process(double) {
 		quit(2);
 		return false;
 	}
-	if (corpus_case_argument.is_empty() != corpus_root_argument.is_empty()) {
-		std::cerr << "Corpus mode requires both --corpus-root= and --corpus-case=" << std::endl;
+	// A root alone selects the whole corpus in this one process; a root with a case selects
+	// that single case. A case without a root names nothing and is refused.
+	if (corpus_root_argument.is_empty() && !corpus_case_argument.is_empty()) {
+		std::cerr << "--corpus-case= requires --corpus-root=" << std::endl;
 		quit(2);
 		return false;
 	}
-	barista_script::native_tests::set_corpus_arguments(corpus_root_argument, corpus_case_argument);
+	const bool whole_corpus = !corpus_root_argument.is_empty() && corpus_case_argument.is_empty();
+	if (corpus_order_argument.is_empty()) {
+		corpus_order_argument = whole_corpus ? barista_script::native_tests::CORPUS_ORDER_ASCENDING : godot::String();
+	} else if (!whole_corpus || (corpus_order_argument != barista_script::native_tests::CORPUS_ORDER_ASCENDING && corpus_order_argument != barista_script::native_tests::CORPUS_ORDER_REVERSE)) {
+		std::cerr << "--corpus-order= accepts ascending or reverse, and only for a whole-corpus run" << std::endl;
+		quit(2);
+		return false;
+	}
+	barista_script::native_tests::set_corpus_arguments(corpus_root_argument, corpus_case_argument, corpus_order_argument);
 	doctest::Context context;
 	context.setOption("order-by", "name");
 	context.setOption("case-sensitive", true);
