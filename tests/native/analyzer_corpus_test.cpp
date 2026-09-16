@@ -994,6 +994,35 @@ TEST_SUITE("analyzer_corpus") {
 		CHECK_MESSAGE(report.outcome.passed, report.outcome.message.utf8().get_data());
 	}
 
+	TEST_CASE("shard_slices_tile_the_population_exactly") {
+		// The supervisor re-derives coverage from the case names the shards actually emit, but
+		// that check can only pass if the slices tile in the first place: a gap would lose a
+		// case silently and an overlap would adjudicate one twice.
+		for (int total = 0; total <= 40; total++) {
+			for (int shards = 1; shards <= 8; shards++) {
+				int covered = 0;
+				int previous_end = 0;
+				for (int shard = 0; shard < shards; shard++) {
+					const CorpusShardSlice slice = corpus_shard_slice(total, shard, shards);
+					CHECK(slice.start == previous_end);
+					CHECK(slice.end >= slice.start);
+					// Slices differ in length by at most one, so no shard carries the run.
+					CHECK(slice.end - slice.start <= total / shards + (total % shards == 0 ? 0 : 1));
+					covered += slice.end - slice.start;
+					previous_end = slice.end;
+				}
+				CHECK(previous_end == total);
+				CHECK(covered == total);
+			}
+		}
+		// An out-of-range shard names no cases rather than silently resolving to a valid one.
+		for (const CorpusShardSlice refused : { corpus_shard_slice(10, 4, 4), corpus_shard_slice(10, -1, 4),
+					 corpus_shard_slice(10, 0, 0) }) {
+			CHECK(refused.start == 0);
+			CHECK(refused.end == 0);
+		}
+	}
+
 	TEST_CASE("whole_corpus_emits_guarded_records") {
 		if (!whole_corpus_selected()) {
 			// Outside a whole-corpus run the runner pairs the two corpus arguments: either an
@@ -1008,5 +1037,8 @@ TEST_SUITE("analyzer_corpus") {
 		CHECK_MESSAGE(run.error.is_empty(), run.error.utf8().get_data());
 		CHECK(run.planned > 0);
 		CHECK(run.completed == run.planned);
+		const CorpusShardSlice slice = corpus_shard_slice(run.total, corpus_shard(), corpus_shard_count());
+		CHECK(run.start == slice.start);
+		CHECK(run.planned == slice.end - slice.start);
 	}
 }

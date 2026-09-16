@@ -374,6 +374,12 @@ class TriageWorkflowContract(unittest.TestCase):
             step = document["jobs"]["build"]["steps"][self.triage_index(document)]
             step["run"] += " --case errors/abstract_annotation_removed.barista"
 
+        def under_cover_the_corpus(document):
+            # A shard count the supervisor never passes on leaves the population covered by
+            # whatever the processes default to. The pin names the count for that reason.
+            step = document["jobs"]["build"]["steps"][self.triage_index(document)]
+            step["run"] = step["run"].replace("--shards 4", "")
+
         def switch_the_execution_path(document):
             # The pinned step names its execution path. The isolated path is supported and
             # is what pinpoints a case, but it is not the run CI attests to, and an audit
@@ -390,7 +396,8 @@ class TriageWorkflowContract(unittest.TestCase):
             document["jobs"]["build"]["if"] = "${{ false }}"
 
         for mutate in (remove_the_step, duplicate_into_another_job, narrow_to_one_case,
-                       switch_the_execution_path, suppress_the_exit_status, disable_the_whole_job):
+                       under_cover_the_corpus, switch_the_execution_path, suppress_the_exit_status,
+                       disable_the_whole_job):
             document = copy.deepcopy(self.document)
             mutate(document)
             self.assertNotEqual(document, self.document, mutate.__name__)

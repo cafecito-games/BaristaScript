@@ -28,12 +28,21 @@ const godot::String &corpus_case();
 /** The requested case order. Empty outside a whole-corpus run. */
 const godot::String &corpus_order();
 
-/** Whether this process was asked to evaluate the whole corpus rather than one named case. */
+/**
+ * The contiguous slice of the ordered population this process evaluates.
+ *
+ * `corpus_shard_count()` is 1 and `corpus_shard()` is 0 for an unsharded whole-corpus run,
+ * which is therefore the single-slice case of the same arithmetic rather than a second path.
+ */
+int corpus_shard();
+int corpus_shard_count();
+
+/** Whether this process was asked to evaluate corpus cases rather than one named case. */
 bool whole_corpus_selected();
 
 /** Record the parsed arguments. The runner calls this once from `_process`, after argument
  *  validation and before any case runs. */
 void set_corpus_arguments(const godot::String &p_root, const godot::String &p_case,
-		const godot::String &p_order);
+		const godot::String &p_order, int p_shard, int p_shard_count);
 
 } //namespace barista_script::native_tests

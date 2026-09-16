@@ -154,23 +154,33 @@ process uses. There is no second adjudication to keep in parity.
 
 What is genuinely new is the completion evidence. A process that evaluates one case proves
 it ran by exiting: the supervisor sees one payload, one guard and one native completion
-record, and a crash costs it all of them. A process that evaluates 1,078 cases keeps
+record, and a crash costs it all of them. A process that evaluates hundreds of cases keeps
 everything it printed before it died, so it must say how much it meant to do and how much it
 did:
 
 | Line | Meaning |
 | --- | --- |
-| `BS_CORPUS_PLAN {"planned":N,"order":...,"root":...}` | printed once, after discovery and manifest validation, before the first case |
+| `BS_CORPUS_PLAN {"planned":N,"order":...,"root":...,"shard":i,"shards":S,"total":T,"start":s}` | printed once, after discovery and manifest validation, before the first case |
 | `BS_CASE_RESULT <json>` / `BS_CASE_RAN <relative>` | one pair per case, byte-identical to the single-case emission |
-| `BS_CORPUS_COMPLETE {"planned":N,"completed":M}` | printed once, only after the last planned case has been emitted |
+| `BS_CORPUS_COMPLETE {"planned":N,"completed":M,"shard":i,"shards":S}` | printed once, only after the last planned case has been emitted |
 
-`run_corpus_triage.py` refuses the run unless `planned`, `completed`, the number of guarded
-records and the imported ledger's `total` all agree, so a truncated run is an infrastructure
-error rather than a short baseline. `analyzer_corpus/whole_corpus_emits_guarded_records`
-asserts only that the run reached its own plan, never a per-case outcome, which is what lets
-the process exit zero while emitting the residual failures the pin declares.
+`--corpus-shards=S` splits the ordered population into S contiguous slices and
+`--corpus-shard=i` selects one; `corpus_shard_slice` is the arithmetic, pinned by
+`analyzer_corpus/shard_slices_tile_the_population_exactly`. An unsharded run is shard 0 of 1,
+the single-slice case of the same arithmetic rather than a separate path.
+
+`run_corpus_triage.py` refuses the run unless every shard reports exactly once, each shard's
+`planned`, `completed` and guarded-record count agree, the shards' slices tile the population
+from zero with no gap and no overlap, and the union of the case names they emitted equals the
+population the imported ledger declares -- with the counts checked alongside the set, so a
+duplicated case cannot hide inside a set comparison. A truncated, missing or duplicated shard
+is therefore an infrastructure error rather than a short baseline.
+`analyzer_corpus/whole_corpus_emits_guarded_records` asserts only that the run reached its own
+plan, never a per-case outcome, which is what lets the process exit zero while emitting the
+residual failures the pin declares.
 
 Each case is wrapped in its own `StorageFixture`, so the ambient `user://` subtree,
 declaration index and cache are rebuilt from nothing before every evaluation exactly as they
-are in a fresh process. `--corpus-order=reverse` exists to check that: it evaluates the same
-population in the exact opposite order, and every case must report the same outcome.
+are in a fresh process. `--corpus-order=reverse` exists to check that. It orders the whole
+population before it is sliced, so it changes both the sequence within a shard and which
+cases share a process, and every case must still report the same outcome.

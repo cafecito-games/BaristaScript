@@ -239,15 +239,36 @@ struct CorpusWholeRunReport {
 	godot::String error;
 	int planned = 0;
 	int completed = 0;
+	/** Where this process's contiguous slice starts in the ordered population. */
+	int start = 0;
+	/** The whole population this process discovered, of which `planned` is its slice. */
+	int total = 0;
+};
+
+/** The half-open `[start, end)` slice of `p_total` cases belonging to shard `p_shard`. */
+struct CorpusShardSlice {
+	int start = 0;
+	int end = 0;
 };
 
 /**
- * Evaluate every case under `--corpus-root=`, emitting the same guard pair per case that a
- * single-case run emits, bracketed by `BS_CORPUS_PLAN` and `BS_CORPUS_COMPLETE`.
+ * Split `p_total` into `p_shard_count` contiguous slices and return the one at `p_shard`.
  *
- * `BS_CORPUS_COMPLETE` is printed only after the last planned case has been emitted, so a run
- * that stops early is missing it and cannot be mistaken for a whole one. A root-level failure
- * returns before `BS_CORPUS_PLAN` is printed and emits neither.
+ * Slices differ in length by at most one and the earlier shards take the remainder, so the
+ * slices of a given population tile it exactly: no case is left out and none is claimed twice.
+ */
+CorpusShardSlice corpus_shard_slice(int p_total, int p_shard, int p_shard_count);
+
+/**
+ * Evaluate this process's slice of the cases under `--corpus-root=`, emitting the same guard
+ * pair per case that a single-case run emits, bracketed by `BS_CORPUS_PLAN` and
+ * `BS_CORPUS_COMPLETE`.
+ *
+ * `--corpus-order=` orders the whole population before it is sliced, so reversing changes both
+ * the sequence within a shard and which cases share a process. `BS_CORPUS_COMPLETE` is printed
+ * only after the last planned case has been emitted, so a shard that stops early is missing it
+ * and cannot be mistaken for a whole one. A root-level failure returns before `BS_CORPUS_PLAN`
+ * is printed and emits neither.
  */
 CorpusWholeRunReport run_whole_corpus();
 

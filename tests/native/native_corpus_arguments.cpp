@@ -41,6 +41,10 @@ String &order_storage() {
 	}
 	return *order;
 }
+
+// Plain integers, so unlike the strings above they need no deferred storage.
+int shard_index = 0;
+int shard_count = 1;
 } //namespace
 
 const String &corpus_root() {
@@ -55,14 +59,25 @@ const String &corpus_order() {
 	return order_storage();
 }
 
+int corpus_shard() {
+	return shard_index;
+}
+
+int corpus_shard_count() {
+	return shard_count;
+}
+
 bool whole_corpus_selected() {
 	return !corpus_root().is_empty() && corpus_case().is_empty();
 }
 
-void set_corpus_arguments(const String &p_root, const String &p_case, const String &p_order) {
+void set_corpus_arguments(const String &p_root, const String &p_case, const String &p_order,
+		int p_shard, int p_shard_count) {
 	root_storage() = p_root;
 	case_storage() = p_case;
 	order_storage() = p_order;
+	shard_index = p_shard;
+	shard_count = p_shard_count;
 }
 
 } //namespace barista_script::native_tests

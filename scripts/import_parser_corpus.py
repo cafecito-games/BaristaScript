@@ -698,7 +698,7 @@ def write_baseline(summary: dict, destination: Path | None = None) -> None:
             "scripts/import_analyzer_corpus.py for the analyzer entry. Do not hand-edit",
             "reasons here when an importer owns them — edit the importer tables instead.",
             "The analyzer corpus is triage-supervised: scripts/run_corpus_triage.py runs",
-            "its whole population in one process and enforces expected_failures both ways.",
+            "its whole population in sharded processes and enforces expected_failures both ways.",
         ],
         "corpora": corpora,
     }

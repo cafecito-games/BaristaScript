@@ -10,25 +10,33 @@
 Two execution paths adjudicate every case identically and differ only in how many Godot
 processes do it.
 
---execution fast (the default) evaluates the whole corpus in one process. It removes nearly
-all of the engine startup, extension load and staged-tree cost that a per-case run pays once
-per case, which on the analyzer corpus is most of the system time and a large share of the
-user time the isolated path spends. The process cannot
-report a partial run as a whole one: it announces the population it discovered, emits the
-same guarded record per case the isolated path emits, and announces its completion only
-after the last planned case, so a crash, a hang or an early exit is missing the completion
-line and is refused here.
+--execution fast (the default) evaluates the corpus in --shards processes, each taking a
+contiguous slice of the ordered population. It removes nearly all of the engine startup,
+extension load and staged-tree cost that a per-case run pays once per case, which on the
+analyzer corpus is most of the system time and a large share of the user time the isolated
+path spends; sharding then spends the remaining, genuinely analytical cost in parallel.
+No shard can report a partial run as a whole one: each announces the population it
+discovered and the slice it owns, emits the same guarded record per case the isolated path
+emits, and announces its completion only after its last planned case, so a crash, a hang or
+an early exit is missing that completion line. The supervisor additionally requires the
+shards' slices to tile the population and the union of the cases they emitted guards for to
+equal the population the imported ledger declares, so a shard that dies silently, never
+reports, or duplicates another's slice is refused rather than absorbed.
 
 --execution isolated evaluates one case per Godot process, which is what pinpoints a case
 that crashes or hangs the engine: the blast radius is that one case. --jobs runs several at
 once, each in its own staged project, and --case narrows the run to named cases. Only this
 path can bracket the staged library hash around each individual case; the fast path brackets
-it once around the whole run, and says so in its report.
+it around each shard, and says so in its report.
+
+--order applies to the whole population before it is sliced, so --order reverse changes both
+the sequence within a shard and which cases share a process. A case whose outcome moves under
+it is a cross-case contamination bug, not a corpus result.
 
 Exit zero requires every selected case's JSON result, its execution guard, the native
 completion record of the process that produced it, full expected/actual block agreement, a
-successful process, and -- on the fast path -- completion evidence matching the population
-the imported ledger declares. Nonzero reports are discovery evidence, never passing corpus
+successful process, and -- on the fast path -- shard completion evidence that together covers
+exactly the population the imported ledger declares. Nonzero reports are discovery evidence, never passing corpus
 baselines.
 """
 from __future__ import annotations
@@ -315,42 +323,68 @@ def parse_whole_corpus_stream(output):
     return plan, completion, pairs
 
 
-def require_whole_corpus_completion(plan, completion, pairs, corpus, order, selected, ledger_total):
-    """Refuse a whole-corpus run that did not demonstrably evaluate the whole corpus.
+def require_sharded_completion(shards, corpus, order, selected, ledger_total):
+    """Refuse a sharded run that did not demonstrably evaluate the whole corpus.
 
-    A process that evaluates every case keeps on stdout whatever it printed before it died,
-    so a crash, a hang or an early exit is otherwise indistinguishable from a short run that
-    finished. Three independent counts must agree before any record here is believed: what
-    the process planned, what it reports completing, and what the imported ledger says the
-    corpus holds. Absent evidence is refused, never assumed complete.
+    A process that evaluates many cases keeps on stdout whatever it printed before it died, so
+    a crash, a hang or an early exit is otherwise indistinguishable from a short run that
+    finished -- and with several processes there is a second way to lose cases silently: a
+    shard that never reports at all, or two shards that claim the same slice.
 
-    The counted checks deliberately overlap the final set comparison, which subsumes them:
-    they exist to name which count went wrong rather than to add coverage.
+    Coverage is therefore established twice over. Structurally, the shards' planned slices must
+    tile the population from zero with no gap and no overlap. By name, the union of the case
+    names they actually emitted must equal the declared population exactly, with the counts
+    agreeing so a duplicate cannot hide inside a set comparison. Absent evidence is refused,
+    never assumed complete.
+
+    `shards` is one record per shard the supervisor started, each carrying its `index`, its
+    decoded `plan` and `completion`, and the `cases` it emitted guards for.
     """
-    if not isinstance(plan, dict) or set(plan) != {'planned', 'order', 'root'}:
-        raise ValueError('the whole-corpus run emitted no usable plan; it did not reach its first case')
-    if not isinstance(completion, dict) or set(completion) != {'planned', 'completed'}:
-        raise ValueError('the whole-corpus run emitted no completion record; it stopped before its last case')
-    for record, key in ((plan, 'planned'), (completion, 'planned'), (completion, 'completed')):
-        if type(record[key]) is not int or record[key] < 0:
-            raise ValueError(f'invalid whole-corpus {key} count')
-    if plan['root'] != corpus:
-        raise ValueError(f'the whole-corpus run evaluated {plan["root"]!r}, not the requested root')
-    if plan['order'] != order:
-        raise ValueError(f'the whole-corpus run used {plan["order"]!r}, not the requested order')
-    if completion['planned'] != plan['planned'] or completion['completed'] != plan['planned']:
-        raise ValueError(f'the whole-corpus run completed {completion["completed"]} of '
-                         f'{completion["planned"]} planned cases; a truncated run is not a result')
-    if plan['planned'] != ledger_total:
-        raise ValueError(f'the whole-corpus run planned {plan["planned"]} cases; the imported '
-                         f'ledger declares {ledger_total}')
-    cases = [case for case, _ in pairs]
-    if len(cases) != plan['planned']:
-        raise ValueError(f'the whole-corpus run planned {plan["planned"]} cases but emitted '
-                         f'{len(cases)} guarded records')
-    if sorted(cases) != sorted(selected):
-        raise ValueError('the whole-corpus run did not evaluate exactly the declared population')
-    return cases
+    count = len(shards)
+    if count < 1:
+        raise ValueError('a sharded run needs at least one shard')
+    if sorted(record['index'] for record in shards) != list(range(count)):
+        raise ValueError('the sharded run did not report each shard exactly once')
+    ordered = sorted(shards, key=lambda record: record['index'])
+    for record in ordered:
+        index, plan, completion = record['index'], record['plan'], record['completion']
+        if not isinstance(plan, dict) or set(plan) != {'planned', 'order', 'root', 'shard', 'shards', 'total', 'start'}:
+            raise ValueError(f'shard {index} emitted no usable plan; it did not reach its first case')
+        if not isinstance(completion, dict) or set(completion) != {'planned', 'completed', 'shard', 'shards'}:
+            raise ValueError(f'shard {index} emitted no completion record; it stopped before its last case')
+        for document, key in ((plan, 'planned'), (plan, 'shard'), (plan, 'shards'), (plan, 'total'),
+                              (plan, 'start'), (completion, 'planned'), (completion, 'completed'),
+                              (completion, 'shard'), (completion, 'shards')):
+            if type(document[key]) is not int or document[key] < 0:
+                raise ValueError(f'invalid shard {index} {key} count')
+        if plan['root'] != corpus:
+            raise ValueError(f'shard {index} evaluated {plan["root"]!r}, not the requested root')
+        if plan['order'] != order:
+            raise ValueError(f'shard {index} used {plan["order"]!r}, not the requested order')
+        if plan['shard'] != index or plan['shards'] != count or completion['shard'] != index or completion['shards'] != count:
+            raise ValueError(f'shard {index} does not identify itself as slice {index} of {count}')
+        if plan['total'] != ledger_total:
+            raise ValueError(f'shard {index} discovered {plan["total"]} cases; the imported ledger '
+                             f'declares {ledger_total}')
+        if completion['planned'] != plan['planned'] or completion['completed'] != plan['planned']:
+            raise ValueError(f'shard {index} completed {completion["completed"]} of '
+                             f'{completion["planned"]} planned cases; a truncated shard is not a result')
+        if len(record['cases']) != plan['planned']:
+            raise ValueError(f'shard {index} planned {plan["planned"]} cases but emitted '
+                             f'{len(record["cases"])} guarded records')
+    boundary = 0
+    for record in ordered:
+        if record['plan']['start'] != boundary:
+            raise ValueError(f'shard {record["index"]} starts at {record["plan"]["start"]}, leaving a '
+                             f'gap or an overlap at {boundary}')
+        boundary += record['plan']['planned']
+    if boundary != ledger_total:
+        raise ValueError(f'the shards cover {boundary} cases; the imported ledger declares {ledger_total}')
+    covered = [case for record in ordered for case in record['cases']]
+    # The count and the set are both required: either alone would accept a duplicated case.
+    if len(covered) != ledger_total or sorted(covered) != sorted(selected):
+        raise ValueError('the sharded run did not evaluate exactly the declared population')
+    return covered
 
 
 def whole_corpus_completion_agrees(completion):
@@ -471,6 +505,9 @@ def main(argv=None):
                              f'or for the whole run when fast (default {FAST_RUN_TIMEOUT})')
     parser.add_argument('--jobs', type=int, default=1,
                         help='number of cases to execute concurrently; isolated only')
+    parser.add_argument('--shards', type=int, default=1,
+                        help='split the fast path across this many concurrent processes, each taking a '
+                             'contiguous slice of the ordered population')
     args = parser.parse_args(argv)
     if args.timeout is None:
         args.timeout = ISOLATED_CASE_TIMEOUT if args.execution == 'isolated' else FAST_RUN_TIMEOUT
@@ -485,8 +522,10 @@ def main(argv=None):
         # to what the operator asked for.
         if args.execution != 'isolated' and (args.case or args.jobs != 1):
             raise ValueError('--case and --jobs require --execution isolated')
-        if args.execution != 'fast' and args.order != 'ascending':
-            raise ValueError('--order applies only to --execution fast')
+        if args.execution != 'fast' and (args.order != 'ascending' or args.shards != 1):
+            raise ValueError('--order and --shards apply only to --execution fast')
+        if args.shards < 1:
+            raise ValueError('shards must be a positive integer')
         if args.corpus not in permitted_corpus_roots():
             raise ValueError('corpus root must be a triage-supervised registered corpus destination')
         root = local_path(ROOT, 'project/' + args.corpus.removeprefix('res://'))
@@ -503,6 +542,11 @@ def main(argv=None):
         if len(set(args.case)) != len(args.case) or set(args.case) - set(records):
             raise ValueError('duplicate or unknown exact case selection')
         selected = args.case or sorted(records)
+        # More shards than cases would leave shards with nothing to do. They would still tile
+        # the population, but an empty shard is evidence of nothing, so refuse the arithmetic
+        # rather than let a run be mostly shards that prove they evaluated zero cases.
+        if args.shards > len(selected):
+            raise ValueError(f'shards must not exceed the {len(selected)} cases this run covers')
         version = subprocess.run([str(args.godot), '--version'], capture_output=True, text=True, check=True).stdout.strip()
         build_directory = ROOT / NATIVE_BUILD_DIRECTORY
         libraries = sorted((build_directory / 'bin').rglob('*template_debug*'))
@@ -539,9 +583,11 @@ def main(argv=None):
                   'native_build_id': expected_build_id,
                   'godot': str(args.godot), 'godot_version': version, 'timeout_seconds': args.timeout,
                   'jobs': args.jobs, 'execution': args.execution, 'order': args.order,
-                  # The fast path evaluates every case in one process, so the staged library
-                  # can only be hashed once around the whole run rather than around each case.
-                  'library_bracket_scope': 'per_case' if args.execution == 'isolated' else 'whole_run',
+                  'shards': args.shards if args.execution == 'fast' else None,
+                  # A fast-path shard evaluates many cases in one process, so the staged library
+                  # can only be hashed around that shard rather than around each case. An
+                  # unsharded fast run is the one-shard case of the same bracket.
+                  'library_bracket_scope': 'per_case' if args.execution == 'isolated' else 'per_shard',
                   'complete_population': not bool(args.case), 'selected_cases': selected,
                   'deferred_cases': [r['identity'] for r in inventory['sources'] if r.get('disposition') == 'deferred'],
                   'completed': False, 'results': [], 'stopped_cases': []}
@@ -691,63 +737,117 @@ def main(argv=None):
                     publish_finished_records()
                     raise
         else:
-            # One process, one staged project, one library bracket. The per-case bracket the
-            # isolated path records is not available here and is not faked: what changed the
-            # library mid-run cannot be attributed to a case, so the report says the bracket
-            # covers the whole run.
+            # Each shard is its own Godot process with its own staged project, so the staged
+            # library is bracketed per shard. The per-case bracket the isolated path records is
+            # not available here and is not faked: what changed a library mid-shard cannot be
+            # attributed to a case, so the report says the bracket covers a shard.
+            shard_records = []
             with ExitStack() as stack:
-                project = stack.enter_context(staged_project({'library': str(library)}))
-                prepare_triage_project(project)
-                validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
-                copied = project / 'bin' / ('native' + library.suffix)
-                before = digest(copied)
-                require_equal('staged library before run', artifact_sha, before)
-                nonce = uuid.uuid4().hex
-                command = [str(args.godot), '--headless', '--path', str(project), '--main-loop',
-                           'BaristaNativeTestRunner', '--', f'--native-suite={NATIVE_SUITE}',
-                           f'--native-case={NATIVE_WHOLE_CORPUS_CASE}', f'--native-nonce={nonce}',
-                           f'--corpus-root={args.corpus}', f'--corpus-order={args.order}']
-                process = supervise(command, args.timeout)
-                after = digest(copied) if copied.is_file() else None
-            report.update(command=command, run_duration_seconds=process['duration_seconds'],
-                          library_sha256_before=before, library_sha256_after=after)
-            plan, whole_completion, pairs = parse_whole_corpus_stream(process['output'])
-            report['whole_corpus_plan'] = plan
-            report['whole_corpus_completion'] = whole_completion
-            if process['timed_out']:
-                raise ValueError('the whole-corpus run exceeded its timeout; rerun the suspect cases with '
-                                 '--execution isolated to find which one hangs')
-            if process['exit_code'] != 0:
-                raise ValueError(f'the whole-corpus run exited {process["exit_code"]}; rerun with '
-                                 '--execution isolated to attribute it to a case')
-            require_whole_corpus_completion(plan, whole_completion, pairs, args.corpus, args.order,
-                                            selected, inventory['ledger']['total'])
-            completion = native_completion(process['output'], nonce, inspected_info, expected_build_id,
-                                           native_case=NATIVE_WHOLE_CORPUS_CASE)
-            if not whole_corpus_completion_agrees(completion):
-                raise ValueError('the native completion record does not describe a clean whole-corpus run')
-            report['build_info'] = completion['build_info']
+                projects = [stack.enter_context(staged_project({'library': str(library)})) for _ in range(args.shards)]
+                for project in projects:
+                    prepare_triage_project(project)
+                    validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory,
+                                           project_root=project)
+                # A worker cannot see an interruption raised on the supervising thread, so a stop
+                # is published here: any shard process still alive is killed rather than left behind.
+                live_processes = set()
+                live_lock = threading.Lock()
+                stop_requested = threading.Event()
+
+                def note_process(process):
+                    with live_lock:
+                        live_processes.add(process)
+                        if stop_requested.is_set():
+                            kill_process_group(process)
+
+                def forget_process(process):
+                    with live_lock:
+                        live_processes.discard(process)
+
+                def request_stop():
+                    with live_lock:
+                        # Setting the event under the lock note_process holds closes the window
+                        # in which a shard registers after the sweep has already read the set.
+                        stop_requested.set()
+                        for process in list(live_processes):
+                            kill_process_group(process)
+
+                def run_shard(index):
+                    project = projects[index]
+                    copied = project / 'bin' / ('native' + library.suffix)
+                    before = digest(copied)
+                    require_equal(f'staged library before shard {index}', artifact_sha, before)
+                    nonce = uuid.uuid4().hex
+                    command = [str(args.godot), '--headless', '--path', str(project), '--main-loop',
+                               'BaristaNativeTestRunner', '--', f'--native-suite={NATIVE_SUITE}',
+                               f'--native-case={NATIVE_WHOLE_CORPUS_CASE}', f'--native-nonce={nonce}',
+                               f'--corpus-root={args.corpus}', f'--corpus-order={args.order}',
+                               f'--corpus-shard={index}', f'--corpus-shards={args.shards}']
+                    process = supervise(command, args.timeout, started=note_process, finished=forget_process)
+                    after = digest(copied) if copied.is_file() else None
+                    return {'index': index, 'nonce': nonce, 'command': command, 'process': process,
+                            'library_sha256_before': before, 'library_sha256_after': after}
+
+                pool = stack.enter_context(ThreadPoolExecutor(max_workers=args.shards))
+                futures = [pool.submit(run_shard, index) for index in range(args.shards)]
+                try:
+                    shard_records = [future.result() for future in futures]
+                except BaseException:
+                    request_stop()
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    raise
+            report['run_duration_seconds'] = max(record['process']['duration_seconds'] for record in shard_records)
+            report['shard_commands'] = [record['command'] for record in shard_records]
+            for record in shard_records:
+                record['plan'], record['completion'], record['pairs'] = parse_whole_corpus_stream(
+                    record['process']['output'])
+                record['cases'] = [case for case, _ in record['pairs']]
+            report['shard_plans'] = [record['plan'] for record in shard_records]
+            report['shard_completions'] = [record['completion'] for record in shard_records]
+            for record in shard_records:
+                index, process = record['index'], record['process']
+                if process['timed_out']:
+                    raise ValueError(f'shard {index} exceeded its timeout; rerun the suspect cases '
+                                     'with --execution isolated to find which one hangs')
+                if process['exit_code'] != 0:
+                    raise ValueError(f'shard {index} exited {process["exit_code"]}; rerun with '
+                                     '--execution isolated to attribute it to a case')
+            require_sharded_completion(shard_records, args.corpus, args.order, selected,
+                                       inventory['ledger']['total'])
+            for record in shard_records:
+                record['native'] = native_completion(record['process']['output'], record['nonce'], inspected_info,
+                                                     expected_build_id, native_case=NATIVE_WHOLE_CORPUS_CASE)
+                if not whole_corpus_completion_agrees(record['native']):
+                    raise ValueError(f'the native completion record of shard {record["index"]} does not '
+                                     'describe a clean whole-corpus run')
+            report['build_info'] = shard_records[0]['native']['build_info']
             built = {}
-            for case, payload in pairs:
-                # Each record is rebuilt from its own two guarded lines through the same
-                # classifier the isolated path uses, so neither path can classify differently.
-                case_process = {'exit_code': process['exit_code'], 'timed_out': False,
-                                'duration_seconds': None,
-                                'output': CASE_RESULT_PREFIX + payload + '\n' + CASE_GUARD_PREFIX + case + '\n'}
-                record = result_record(case_process, case, args.corpus, records[case]['expected_block'], None)
-                attach_build_info(record, completion, None)
-                record.update(library_sha256_before=before, library_sha256_after=after)
-                if after != artifact_sha:
-                    record['artifact_error'] = 'staged library changed during the whole-corpus run'
-                    record['passed'] = False
-                    if record['terminal'] == 'passed':
-                        record['terminal'] = 'artifact_changed'
-                record.update({'case': case, 'identity': records[case]['identity'], 'source_sha256': records[case]['sha256'],
-                               'staged_source_sha256': records[case]['imported_sha256'],
-                               'expectation_sha256': records[case]['expectation_sha256'],
-                               'semantic_owner': records[case]['semantic_owner'],
-                               'candidate_observations': records[case]['candidate_observations'], 'command': command})
-                built[case] = record
+            for record in shard_records:
+                for case, payload in record['pairs']:
+                    # Each record is rebuilt from its own two guarded lines through the same
+                    # classifier the isolated path uses, so neither path can classify differently.
+                    case_process = {'exit_code': record['process']['exit_code'], 'timed_out': False,
+                                    'duration_seconds': None,
+                                    'output': CASE_RESULT_PREFIX + payload + '\n' + CASE_GUARD_PREFIX + case + '\n'}
+                    case_record = result_record(case_process, case, args.corpus,
+                                                records[case]['expected_block'], None)
+                    attach_build_info(case_record, record['native'], None)
+                    case_record.update(shard=record['index'],
+                                       library_sha256_before=record['library_sha256_before'],
+                                       library_sha256_after=record['library_sha256_after'])
+                    if record['library_sha256_after'] != artifact_sha:
+                        case_record['artifact_error'] = 'staged library changed during the shard'
+                        case_record['passed'] = False
+                        if case_record['terminal'] == 'passed':
+                            case_record['terminal'] = 'artifact_changed'
+                    case_record.update({'case': case, 'identity': records[case]['identity'],
+                                        'source_sha256': records[case]['sha256'],
+                                        'staged_source_sha256': records[case]['imported_sha256'],
+                                        'expectation_sha256': records[case]['expectation_sha256'],
+                                        'semantic_owner': records[case]['semantic_owner'],
+                                        'candidate_observations': records[case]['candidate_observations'],
+                                        'command': record['command']})
+                    built[case] = case_record
             report['results'] = [built[case] for case in selected]
             atomic_report(args.report, report)
         report['completed'] = True

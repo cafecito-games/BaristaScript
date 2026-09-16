@@ -804,6 +804,18 @@ static CorpusModeReport selected_corpus_case_report() {
 	return evaluate_environment_case(environment, selected);
 }
 
+CorpusShardSlice corpus_shard_slice(int p_total, int p_shard, int p_shard_count) {
+	CorpusShardSlice slice;
+	if (p_shard_count < 1 || p_shard < 0 || p_shard >= p_shard_count || p_total < 0) {
+		return slice;
+	}
+	const int base = p_total / p_shard_count;
+	const int remainder = p_total % p_shard_count;
+	slice.start = p_shard * base + (p_shard < remainder ? p_shard : remainder);
+	slice.end = slice.start + base + (p_shard < remainder ? 1 : 0);
+	return slice;
+}
+
 CorpusWholeRunReport run_whole_corpus() {
 	CorpusWholeRunReport run;
 	const CorpusEnvironment environment = prepare_corpus_environment(corpus_root());
@@ -812,14 +824,23 @@ CorpusWholeRunReport run_whole_corpus() {
 		return run;
 	}
 	const bool reversed = corpus_order() == String(CORPUS_ORDER_REVERSE);
-	run.planned = environment.discovery.cases.size();
+	run.total = environment.discovery.cases.size();
+	const CorpusShardSlice slice = corpus_shard_slice(run.total, corpus_shard(), corpus_shard_count());
+	run.start = slice.start;
+	run.planned = slice.end - slice.start;
 	Dictionary plan;
 	plan["planned"] = run.planned;
 	plan["order"] = reversed ? CORPUS_ORDER_REVERSE : CORPUS_ORDER_ASCENDING;
 	plan["root"] = environment.root;
+	plan["shard"] = corpus_shard();
+	plan["shards"] = corpus_shard_count();
+	plan["total"] = run.total;
+	plan["start"] = run.start;
 	std::cout << "BS_CORPUS_PLAN " << JSON::stringify(plan).utf8().get_data() << std::endl;
-	for (int offset = 0; offset < run.planned; offset++) {
-		const int index = reversed ? run.planned - 1 - offset : offset;
+	for (int offset = slice.start; offset < slice.end; offset++) {
+		// The order is applied to the whole population and the slice is cut from the result,
+		// so reversing moves cases between shards as well as within one.
+		const int index = reversed ? run.total - 1 - offset : offset;
 		{
 			// One scope per case, exactly as a single-case process gets one for its only case:
 			// the ambient user:// subtree, declaration index and cache are rebuilt from nothing
@@ -834,6 +855,8 @@ CorpusWholeRunReport run_whole_corpus() {
 	Dictionary completion;
 	completion["planned"] = run.planned;
 	completion["completed"] = run.completed;
+	completion["shard"] = corpus_shard();
+	completion["shards"] = corpus_shard_count();
 	std::cout << "BS_CORPUS_COMPLETE " << JSON::stringify(completion).utf8().get_data() << std::endl;
 	return run;
 }

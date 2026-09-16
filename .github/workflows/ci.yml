@@ -279,7 +279,8 @@ jobs:
           --corpus res://tests/corpus/analyzer
           --report "$RUNNER_TEMP/analyzer-corpus-triage.json"
           --execution fast
-          --timeout 1800
+          --shards 4
+          --timeout 900
 
       # Focused desktop debug import + SuiteGuard runners for #21 platform evidence. Linux keeps the
       # heavier cmake on/off matrix above; Windows/macOS debug get import + gdscript + native suites

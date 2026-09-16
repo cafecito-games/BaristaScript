@@ -59,6 +59,7 @@ bool BaristaNativeTestRunner::_process(double) {
 	}
 	ran = true;
 	godot::String suite, case_name, nonce, corpus_root_argument, corpus_case_argument, corpus_order_argument;
+	godot::String corpus_shard_argument, corpus_shards_argument;
 	bool listing = false;
 	for (const godot::String &argument : godot::OS::get_singleton()->get_cmdline_user_args()) {
 		if (argument.begins_with("--native-suite=")) {
@@ -75,6 +76,10 @@ bool BaristaNativeTestRunner::_process(double) {
 			corpus_case_argument = argument.trim_prefix("--corpus-case=");
 		} else if (argument.begins_with("--corpus-order=")) {
 			corpus_order_argument = argument.trim_prefix("--corpus-order=");
+		} else if (argument.begins_with("--corpus-shard=")) {
+			corpus_shard_argument = argument.trim_prefix("--corpus-shard=");
+		} else if (argument.begins_with("--corpus-shards=")) {
+			corpus_shards_argument = argument.trim_prefix("--corpus-shards=");
 		} else {
 			std::cerr << "Unknown native runner argument: " << argument.utf8().get_data() << std::endl;
 			quit(2);
@@ -101,7 +106,28 @@ bool BaristaNativeTestRunner::_process(double) {
 		quit(2);
 		return false;
 	}
-	barista_script::native_tests::set_corpus_arguments(corpus_root_argument, corpus_case_argument, corpus_order_argument);
+	// Shard 0 of 1 is an unsharded whole-corpus run, so the sliced and unsliced runs share one
+	// arithmetic rather than branching. Both values are refused outside a whole-corpus run.
+	int shard_index = 0;
+	int shard_count = 1;
+	if (!corpus_shard_argument.is_empty() || !corpus_shards_argument.is_empty()) {
+		if (!whole_corpus || !corpus_shard_argument.is_valid_int() || !corpus_shards_argument.is_valid_int()) {
+			std::cerr << "--corpus-shard= and --corpus-shards= are integers, required together, "
+						 "and only for a whole-corpus run"
+					  << std::endl;
+			quit(2);
+			return false;
+		}
+		shard_index = int(corpus_shard_argument.to_int());
+		shard_count = int(corpus_shards_argument.to_int());
+		if (shard_count < 1 || shard_index < 0 || shard_index >= shard_count) {
+			std::cerr << "--corpus-shard= must name one of --corpus-shards= slices, counted from zero" << std::endl;
+			quit(2);
+			return false;
+		}
+	}
+	barista_script::native_tests::set_corpus_arguments(corpus_root_argument, corpus_case_argument,
+			corpus_order_argument, shard_index, shard_count);
 	doctest::Context context;
 	context.setOption("order-by", "name");
 	context.setOption("case-sensitive", true);
