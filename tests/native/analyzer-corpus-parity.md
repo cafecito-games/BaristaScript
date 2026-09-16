@@ -17,11 +17,12 @@ Baseline sources are `project/tests/corpus_harness.gd` (744 lines),
 `project/tests/corpus_harness_test.gd` (668 lines) and
 `project/tests/corpus_oracle_test.gd` (309 lines) at `7db8f3c`.
 
-The inventory holds **73 rows: 65 with a named pinning test, and 8 deliberate non-ports
+The inventory holds **76 rows: 68 with a named pinning test, and 8 deliberate non-ports
 carrying a disposition instead**. The 8 are not covered by any native test and are not
-claimed to be; they name behavior that stays in GDScript until issue #156 retires it. A
-row in the first six tables that named no test would mean the port is incomplete, so
-every one of the 65 names a registered case.
+claimed to be; they name behavior that stays in GDScript until issue #156 retires it, and
+each says which caller would break if it were deleted today. A row in the first six tables
+that named no test would mean the port is incomplete, so every one of the 68 names a
+registered case. Where a named test covers only part of a row, the row says which part.
 
 ## Discovery and pairing
 
@@ -36,7 +37,8 @@ every one of the 65 names a registered case.
 | A directory `DirAccess` cannot open is recorded, never silently shrinks the corpus (`corpus_harness.gd:198-201,84-88`) | `CorpusDiscovery::unreadable_directories`; corpus mode refuses to run | `analyzer_corpus/unreadable_directory_is_recorded_not_skipped` |
 | A symlinked case, expectation or subdirectory is rejected without traversal (`corpus_harness.gd:225-227`) | `is_link` check per entry before classification | `analyzer_corpus/symlinked_entries_are_rejected_without_traversal` |
 | A symlinked `.baristaignore` is rejected (`corpus_harness.gd:215-216`) | marker `is_link` check | `analyzer_corpus/symlinked_entries_are_rejected_without_traversal` |
-| Results are path-sorted, never dependent on directory order (`corpus_harness.gd:260-262`) | `sort_custom` on cases, `sort()` on the two string arrays | `analyzer_corpus/discovery_order_is_path_sorted` |
+| Results are path-sorted, never dependent on directory order (`corpus_harness.gd:260-262`) | `sort_custom` on cases, `sort()` on all three string arrays | `analyzer_corpus/discovery_order_is_path_sorted` |
+| `discovery_errors` is sorted too, although GDScript leaves it unsorted (`corpus_harness.gd:263-268`) | the traversal stack is LIFO over sorted subdirectories, so an unsorted array would put the joined, operator-visible complaint in reverse path order | `analyzer_corpus/discovery_errors_are_sorted` |
 | Dot-prefixed entries are hidden from listing, so the marker is probed by path (`corpus_harness.gd:210-212`) | `FileAccess::file_exists` on the marker path | `analyzer_corpus/ignore_marker_is_inherited_by_descendants` |
 
 The unreadable-directory row is pinned through the branch a failed `DirAccess::open`
@@ -93,7 +95,7 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | Gate, evaluation and comparison run as one pipeline over a committed `.barista`/`.out` pair (`corpus_harness.gd:273-318`) | `run_corpus_case` | `analyzer_corpus/paired_case_runs_end_to_end_against_its_expectation` |
 | `expected` on a failure is re-read from disk and lossily decoded (`corpus_harness.gd:369`) | `FileAccess::get_file_as_string(...).trim_suffix("\n")` | `analyzer_corpus/failure_expected_field_is_reread_from_disk` |
 | `fixture_index` is `{}` when the evaluation reported none (`corpus_harness.gd:315,318`) | empty `Dictionary` | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
-| Orphaned expectation failure record ordinal 1 (`corpus_harness.gd:122-128`) | `CORPUS_ORPHANED_EXPECTATION` ordinal, discovery-level | `analyzer_corpus/orphaned_expectation_is_reported_without_a_case` |
+| Orphaned expectation failure record ordinal 1 (`corpus_harness.gd:122-128`) | `CORPUS_ORPHANED_EXPECTATION` exists at the declared ordinal, but the per-case path never emits a `CorpusOutcome` carrying it: an orphan has no case to select, so it is a discovery-level fact only | the **ordinal** is pinned by the `static_assert` and runtime `CHECK` in `analyzer_corpus/failure_reason_ordinals_match_the_gdscript_enum`; `analyzer_corpus/orphaned_expectation_is_reported_without_a_case` pins only that discovery collects the orphan, not that reason 1 is ever emitted. Emitting it belongs to the aggregate run, which is a non-port below. |
 
 ## Case selection, stages and fixtures
 
@@ -103,7 +105,8 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | Exact case must be a valid relative `.barista` path (`corpus_harness.gd:98,533-539`) | `valid_case_relative` | `analyzer_corpus/valid_case_relative_rejects_traversal_and_helpers` |
 | A helper is not selectable as an exact case (`corpus_harness_test.gd:608-611`) | `valid_case_relative` rejects `HELPER_SUFFIX` | same |
 | The exact case must be discovered exactly once (`corpus_harness.gd:100-103`) | `select_discovered_case` | `analyzer_corpus/exact_case_selection_requires_one_discovered_case` |
-| Stage manifest shape: exactly 3 keys, `schema_version` integer 1, matching `foundry_revision`, `cases` object (`corpus_harness.gd:502-503`) | `validate_stage_manifest` | `analyzer_corpus/stage_manifest_shape_is_validated` |
+| An absent case and an ambiguous one are different problems and say so: GDScript reports both through one `selected.size() != 1` check (`corpus_harness.gd:101-102`) | `select_discovered_case` counts matches and emits `exact case was not discovered:` or `exact case is ambiguous:` | `analyzer_corpus/exact_case_selection_requires_one_discovered_case` |
+| Stage manifest shape: exactly 3 keys, `schema_version` integer 1, matching `foundry_revision`, `cases` object (`corpus_harness.gd:502-503`) | `validate_stage_manifest` requires `Variant::INT` exactly, so this entry point is never looser than the `StrictJsonValidator` gate in front of it | `analyzer_corpus/stage_manifest_shape_is_validated`, which passes hand-built dictionaries that bypass the gate entirely, including `1.0` and `true` |
 | Every manifest key is a valid relative case with stage `parser`/`analyzer` (`corpus_harness.gd:511-513`) | same | same |
 | Every discovered case has an entry; no extra or helper entries remain (`corpus_harness.gd:514-521`) | same | same |
 | Discovery errors and unreadable directories both abort manifest validation (`corpus_harness.gd:504-508`) | same | `analyzer_corpus/stage_manifest_shape_is_validated` (a symlinked entry for the first, an unopenable root for the second) |
@@ -122,16 +125,17 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | A failing case still prints both guards; `BS_CASE_RAN` means "ran", not "passed" (`corpus_runner.gd:63-68`, `run_corpus_triage.py:152`) | guards emitted regardless of `passed` | `analyzer_corpus/guard_lines_are_ordered_result_then_ran` |
 | Corpus mode discovers, stages, evaluates and compares the one selected case, then emits its guards (`corpus_runner.gd:35-45,63-68` with `corpus_harness.gd:63-104`) | `run_selected_corpus_case` | `analyzer_corpus/selected_corpus_case_emits_guards`, which runs only when `--corpus-case=` is supplied and is a no-op in an ordinary suite run |
 | `path` is the corpus root joined with the relative case, which the supervisor re-derives (`run_corpus_triage.py:145`) | `select_discovered_case` matches on `p_root.path_join(p_relative)` | `analyzer_corpus/exact_case_selection_requires_one_discovered_case` |
+| An infrastructure failure emits a self-describing payload, not a blank default. GDScript emits **no** payload at all on these paths (`corpus_harness.gd:66-67,91-92`, so the supervisor sees `missing_guard`); native reports reason 5 with the complaint and the best-known case identity | `describe_infrastructure_failure` | `analyzer_corpus/infrastructure_failure_emits_a_self_describing_payload` |
 
 ## Deliberate non-ports (issue #156 owns these)
 
 | GDScript behavior (file:line) | Disposition |
 | --- | --- |
-| Aggregate multi-case run and `FAIL ...` output lines (`corpus_harness.gd:105-119`) | out of scope; GDScript retains it |
-| `BS_CORPUS <passed>/<total> skipped=<n>` summary (`corpus_harness.gd:416-417`) | out of scope; still emitted by the GDScript runner the supervisor invokes |
-| `--update-expectations` and its refusal rules (`corpus_harness.gd:137-160,373-387`) | out of scope |
-| `--allow-empty` (`corpus_harness.gd:131-135`) | out of scope |
-| `ExitCode` vocabulary and `error_result` (`corpus_harness.gd:36-40,175-179`) | out of scope; native suites report through doctest and the native result record |
+| Aggregate multi-case run and `FAIL ...` output lines (`corpus_harness.gd:105-119`) | **In use.** The three `corpus_runner.gd` entries in `tests/gdscript_suites.json` are whole-corpus runs, executed in CI by `run_gdscript_suites.py` (`.github/workflows/ci.yml:238,293,312`). Deleting the aggregate run breaks those three suites. |
+| `BS_CORPUS <passed>/<total> skipped=<n>` summary (`corpus_harness.gd:416-417`) | **In use.** It is the `expect` regex of all three `tests/gdscript_suites.json` entries, is required once per case by `run_corpus_triage.py:157-158` (a missing or malformed one is terminal `missing_summary`), is pinned by `tests/test_corpus_baseline.py` and synthesized by `tests/test_run_corpus_triage.py:216`. Nothing native emits it. |
+| `--update-expectations` and its refusal rules (`corpus_harness.gd:137-160,373-387`) | **No production caller.** No script, workflow or `gdscript_suites.json` entry passes it, and `scripts/import_parser_corpus.py:635` explicitly tells importers not to: the importer owns sources, expectations and stages. Its only exercisers are `corpus_harness_test.gd` and `corpus_oracle_test.gd`, which are retired with it. |
+| `--allow-empty` (`corpus_harness.gd:131-135`) | **No production caller.** No script, workflow or `gdscript_suites.json` entry passes it; only `corpus_harness_test.gd:_test_zero_cases_fails_without_allow_empty` and `_test_runner_process_arguments` do, and both are retired with it. |
+| `ExitCode` vocabulary and `error_result` (`corpus_harness.gd:36-40,175-179`) | **In use.** `run_gdscript_suites.py` checks each `extra_invocations` process exit code, and `run_corpus_triage.py:163-164` maps exit 2 specifically to terminal `infrastructure_error`. Native suites report through doctest and the native result record instead, so the supervisor must keep treating a nonzero native exit as failure when it switches over. |
 | `_path_identity` / `_resolve_filesystem_path` alias resolution (`corpus_harness.gd:542-599`) | out of scope: it exists to stop `--update-expectations` writing through an alias into an importer-owned tree. The native path normalizes with `ProjectSettings::localize_path` and rejects a symlinked root outright, which is fail-closed for a read-only run; that replacement behavior is itself pinned by `analyzer_corpus/corpus_root_normalization_rejects_aliases_and_outside_paths`. |
 | Imported-root ownership lookup through `scripts/corpus_sources.json` (`corpus_harness.gd:437-475`) | partially ported: the registry is read only for `revision`, because the remaining branches exist to refuse updates |
 | `fixture_stages` explicit local-fixture stage selection (`corpus_harness.gd:53,477-493`) | out of scope: native corpus mode always reads `case_stages.json` at the corpus root |

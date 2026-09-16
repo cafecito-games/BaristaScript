@@ -60,6 +60,10 @@ bool remove_tree(const String &p_path) {
 	for (int i = 0; i < files.size(); i++) {
 		DirAccess::remove_absolute(p_path.path_join(files[i]));
 	}
+	// This recurses through a surviving directory symlink rather than unlinking it. Every
+	// tree it is pointed at is disposable and every link a case creates is removed before the
+	// case returns, so it never reaches outside `user://` -- but do not point it at a tree
+	// whose links may outlive the case that made them.
 	const PackedStringArray children = DirAccess::get_directories_at(p_path);
 	for (int i = 0; i < children.size(); i++) {
 		remove_tree(p_path.path_join(children[i]));
@@ -131,15 +135,42 @@ CorpusResult synthetic_result(const String &p_output, bool p_ok = true, bool p_a
 	return result;
 }
 
+/**
+ * Redirect `std::cout` for the lifetime of the guard.
+ *
+ * Restoring in the destructor rather than at a statement makes the dangerous shape
+ * unconstructible: an early return between the swap and a manual restore -- from a
+ * `BS_TEST_REQUIRE`, say -- would leave the redirect live and silently swallow the output of
+ * every later case in the process.
+ */
+class CapturedStandardOutput {
+	std::ostringstream capture;
+	std::streambuf *previous;
+
+public:
+	CapturedStandardOutput() :
+			previous(std::cout.rdbuf(capture.rdbuf())) {}
+	CapturedStandardOutput(const CapturedStandardOutput &) = delete;
+	CapturedStandardOutput &operator=(const CapturedStandardOutput &) = delete;
+	~CapturedStandardOutput() { std::cout.rdbuf(previous); }
+
+	std::string text() {
+		std::cout.flush();
+		return capture.str();
+	}
+};
+
 /** Capture what `emit_corpus_guards` writes to stdout so an ordinary run emits no guards. */
 std::vector<std::string> captured_guard_lines(const CorpusModeReport &p_report) {
-	std::ostringstream capture;
-	std::streambuf *previous = std::cout.rdbuf(capture.rdbuf());
-	emit_corpus_guards(p_report);
-	std::cout.rdbuf(previous);
+	std::string captured;
+	{
+		CapturedStandardOutput redirect;
+		emit_corpus_guards(p_report);
+		captured = redirect.text();
+	}
 	std::vector<std::string> lines;
 	std::string line;
-	std::istringstream stream(capture.str());
+	std::istringstream stream(captured);
 	while (std::getline(stream, line)) {
 		lines.push_back(line);
 	}
@@ -539,6 +570,36 @@ TEST_SUITE("analyzer_corpus") {
 		CHECK(discovery.orphaned_expectations[2] == corpus.root().path_join("zulu/orphan.out"));
 	}
 
+	TEST_CASE("discovery_errors_are_sorted") {
+		// The traversal stack is LIFO over sorted subdirectories, so errors raised in
+		// different directories would otherwise reach the operator in reverse path order.
+		TemporaryCorpus corpus("sorted_errors");
+		TemporaryCorpus target("sorted_errors_target");
+		target.write("case.barista", String("func test():\n\tpass\n"));
+		ProjectSettings *settings = ProjectSettings::get_singleton();
+		BS_TEST_REQUIRE(settings != nullptr);
+		const PackedStringArray directories = { "zulu", "alpha", "mike" };
+		PackedStringArray expected;
+		for (int i = 0; i < directories.size(); i++) {
+			corpus.write(directories[i] + String("/real.barista"), String("func test():\n\tpass\n"));
+			Ref<DirAccess> directory = DirAccess::open(corpus.root().path_join(directories[i]));
+			BS_TEST_REQUIRE(directory.is_valid());
+			const String link = corpus.root().path_join(directories[i] + String("/alias.barista"));
+			BS_TEST_REQUIRE(directory->create_link(settings->globalize_path(target.root().path_join("case.barista")),
+									settings->globalize_path(link)) == OK);
+			expected.push_back(symlink_error(link));
+		}
+		const CorpusDiscovery discovery = discover_corpus(corpus.root());
+		for (int i = 0; i < directories.size(); i++) {
+			DirAccess::remove_absolute(corpus.root().path_join(directories[i] + String("/alias.barista")));
+		}
+		expected.sort();
+		CHECK(discovery.discovery_errors == expected);
+		for (int i = 1; i < discovery.discovery_errors.size(); i++) {
+			CHECK(String(discovery.discovery_errors[i - 1]) < String(discovery.discovery_errors[i]));
+		}
+	}
+
 	TEST_CASE("unreadable_directory_is_recorded_not_skipped") {
 		// A directory that cannot be opened hides an unknown number of cases, so it is
 		// recorded rather than quietly shrinking the corpus.
@@ -562,7 +623,6 @@ TEST_SUITE("analyzer_corpus") {
 		BS_TEST_REQUIRE(settings != nullptr);
 		Ref<DirAccess> directory = DirAccess::open(corpus.root());
 		BS_TEST_REQUIRE(directory.is_valid());
-		const String link_error = "unsupported corpus symlink: ";
 
 		struct LinkedEntry {
 			const char *name;
@@ -578,7 +638,7 @@ TEST_SUITE("analyzer_corpus") {
 			const String destination = entry.destination == nullptr ? target.root() : target.root().path_join(entry.destination);
 			BS_TEST_REQUIRE(directory->create_link(settings->globalize_path(destination), settings->globalize_path(link)) == OK);
 			const CorpusDiscovery discovery = discover_corpus(corpus.root());
-			CHECK(discovery.discovery_errors.has(link_error + link));
+			CHECK(discovery.discovery_errors.has(symlink_error(link)));
 			// The real neighbour is still collected, the link is never classified as a case
 			// or an expectation, and a linked directory is never traversed into.
 			BS_TEST_REQUIRE(discovery.cases.size() == 1);
@@ -594,7 +654,7 @@ TEST_SUITE("analyzer_corpus") {
 		BS_TEST_REQUIRE(directory->create_link(settings->globalize_path(target.root().path_join("case.out")),
 								settings->globalize_path(marker_link)) == OK);
 		const CorpusDiscovery ignored = discover_corpus(corpus.root());
-		CHECK(ignored.discovery_errors.has(link_error + corpus.root() + String("/") + CORPUS_IGNORE_MARKER));
+		CHECK(ignored.discovery_errors.has(symlink_error(corpus.root() + String("/") + CORPUS_IGNORE_MARKER)));
 		CHECK(ignored.cases.is_empty());
 		CHECK(ignored.skipped_count == 1);
 		DirAccess::remove_absolute(marker_link);
@@ -675,6 +735,15 @@ TEST_SUITE("analyzer_corpus") {
 			stale[field] = "stale";
 			CHECK_FALSE(validate_stage_manifest(stale, corpus.root(), revision).error.is_empty());
 		}
+		// The strict JSON gate rejects a float spelling first in production, but this entry
+		// point is called directly and must not be looser than the gate in front of it.
+		Dictionary float_schema = manifest.duplicate(true);
+		float_schema["schema_version"] = 1.0;
+		CHECK_FALSE(validate_stage_manifest(float_schema, corpus.root(), revision).error.is_empty());
+		Dictionary boolean_schema = manifest.duplicate(true);
+		boolean_schema["schema_version"] = true;
+		CHECK_FALSE(validate_stage_manifest(boolean_schema, corpus.root(), revision).error.is_empty());
+
 		Dictionary extra_key = manifest.duplicate(true);
 		extra_key["unexpected"] = 1;
 		CHECK_FALSE(validate_stage_manifest(extra_key, corpus.root(), revision).error.is_empty());
@@ -719,7 +788,7 @@ TEST_SUITE("analyzer_corpus") {
 								settings->globalize_path(link)) == OK);
 		const CorpusStageManifest aliased = validate_stage_manifest(manifest, corpus.root(), revision);
 		DirAccess::remove_absolute(link);
-		CHECK(aliased.error == "unsupported corpus symlink: " + link);
+		CHECK(aliased.error == symlink_error(link));
 		CHECK(aliased.stages.is_empty());
 		CHECK(validate_stage_manifest(manifest, corpus.root(), revision).error.is_empty());
 
@@ -779,12 +848,14 @@ TEST_SUITE("analyzer_corpus") {
 			CHECK(error == "exact case was not discovered: " + String(undiscovered[i]));
 		}
 
-		// An ambiguous identity is refused rather than resolved to either match.
+		// An ambiguous identity is refused rather than resolved to either match, and says so:
+		// reporting it as an absence would describe the opposite of what happened.
 		CorpusDiscovery duplicated;
 		duplicated.cases.push_back(discovery.cases[0]);
 		duplicated.cases.push_back(discovery.cases[0]);
 		CHECK(select_discovered_case(duplicated, corpus.root(), "errors/case.barista", &error) == -1);
-		CHECK(error == "exact case was not discovered: errors/case.barista");
+		CHECK(error == "exact case is ambiguous: errors/case.barista");
+		CHECK_FALSE(error.contains("not discovered"));
 	}
 
 	TEST_CASE("corpus_root_normalization_rejects_aliases_and_outside_paths") {
@@ -820,7 +891,42 @@ TEST_SUITE("analyzer_corpus") {
 		const String refused = normalize_corpus_root(alias, &error);
 		DirAccess::remove_absolute(alias);
 		CHECK(refused.is_empty());
-		CHECK(error == "unsupported corpus symlink: " + alias);
+		CHECK(error == symlink_error(alias));
+	}
+
+	TEST_CASE("infrastructure_failure_emits_a_self_describing_payload") {
+		// Every other failure class names itself in the payload. A bad root, an undiscovered
+		// case, a registry problem or a manifest failure must not be the one that arrives as
+		// a blank record with an empty path and an empty message.
+		CorpusModeReport report;
+		report.selected = true;
+		report.relative_case = "errors/case.barista";
+		report.error = "corpus root is not a readable directory: res://tests/absent";
+		report.outcome.path = "res://tests/absent/errors/case.barista";
+		describe_infrastructure_failure(report);
+
+		const Dictionary payload = corpus_case_result_dictionary(report.outcome);
+		CHECK_FALSE(bool(payload["passed"]));
+		CHECK(int(payload["reason"]) == CORPUS_INVALID_RESULT);
+		CHECK(String(payload["message"]) == report.error);
+		CHECK(String(payload["path"]) == "res://tests/absent/errors/case.barista");
+		CHECK_FALSE(String(payload["message"]).is_empty());
+		CHECK_FALSE(String(payload["path"]).is_empty());
+		// The mismatch-only keys stay absent: this is not an output mismatch.
+		CHECK_FALSE(payload.has("fixture_index"));
+		CHECK_FALSE(payload.has("analysis_ran"));
+
+		// A run that raised no error, and one with no selection, are both left untouched.
+		CorpusModeReport passing;
+		passing.selected = true;
+		passing.outcome.passed = true;
+		passing.outcome.path = "res://case.barista";
+		describe_infrastructure_failure(passing);
+		CHECK(passing.outcome.passed);
+		CorpusModeReport unselected;
+		unselected.error = "ignored because nothing was selected";
+		describe_infrastructure_failure(unselected);
+		CHECK(unselected.outcome.message.is_empty());
 	}
 
 	TEST_CASE("guard_lines_are_ordered_result_then_ran") {

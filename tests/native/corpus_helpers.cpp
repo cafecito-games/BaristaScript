@@ -299,7 +299,7 @@ CorpusDiscovery discover_corpus(const String &p_root) {
 			ignored = true;
 		}
 		if (directory->is_link(CORPUS_IGNORE_MARKER)) {
-			discovery.discovery_errors.push_back(vformat("unsupported corpus symlink: %s/%s", directory_path, CORPUS_IGNORE_MARKER));
+			discovery.discovery_errors.push_back(symlink_error(directory_path + String("/") + CORPUS_IGNORE_MARKER));
 		}
 
 		PackedStringArray subdirectories;
@@ -312,7 +312,7 @@ CorpusDiscovery discover_corpus(const String &p_root) {
 			}
 			const String entry_path = directory_path + String("/") + name;
 			if (directory->is_link(entry_path)) {
-				discovery.discovery_errors.push_back("unsupported corpus symlink: " + entry_path);
+				discovery.discovery_errors.push_back(symlink_error(entry_path));
 				continue;
 			}
 			if (DirAccess::dir_exists_absolute(entry_path)) {
@@ -354,6 +354,9 @@ CorpusDiscovery discover_corpus(const String &p_root) {
 	discovery.cases.sort_custom<CasePathComparator>();
 	discovery.orphaned_expectations.sort();
 	discovery.unreadable_directories.sort();
+	// The traversal stack is LIFO over sorted subdirectories, so without this the joined
+	// complaint would list directories in reverse path order.
+	discovery.discovery_errors.sort();
 	return discovery;
 }
 
@@ -507,6 +510,10 @@ Dictionary corpus_case_result_dictionary(const CorpusOutcome &p_outcome) {
 	return result;
 }
 
+String symlink_error(const String &p_path) {
+	return "unsupported corpus symlink: " + p_path;
+}
+
 bool valid_case_relative(const String &p_path) {
 	if (!p_path.ends_with(CORPUS_CASE_EXTENSION) || p_path.ends_with(CORPUS_HELPER_SUFFIX) ||
 			p_path.contains("\\") || p_path.begins_with("/")) {
@@ -561,8 +568,9 @@ CorpusJsonDocument read_unique_json(const String &p_path) {
 CorpusStageManifest validate_stage_manifest(const Dictionary &p_stages, const String &p_root, const String &p_revision) {
 	CorpusStageManifest manifest;
 	const Variant schema_version = p_stages.get("schema_version", Variant());
-	const bool numeric_schema = schema_version.get_type() == Variant::INT || schema_version.get_type() == Variant::FLOAT;
-	if (p_stages.keys().size() != 3 || !numeric_schema || double(schema_version) != 1.0 ||
+	// Integer 1 exactly, matching StrictJsonValidator. This entry point is called directly,
+	// so it cannot lean on the strict gate having rejected a float spelling first.
+	if (p_stages.keys().size() != 3 || schema_version.get_type() != Variant::INT || int64_t(schema_version) != 1 ||
 			p_stages.get("foundry_revision", Variant()) != Variant(p_revision) ||
 			p_stages.get("cases", Variant()).get_type() != Variant::DICTIONARY) {
 		manifest.error = "invalid/stale case stage manifest: " + p_root;
@@ -665,7 +673,7 @@ String normalize_corpus_root(const String &p_root, String *r_error) {
 	const Ref<DirAccess> parent = DirAccess::open(root.get_base_dir());
 	if (parent.is_valid() && parent->is_link(root)) {
 		if (r_error != nullptr) {
-			*r_error = "unsupported corpus symlink: " + root;
+			*r_error = symlink_error(root);
 		}
 		return String();
 	}
@@ -685,34 +693,42 @@ int select_discovered_case(const CorpusDiscovery &p_discovery, const String &p_r
 	}
 	const String selected_path = p_root.path_join(p_relative);
 	int selected = -1;
+	int matches = 0;
 	for (int i = 0; i < p_discovery.cases.size(); i++) {
 		if (p_discovery.cases[i].path == selected_path) {
-			// A second match means the identity is ambiguous, so neither is executed.
-			selected = selected >= 0 ? -2 : i;
+			selected = i;
+			matches++;
 		}
 	}
-	if (selected < 0) {
-		if (r_error != nullptr) {
-			*r_error = "exact case was not discovered: " + p_relative;
-		}
-		return -1;
+	if (matches == 1) {
+		return selected;
 	}
-	return selected;
+	if (r_error != nullptr) {
+		// A duplicated identity is refused rather than resolved to either match, and must not
+		// be reported as an absence: the two are different problems for whoever reads the log.
+		*r_error = matches == 0 ? "exact case was not discovered: " + p_relative
+								: "exact case is ambiguous: " + p_relative;
+	}
+	return -1;
 }
 
-CorpusModeReport run_selected_corpus_case() {
+static CorpusModeReport selected_corpus_case_report() {
 	CorpusModeReport report;
 	report.relative_case = corpus_case();
 	if (report.relative_case.is_empty()) {
 		return report;
 	}
 	report.selected = true;
+	// A best-effort identity from the moment the selection is known, so a failure raised
+	// before discovery still names the case it was asked about.
+	report.outcome.path = String(corpus_root()).path_join(report.relative_case);
 	String error;
 	const String root = normalize_corpus_root(corpus_root(), &error);
 	if (!error.is_empty()) {
 		report.error = error;
 		return report;
 	}
+	report.outcome.path = root.path_join(report.relative_case);
 	if (!valid_case_relative(report.relative_case)) {
 		report.error = "invalid exact case: " + report.relative_case;
 		return report;
@@ -731,6 +747,7 @@ CorpusModeReport run_selected_corpus_case() {
 		report.error = error;
 		return report;
 	}
+	report.outcome.expectation_path = discovery.cases[selected].expectation_path;
 	const CorpusJsonDocument registry = read_unique_json("res://../scripts/corpus_sources.json");
 	if (!registry.error.is_empty()) {
 		report.error = registry.error;
@@ -761,6 +778,25 @@ CorpusModeReport run_selected_corpus_case() {
 		fixture_paths = staging_fixture_paths();
 	}
 	report.outcome = run_corpus_case(selected_case, fixture_paths);
+	return report;
+}
+
+void describe_infrastructure_failure(CorpusModeReport &p_report) {
+	if (!p_report.selected || p_report.error.is_empty()) {
+		return;
+	}
+	// This is the one failure class whose payload would otherwise be blank. It carries the
+	// same INVALID_RESULT reason a malformed evaluation does, plus the complaint that already
+	// reached stdout, so the machine-readable record is self-describing too.
+	p_report.outcome.passed = false;
+	p_report.outcome.reason = CORPUS_INVALID_RESULT;
+	p_report.outcome.message = p_report.error;
+	p_report.outcome.expected = FileAccess::get_file_as_string(p_report.outcome.expectation_path).trim_suffix("\n");
+}
+
+CorpusModeReport run_selected_corpus_case() {
+	CorpusModeReport report = selected_corpus_case_report();
+	describe_infrastructure_failure(report);
 	return report;
 }
 

@@ -65,7 +65,9 @@ struct CorpusDiscovery {
 /**
  * Walk `p_root`, pairing `.barista` sources with `.out` expectations.
  *
- * Everything is path-sorted, so a result never depends on directory iteration order.
+ * Every returned array is sorted, so a result never depends on directory iteration order --
+ * including `discovery_errors`, which reaches operators through joined diagnostics and would
+ * otherwise emerge in the LIFO order of the traversal stack.
  * A symlinked entry is recorded as a discovery error and is never traversed or classified.
  */
 CorpusDiscovery discover_corpus(const godot::String &p_root);
@@ -115,6 +117,9 @@ CorpusOutcome run_corpus_case(const CorpusCase &p_case, const godot::PackedStrin
  * `analysis_ran` accompany a pass and an output mismatch only.
  */
 godot::Dictionary corpus_case_result_dictionary(const CorpusOutcome &p_outcome);
+
+/** The one spelling of the discovery complaint about a symlinked corpus entry. */
+godot::String symlink_error(const godot::String &p_path);
 
 /** Whether `p_path` is a relative, traversal-free, non-helper `.barista` case path. */
 bool valid_case_relative(const godot::String &p_path);
@@ -166,8 +171,9 @@ godot::String normalize_corpus_root(const godot::String &p_root, godot::String *
 /**
  * The index into `p_discovery.cases` of the single case at `p_root`/`p_relative`.
  *
- * Returns -1 with `r_error` set when the case was not discovered, and refuses a duplicated
- * path rather than picking one of the two.
+ * Returns -1 with `r_error` set when the case was not discovered, and separately when the path
+ * matched more than once: an ambiguous identity is refused rather than resolved to either
+ * match, and says so rather than claiming the case was absent.
  */
 int select_discovered_case(const CorpusDiscovery &p_discovery, const godot::String &p_root,
 		const godot::String &p_relative, godot::String *r_error);
@@ -175,10 +181,22 @@ int select_discovered_case(const CorpusDiscovery &p_discovery, const godot::Stri
 struct CorpusModeReport {
 	/** False when no `--corpus-case=` was given, which is every ordinary suite run. */
 	bool selected = false;
+	/**
+	 * An infrastructure complaint raised before, or instead of, a comparison. It is also
+	 * copied into `outcome` so the emitted payload is self-describing for this failure class
+	 * exactly as it is for every other one.
+	 */
 	godot::String error;
 	godot::String relative_case;
 	CorpusOutcome outcome;
 };
+
+/**
+ * Fill `p_report.outcome` from an infrastructure `error`, so that failure class emits a
+ * self-describing payload instead of a blank default the way every other class already does.
+ * Does nothing when no case was selected or no error was raised.
+ */
+void describe_infrastructure_failure(CorpusModeReport &p_report);
 
 /** Discover, stage, evaluate and compare the case named by `--corpus-root=`/`--corpus-case=`. */
 CorpusModeReport run_selected_corpus_case();
