@@ -12,6 +12,7 @@ import io
 import json
 from pathlib import Path
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -47,9 +48,9 @@ ANALYZER_ROOT = 'res://tests/corpus/analyzer'
 
 
 def native_completion_line(nonce, *, cases=1, assertions=3, failed_cases=0, failed_assertions=0,
-                           suite=triage.NATIVE_SUITE, build_id=BUILD_ID):
+                           suite=triage.NATIVE_SUITE, build_id=BUILD_ID, case=triage.NATIVE_CORPUS_CASE):
     return native.RESULT_PREFIX + json.dumps(dict(
-        protocol=native.PROTOCOL_VERSION, suite=suite, case=triage.NATIVE_CORPUS_CASE, nonce=nonce,
+        protocol=native.PROTOCOL_VERSION, suite=suite, case=case, nonce=nonce,
         build_id=build_id, build_info=metadata(), cases=cases, assertions=assertions,
         failed_cases=failed_cases, failed_assertions=failed_assertions))
 
@@ -305,7 +306,7 @@ class ReportTests(unittest.TestCase):
                 return dict(output=output, exit_code=0, timed_out=False, duration_seconds=0.001)
 
             arguments = ['--godot', 'fake-godot', '--corpus', inventory['root'],
-                         '--report', str(report_path), '--jobs', str(jobs)]
+                         '--report', str(report_path), '--execution', 'isolated', '--jobs', str(jobs)]
             if explicit_library:
                 arguments += ['--library', str(library)]
             for case in cases:
@@ -328,6 +329,8 @@ class ReportTests(unittest.TestCase):
             self.assertTrue(projects)
             self.assertTrue(all(not project.parent.exists() for project in projects))
             self.assertEqual(report['selected_cases'], cases)
+            self.assertEqual(report['execution'], 'isolated')
+            self.assertEqual(report['library_bracket_scope'], 'per_case')
             self.assertFalse(report['complete_population'])
             self.assertEqual(report['inventory_sha256'], triage.digest(root / 'project/tests/corpus/analyzer/inventory.json'))
             self.assertEqual(report['checkout_info'], checkout)
@@ -460,7 +463,8 @@ class ReportTests(unittest.TestCase):
                     os.kill(os.getpid(), signal.SIGINT)
 
             arguments = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
-                         '--report', str(report_path), '--jobs', str(len(cases)), '--timeout', '30']
+                         '--report', str(report_path), '--execution', 'isolated',
+                         '--jobs', str(len(cases)), '--timeout', '30']
             for case in cases:
                 arguments += ['--case', case]
             interrupter = threading.Thread(target=interrupt_when_all_cases_are_running)
@@ -557,6 +561,266 @@ class ReportTests(unittest.TestCase):
                     redirect_stderr(stream):
                 self.assertEqual(triage.main(arguments), 2)
             self.assertIn('native build id', stream.getvalue())
+
+
+class FastPathTests(unittest.TestCase):
+    """The whole-corpus path and, above all, its refusal to report a partial run as a whole one."""
+
+    fixture = ReportTests.fixture
+
+    @staticmethod
+    def slice_bounds(total, shard, shards):
+        """The same contiguous split corpus_shard_slice performs in C++."""
+        base, remainder = divmod(total, shards)
+        begin = shard * base + min(shard, remainder)
+        return begin, begin + base + (1 if shard < remainder else 0)
+
+    def shard_output(self, inventory, records, *, nonce, shard, shards, order='ascending',
+                     planned=None, emitted=None, completed=None, announce_completion=True,
+                     root=None, total=None, start=None, failing=()):
+        pinned = set(inventory['ledger']['expected_failures']) | set(failing)
+        population = sorted(records)
+        if order == 'reverse':
+            population.reverse()
+        begin, finish = self.slice_bounds(len(population), shard, shards)
+        cases = population[begin:finish]
+        lines = [triage.CORPUS_PLAN_PREFIX + json.dumps(dict(
+            planned=len(cases) if planned is None else planned, order=order,
+            root=inventory['root'] if root is None else root, shard=shard, shards=shards,
+            total=len(population) if total is None else total,
+            start=begin if start is None else start))]
+        for case in cases[:len(cases) if emitted is None else emitted]:
+            expected = records[case]['expected_block']
+            if case in pinned:
+                payload = dict(passed=False, reason=4, path=inventory['root'] + '/' + case,
+                               expectation_path=inventory['root'] + '/' + case.removesuffix('.barista') + '.out',
+                               message='output mismatch', expected=expected, actual='diverged block',
+                               fixture_index={}, analysis_ran=True)
+            else:
+                payload = dict(passed=True, path=inventory['root'] + '/' + case, expected=expected,
+                               actual=expected, analysis_ran=True, fixture_index={})
+            lines.append(triage.CASE_RESULT_PREFIX + json.dumps(payload))
+            lines.append(triage.CASE_GUARD_PREFIX + case)
+        if announce_completion:
+            lines.append(triage.CORPUS_COMPLETE_PREFIX + json.dumps(dict(
+                planned=len(cases) if planned is None else planned,
+                completed=len(cases) if completed is None else completed, shard=shard, shards=shards)))
+        lines.append(native_completion_line(nonce, case=triage.NATIVE_WHOLE_CORPUS_CASE))
+        return '\n'.join(lines) + '\n'
+
+    @contextmanager
+    def fast_run(self, *, shards=1, order='ascending', extra_arguments=(), damaged_shard=None,
+                 exit_code=0, **damage):
+        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+            records = {record['imported_path']: record for record in inventory['sources']
+                       if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
+            commands = []
+
+            def shard_process(command, timeout, **hooks):
+                commands.append(command)
+                nonce = next(argument.removeprefix('--native-nonce=') for argument in command
+                             if argument.startswith('--native-nonce='))
+                shard = int(next(argument.removeprefix('--corpus-shard=') for argument in command
+                                 if argument.startswith('--corpus-shard=')))
+                declared = int(next(argument.removeprefix('--corpus-shards=') for argument in command
+                                    if argument.startswith('--corpus-shards=')))
+                applied = damage if damaged_shard in (shard, 'every') else {}
+                return dict(output=self.shard_output(inventory, records, nonce=nonce, shard=shard,
+                                                     shards=declared, order=order, **applied),
+                            exit_code=exit_code if damaged_shard in (shard, 'every') else 0,
+                            timed_out=False, duration_seconds=1.5 + shard)
+
+            arguments = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
+                         '--report', str(report_path), '--shards', str(shards), *extra_arguments]
+            stderr = io.StringIO()
+            with patch.object(triage, 'supervise', side_effect=shard_process), redirect_stderr(stderr):
+                result = triage.main(arguments)
+            yield result, json.loads(report_path.read_text()), stderr.getvalue(), commands, inventory, records
+
+    def test_an_unsharded_run_is_one_process_and_adjudicates_the_pin(self):
+        with self.fast_run() as (result, report, stderr, commands, inventory, records):
+            self.assertEqual(result, 0, stderr)
+            self.assertEqual(len(commands), 1, 'an unsharded fast run spawns exactly one Godot process')
+            self.assertIn(f'--native-case={triage.NATIVE_WHOLE_CORPUS_CASE}', commands[0])
+            self.assertIn(f'--corpus-root={inventory["root"]}', commands[0])
+            self.assertIn('--corpus-order=ascending', commands[0])
+            self.assertIn('--corpus-shard=0', commands[0])
+            self.assertIn('--corpus-shards=1', commands[0])
+            self.assertFalse(any(argument.startswith('--corpus-case=') for argument in commands[0]))
+            self.assertTrue(report['completed'])
+            self.assertTrue(report['complete_population'])
+            self.assertEqual(report['execution'], 'fast')
+            self.assertEqual(report['shards'], 1)
+            self.assertEqual(report['library_bracket_scope'], 'per_shard')
+            self.assertEqual([record['case'] for record in report['results']], sorted(records))
+            self.assertEqual(report['expected_failure_complaints'], [])
+            self.assertEqual(report['unowned_failures'], [])
+            pinned = set(inventory['ledger']['expected_failures'])
+            self.assertEqual({record['case'] for record in report['results'] if not record['passed']}, pinned)
+            self.assertEqual(report['build_info'], metadata())
+
+    def test_shards_partition_the_population_across_concurrent_processes(self):
+        for shards in (2, 3, 6):
+            with self.subTest(shards=shards), self.fast_run(shards=shards) as (
+                    result, report, stderr, commands, inventory, records):
+                self.assertEqual(result, 0, stderr)
+                self.assertEqual(len(commands), shards)
+                self.assertEqual(sorted(int(argument.removeprefix('--corpus-shard='))
+                                        for command in commands for argument in command
+                                        if argument.startswith('--corpus-shard=')), list(range(shards)))
+                self.assertEqual(report['shards'], shards)
+                # Records stay in case order however the slices were distributed.
+                self.assertEqual([record['case'] for record in report['results']], sorted(records))
+                self.assertEqual(report['expected_failure_complaints'], [])
+                # Every case is attributed to exactly one shard, and every shard carries some.
+                attribution = {record['case']: record['shard'] for record in report['results']}
+                self.assertEqual(sorted(set(attribution.values())), list(range(shards)))
+                self.assertEqual(sum(plan['planned'] for plan in report['shard_plans']), len(records))
+
+    def test_a_reversed_run_orders_the_population_before_slicing_it(self):
+        with self.fast_run(shards=2, order='reverse', extra_arguments=('--order', 'reverse')) as (
+                result, report, stderr, commands, inventory, records):
+            self.assertEqual(result, 0, stderr)
+            self.assertTrue(all('--corpus-order=reverse' in command for command in commands))
+            self.assertEqual(report['order'], 'reverse')
+            self.assertEqual([record['case'] for record in report['results']], sorted(records))
+            # Reversing moves cases between shards, so shard 0 holds the tail of the ascending order.
+            first = [record['case'] for record in report['results'] if record['shard'] == 0]
+            self.assertEqual(sorted(first), sorted(sorted(records)[len(records) - len(first):]))
+        # A shard that ran a different order than the one requested is not the requested run.
+        with self.fast_run(shards=2, order='ascending', extra_arguments=('--order', 'reverse')) as (
+                result, report, stderr, commands, inventory, records):
+            self.assertEqual(result, 2)
+            self.assertIn('not the requested order', stderr)
+            self.assertFalse(report['completed'])
+
+    def test_a_shard_that_stops_before_its_last_case_is_refused(self):
+        """The fast path's whole reason to be trustworthy: absent evidence is never a pass.
+
+        The disguised exit is the one that matters. A shard killed at case 400 of 1078 still
+        printed 399 well-formed records, and with several shards the run around it finished
+        cleanly, so nothing but the missing completion line distinguishes it from a short run
+        that worked.
+        """
+        truncations = (
+            dict(announce_completion=False),
+            dict(announce_completion=False, emitted=1),
+            dict(completed=1),
+            dict(emitted=1),
+        )
+        for shards in (1, 4):
+            for damaged in range(shards):
+                for truncation in truncations:
+                    for exit_code in (0, -9):
+                        with self.subTest(shards=shards, damaged=damaged, exit_code=exit_code,
+                                          truncation=sorted(truncation)), \
+                                self.fast_run(shards=shards, damaged_shard=damaged,
+                                              exit_code=exit_code, **truncation) as (
+                                result, report, stderr, commands, inventory, records):
+                            self.assertEqual(result, 2, stderr)
+                            self.assertFalse(report['completed'])
+                            self.assertFalse(report['results'])
+                            self.assertIn('infrastructure_error', report)
+                            self.assertNotIn('summary', report)
+
+    def test_a_shard_that_misreports_its_slice_is_refused(self):
+        misreports = (
+            (dict(start=0), 'gap or an overlap'),
+            (dict(planned=0, emitted=0, completed=0), 'the shards cover'),
+            (dict(total=3), 'the imported ledger declares'),
+            (dict(root='res://tests/corpus/parser'), 'not the requested root'),
+        )
+        for damage, expected in misreports:
+            with self.subTest(damage=sorted(damage)), self.fast_run(
+                    shards=3, damaged_shard=2, **damage) as (result, report, stderr, *_):
+                self.assertEqual(result, 2)
+                self.assertIn(expected, stderr)
+                self.assertFalse(report['completed'])
+
+    def test_a_duplicated_slice_cannot_pass_as_coverage(self):
+        """Two shards claiming the same cases keep the count right and the population wrong."""
+        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+            records = {record['imported_path']: record for record in inventory['sources']
+                       if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
+
+            def shard_process(command, timeout, **hooks):
+                nonce = next(argument.removeprefix('--native-nonce=') for argument in command
+                             if argument.startswith('--native-nonce='))
+                shard = int(next(argument.removeprefix('--corpus-shard=') for argument in command
+                                 if argument.startswith('--corpus-shard=')))
+                own = self.shard_output(inventory, records, nonce=nonce, shard=shard, shards=2)
+                if shard == 0:
+                    return dict(output=own, exit_code=0, timed_out=False, duration_seconds=1.0)
+                # Shard 1 re-emits as many of shard 0's cases as its own slice holds, while still
+                # declaring its own boundaries and count. Every structural check therefore passes
+                # and only the case names disagree: the population is short by shard 1's slice.
+                kept = [line for line in own.splitlines()
+                        if not line.startswith((triage.CASE_RESULT_PREFIX, triage.CASE_GUARD_PREFIX))]
+                borrowed = [line for line in
+                            self.shard_output(inventory, records, nonce=nonce, shard=0, shards=2).splitlines()
+                            if line.startswith((triage.CASE_RESULT_PREFIX, triage.CASE_GUARD_PREFIX))]
+                planned = json.loads(kept[0].removeprefix(triage.CORPUS_PLAN_PREFIX))['planned']
+                return dict(output='\n'.join([kept[0], *borrowed[:2 * planned], *kept[1:]]) + '\n',
+                            exit_code=0, timed_out=False, duration_seconds=1.0)
+
+            stderr = io.StringIO()
+            with patch.object(triage, 'supervise', side_effect=shard_process), redirect_stderr(stderr):
+                result = triage.main(['--godot', 'fake-godot', '--library', str(library), '--corpus',
+                                      inventory['root'], '--report', str(report_path), '--shards', '2'])
+            self.assertEqual(result, 2)
+            self.assertIn('did not evaluate exactly the declared population', stderr.getvalue())
+
+    def test_an_undeclared_failure_complains_and_names_the_isolated_rerun(self):
+        """The pin still bites on the fast path, and the complaint says how to pinpoint it."""
+        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+            records = {record['imported_path']: record for record in inventory['sources']
+                       if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
+            undeclared = sorted(records)[0]
+            self.assertNotIn(undeclared, inventory['ledger']['expected_failures'])
+
+            def shard_process(command, timeout, **hooks):
+                nonce = next(argument.removeprefix('--native-nonce=') for argument in command
+                             if argument.startswith('--native-nonce='))
+                shard = int(next(argument.removeprefix('--corpus-shard=') for argument in command
+                                 if argument.startswith('--corpus-shard=')))
+                return dict(output=self.shard_output(inventory, records, nonce=nonce, shard=shard,
+                                                     shards=2, failing=(undeclared,)),
+                            exit_code=0, timed_out=False, duration_seconds=1.0)
+
+            stderr = io.StringIO()
+            with patch.object(triage, 'supervise', side_effect=shard_process), redirect_stderr(stderr):
+                result = triage.main(['--godot', 'fake-godot', '--library', str(library), '--corpus',
+                                      inventory['root'], '--report', str(report_path), '--shards', '2'])
+            self.assertEqual(result, 1)
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report['summary'], {'mismatch': 1, 'passed': len(records) - 1})
+            self.assertTrue(any(complaint.startswith(undeclared + ':') and 'not declared in expected_failures' in complaint
+                                for complaint in report['expected_failure_complaints']),
+                            report['expected_failure_complaints'])
+            self.assertIn('--execution isolated --case ' + shlex.quote(undeclared), stderr.getvalue())
+
+    def test_narrowing_parallelism_and_slicing_belong_to_their_own_paths(self):
+        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+            population = len(triage.validate_imported_tree(
+                root / 'project/tests/corpus/analyzer', inventory, project_root=root / 'project'))
+            base = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
+                    '--report', str(report_path)]
+            refusals = (
+                (['--case', cases[0]], 'isolated'),
+                (['--jobs', '4'], 'isolated'),
+                (['--execution', 'isolated', '--order', 'reverse'], '--order'),
+                (['--execution', 'isolated', '--shards', '4'], '--shards'),
+                (['--shards', '0'], 'shards must be a positive integer'),
+                # More shards than cases would leave shards proving they evaluated nothing.
+                ([f'--shards', str(population + 1)], 'must not exceed'),
+            )
+            for extra, expected in refusals:
+                with self.subTest(extra=extra):
+                    stream = io.StringIO()
+                    with patch.object(triage, 'supervise', side_effect=AssertionError('no process may run')), \
+                            redirect_stderr(stream):
+                        self.assertEqual(triage.main(base + extra), 2)
+                    self.assertIn(expected, stream.getvalue())
 
 
 @unittest.skipUnless(GODOT and LIBRARY, 'pass --godot and --library for actual same-process corpus transport')

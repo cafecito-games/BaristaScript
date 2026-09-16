@@ -348,8 +348,12 @@ CORPUS_TRIAGE_STEP = {
            ' --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
            ' --corpus res://tests/corpus/analyzer'
            ' --report "$RUNNER_TEMP/analyzer-corpus-triage.json"'
-           ' --jobs 4'
-           ' --timeout 90',
+           ' --execution fast'
+           # One shard per vCPU on the GitHub-hosted x86_64 Linux runner. Each shard is a
+           # single-threaded, CPU-bound Godot process, so more shards than cores would only
+           # oversubscribe and fewer would leave the runner idle.
+           ' --shards 4'
+           ' --timeout 900',
 }
 
 
@@ -361,6 +365,14 @@ def check_corpus_triage_wiring(workflow: str) -> str | None:
     binds the pin to what the analyzer actually does, and it reports through its exit
     status, so the pinned command must select the complete population -- an exact --case
     selection judges only the cases it names -- and must stay free to fail its job.
+
+    The pinned command runs the whole corpus in four concurrent processes, each taking a
+    contiguous slice. That is safe only because the supervisor refuses a run whose shards do
+    not tile the population and whose own completion evidence does not account for every case
+    the imported ledger declares, so a truncated or missing shard is an infrastructure error
+    rather than a shorter baseline. The execution mode and the shard count are part of the
+    exact comparison below for that reason: a smaller count is slower but sound, while any
+    change to either alters what this job attests to.
     """
     try:
         job_steps = workflow_steps(workflow)

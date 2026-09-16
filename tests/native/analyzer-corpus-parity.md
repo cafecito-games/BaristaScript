@@ -6,7 +6,9 @@ Native suite `analyzer_corpus` (`tests/native/analyzer_corpus_test.cpp`,
 comparison, failure taxonomy and guard emission of
 `project/tests/corpus_harness.gd`.
 
-Scope is the **per-case** path that `scripts/run_corpus_triage.py` supervises. The
+Scope is the case-evaluation path that `scripts/run_corpus_triage.py` supervises, in
+both the whole-corpus process it uses by default and the one-process-per-case path it keeps
+for pinpointing. The
 aggregate multi-case run, `--update-expectations`, `--allow-empty`, the `BS_CORPUS`
 summary line and the `_path_identity` alias machinery that exists to protect
 importer-owned trees from updates stay in GDScript; they are retired by issue #156.
@@ -140,3 +142,45 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | `_path_identity` / `_resolve_filesystem_path` alias resolution (`corpus_harness.gd:542-599`) | out of scope: it exists to stop `--update-expectations` writing through an alias into an importer-owned tree. The native path normalizes with `ProjectSettings::localize_path` and rejects a symlinked root outright, which is fail-closed for a read-only run; that replacement behavior is itself pinned by `analyzer_corpus/corpus_root_normalization_rejects_aliases_and_outside_paths`. |
 | Imported-root ownership lookup through `scripts/corpus_sources.json` (`corpus_harness.gd:437-475`) | partially ported: the registry is read only for `revision`, because the remaining branches exist to refuse updates |
 | `fixture_stages` explicit local-fixture stage selection (`corpus_harness.gd:53,477-493`) | out of scope: native corpus mode always reads `case_stages.json` at the corpus root |
+
+## Whole-corpus execution (not a GDScript parity row)
+
+The rows above cover what one case evaluation does. They are unchanged by the addition of
+the whole-corpus path, because that path reuses them verbatim: `prepare_corpus_environment`
+establishes the root, discovery, stage manifest and fixture list once, and every case then
+goes through the same `evaluate_environment_case` -> `run_corpus_case` ->
+`compare_corpus_result` sequence and the same `emit_corpus_guards` that a single-case
+process uses. There is no second adjudication to keep in parity.
+
+What is genuinely new is the completion evidence. A process that evaluates one case proves
+it ran by exiting: the supervisor sees one payload, one guard and one native completion
+record, and a crash costs it all of them. A process that evaluates hundreds of cases keeps
+everything it printed before it died, so it must say how much it meant to do and how much it
+did:
+
+| Line | Meaning |
+| --- | --- |
+| `BS_CORPUS_PLAN {"planned":N,"order":...,"root":...,"shard":i,"shards":S,"total":T,"start":s}` | printed once, after discovery and manifest validation, before the first case |
+| `BS_CASE_RESULT <json>` / `BS_CASE_RAN <relative>` | one pair per case, byte-identical to the single-case emission |
+| `BS_CORPUS_COMPLETE {"planned":N,"completed":M,"shard":i,"shards":S}` | printed once, only after the last planned case has been emitted |
+
+`--corpus-shards=S` splits the ordered population into S contiguous slices and
+`--corpus-shard=i` selects one; `corpus_shard_slice` is the arithmetic, pinned by
+`analyzer_corpus/shard_slices_tile_the_population_exactly`. An unsharded run is shard 0 of 1,
+the single-slice case of the same arithmetic rather than a separate path.
+
+`run_corpus_triage.py` refuses the run unless every shard reports exactly once, each shard's
+`planned`, `completed` and guarded-record count agree, the shards' slices tile the population
+from zero with no gap and no overlap, and the union of the case names they emitted equals the
+population the imported ledger declares -- with the counts checked alongside the set, so a
+duplicated case cannot hide inside a set comparison. A truncated, missing or duplicated shard
+is therefore an infrastructure error rather than a short baseline.
+`analyzer_corpus/whole_corpus_emits_guarded_records` asserts only that the run reached its own
+plan, never a per-case outcome, which is what lets the process exit zero while emitting the
+residual failures the pin declares.
+
+Each case is wrapped in its own `StorageFixture`, so the ambient `user://` subtree,
+declaration index and cache are rebuilt from nothing before every evaluation exactly as they
+are in a fresh process. `--corpus-order=reverse` exists to check that. It orders the whole
+population before it is sliced, so it changes both the sequence within a shard and which
+cases share a process, and every case must still report the same outcome.

@@ -12,14 +12,37 @@
 
 namespace barista_script::native_tests {
 
-// The `--corpus-root=` / `--corpus-case=` values selecting the single corpus case this
-// process evaluates. Both are empty for an ordinary, non-corpus run.
+/** The two `--corpus-order=` values. Ascending is the discovery order; reverse is the exact
+ *  opposite of it, and exists so a whole-corpus run can prove its outcomes do not depend on
+ *  the order the cases ran in. */
+inline constexpr const char *CORPUS_ORDER_ASCENDING = "ascending";
+inline constexpr const char *CORPUS_ORDER_REVERSE = "reverse";
+
+// The `--corpus-root=` / `--corpus-case=` values selecting the corpus work this process does.
+// Both are empty for an ordinary, non-corpus run. A root without a case selects the whole
+// corpus; a case without a root is refused by the runner.
 
 const godot::String &corpus_root();
 const godot::String &corpus_case();
 
-/** Record the parsed pair. The runner calls this once from `_process`, after argument
+/** The requested case order. Empty outside a whole-corpus run. */
+const godot::String &corpus_order();
+
+/**
+ * The contiguous slice of the ordered population this process evaluates.
+ *
+ * `corpus_shard_count()` is 1 and `corpus_shard()` is 0 for an unsharded whole-corpus run,
+ * which is therefore the single-slice case of the same arithmetic rather than a second path.
+ */
+int corpus_shard();
+int corpus_shard_count();
+
+/** Whether this process was asked to evaluate corpus cases rather than one named case. */
+bool whole_corpus_selected();
+
+/** Record the parsed arguments. The runner calls this once from `_process`, after argument
  *  validation and before any case runs. */
-void set_corpus_arguments(const godot::String &p_root, const godot::String &p_case);
+void set_corpus_arguments(const godot::String &p_root, const godot::String &p_case,
+		const godot::String &p_order, int p_shard, int p_shard_count);
 
 } //namespace barista_script::native_tests

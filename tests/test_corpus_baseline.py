@@ -360,7 +360,7 @@ class AnalyzerImportedTree(ImportedTreeShape):
         self.assertEqual(ledger["skipped"], self.baseline["skipped"])
 
     def test_the_analyzer_claims_no_gdscript_runner_invocation(self):
-        """Its cases are run by scripts/run_corpus_triage.py, one process each.
+        """Its cases are run by scripts/run_corpus_triage.py, not the GDScript runner.
 
         The aggregate runner root would collect them, and 168 pinned failures
         would make that run red, so the corpus must be absent from the manifest.

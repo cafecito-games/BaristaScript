@@ -10,6 +10,7 @@
 
 #include "bs_corpus_sentinels.h"
 #include "native_corpus_arguments.h"
+#include "storage_fixture.h"
 
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
@@ -715,6 +716,65 @@ int select_discovered_case(const CorpusDiscovery &p_discovery, const String &p_r
 	return -1;
 }
 
+CorpusEnvironment prepare_corpus_environment(const String &p_root_argument) {
+	CorpusEnvironment environment;
+	environment.root = normalize_corpus_root(p_root_argument, &environment.error);
+	if (!environment.error.is_empty()) {
+		return environment;
+	}
+	environment.discovery = discover_corpus(environment.root);
+	if (!environment.discovery.discovery_errors.is_empty()) {
+		environment.error = String("; ").join(environment.discovery.discovery_errors);
+		return environment;
+	}
+	if (!environment.discovery.unreadable_directories.is_empty()) {
+		environment.error = "corpus directory is unreadable: " + String(environment.discovery.unreadable_directories[0]);
+		return environment;
+	}
+	const CorpusJsonDocument registry = read_unique_json("res://../scripts/corpus_sources.json");
+	if (!registry.error.is_empty()) {
+		environment.error = registry.error;
+		return environment;
+	}
+	if (registry.document.get("revision", Variant()).get_type() != Variant::STRING) {
+		environment.error = "invalid corpus registry revision";
+		return environment;
+	}
+	const CorpusJsonDocument document = read_unique_json(environment.root.path_join("case_stages.json"));
+	if (!document.error.is_empty()) {
+		environment.error = document.error;
+		return environment;
+	}
+	const CorpusStageManifest manifest = validate_stage_manifest(document.document, environment.root,
+			registry.document["revision"]);
+	if (!manifest.error.is_empty()) {
+		environment.error = manifest.error;
+		return environment;
+	}
+	environment.stages = manifest.stages;
+	if (corpus_path_under(environment.root, CORPUS_ANALYZER_ROOT) ||
+			corpus_path_under(CORPUS_ANALYZER_ROOT, environment.root)) {
+		environment.fixture_paths = analyzer_fixture_paths();
+	}
+	return environment;
+}
+
+CorpusModeReport evaluate_environment_case(const CorpusEnvironment &p_environment, int p_index) {
+	CorpusModeReport report;
+	report.selected = true;
+	CorpusCase selected_case = p_environment.discovery.cases[p_index];
+	report.relative_case = selected_case.path.trim_prefix(p_environment.root + String("/"));
+	report.outcome.path = selected_case.path;
+	report.outcome.expectation_path = selected_case.expectation_path;
+	if (!p_environment.stages.has(selected_case.path)) {
+		report.error = "unregistered case has no manifest entry: " + selected_case.path;
+		return report;
+	}
+	selected_case.stage = p_environment.stages[selected_case.path];
+	report.outcome = run_corpus_case(selected_case, p_environment.fixture_paths);
+	return report;
+}
+
 static CorpusModeReport selected_corpus_case_report() {
 	CorpusModeReport report;
 	report.relative_case = corpus_case();
@@ -725,63 +785,80 @@ static CorpusModeReport selected_corpus_case_report() {
 	// A best-effort identity from the moment the selection is known, so a failure raised
 	// before discovery still names the case it was asked about.
 	report.outcome.path = String(corpus_root()).path_join(report.relative_case);
-	String error;
-	const String root = normalize_corpus_root(corpus_root(), &error);
-	if (!error.is_empty()) {
-		report.error = error;
+	const CorpusEnvironment environment = prepare_corpus_environment(corpus_root());
+	if (!environment.error.is_empty()) {
+		report.error = environment.error;
 		return report;
 	}
-	report.outcome.path = root.path_join(report.relative_case);
+	report.outcome.path = environment.root.path_join(report.relative_case);
 	if (!valid_case_relative(report.relative_case)) {
 		report.error = "invalid exact case: " + report.relative_case;
 		return report;
 	}
-	const CorpusDiscovery discovery = discover_corpus(root);
-	if (!discovery.discovery_errors.is_empty()) {
-		report.error = String("; ").join(discovery.discovery_errors);
-		return report;
-	}
-	if (!discovery.unreadable_directories.is_empty()) {
-		report.error = "corpus directory is unreadable: " + String(discovery.unreadable_directories[0]);
-		return report;
-	}
-	const int selected = select_discovered_case(discovery, root, report.relative_case, &error);
+	String error;
+	const int selected = select_discovered_case(environment.discovery, environment.root, report.relative_case, &error);
 	if (selected < 0) {
 		report.error = error;
 		return report;
 	}
-	report.outcome.expectation_path = discovery.cases[selected].expectation_path;
-	const CorpusJsonDocument registry = read_unique_json("res://../scripts/corpus_sources.json");
-	if (!registry.error.is_empty()) {
-		report.error = registry.error;
-		return report;
+	return evaluate_environment_case(environment, selected);
+}
+
+CorpusShardSlice corpus_shard_slice(int p_total, int p_shard, int p_shard_count) {
+	CorpusShardSlice slice;
+	if (p_shard_count < 1 || p_shard < 0 || p_shard >= p_shard_count || p_total < 0) {
+		return slice;
 	}
-	if (registry.document.get("revision", Variant()).get_type() != Variant::STRING) {
-		report.error = "invalid corpus registry revision";
-		return report;
+	const int base = p_total / p_shard_count;
+	const int remainder = p_total % p_shard_count;
+	slice.start = p_shard * base + (p_shard < remainder ? p_shard : remainder);
+	slice.end = slice.start + base + (p_shard < remainder ? 1 : 0);
+	return slice;
+}
+
+CorpusWholeRunReport run_whole_corpus() {
+	CorpusWholeRunReport run;
+	const CorpusEnvironment environment = prepare_corpus_environment(corpus_root());
+	if (!environment.error.is_empty()) {
+		run.error = environment.error;
+		return run;
 	}
-	const CorpusJsonDocument document = read_unique_json(root.path_join("case_stages.json"));
-	if (!document.error.is_empty()) {
-		report.error = document.error;
-		return report;
+	const bool reversed = corpus_order() == String(CORPUS_ORDER_REVERSE);
+	run.total = environment.discovery.cases.size();
+	const CorpusShardSlice slice = corpus_shard_slice(run.total, corpus_shard(), corpus_shard_count());
+	run.start = slice.start;
+	run.planned = slice.end - slice.start;
+	Dictionary plan;
+	plan["planned"] = run.planned;
+	plan["order"] = reversed ? CORPUS_ORDER_REVERSE : CORPUS_ORDER_ASCENDING;
+	plan["root"] = environment.root;
+	plan["shard"] = corpus_shard();
+	plan["shards"] = corpus_shard_count();
+	plan["total"] = run.total;
+	plan["start"] = run.start;
+	std::cout << "BS_CORPUS_PLAN " << JSON::stringify(plan).utf8().get_data() << std::endl;
+	for (int offset = slice.start; offset < slice.end; offset++) {
+		// The order is applied to the whole population and the slice is cut from the result,
+		// so reversing moves cases between shards as well as within one.
+		const int index = reversed ? run.total - 1 - offset : offset;
+		{
+			// One scope per case, exactly as a single-case process gets one for its only case:
+			// the ambient user:// subtree, declaration index and cache are rebuilt from nothing
+			// before each evaluation rather than inherited from the case before it.
+			StorageFixture fixture;
+			CorpusModeReport report = evaluate_environment_case(environment, index);
+			describe_infrastructure_failure(report);
+			emit_corpus_guards(report);
+		}
+		run.completed++;
 	}
-	const CorpusStageManifest manifest = validate_stage_manifest(document.document, root, registry.document["revision"]);
-	if (!manifest.error.is_empty()) {
-		report.error = manifest.error;
-		return report;
-	}
-	CorpusCase selected_case = discovery.cases[selected];
-	if (!manifest.stages.has(selected_case.path)) {
-		report.error = "unregistered case has no manifest entry: " + selected_case.path;
-		return report;
-	}
-	selected_case.stage = manifest.stages[selected_case.path];
-	PackedStringArray fixture_paths;
-	if (corpus_path_under(root, CORPUS_ANALYZER_ROOT) || corpus_path_under(CORPUS_ANALYZER_ROOT, root)) {
-		fixture_paths = analyzer_fixture_paths();
-	}
-	report.outcome = run_corpus_case(selected_case, fixture_paths);
-	return report;
+	Dictionary completion;
+	completion["planned"] = run.planned;
+	completion["completed"] = run.completed;
+	completion["shard"] = corpus_shard();
+	completion["shards"] = corpus_shard_count();
+	std::cout << "BS_CORPUS_COMPLETE " << JSON::stringify(completion).utf8().get_data() << std::endl;
+	return run;
 }
 
 void describe_infrastructure_failure(CorpusModeReport &p_report) {

@@ -58,7 +58,8 @@ bool BaristaNativeTestRunner::_process(double) {
 		return false;
 	}
 	ran = true;
-	godot::String suite, case_name, nonce, corpus_root_argument, corpus_case_argument;
+	godot::String suite, case_name, nonce, corpus_root_argument, corpus_case_argument, corpus_order_argument;
+	godot::String corpus_shard_argument, corpus_shards_argument;
 	bool listing = false;
 	for (const godot::String &argument : godot::OS::get_singleton()->get_cmdline_user_args()) {
 		if (argument.begins_with("--native-suite=")) {
@@ -73,6 +74,12 @@ bool BaristaNativeTestRunner::_process(double) {
 			corpus_root_argument = argument.trim_prefix("--corpus-root=");
 		} else if (argument.begins_with("--corpus-case=")) {
 			corpus_case_argument = argument.trim_prefix("--corpus-case=");
+		} else if (argument.begins_with("--corpus-order=")) {
+			corpus_order_argument = argument.trim_prefix("--corpus-order=");
+		} else if (argument.begins_with("--corpus-shard=")) {
+			corpus_shard_argument = argument.trim_prefix("--corpus-shard=");
+		} else if (argument.begins_with("--corpus-shards=")) {
+			corpus_shards_argument = argument.trim_prefix("--corpus-shards=");
 		} else {
 			std::cerr << "Unknown native runner argument: " << argument.utf8().get_data() << std::endl;
 			quit(2);
@@ -84,12 +91,43 @@ bool BaristaNativeTestRunner::_process(double) {
 		quit(2);
 		return false;
 	}
-	if (corpus_case_argument.is_empty() != corpus_root_argument.is_empty()) {
-		std::cerr << "Corpus mode requires both --corpus-root= and --corpus-case=" << std::endl;
+	// A root alone selects the whole corpus in this one process; a root with a case selects
+	// that single case. A case without a root names nothing and is refused.
+	if (corpus_root_argument.is_empty() && !corpus_case_argument.is_empty()) {
+		std::cerr << "--corpus-case= requires --corpus-root=" << std::endl;
 		quit(2);
 		return false;
 	}
-	barista_script::native_tests::set_corpus_arguments(corpus_root_argument, corpus_case_argument);
+	const bool whole_corpus = !corpus_root_argument.is_empty() && corpus_case_argument.is_empty();
+	if (corpus_order_argument.is_empty()) {
+		corpus_order_argument = whole_corpus ? barista_script::native_tests::CORPUS_ORDER_ASCENDING : godot::String();
+	} else if (!whole_corpus || (corpus_order_argument != barista_script::native_tests::CORPUS_ORDER_ASCENDING && corpus_order_argument != barista_script::native_tests::CORPUS_ORDER_REVERSE)) {
+		std::cerr << "--corpus-order= accepts ascending or reverse, and only for a whole-corpus run" << std::endl;
+		quit(2);
+		return false;
+	}
+	// Shard 0 of 1 is an unsharded whole-corpus run, so the sliced and unsliced runs share one
+	// arithmetic rather than branching. Both values are refused outside a whole-corpus run.
+	int shard_index = 0;
+	int shard_count = 1;
+	if (!corpus_shard_argument.is_empty() || !corpus_shards_argument.is_empty()) {
+		if (!whole_corpus || !corpus_shard_argument.is_valid_int() || !corpus_shards_argument.is_valid_int()) {
+			std::cerr << "--corpus-shard= and --corpus-shards= are integers, required together, "
+						 "and only for a whole-corpus run"
+					  << std::endl;
+			quit(2);
+			return false;
+		}
+		shard_index = int(corpus_shard_argument.to_int());
+		shard_count = int(corpus_shards_argument.to_int());
+		if (shard_count < 1 || shard_index < 0 || shard_index >= shard_count) {
+			std::cerr << "--corpus-shard= must name one of --corpus-shards= slices, counted from zero" << std::endl;
+			quit(2);
+			return false;
+		}
+	}
+	barista_script::native_tests::set_corpus_arguments(corpus_root_argument, corpus_case_argument,
+			corpus_order_argument, shard_index, shard_count);
 	doctest::Context context;
 	context.setOption("order-by", "name");
 	context.setOption("case-sensitive", true);

@@ -654,8 +654,9 @@ def generate(inv: dict, source: Path, destination: Path, *, project_root: Path |
         f'{len(SHARED_SUPPORT_ROOTS)} supplied by the existing external parser-owned delivery.\n'
         f'Generated helper projections: {sum("projection" in record for record in inv["sources"])}.\n'
         f'Residual failures pinned in `tests/corpus_baseline.json`: {len(inv["ledger"]["expected_failures"])}.\n'
-        'Cases are supervised case-by-case by `scripts/run_corpus_triage.py`; every included dependency\n'
-        'remains available. No script body executes.\n')
+        'Cases are supervised by `scripts/run_corpus_triage.py`, in sharded whole-corpus processes by\n'
+        'default and one process per case under `--execution isolated`; every included dependency remains\n'
+        'available. No script body executes.\n')
 
 
 def write_tree(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
