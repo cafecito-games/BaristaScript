@@ -359,6 +359,46 @@ class RuntimeTests(unittest.TestCase):
                                         "wrong-library-check", artifact["build_id"], artifact["build_info"]))
         self.assertNotIn(runner.RESULT_PREFIX, completed.stdout)
 
+    def test_complete_corpus_argument_pair_is_accepted(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        with runner.staged_project(artifact) as project:
+            completed = runner.invoke(GODOT, project, "tokenizer", "integer_range_is_exact",
+                                      "corpus-accept", 60, corpus_root=str(project),
+                                      corpus_case="cases/example.barista")
+        self.assertEqual([], runner.evaluate(completed.returncode, completed.stdout, "tokenizer",
+                          "integer_range_is_exact", "corpus-accept", artifact["build_id"],
+                          artifact["build_info"]), completed.stdout)
+
+    def test_incomplete_corpus_argument_pair_is_rejected(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        for selection in (dict(corpus_case="cases/example.barista"), dict(corpus_root="/tmp/corpus")):
+            with self.subTest(**selection):
+                with runner.staged_project(artifact) as project:
+                    completed = runner.invoke(GODOT, project, "tokenizer", "", "corpus-pair-check",
+                                              60, **selection)
+                self.assertEqual(2, completed.returncode, completed.stdout)
+                self.assertIn("Corpus mode requires both", completed.stdout)
+
+    def test_unknown_argument_is_still_rejected(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        with runner.staged_project(artifact) as project:
+            # `invoke` cannot emit an unrecognized flag, so the command line is built directly.
+            command = [str(GODOT), "--headless", "--path", str(project), "--main-loop",
+                       "BaristaNativeTestRunner", "--", "--native-suite=tokenizer",
+                       "--native-case=", "--native-nonce=corpus-unknown-check", "--corpus-bogus=1"]
+            completed = runner.supervise(command, 60)
+        self.assertEqual(2, completed.returncode, completed.stdout)
+        self.assertIn("Unknown native runner argument", completed.stdout)
+
+    def test_ordinary_invocation_without_corpus_arguments_still_runs(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        with runner.staged_project(artifact) as project:
+            completed = runner.invoke(GODOT, project, "tokenizer", "integer_range_is_exact",
+                                      "corpus-regression", 60)
+        self.assertEqual([], runner.evaluate(completed.returncode, completed.stdout, "tokenizer",
+                          "integer_range_is_exact", "corpus-regression", artifact["build_id"],
+                          artifact["build_info"]), completed.stdout)
+
     def test_unknown_case_and_query_emit_no_execution_evidence(self):
         artifact = runner.read_artifact(BUILD_DIR)
         for case, listing in (("no such case", False), ("INTEGER_RANGE_IS_EXACT", False), ("", True)):
