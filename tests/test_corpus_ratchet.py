@@ -7,14 +7,21 @@
 
 """The residual-failure pin may only ever shrink, and must match what a run observes.
 
-Growth is measured against the newest committed baseline that differs from the working
-tree, so an uncommitted addition is caught before it is committed and a committed one is
-caught afterwards. Shrinking is enforced by the triage run itself: a pinned case that
-passes is a failure, which is what keeps a pin from outliving the bug it describes.
+Growth is measured against every committed state this checkout can resolve: the newest
+commit whose pin differs from the working tree, and the merge base with the upstream
+default branch when one exists. References only ever add complaints, so a missing merge
+base weakens nothing and the one-commit lookback is required rather than optional.
+
+Reference selection compares the pin, never the baseline file: an unrelated edit to the
+baseline must not move the comparison onto the very commit that grew the pin.
+
+Shrinking is enforced by the triage run itself: a pinned case that passes is a failure,
+which is what keeps a pin from outliving the bug it describes.
 """
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -24,6 +31,7 @@ import corpus_registry
 import run_corpus_triage as triage
 
 BASELINE = 'tests/corpus_baseline.json'
+UPSTREAM_BRANCH = 'origin/main'
 
 
 def expected_failures_by_corpus(document):
@@ -34,92 +42,281 @@ def expected_failures_by_corpus(document):
     return {name: set(entry.get('expected_failures') or []) for name, entry in corpora.items()}
 
 
-def committed_baseline(repository, reference):
-    """The baseline document at ``reference``, or an empty document when it has none."""
-    if reference is None:
-        return {}
-    try:
-        return json.loads(corpus_registry.run_git(repository, 'show', f'{reference}:{BASELINE}'))
-    except (ValueError, json.JSONDecodeError):
-        return {}
+def imported_corpora(document):
+    """The corpora a document actually imports, and which therefore may hold a pin."""
+    corpora = document.get('corpora') if isinstance(document, dict) else None
+    if not isinstance(corpora, dict):
+        return set()
+    return {name for name, entry in corpora.items() if entry.get('imported', True) is not False}
 
 
-def previous_reference(repository):
-    """The newest committed state that differs from the baseline being checked.
+def growth(previous_document, current_document):
+    """Every pin entry present now and absent before, named with its corpus.
 
-    With an uncommitted edit that is HEAD itself; with a clean tree the edit, if any, is in
-    the tip commit, so the comparison has to reach one commit further back.
+    A corpus the previous state did not import contributes nothing: the ledger forbids it a
+    pin at all while it is pending, so its first pin is establishment rather than growth.
+    Once imported, every later entry has to have been there before.
     """
-    current = (repository / BASELINE).read_bytes()
-    try:
-        head = corpus_registry.run_git(repository, 'show', f'HEAD:{BASELINE}')
-    except ValueError:
-        return None
-    if head.strip() != current.decode('utf-8').strip():
-        return 'HEAD'
-    try:
-        corpus_registry.run_git(repository, 'rev-parse', '--verify', 'HEAD~1')
-    except ValueError:
-        return None
-    return 'HEAD~1'
-
-
-def growth(previous, current):
-    """Every pin entry present now and absent before, named with its corpus."""
+    previous = expected_failures_by_corpus(previous_document)
+    current = expected_failures_by_corpus(current_document)
+    established = imported_corpora(previous_document)
     complaints = []
     for name in sorted(current):
+        if name not in established:
+            continue
         for path in sorted(current[name] - previous.get(name, set())):
             complaints.append(f'corpus {name!r}: {path} was added to expected_failures; '
                               'the residual-failure pin may only ever shrink')
     return complaints
 
 
+def working_baseline(repository):
+    return json.loads((repository / BASELINE).read_bytes())
+
+
+def committed_baseline(repository, reference):
+    """The baseline document at ``reference``, or None when it carries none."""
+    try:
+        return json.loads(corpus_registry.run_git(repository, 'show', f'{reference}:{BASELINE}'))
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+def resolved_commit(repository, reference):
+    try:
+        return corpus_registry.run_git(repository, 'rev-parse', '--verify', f'{reference}^{{commit}}')
+    except ValueError:
+        return None
+
+
+def merge_base_commit(repository, reference=UPSTREAM_BRANCH):
+    if resolved_commit(repository, reference) is None:
+        return None
+    try:
+        return corpus_registry.run_git(repository, 'merge-base', 'HEAD', reference)
+    except ValueError:
+        return None
+
+
+def previous_references(repository):
+    """Every committed state the working tree's pin must not have grown against.
+
+    The first reference is the newest commit whose *pin* differs from the working tree: an
+    uncommitted pin change makes that HEAD, and an unchanged pin means the change, if any,
+    is in the tip commit, so the comparison has to reach one commit further back. Comparing
+    the baseline file instead would let any unrelated edit snap the comparison onto HEAD and
+    hide growth that HEAD already carries.
+    """
+    current = expected_failures_by_corpus(working_baseline(repository))
+    head = committed_baseline(repository, 'HEAD')
+    candidates = []
+    if head is None:
+        candidates.append('HEAD')
+    elif current != expected_failures_by_corpus(head):
+        candidates.append('HEAD')
+    else:
+        candidates.append('HEAD~1')
+    candidates.append(merge_base_commit(repository))
+    references = []
+    seen = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        commit = resolved_commit(repository, candidate)
+        document = committed_baseline(repository, candidate) if commit is not None else None
+        if commit is None or document is None or commit in seen:
+            continue
+        seen.add(commit)
+        references.append((candidate, document))
+    return references
+
+
+def repository_complaints(repository):
+    references = previous_references(repository)
+    current = working_baseline(repository)
+    complaints = []
+    for _, document in references:
+        for complaint in growth(document, current):
+            if complaint not in complaints:
+                complaints.append(complaint)
+    return references, complaints
+
+
+def document(corpora):
+    """A minimal baseline document: ``name -> (expected_failures, imported)``."""
+    return {'corpora': {name: {'expected_failures': list(failures), 'imported': imported}
+                        for name, (failures, imported) in corpora.items()}}
+
+
 class GrowthDetection(unittest.TestCase):
     def test_growth_names_each_added_entry(self):
-        complaints = growth({'analyzer': {'a.barista'}}, {'analyzer': {'a.barista', 'b.barista', 'c.barista'}})
+        complaints = growth(document({'analyzer': (['a.barista'], True)}),
+                            document({'analyzer': (['a.barista', 'b.barista', 'c.barista'], True)}))
         self.assertEqual(len(complaints), 2)
         self.assertIn('b.barista', complaints[0])
         self.assertIn('c.barista', complaints[1])
         self.assertTrue(all('may only ever shrink' in complaint for complaint in complaints))
 
     def test_growth_accepts_a_shrinking_pin(self):
-        self.assertEqual(growth({'analyzer': {'a.barista', 'b.barista'}}, {'analyzer': {'a.barista'}}), [])
+        self.assertEqual(growth(document({'analyzer': (['a.barista', 'b.barista'], True)}),
+                                document({'analyzer': (['a.barista'], True)})), [])
 
     def test_growth_accepts_an_unchanged_pin(self):
-        self.assertEqual(growth({'analyzer': {'a.barista'}}, {'analyzer': {'a.barista'}}), [])
+        self.assertEqual(growth(document({'analyzer': (['a.barista'], True)}),
+                                document({'analyzer': (['a.barista'], True)})), [])
 
-    def test_growth_judges_a_corpus_the_previous_baseline_did_not_have(self):
-        complaints = growth({'parser': set()}, {'parser': set(), 'analyzer': {'a.barista'}})
+    def test_a_first_pin_on_a_newly_imported_corpus_is_establishment(self):
+        # corpus_ledger forbids a pending corpus any pin at all, so promotion is the one
+        # moment a pin may appear; every entry after that is judged against it.
+        promoted = growth(document({'analyzer': ([], False)}),
+                          document({'analyzer': (['a.barista', 'b.barista'], True)}))
+        self.assertEqual(promoted, [])
+        after = growth(document({'analyzer': (['a.barista', 'b.barista'], True)}),
+                       document({'analyzer': (['a.barista', 'b.barista', 'c.barista'], True)}))
+        self.assertEqual(len(after), 1)
+        self.assertIn('c.barista', after[0])
+
+    def test_a_corpus_absent_from_the_previous_baseline_is_establishment(self):
+        self.assertEqual(growth(document({'parser': ([], True)}),
+                                document({'parser': ([], True), 'analyzer': (['a.barista'], True)})), [])
+
+    def test_an_imported_corpus_that_was_imported_before_is_judged(self):
+        complaints = growth(document({'analyzer': ([], True)}), document({'analyzer': (['a.barista'], True)}))
         self.assertEqual(len(complaints), 1)
         self.assertIn("corpus 'analyzer'", complaints[0])
 
     def test_expected_failures_are_read_per_corpus(self):
-        document = {'corpora': {'parser': {'expected_failures': []},
-                                'analyzer': {'expected_failures': ['x.barista']}}}
-        self.assertEqual(expected_failures_by_corpus(document), {'parser': set(), 'analyzer': {'x.barista'}})
+        parsed = expected_failures_by_corpus({'corpora': {'parser': {'expected_failures': []},
+                                                          'analyzer': {'expected_failures': ['x.barista']}}})
+        self.assertEqual(parsed, {'parser': set(), 'analyzer': {'x.barista'}})
 
 
-class PreviousCommitLookup(unittest.TestCase):
+class TemporaryRepository:
+    """A throwaway git repository holding only a baseline, driven through run_git."""
+
+    def __init__(self, stack):
+        self.root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+        (self.root / 'tests').mkdir()
+        self.git('init', '-q')
+        self.git('symbolic-ref', 'HEAD', 'refs/heads/main')
+
+    def git(self, *arguments):
+        return corpus_registry.run_git(self.root, '-c', 'user.email=ratchet@example.invalid',
+                                       '-c', 'user.name=Ratchet', '-c', 'commit.gpgsign=false', *arguments)
+
+    def write(self, corpora, **extra):
+        payload = document(corpora)
+        for name, entry in payload['corpora'].items():
+            entry.update(extra.get(name, {}))
+        (self.root / BASELINE).write_text(json.dumps(payload, indent=2) + '\n')
+
+    def commit(self, message):
+        self.git('add', '-A')
+        self.git('commit', '-q', '-m', message)
+        return self.git('rev-parse', 'HEAD')
+
+
+class ReferenceSelection(unittest.TestCase):
+    def setUp(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        self.repository = TemporaryRepository(stack)
+
+    def test_an_uncommitted_pin_addition_is_caught_against_head(self):
+        self.repository.write({'analyzer': (['a.barista'], True)})
+        self.repository.commit('base')
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)})
+        references, complaints = repository_complaints(self.repository.root)
+        self.assertEqual([label for label, _ in references], ['HEAD'])
+        self.assertEqual(len(complaints), 1)
+        self.assertIn('b.barista', complaints[0])
+
+    def test_a_committed_pin_addition_is_caught_against_the_grandparent(self):
+        self.repository.write({'analyzer': (['a.barista'], True)})
+        self.repository.commit('base')
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)})
+        self.repository.commit('grow the pin')
+        references, complaints = repository_complaints(self.repository.root)
+        self.assertEqual([label for label, _ in references], ['HEAD~1'])
+        self.assertEqual(len(complaints), 1)
+        self.assertIn('b.barista', complaints[0])
+
+    def test_an_unrelated_dirty_baseline_edit_does_not_hide_committed_growth(self):
+        # The escape this test exists for: selecting the reference by comparing the baseline
+        # file rather than the pin snapped the comparison onto HEAD, which already carried
+        # the added entry, so the addition compared equal to itself and vanished.
+        self.repository.write({'analyzer': (['a.barista'], True)})
+        self.repository.commit('base')
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)})
+        self.repository.commit('grow the pin')
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)}, analyzer={'total': 1078})
+        self.assertNotEqual((self.repository.root / BASELINE).read_text(),
+                            self.repository.git('show', f'HEAD:{BASELINE}') + '\n')
+        references, complaints = repository_complaints(self.repository.root)
+        self.assertEqual([label for label, _ in references], ['HEAD~1'])
+        self.assertEqual(len(complaints), 1)
+        self.assertIn('b.barista', complaints[0])
+
+    def test_growth_in_an_earlier_branch_commit_is_caught_against_the_merge_base(self):
+        # A one-commit lookback alone cannot see this: HEAD~1 already carries the addition.
+        self.repository.write({'analyzer': (['a.barista'], True)})
+        base = self.repository.commit('base')
+        self.repository.git('update-ref', f'refs/remotes/{UPSTREAM_BRANCH}', base)
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)})
+        self.repository.commit('grow the pin')
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)}, analyzer={'total': 7})
+        self.repository.commit('unrelated tip commit')
+        self.assertEqual(growth(committed_baseline(self.repository.root, 'HEAD~1'),
+                                working_baseline(self.repository.root)), [])
+        references, complaints = repository_complaints(self.repository.root)
+        self.assertIn(base, [self.repository.git('rev-parse', label) for label, _ in references])
+        self.assertEqual(len(complaints), 1)
+        self.assertIn('b.barista', complaints[0])
+
+    def test_a_missing_upstream_branch_leaves_the_one_commit_lookback(self):
+        self.repository.write({'analyzer': (['a.barista'], True)})
+        self.repository.commit('base')
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)})
+        self.repository.commit('grow the pin')
+        self.assertIsNone(merge_base_commit(self.repository.root))
+        references, complaints = repository_complaints(self.repository.root)
+        self.assertEqual([label for label, _ in references], ['HEAD~1'])
+        self.assertEqual(len(complaints), 1)
+
+    def test_an_orphan_first_commit_resolves_no_reference(self):
+        self.repository.write({'analyzer': ([], True)})
+        self.repository.commit('only commit')
+        self.assertEqual(previous_references(self.repository.root), [])
+
+    def test_duplicate_references_are_compared_once(self):
+        self.repository.write({'analyzer': (['a.barista'], True)})
+        base = self.repository.commit('base')
+        self.repository.write({'analyzer': (['a.barista', 'b.barista'], True)})
+        self.repository.commit('grow the pin')
+        self.repository.git('update-ref', f'refs/remotes/{UPSTREAM_BRANCH}', base)
+        references, complaints = repository_complaints(self.repository.root)
+        self.assertEqual(len(references), 1)
+        self.assertEqual(len(complaints), 1)
+
+
+class GitAccess(unittest.TestCase):
     def test_the_previous_baseline_is_read_through_the_shared_git_helper(self):
         with patch.object(corpus_registry, 'run_git', return_value='{"corpora": {}}') as helper:
             self.assertEqual(committed_baseline(ROOT, 'HEAD~1'), {'corpora': {}})
         helper.assert_called_once_with(ROOT, 'show', f'HEAD~1:{BASELINE}')
 
-    def test_a_reference_without_the_baseline_reads_as_an_empty_document(self):
+    def test_a_reference_without_the_baseline_reads_as_no_document(self):
         with patch.object(corpus_registry, 'run_git', side_effect=ValueError('no such path')):
-            self.assertEqual(committed_baseline(ROOT, 'HEAD~1'), {})
-
-    def test_the_repository_resolves_a_previous_reference(self):
-        self.assertIn(previous_reference(ROOT), ('HEAD', 'HEAD~1'))
+            self.assertIsNone(committed_baseline(ROOT, 'HEAD~1'))
 
 
 class RepositoryRatchet(unittest.TestCase):
     def test_expected_failures_did_not_grow_since_the_previous_commit(self):
-        reference = previous_reference(ROOT)
-        current = expected_failures_by_corpus(json.loads((ROOT / BASELINE).read_bytes()))
+        current = expected_failures_by_corpus(working_baseline(ROOT))
         self.assertIn('parser', current, 'the baseline under test was not parsed')
-        self.assertIsNotNone(reference, 'no committed baseline to compare against; the ratchet needs the full history')
-        complaints = growth(expected_failures_by_corpus(committed_baseline(ROOT, reference)), current)
+        references, complaints = repository_complaints(ROOT)
+        self.assertTrue(references, 'no committed baseline to compare against; the ratchet needs the full history')
         self.assertEqual(complaints, [], '\n'.join(complaints))
 
 
