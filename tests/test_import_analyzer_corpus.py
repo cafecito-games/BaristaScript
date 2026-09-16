@@ -678,25 +678,32 @@ class AnalyzerImport(unittest.TestCase):
 
 
 class TriageGuard(unittest.TestCase):
+    COMPLETION = {'cases': 1, 'assertions': 4, 'failed_cases': 0, 'failed_assertions': 0}
+
     def test_duplicate_result_fields_are_malformed(self):
         import run_corpus_triage as triage
         payload = '{"path":"res://fixture/case.barista","passed":false,"passed":true,"expected":"BS_TEST_OK","actual":"BS_TEST_OK"}'
-        process = {'output': 'BS_CASE_RESULT ' + payload + '\nBS_CASE_RAN case.barista\nBS_CORPUS 1/1 skipped=2\n', 'exit_code': 0, 'timed_out': False}
-        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['terminal'], 'malformed_result')
+        process = {'output': 'BS_CASE_RESULT ' + payload + '\nBS_CASE_RAN case.barista\n', 'exit_code': 0, 'timed_out': False}
+        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['terminal'],
+                         'malformed_result')
 
     def test_exit_zero_without_execution_is_failure(self):
         import run_corpus_triage as triage
         process = {'output': '', 'exit_code': 0, 'timed_out': False}
-        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['terminal'], 'missing_guard')
+        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['terminal'],
+                         'missing_guard')
         payload = {'path': 'res://fixture/case.barista', 'passed': True, 'expected': 'BS_TEST_OK', 'actual': 'BS_TEST_OK'}
-        process['output'] = 'BS_CASE_RESULT ' + json.dumps(payload) + '\nBS_CASE_RAN case.barista\nBS_CORPUS 1/1 skipped=2\n'
-        self.assertTrue(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['passed'])
-        for change in ['BS_CASE_RAN other.barista', 'BS_CORPUS 0/0 skipped=0']:
-            broken = dict(process)
-            broken['output'] = process['output'].replace('BS_CASE_RAN case.barista' if change.startswith('BS_CASE') else 'BS_CORPUS 1/1 skipped=2', change)
-            self.assertFalse(triage.result_record(broken, 'case.barista', 'res://fixture', 'BS_TEST_OK')['passed'])
+        process['output'] = 'BS_CASE_RESULT ' + json.dumps(payload) + '\nBS_CASE_RAN case.barista\n'
+        self.assertTrue(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['passed'])
+        broken = dict(process, output=process['output'].replace('BS_CASE_RAN case.barista', 'BS_CASE_RAN other.barista'))
+        self.assertFalse(triage.result_record(broken, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['passed'])
+        # A completion record that did not run exactly this one case cannot report a pass either.
+        for completion in (dict(self.COMPLETION, cases=0), dict(self.COMPLETION, assertions=0),
+                           dict(self.COMPLETION, failed_cases=1)):
+            self.assertFalse(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', completion)['passed'])
         process['timed_out'] = True
-        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['terminal'], 'timeout')
+        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['terminal'],
+                         'timeout')
 
     def test_timeout_supervises_real_process_and_preserves_output(self):
         import run_corpus_triage as triage

@@ -236,12 +236,13 @@ jobs:
           # here: the runner discovers every project/tests/*_test.gd and fails the job unless the
           # run printed the guard sentinel that only executed code can produce.
           python3 tests/run_gdscript_suites.py --godot "$godot_binary"
-          python3 tests/test_run_corpus_triage.py --godot "$godot_binary" --library project/bin/linux/libbarista_script.linux.template_debug.x86_64.so
 
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/test_run_native_suites.py --godot "$godot_binary"
           python3 tests/test_native_storage.py --godot "$godot_binary"
           python3 tests/run_native_suites.py --godot "$godot_binary"
+          python3 tests/test_run_corpus_triage.py --godot "$godot_binary" \
+            --library "$(python3 -c "import json; print(json.load(open('build/native-scons/native-artifact.json'))['library'])")"
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=no
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_release barista_tests=no

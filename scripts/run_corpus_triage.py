@@ -7,12 +7,14 @@
 
 """Supervise static corpus cases in isolated Godot processes (30s per case).
 
-Cases run one at a time by default; --jobs runs several at once, each in its own staged
-project. Concurrency changes only timing, never a recorded outcome or its ordering.
+Each case is evaluated by the native analyzer_corpus suite hosted by stock Godot, so the
+library must be a barista_tests build. Cases run one at a time by default; --jobs runs
+several at once, each in its own staged project. Concurrency changes only timing, never a
+recorded outcome or its ordering.
 
-Exit zero requires each selected case's JSON result, exact-case execution guard,
-aggregate guard, full expected/actual block agreement and a successful process.
-Nonzero reports are discovery evidence, never passing corpus baselines.
+Exit zero requires each selected case's JSON result, exact-case execution guard, the
+native completion record of the same process, full expected/actual block agreement and a
+successful process. Nonzero reports are discovery evidence, never passing corpus baselines.
 """
 from __future__ import annotations
 
@@ -26,7 +28,6 @@ import math
 import os
 from pathlib import Path
 import queue
-import re
 import signal
 import shutil
 import subprocess
@@ -36,58 +37,99 @@ import threading
 import time
 import uuid
 
-from corpus_registry import ROOT, local_path, read_json, run_git, tree_entries
+from corpus_registry import ROOT, load_registry, local_path, read_json, run_git, tree_entries
 from corpus_stages import validate_stages
 from corpus_expectations import decode_expectation
 from corpus_ledger import validate_triage_ledger
-from build_config import require_equal
-from build_metadata import inspect_artifact_bytes
-from query_build_info import checkout_info, parse_record
-from run_native_suites import staged_project
+from build_config import parse_json, require_equal
+from build_metadata import inspect_artifact_bytes, verify_identity
+from query_build_info import checkout_info
+from run_native_suites import PROTOCOL_VERSION, RESULT_FIELDS, RESULT_PREFIX, staged_project
+
+NATIVE_SUITE = 'analyzer_corpus'
+# The one registered analyzer_corpus case that evaluates a single externally selected case.
+NATIVE_CORPUS_CASE = 'selected_corpus_case_emits_guards'
+STAGING_ROOT = 'res://tests/corpus_staging/analyzer'
+NATIVE_BUILD_DIRECTORY = 'build/native-scons'
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def permitted_corpus_roots():
+    """The only roots a case may be evaluated from, refused by intent rather than by accident.
+
+    The native suite reads case_stages.json from whatever root it is handed, so a root
+    outside this set could carry a planted manifest that evaluates a case at a stage it
+    was never adjudicated for and silently turn a failing case into a passing one. Only
+    the registry's own destinations and the importer-owned staging root are trusted to
+    carry that manifest.
+    """
+    destinations = {record['destination'] for record in load_registry(ROOT)['corpora'].values()}
+    return {'res://' + destination.removeprefix('project/') for destination in destinations} | {STAGING_ROOT}
+
+
 def select_library(explicit, candidates):
+    """Resolve the barista_tests debug library that hosts the native analyzer_corpus suite."""
     hosts = {'darwin': ('macos', '.dylib'), 'win32': ('windows', '.dll'), 'linux': ('linux', '.so')}
     platform, suffix = hosts.get(sys.platform, (None, None))
     if platform is None:
         raise ValueError(f'unsupported corpus triage host: {sys.platform}')
     if explicit is None:
-        matching = [path for path in candidates if path.parent.name == platform and path.suffix == suffix]
+        matching = [path for path in candidates if path.suffix == suffix]
         if len(matching) != 1:
-            raise ValueError('select --library explicitly; an unambiguous current-host debug artifact is required')
+            raise ValueError('select --library explicitly; an unambiguous current-host native-test debug artifact is required')
         explicit = matching[0]
     library = Path(explicit).resolve()
     content = library.read_bytes()
     info = inspect_artifact_bytes(content)
-    if info['build']['native_tests'] or info['build']['target'] != 'template_debug':
-        raise ValueError('corpus triage requires an ordinary template_debug library with analyzer bindings')
+    # analyzer_corpus is compiled only into a barista_tests build, so an ordinary debug
+    # library cannot evaluate a single case at all. Say so instead of running it.
+    if not info['build']['native_tests'] or info['build']['target'] != 'template_debug':
+        raise ValueError('corpus triage requires the barista_tests template_debug library that hosts analyzer_corpus')
     require_equal('triage library platform', platform, info['build']['platform'])
     return library, info, hashlib.sha256(content).hexdigest()
 
 
 def prepare_triage_project(project):
-    # The corpus harness reads this registry adjacent to its project. It needs no API fixture.
+    # The native corpus suite reads this registry adjacent to its project. It needs no API fixture.
     scripts = project.parent / 'scripts'
     scripts.mkdir()
     shutil.copy2(ROOT / 'scripts/corpus_sources.json', scripts / 'corpus_sources.json')
 
 
-def attach_build_info(record, nonce, expected):
-    # Corpus mismatch/crash/timeout status remains authoritative. Metadata emitted before
-    # evaluation can still identify that same process without pretending it exited zero.
-    record.update(build_info=None, godot_version=None, build_info_error=None)
-    try:
-        loaded = parse_record(record['output'], nonce, expected)
-        record.update(build_info=loaded['build_info'], godot_version=loaded['godot_version'])
-    except ValueError as error:
-        record['build_info_error'] = str(error)
+def native_completion(output, nonce, expected):
+    """Parse the one native completion record the case process emits about its own run."""
+    records = [line.removeprefix(RESULT_PREFIX) for line in output.splitlines() if line.startswith(RESULT_PREFIX)]
+    if len(records) != 1:
+        raise ValueError(f'expected one native completion record, found {len(records)}')
+    record = parse_json(records[0])
+    if type(record) is not dict or set(record) != RESULT_FIELDS:
+        raise ValueError('native completion fields do not match the shared protocol')
+    for key, expectation in (('protocol', PROTOCOL_VERSION), ('suite', NATIVE_SUITE),
+                             ('case', NATIVE_CORPUS_CASE), ('nonce', nonce)):
+        if type(record[key]) is not type(expectation) or record[key] != expectation:
+            raise ValueError(f'native completion {key} does not match {expectation!r}')
+    for key in ('cases', 'assertions', 'failed_cases', 'failed_assertions'):
+        if type(record[key]) is not int or record[key] < 0:
+            raise ValueError(f'invalid native completion {key}')
+    verify_identity(record['build_info'], expected)
+    return record
+
+
+def attach_build_info(record, completion, error):
+    # Corpus mismatch/crash/timeout status remains authoritative. Metadata the case process
+    # emits about itself can still identify it without pretending it exited zero. The native
+    # completion protocol carries build identity only; the host engine version is recorded
+    # once per report from the selected executable.
+    record.update(build_info=None, godot_version=None, build_info_error=error)
+    if completion is None:
         record['passed'] = False
         if record['terminal'] == 'passed':
             record['terminal'] = 'build_info_error'
+        return
+    record['build_info'] = completion['build_info']
 
 
 def atomic_report(path, document):
@@ -157,13 +199,10 @@ def unique_result_pairs(pairs):
     return result
 
 
-def result_record(process, case, corpus, expected):
+def result_record(process, case, corpus, expected, completion):
     lines = process['output'].splitlines()
     payloads = [line.removeprefix('BS_CASE_RESULT ') for line in lines if line.startswith('BS_CASE_RESULT ')]
     guards = [line for line in lines if line.startswith('BS_CASE_RAN ')]
-    header = (ROOT / 'src/bs_corpus_sentinels.h').read_text()
-    prefix = re.search(r'SUMMARY_PREFIX\s*=\s*"([^"]+)"', header)[1]
-    summaries = [line for line in lines if line.startswith(prefix + ' ')]
     result = None
     malformed = False
     if len(payloads) == 1:
@@ -183,9 +222,12 @@ def result_record(process, case, corpus, expected):
         terminal = 'crash'
     elif not ran:
         terminal = 'malformed_result' if malformed else 'missing_guard'
-    elif len(summaries) != 1 or not re.fullmatch(re.escape(prefix) + r' [01]/1 skipped=[0-9]+', summaries[0]):
-        terminal = 'missing_summary'
-    elif result.get('passed') and actual == expected and process['exit_code'] == 0 and summaries[0].startswith(prefix + ' 1/1 '):
+    elif completion is not None and (completion['cases'] != 1 or completion['assertions'] < 1
+                                     or bool(completion['failed_cases']) == bool(result.get('passed'))):
+        # The suite runs exactly this case and asserts the very outcome the payload reports,
+        # so a completion record that disagrees with the payload describes a different run.
+        terminal = 'inconsistent_completion'
+    elif result.get('passed') and actual == expected and process['exit_code'] == 0:
         terminal = 'passed'
     elif process['exit_code'] == 2 or result.get('reason') in (3, 5):
         terminal = 'infrastructure_error'
@@ -235,7 +277,7 @@ def validate_staging(root, inventory, *, project_root=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--godot', type=Path, required=True)
-    parser.add_argument('--library', type=Path, help='explicit ordinary debug library; otherwise require one current-host candidate')
+    parser.add_argument('--library', type=Path, help='explicit native-test debug library; otherwise require one current-host candidate')
     parser.add_argument('--corpus', required=True)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--case', action='append', default=[])
@@ -248,7 +290,9 @@ def main(argv=None):
             raise ValueError('timeout must be finite and positive')
         if args.jobs < 1:
             raise ValueError('jobs must be a positive integer')
-        if args.corpus != 'res://tests/corpus_staging/analyzer':
+        if args.corpus not in permitted_corpus_roots():
+            raise ValueError('corpus root must be a registered corpus destination or the analyzer staging root')
+        if args.corpus != STAGING_ROOT:
             raise ValueError('discovery triage requires the importer-owned analyzer staging root')
         root = local_path(ROOT, 'project/' + args.corpus.removeprefix('res://'))
         if args.report.resolve().is_relative_to(ROOT):
@@ -265,9 +309,15 @@ def main(argv=None):
             raise ValueError('duplicate or unknown exact case selection')
         selected = args.case or sorted(records)
         version = subprocess.run([str(args.godot), '--version'], capture_output=True, text=True, check=True).stdout.strip()
-        libraries = sorted((ROOT / 'project/bin').rglob('*template_debug*'))
+        build_directory = ROOT / NATIVE_BUILD_DIRECTORY
+        libraries = sorted((build_directory / 'bin').rglob('*template_debug*'))
         libraries = [path for path in libraries if path.is_file()]
         library, inspected_info, artifact_sha = select_library(args.library, libraries)
+        if args.library is None:
+            # Without an operator-pinned library, the build that recorded the descriptor is
+            # the only one this run may host: a stale sibling artifact is an error, not a
+            # fallback. An explicit --library pins a build the operator already chose.
+            require_equal('native test artifact', read_json(build_directory / 'native-artifact.json')['sha256'], artifact_sha)
         report = {'schema_version': 1, 'checkpoint': 'discovery', 'corpus': args.corpus,
                   'source_revision': inventory['foundry_revision'], 'inventory_sha256': digest(root / 'inventory.json'),
                   'baristascript_revision': run_git(ROOT, 'rev-parse', 'HEAD'),
@@ -276,9 +326,9 @@ def main(argv=None):
                   'selected_artifact': {'path': str(library), 'sha256': artifact_sha, 'build_info': inspected_info},
                   'build_info': None, 'checkout_info': checkout_info(),
                   'execution_files': {str(path.relative_to(ROOT)): digest(path) for path in
-                                      sorted([ROOT / 'scripts/run_corpus_triage.py', ROOT / 'project/tests/corpus_runner.gd',
-                                              ROOT / 'project/tests/corpus_harness.gd', ROOT / 'src/bs_analyzer_probe.cpp',
-                                              ROOT / 'src/bs_analyzer_probe.h', ROOT / 'scripts/analyzer_corpus_policy.json'])},
+                                      sorted([ROOT / 'scripts/run_corpus_triage.py', ROOT / 'scripts/analyzer_corpus_policy.json',
+                                              ROOT / 'tests/native/corpus_helpers.cpp', ROOT / 'tests/native/analyzer_corpus_test.cpp',
+                                              ROOT / 'src/bs_corpus_evaluation.cpp'])},
                   'godot': str(args.godot), 'godot_version': version, 'timeout_seconds': args.timeout,
                   'jobs': args.jobs,
                   'complete_population': not bool(args.case), 'selected_cases': selected,
@@ -337,16 +387,21 @@ def main(argv=None):
                 before = digest(copied)
                 require_equal('staged library before case', artifact_sha, before)
                 nonce = uuid.uuid4().hex
-                command = [str(args.godot), '--headless', '--path', str(project), '--script',
-                           'res://tests/corpus_runner.gd', '--', '--corpus', args.corpus, '--case', case,
-                           '--build-info-nonce', nonce]
+                command = [str(args.godot), '--headless', '--path', str(project), '--main-loop',
+                           'BaristaNativeTestRunner', '--', f'--native-suite={NATIVE_SUITE}',
+                           f'--native-case={NATIVE_CORPUS_CASE}', f'--native-nonce={nonce}',
+                           f'--corpus-root={args.corpus}', f'--corpus-case={case}']
                 process = supervise(command, args.timeout, started=remember_process, finished=forget_process)
                 if any(was_killed(child) for child in case_processes):
                     # Only a process the stop actually killed produces unusable output. A case
                     # that finished on its own keeps its result even if a sibling then failed.
                     return KILLED_BY_STOP
-                record = result_record(process, case, args.corpus, records[case]['expected_block'])
-                attach_build_info(record, nonce, inspected_info)
+                try:
+                    completion, completion_error = native_completion(process['output'], nonce, inspected_info), None
+                except ValueError as error:
+                    completion, completion_error = None, str(error)
+                record = result_record(process, case, args.corpus, records[case]['expected_block'], completion)
+                attach_build_info(record, completion, completion_error)
                 after = digest(copied) if copied.is_file() else None
                 record.update(library_sha256_before=before, library_sha256_after=after)
                 if after != artifact_sha:
@@ -376,9 +431,6 @@ def main(argv=None):
                 project = stack.enter_context(staged_project({'library': str(library)}))
                 prepare_triage_project(project)
                 validate_staging(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
-                for name in ('corpus_runner.gd', 'corpus_harness.gd'):
-                    require_equal('staged execution script ' + name, report['execution_files']['project/tests/' + name],
-                                  digest(project / 'tests' / name))
                 idle_projects.put(project)
             # Only this thread touches the report, so every write stays a consistent snapshot.
             finished = {}

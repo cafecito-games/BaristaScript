@@ -44,9 +44,8 @@ Run from the repository root with a clean checkout of the registered source:
 ```sh
 python3 scripts/import_analyzer_corpus.py --foundry /path/to/Foundry --revision c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 --inventory /tmp/analyzer-inventory.json
 python3 scripts/import_analyzer_corpus.py --foundry /path/to/Foundry --revision c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 --stage project/tests/corpus_staging/analyzer
-scons api_version=4.7 target=template_debug
-godot --headless --path project --editor --quit
-python3 scripts/run_corpus_triage.py --godot /path/to/godot --corpus res://tests/corpus_staging/analyzer --report /tmp/analyzer-results.json
+scons api_version=4.7 target=template_debug barista_tests=yes
+python3 scripts/run_corpus_triage.py --godot /path/to/godot --corpus res://tests/corpus_staging/analyzer --report /tmp/analyzer-results.json --jobs 8
 ```
 
 The staging destination is importer-owned and outside aggregate corpus
