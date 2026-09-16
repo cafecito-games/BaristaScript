@@ -43,6 +43,7 @@ from corpus_expectations import decode_expectation
 from corpus_ledger import validate_triage_ledger
 from build_config import parse_json, require_equal
 from build_metadata import inspect_artifact_bytes, verify_identity
+from native_test_build import build_identity
 from query_build_info import checkout_info
 from run_native_suites import PROTOCOL_VERSION, RESULT_FIELDS, RESULT_PREFIX, staged_project
 
@@ -99,8 +100,13 @@ def prepare_triage_project(project):
     shutil.copy2(ROOT / 'scripts/corpus_sources.json', scripts / 'corpus_sources.json')
 
 
-def native_completion(output, nonce, expected):
-    """Parse the one native completion record the case process emits about its own run."""
+def native_completion(output, nonce, expected, expected_build_id):
+    """Parse the one native completion record the case process emits about its own run.
+
+    The recorded build id is a content fingerprint of the native sources, so pinning it binds
+    this case process to the very sources the report attests to rather than to a stale library
+    that merely happens to still carry the artifact hash the descriptor recorded.
+    """
     records = [line.removeprefix(RESULT_PREFIX) for line in output.splitlines() if line.startswith(RESULT_PREFIX)]
     if len(records) != 1:
         raise ValueError(f'expected one native completion record, found {len(records)}')
@@ -108,7 +114,8 @@ def native_completion(output, nonce, expected):
     if type(record) is not dict or set(record) != RESULT_FIELDS:
         raise ValueError('native completion fields do not match the shared protocol')
     for key, expectation in (('protocol', PROTOCOL_VERSION), ('suite', NATIVE_SUITE),
-                             ('case', NATIVE_CORPUS_CASE), ('nonce', nonce)):
+                             ('case', NATIVE_CORPUS_CASE), ('nonce', nonce),
+                             ('build_id', expected_build_id)):
         if type(record[key]) is not type(expectation) or record[key] != expectation:
             raise ValueError(f'native completion {key} does not match {expectation!r}')
     for key in ('cases', 'assertions', 'failed_cases', 'failed_assertions'):
@@ -223,7 +230,8 @@ def result_record(process, case, corpus, expected, completion):
     elif not ran:
         terminal = 'malformed_result' if malformed else 'missing_guard'
     elif completion is not None and (completion['cases'] != 1 or completion['assertions'] < 1
-                                     or bool(completion['failed_cases']) == bool(result.get('passed'))):
+                                     or bool(completion['failed_cases'] or completion['failed_assertions'])
+                                     == bool(result.get('passed'))):
         # The suite runs exactly this case and asserts the very outcome the payload reports,
         # so a completion record that disagrees with the payload describes a different run.
         terminal = 'inconsistent_completion'
@@ -313,11 +321,14 @@ def main(argv=None):
         libraries = sorted((build_directory / 'bin').rglob('*template_debug*'))
         libraries = [path for path in libraries if path.is_file()]
         library, inspected_info, artifact_sha = select_library(args.library, libraries)
+        expected_build_id = build_identity()
         if args.library is None:
             # Without an operator-pinned library, the build that recorded the descriptor is
             # the only one this run may host: a stale sibling artifact is an error, not a
             # fallback. An explicit --library pins a build the operator already chose.
-            require_equal('native test artifact', read_json(build_directory / 'native-artifact.json')['sha256'], artifact_sha)
+            descriptor = read_json(build_directory / 'native-artifact.json')
+            require_equal('native test artifact', descriptor['sha256'], artifact_sha)
+            require_equal('native build id', expected_build_id, descriptor['build_id'])
         report = {'schema_version': 1, 'checkpoint': 'discovery', 'corpus': args.corpus,
                   'source_revision': inventory['foundry_revision'], 'inventory_sha256': digest(root / 'inventory.json'),
                   'baristascript_revision': run_git(ROOT, 'rev-parse', 'HEAD'),
@@ -327,8 +338,12 @@ def main(argv=None):
                   'build_info': None, 'checkout_info': checkout_info(),
                   'execution_files': {str(path.relative_to(ROOT)): digest(path) for path in
                                       sorted([ROOT / 'scripts/run_corpus_triage.py', ROOT / 'scripts/analyzer_corpus_policy.json',
-                                              ROOT / 'tests/native/corpus_helpers.cpp', ROOT / 'tests/native/analyzer_corpus_test.cpp',
-                                              ROOT / 'src/bs_corpus_evaluation.cpp'])},
+                                              ROOT / 'tests/native/corpus_helpers.cpp', ROOT / 'tests/native/corpus_helpers.h',
+                                              ROOT / 'tests/native/analyzer_corpus_test.cpp',
+                                              ROOT / 'tests/native/native_test_runner.cpp', ROOT / 'tests/native/native_test_runner.h',
+                                              ROOT / 'tests/native/native_corpus_arguments.cpp', ROOT / 'tests/native/native_corpus_arguments.h',
+                                              ROOT / 'src/bs_corpus_evaluation.cpp', ROOT / 'src/bs_corpus_evaluation.h'])},
+                  'native_build_id': expected_build_id,
                   'godot': str(args.godot), 'godot_version': version, 'timeout_seconds': args.timeout,
                   'jobs': args.jobs,
                   'complete_population': not bool(args.case), 'selected_cases': selected,
@@ -397,7 +412,8 @@ def main(argv=None):
                     # that finished on its own keeps its result even if a sibling then failed.
                     return KILLED_BY_STOP
                 try:
-                    completion, completion_error = native_completion(process['output'], nonce, inspected_info), None
+                    completion = native_completion(process['output'], nonce, inspected_info, expected_build_id)
+                    completion_error = None
                 except ValueError as error:
                     completion, completion_error = None, str(error)
                 record = result_record(process, case, args.corpus, records[case]['expected_block'], completion)

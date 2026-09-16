@@ -41,10 +41,14 @@ def metadata():
                 build=dict(platform='macos', architecture='arm64', target='template_debug', precision=config['precision'], native_tests=True))
 
 
-def native_completion_line(nonce, *, cases=1, assertions=3, failed_cases=0, failed_assertions=0, suite=triage.NATIVE_SUITE):
+BUILD_ID = 'b' * 64
+
+
+def native_completion_line(nonce, *, cases=1, assertions=3, failed_cases=0, failed_assertions=0,
+                           suite=triage.NATIVE_SUITE, build_id=BUILD_ID):
     return native.RESULT_PREFIX + json.dumps(dict(
         protocol=native.PROTOCOL_VERSION, suite=suite, case=triage.NATIVE_CORPUS_CASE, nonce=nonce,
-        build_id='b' * 64, build_info=metadata(), cases=cases, assertions=assertions,
+        build_id=build_id, build_info=metadata(), cases=cases, assertions=assertions,
         failed_cases=failed_cases, failed_assertions=failed_assertions))
 
 
@@ -81,17 +85,20 @@ class IdentityTests(unittest.TestCase):
         output = native_completion_line('n')
         for terminal in ('passed', 'mismatch', 'crash', 'timeout'):
             record = dict(terminal=terminal, passed=terminal == 'passed', output=output)
-            completion = triage.native_completion(record['output'], 'n', info)
+            completion = triage.native_completion(record['output'], 'n', info, BUILD_ID)
             triage.attach_build_info(record, completion, None)
             self.assertEqual(record['terminal'], terminal)
             self.assertEqual(record['passed'], terminal == 'passed')
             self.assertEqual(record['build_info'], info)
         for text in ('', output + '\n' + output, output.replace('"n"', '"wrong"'),
                      output.replace('1' * 40, '3' * 40),
-                     native_completion_line('n', suite='runner_failure')):
+                     native_completion_line('n', suite='runner_failure'),
+                     # A library built from other sources cannot attest to the sources this
+                     # report hashes, however well its artifact hash matches a descriptor.
+                     native_completion_line('n', build_id='c' * 64)):
             record = dict(terminal='passed', passed=True, output=text)
             with self.assertRaises(ValueError):
-                triage.native_completion(text, 'n', info)
+                triage.native_completion(text, 'n', info, BUILD_ID)
             triage.attach_build_info(record, None, 'rejected')
             self.assertFalse(record['passed'])
             self.assertEqual(record['terminal'], 'build_info_error')
@@ -106,6 +113,7 @@ class IdentityTests(unittest.TestCase):
         agreeing = dict(cases=1, assertions=3, failed_cases=0, failed_assertions=0, build_info=metadata())
         self.assertEqual(triage.result_record(process, case, corpus, 'BS_TEST_OK', agreeing)['terminal'], 'passed')
         for disagreeing in (dict(agreeing, cases=2), dict(agreeing, assertions=0),
+                            dict(agreeing, failed_assertions=1),
                             dict(agreeing, failed_cases=1, failed_assertions=1)):
             self.assertEqual(triage.result_record(process, case, corpus, 'BS_TEST_OK', disagreeing)['terminal'],
                              'inconsistent_completion')
@@ -196,8 +204,11 @@ class ReportTests(unittest.TestCase):
                      'project/tests/corpus_support/parser/source_map.json',
                      'scripts/corpus_sources.json', 'scripts/run_corpus_triage.py',
                      'scripts/import_parser_corpus.py', 'scripts/import_analyzer_corpus.py',
-                     'src/bs_corpus_sentinels.h', 'src/bs_corpus_evaluation.cpp',
-                     'tests/native/corpus_helpers.cpp', 'tests/native/analyzer_corpus_test.cpp')
+                     'src/bs_corpus_sentinels.h', 'src/bs_corpus_evaluation.cpp', 'src/bs_corpus_evaluation.h',
+                     'tests/native/corpus_helpers.cpp', 'tests/native/corpus_helpers.h',
+                     'tests/native/analyzer_corpus_test.cpp',
+                     'tests/native/native_test_runner.cpp', 'tests/native/native_test_runner.h',
+                     'tests/native/native_corpus_arguments.cpp', 'tests/native/native_corpus_arguments.h')
             for name in files:
                 destination = root / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +227,7 @@ class ReportTests(unittest.TestCase):
             other = library.with_name('other.template_debug.dll')
             other.write_bytes(b'other candidate remains hashed')
             (root / triage.NATIVE_BUILD_DIRECTORY / 'native-artifact.json').write_text(
-                json.dumps(dict(library=str(library), sha256=triage.digest(library))))
+                json.dumps(dict(library=str(library), sha256=triage.digest(library), build_id=BUILD_ID)))
             for command in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                                                         'commit', '-qm', 'fixture']):
                 subprocess.run(['git', '-C', str(root), *command], check=True, capture_output=True)
@@ -234,6 +245,7 @@ class ReportTests(unittest.TestCase):
                 for target, name, value in ((triage, 'ROOT', root), (native, 'ROOT', root),
                                             (triage.sys, 'platform', 'darwin')):
                     stack.enter_context(patch.object(target, name, value))
+                stack.enter_context(patch.object(triage, 'build_identity', return_value=BUILD_ID))
                 stack.enter_context(patch.object(importer, 'default_policy', return_value=policy))
                 stack.enter_context(patch.object(triage, 'checkout_info', return_value=checkout))
                 stack.enter_context(patch.object(native, 'godot_data_path', return_value=base / 'userdata'))
@@ -319,8 +331,12 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(len(report['build_artifacts']), 2)
             self.assertEqual(set(report['execution_files']),
                              {'scripts/run_corpus_triage.py', 'scripts/analyzer_corpus_policy.json',
-                              'src/bs_corpus_evaluation.cpp', 'tests/native/corpus_helpers.cpp',
-                              'tests/native/analyzer_corpus_test.cpp'})
+                              'src/bs_corpus_evaluation.cpp', 'src/bs_corpus_evaluation.h',
+                              'tests/native/corpus_helpers.cpp', 'tests/native/corpus_helpers.h',
+                              'tests/native/analyzer_corpus_test.cpp',
+                              'tests/native/native_test_runner.cpp', 'tests/native/native_test_runner.h',
+                              'tests/native/native_corpus_arguments.cpp', 'tests/native/native_corpus_arguments.h'})
+            self.assertEqual(report['native_build_id'], BUILD_ID)
             self.assertEqual(report['godot_version'], 'actual-host-version')
             for record in report['results']:
                 source = records[record['case']]
@@ -500,13 +516,27 @@ class ReportTests(unittest.TestCase):
     def test_a_library_the_native_artifact_descriptor_does_not_name_is_refused(self):
         with self.fixture() as (root, library, report_path, inventory, cases, checkout):
             descriptor = root / triage.NATIVE_BUILD_DIRECTORY / 'native-artifact.json'
-            descriptor.write_text(json.dumps(dict(library=str(library), sha256='f' * 64)))
+            descriptor.write_text(json.dumps(dict(library=str(library), sha256='f' * 64, build_id=BUILD_ID)))
             arguments = ['--godot', 'fake-godot', '--corpus', inventory['root'], '--report', str(report_path)]
             stream = io.StringIO()
             with patch.object(triage, 'supervise', side_effect=AssertionError('no case may run')), \
                     redirect_stderr(stream):
                 self.assertEqual(triage.main(arguments), 2)
             self.assertIn('native test artifact', stream.getvalue())
+
+    def test_a_library_older_than_the_sources_the_report_hashes_is_refused(self):
+        with self.fixture() as (root, library, report_path, inventory, cases, checkout):
+            # Editing a native source without rebuilding leaves the artifact hash matching the
+            # descriptor while execution_files would attest to sources that never ran.
+            descriptor = root / triage.NATIVE_BUILD_DIRECTORY / 'native-artifact.json'
+            descriptor.write_text(json.dumps(dict(library=str(library), sha256=triage.digest(library),
+                                                  build_id='a' * 64)))
+            arguments = ['--godot', 'fake-godot', '--corpus', inventory['root'], '--report', str(report_path)]
+            stream = io.StringIO()
+            with patch.object(triage, 'supervise', side_effect=AssertionError('no case may run')), \
+                    redirect_stderr(stream):
+                self.assertEqual(triage.main(arguments), 2)
+            self.assertIn('native build id', stream.getvalue())
 
 
 @unittest.skipUnless(GODOT and LIBRARY, 'pass --godot and --library for actual same-process corpus transport')
@@ -529,7 +559,7 @@ class RuntimeTests(unittest.TestCase):
                        '--', f'--native-suite={triage.NATIVE_SUITE}', f'--native-case={triage.NATIVE_CORPUS_CASE}',
                        f'--native-nonce={nonce}', f'--corpus-root={corpus}', f'--corpus-case={case}']
             process = triage.supervise(command, 120)
-            completion = triage.native_completion(process['output'], nonce, info)
+            completion = triage.native_completion(process['output'], nonce, info, triage.build_identity())
             record = triage.result_record(process, case, corpus, expected, completion)
             triage.attach_build_info(record, completion, None)
             self.assertTrue(record['passed'], record)
