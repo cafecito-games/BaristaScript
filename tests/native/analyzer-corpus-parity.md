@@ -27,17 +27,22 @@ Baseline sources are `project/tests/corpus_harness.gd` (744 lines),
 | `.baristaignore` suppresses collection and is inherited by descendants (`corpus_harness.gd:26,212-213,242-243,257-258`) | inherited `ignored` flag on the traversal stack | `analyzer_corpus/ignore_marker_is_inherited_by_descendants` |
 | `.fsignore` is deliberately NOT honored (`corpus_harness.gd:19-26`) | no `.fsignore` handling exists; a tree carrying one is still collected | `analyzer_corpus/fsignore_is_not_an_ignore_marker` |
 | Ignored entries increment `skipped_count`, never fail (`corpus_harness.gd:241-244`) | `CorpusDiscovery::skipped_count` | `analyzer_corpus/ignore_marker_is_inherited_by_descendants` |
-| An unopenable directory is recorded, never silently shrinks the corpus (`corpus_harness.gd:198-201,84-88`) | `CorpusDiscovery::unreadable_directories`; corpus mode refuses to run | `analyzer_corpus/unreadable_directory_is_recorded_not_skipped` |
+| A directory `DirAccess` cannot open is recorded, never silently shrinks the corpus (`corpus_harness.gd:198-201,84-88`) | `CorpusDiscovery::unreadable_directories`; corpus mode refuses to run | `analyzer_corpus/unreadable_directory_is_recorded_not_skipped` |
 | A symlinked case, expectation or subdirectory is rejected without traversal (`corpus_harness.gd:225-227`) | `is_link` check per entry before classification | `analyzer_corpus/symlinked_entries_are_rejected_without_traversal` |
 | A symlinked `.baristaignore` is rejected (`corpus_harness.gd:215-216`) | marker `is_link` check | `analyzer_corpus/symlinked_entries_are_rejected_without_traversal` |
 | Results are path-sorted, never dependent on directory order (`corpus_harness.gd:260-262`) | `sort_custom` on cases, `sort()` on the two string arrays | `analyzer_corpus/discovery_order_is_path_sorted` |
 | Dot-prefixed entries are hidden from listing, so the marker is probed by path (`corpus_harness.gd:210-212`) | `FileAccess::file_exists` on the marker path | `analyzer_corpus/ignore_marker_is_inherited_by_descendants` |
 
+The unreadable-directory row is pinned through the branch a failed `DirAccess::open`
+takes, exercised with a directory that is not there. It is not pinned by revoking read
+permission: leaving a mode-000 directory behind in the disposable `user://` root would
+break the runner's own cleanup, and the open-failure branch is the same one either way.
+
 ## Expectation validity gate
 
 | GDScript behavior (file:line) | Native counterpart | Pinning test |
 | --- | --- | --- |
-| Missing `.out` is `MISSING_EXPECTATION` naming the expected path (`corpus_harness.gd:275-276`) | `run_corpus_case` missing-file branch | `analyzer_corpus/missing_expectation_is_reason_zero` |
+| Missing `.out` is `MISSING_EXPECTATION` naming the expected path (`corpus_harness.gd:275-276`) | `run_corpus_case` missing-file branch | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
 | Unreadable `.out` is `INVALID_EXPECTATION` (`corpus_harness.gd:278-285`) | open-failure branch | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
 | Round-trip-exact UTF-8 required: `text.to_utf8_buffer() == bytes` (`corpus_harness.gd:286-292`) | `check_expectation_bytes` round-trip compare | `analyzer_corpus/expectation_gate_accepts_and_rejects_exact_byte_forms` |
 | No NUL byte (`corpus_harness.gd:293`) | gate NUL scan | same |
@@ -50,7 +55,7 @@ Baseline sources are `project/tests/corpus_harness.gd` (744 lines),
 
 | GDScript behavior (file:line) | Native counterpart | Pinning test |
 | --- | --- | --- |
-| Byte-exact block equality, no whitespace trimming (`corpus_harness.gd:307`) | `compare_corpus_result` `!=` on whole blocks | `analyzer_corpus/trailing_whitespace_drift_is_a_mismatch` |
+| Byte-exact block equality, no whitespace trimming (`corpus_harness.gd:307`) | `compare_corpus_result` `!=` on whole blocks | `analyzer_corpus/paired_case_runs_end_to_end_against_its_expectation` |
 | No line-ending normalization (`corpus_harness.gd:293,307`) | CR is rejected by the gate, never normalized | `analyzer_corpus/expectation_gate_accepts_and_rejects_exact_byte_forms` |
 | No per-line sorting or reordering tolerance (`corpus_oracle_test.gd:64-69`) | whole-block compare | `analyzer_corpus/multi_line_block_mutations_all_mismatch` |
 | Any later-line mutation, removal, addition or reorder mismatches (`corpus_oracle_test.gd:64-69`) | same | same |
@@ -78,6 +83,7 @@ Baseline sources are `project/tests/corpus_harness.gd` (744 lines),
 | Failure keys are `passed,reason,path,expectation_path,message,actual,expected` (`corpus_harness.gd:359-370`) | `corpus_case_result_dictionary` | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
 | `fixture_index` and `analysis_ran` are added ONLY for `OUTPUT_MISMATCH` (`corpus_harness.gd:308-317`) | same | same |
 | Pass keys are `passed,path,expected,actual,analysis_ran,fixture_index` (`corpus_harness.gd:318`) | same | same |
+| Gate, evaluation and comparison run as one pipeline over a committed `.barista`/`.out` pair (`corpus_harness.gd:273-318`) | `run_corpus_case` | `analyzer_corpus/paired_case_runs_end_to_end_against_its_expectation` |
 | `expected` on a failure is re-read from disk and lossily decoded (`corpus_harness.gd:369`) | `FileAccess::get_file_as_string(...).trim_suffix("\n")` | `analyzer_corpus/failure_expected_field_is_reread_from_disk` |
 | `fixture_index` is `{}` when the evaluation reported none (`corpus_harness.gd:315,318`) | empty `Dictionary` | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
 | Orphaned expectation failure record ordinal 1 (`corpus_harness.gd:122-128`) | `CORPUS_ORPHANED_EXPECTATION` ordinal, discovery-level | `analyzer_corpus/orphaned_expectation_is_reported_without_a_case` |
