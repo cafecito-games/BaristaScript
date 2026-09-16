@@ -390,9 +390,12 @@ def check_corpus_triage_wiring(workflow: str) -> str | None:
             "the analyzer corpus triage step must retain its validated inputs and its exact "
             "whole-population command"
         )
+    # The step arms are redundant with the exact comparison above -- a `continue-on-error`
+    # or `if` the pin does not carry already breaks equality. The operative arm is the job
+    # one: disabling the whole build job leaves the step's own bytes untouched.
     if (
-        step_continues_on_error(step)
-        or condition_is_unreachable(job)
+        condition_is_unreachable(job)
+        or step_continues_on_error(step)
         or condition_is_unreachable(step)
     ):
         return (

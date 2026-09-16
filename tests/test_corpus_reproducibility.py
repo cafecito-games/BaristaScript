@@ -330,6 +330,67 @@ class WorkflowContract(unittest.TestCase):
             self.assertIsNotNone(self.audit(text))
 
 
+class TriageWorkflowContract(unittest.TestCase):
+    """Negative coverage for the CI step that executes the analyzer residual-failure pin.
+
+    The committed pin is cross-checked against other committed bytes in two places, but
+    this one step is the only thing that evaluates the cases the pin describes. An audit
+    that stopped refusing a weakened step -- exact equality relaxed to a substring match,
+    say -- would retire that guarantee without failing anything, so each mutation below
+    stands for one branch of check_corpus_triage_wiring and must be refused.
+    """
+
+    def setUp(self):
+        import validate_ci
+        import yaml
+        self.audit = getattr(validate_ci, "check_corpus_triage_wiring", None)
+        self.assertIsNotNone(self.audit, "analyzer corpus triage audit missing")
+        self.yaml = yaml
+        self.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.document = yaml.load(self.workflow, Loader=yaml.BaseLoader)
+
+    def triage_index(self, document):
+        steps = document["jobs"]["build"]["steps"]
+        found = [index for index, step in enumerate(steps)
+                 if "scripts/run_corpus_triage.py" in step.get("run", "")]
+        self.assertEqual(len(found), 1, "one whole-population triage step")
+        return found[0]
+
+    def test_current_workflow(self):
+        """Also proves a clean round-trip, so a refusal below is the mutation, not the dump."""
+        self.assertIsNone(self.audit(self.workflow))
+        self.assertIsNone(self.audit(self.yaml.safe_dump(self.document)))
+
+    def test_a_weakened_triage_step_is_refused(self):
+        def remove_the_step(document):
+            document["jobs"]["build"]["steps"].pop(self.triage_index(document))
+
+        def duplicate_into_another_job(document):
+            document["jobs"]["static-checks"]["steps"].append(
+                {"name": "second triage", "shell": "bash",
+                 "run": "python3 scripts/run_corpus_triage.py --corpus res://tests/corpus/analyzer"})
+
+        def narrow_to_one_case(document):
+            step = document["jobs"]["build"]["steps"][self.triage_index(document)]
+            step["run"] += " --case errors/abstract_annotation_removed.barista"
+
+        def suppress_the_exit_status(document):
+            document["jobs"]["build"]["steps"][self.triage_index(document)]["continue-on-error"] = "true"
+
+        def disable_the_whole_job(document):
+            # The only mutation the reachability arm catches on its own: the step's own
+            # bytes still match the pin exactly.
+            document["jobs"]["build"]["if"] = "${{ false }}"
+
+        for mutate in (remove_the_step, duplicate_into_another_job, narrow_to_one_case,
+                       suppress_the_exit_status, disable_the_whole_job):
+            document = copy.deepcopy(self.document)
+            mutate(document)
+            self.assertNotEqual(document, self.document, mutate.__name__)
+            with self.subTest(mutation=mutate.__name__):
+                self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), mutate.__name__)
+
+
 class WrapperContract(unittest.TestCase):
     setUp = RegistryContract.setUp
     check = RegistryContract.check
