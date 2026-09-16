@@ -1,0 +1,4 @@
+>> ERROR at line 15: Invalid argument for "gradual_tail()" function: argument 1 should be "Callable[[...Array], void]" but is "int".
+>> ERROR at line 16: Invalid argument for "typed_tail()" function: argument 1 should be "Callable[[...Array[int]], void]" but is "int".
+>> ERROR at line 17: Invalid argument for "fixed()" function: argument 1 should be "Callable[[int], void]" but is "int".
+>> ERROR at line 19: Cannot assign a value of type Callable[[...Array], void] to variable "bad" with specified type int.

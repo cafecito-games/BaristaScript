@@ -1,0 +1,1 @@
+>> ERROR at line 3: Cannot assign a value of type (int, int, int) to variable "pair" with specified type (int, int).

@@ -1,0 +1,14 @@
+# An alias declares no value, so it can neither be read, called, nor constructed.
+class Holder:
+	var label: String = "holder"
+
+
+type Only = Holder
+type Scalar = int | String
+
+
+func test():
+	var read = Scalar
+	var called = Scalar()
+	var made = Only.new()
+	prints(read, called, made)

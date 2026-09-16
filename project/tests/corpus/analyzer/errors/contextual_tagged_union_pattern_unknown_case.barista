@@ -1,0 +1,14 @@
+# The case name is checked against the subject union's declared cases in both pattern forms.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func run(subject: Result) -> void:
+	match subject:
+		.Nope(payload):
+			print(payload)
+		.Missing:
+			pass
+		_:
+			pass

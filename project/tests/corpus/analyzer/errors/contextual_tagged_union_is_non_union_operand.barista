@@ -1,0 +1,9 @@
+# The `is` shorthand needs the tested operand to name a complete tagged-union specialization.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func run(subject: int) -> void:
+	if subject is .Ok(value):
+		print(value)

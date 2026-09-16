@@ -1,0 +1,34 @@
+class Marker:
+	var id := 0
+
+func ints(...values: Array[int]) -> int:
+	return values.size()
+
+func labeled(prefix: String, ...values: Array[String]) -> String:
+	return prefix + str(values.size())
+
+func markers(...values: Array[Marker]) -> int:
+	return values.size()
+
+func nullable_markers(...values: Array[Marker?]) -> int:
+	return values.size()
+
+func nested(...values: Array[Array[int]]) -> int:
+	return values.size()
+
+func gradual(...values: Array) -> int:
+	return values.size()
+
+func explicit_variant(...values: Array[Variant]) -> int:
+	return values.size()
+
+func test() -> void:
+	print(ints())
+	print(ints(1, 2, 3))
+	print(labeled("count: "))
+	print(labeled("count: ", "a", "b"))
+	print(markers(Marker.new(), Marker.new()))
+	print(nullable_markers(Marker.new(), null))
+	print(nested([1], [2, 3]))
+	print(gradual(1, "two", null))
+	print(explicit_variant(1, "two", null))

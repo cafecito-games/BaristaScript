@@ -1,0 +1,9 @@
+# A `Type[T]`-carrying signature declared in another file keeps its class-handle layer when it is
+# consumed here, so the same annotation still matches.
+const Provider = preload("external_callable_type_handle_roundtrip_provider.notest.barista")
+
+func test() -> void:
+	var handler: Callable[[Type[Node]], void] = Provider.new().get_cb()
+	var spawned: Signal[[Type[Node]]] = Provider.new().get_signal()
+	print(handler.is_valid())
+	print(spawned.is_null())

@@ -1,0 +1,8 @@
+# A `PropertyInfo` carries exactly one runtime type, so a multi-member union has no single runtime
+# type to export; this is a distinct diagnostic from the generic unsupported-export-type error.
+type Scalar = int | String
+
+@export var exported: Scalar
+
+func test():
+	print(exported)

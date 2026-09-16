@@ -1,0 +1,2 @@
+>> ERROR at line 1: Could not resolve member "TupleNameCyclic": Cyclic reference.
+>> ERROR at line 1: Tuple "TupleNameCyclic" cannot contain itself by value.

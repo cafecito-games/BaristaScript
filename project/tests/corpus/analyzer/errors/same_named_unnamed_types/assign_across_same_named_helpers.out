@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot assign a value of type helper.notest.barista to variable "value" with specified type helper.notest.barista. The value is declared in "res://tests/corpus/analyzer/errors/same_named_unnamed_types/a/helper.notest.barista"; the specified type is declared in "res://tests/corpus/analyzer/errors/same_named_unnamed_types/b/helper.notest.barista".

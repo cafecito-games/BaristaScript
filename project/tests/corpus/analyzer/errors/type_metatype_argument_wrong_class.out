@@ -1,0 +1,1 @@
+>> ERROR at line 10: Cannot pass class handle "Node" as argument 1 of "accept_user()"; handle represents "Node", which is not compatible with expected represented instance type "User" for "Type[User]".

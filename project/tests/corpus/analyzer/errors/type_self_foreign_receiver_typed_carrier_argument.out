@@ -1,0 +1,2 @@
+>> ERROR at line 9: Invalid argument for "take_all()" function: argument 1 should be "Array[Self]" but is "Array".
+>> ERROR at line 9: Cannot have an element of type "Cell" in an array of type "Array[Self]".

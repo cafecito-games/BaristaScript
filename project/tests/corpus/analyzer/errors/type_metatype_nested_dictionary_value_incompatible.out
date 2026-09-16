@@ -1,0 +1,1 @@
+>> ERROR at line 2: Cannot use class handle "Resource" as a value of "Dictionary[String, Type[Node]]"; handle represents "Resource", which is not compatible with "Node".

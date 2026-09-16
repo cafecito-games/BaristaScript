@@ -1,0 +1,4 @@
+>> ERROR at line 7: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.
+>> ERROR at line 8: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 9: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 10: A typed container cannot have the type union "String | int" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.

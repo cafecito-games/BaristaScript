@@ -1,0 +1,1 @@
+>> ERROR at line 5: Cannot export a tuple-typed property: "waypoints" has type "Array[Vec2]".

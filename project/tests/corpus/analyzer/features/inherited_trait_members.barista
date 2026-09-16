@@ -1,0 +1,122 @@
+const Provider = preload("inherited_trait_members_provider.notest.barista")
+
+
+trait Storage[T]:
+	var value: T
+	signal changed(item: T)
+	var callback: Callable[[T], T]
+
+	func store(item: T) -> void:
+		value = item
+
+	func fetch() -> T:
+		return value
+
+	func identity(item: T) -> T:
+		return item
+
+	func echo[U](item: U) -> U:
+		return item
+
+
+trait Forward[T] uses Storage[T]:
+	func forwarded() -> T:
+		return fetch()
+
+
+class Base[T] uses Forward[T]:
+	pass
+
+
+class Middle[T] extends Base[T]:
+	pass
+
+
+class IntChild extends Middle[int]:
+	func via_bare(item: int) -> int:
+		store(item)
+		return forwarded()
+
+	func via_self(item: int) -> int:
+		self.value = item
+		return self.fetch()
+
+
+class StringChild extends Middle[String]:
+	pass
+
+
+class ConcreteBase uses Storage[int]:
+	pass
+
+
+class ConcreteChild extends ConcreteBase:
+	pass
+
+
+trait DiamondRoot:
+	func diamond() -> String:
+		return "diamond"
+
+
+trait DiamondLeft uses DiamondRoot:
+	pass
+
+
+trait DiamondRight uses DiamondRoot:
+	pass
+
+
+class DiamondBase uses DiamondLeft, DiamondRight:
+	pass
+
+
+class DiamondChild extends DiamondBase:
+	pass
+
+
+trait Shadowed:
+	func label() -> String:
+		return "trait"
+
+
+class ShadowBase uses Shadowed:
+	pass
+
+
+class ShadowChild extends ShadowBase:
+	func label() -> String:
+		return "class"
+
+
+class ExternalChild extends Provider.ExternalBase[int]:
+	pass
+
+
+func plus_one(value: int) -> int:
+	return value + 1
+
+
+func test() -> void:
+	var child := IntChild.new()
+	print(child.via_bare(7))
+	print(child.via_self(8))
+	child.changed.emit(8)
+	child.callback = plus_one
+	print(child.callback.call(9))
+	print(child.echo[String]("generic"))
+
+	var strings := StringChild.new()
+	strings.store("specialized")
+	print(strings.fetch())
+	var concrete := ConcreteChild.new()
+	concrete.store(12)
+	print(concrete.fetch())
+
+	print(DiamondChild.new().diamond())
+	print(ShadowChild.new().label())
+
+	var external := ExternalChild.new()
+	external.external_value = 11
+	print(external.external_fetch())
+	print("inherited trait members ok")

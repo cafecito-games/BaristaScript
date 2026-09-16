@@ -1,0 +1,1 @@
+>> ERROR at line 12: Cannot assign a value of type (int, int) to variable "slot" with specified type (float, int).

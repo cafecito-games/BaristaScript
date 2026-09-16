@@ -22,7 +22,7 @@ using namespace barista_script::native_tests;
 
 namespace {
 
-const char *const ROOT = "res://tests/corpus_staging/analyzer/features/";
+const char *const ROOT = "res://tests/corpus/analyzer/features/";
 
 String path(const String &p_name) {
 	return String(ROOT) + p_name + ".barista";

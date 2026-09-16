@@ -1,0 +1,1 @@
+>> ERROR at line 3: Class "RtcBaseTarget" cannot conform to trait "RtcBased" because it does not inherit from "Node".

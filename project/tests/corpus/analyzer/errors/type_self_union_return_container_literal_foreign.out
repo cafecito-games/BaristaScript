@@ -1,0 +1,2 @@
+>> ERROR at line 9: Cannot have an element of type "Foreign" in an array of type "Array[Self]".
+>> ERROR at line 13: Cannot return value of type "Array[Receiver]" because the function return type is "Array[Self] | int".

@@ -1,0 +1,27 @@
+# A foreign class (`RtcWidget`, from a companion file) is retroactively conformed to the `RtcPrintable`
+# trait, supplying the required `describe()` witness externally. The witness body resolves against the
+# target: `label` is `RtcWidget`'s own member. Once conformed, an `RtcWidget` value is assignable to a
+# trait-typed slot, satisfies `is`/`as` against the trait, satisfies a generic bound `T: RtcPrintable`,
+# and is accepted by a trait-typed parameter. Compiled but not run: runtime witness dispatch is Phase 3.
+extend RtcWidget uses RtcPrintable:
+	func describe() -> String:
+		return label
+
+
+func take_printable(p: RtcPrintable) -> bool:
+	return p != null
+
+
+func use_bound(value: RtcPrintable) -> bool:
+	return value != null
+
+
+func test() -> void:
+	var w := RtcWidget.new()
+	var p: RtcPrintable = w
+	print(p != null)
+	print(w is RtcPrintable)
+	var as_p := w as RtcPrintable
+	print(as_p != null)
+	print(take_printable(w))
+	print(use_bound(w))

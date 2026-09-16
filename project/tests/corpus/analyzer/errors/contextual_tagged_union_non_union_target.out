@@ -1,0 +1,2 @@
+>> ERROR at line 9: Contextual shorthand ".LOW" needs an expected tagged-union type, but this position expects "contextual_tagged_union_non_union_target.barista.Severity"; spell the case with its union, e.g. "Result[int, String].LOW".
+>> ERROR at line 10: Contextual shorthand ".Ok" needs an expected tagged-union type, but this position expects "int"; spell the case with its union, e.g. "Result[int, String].Ok(...)".

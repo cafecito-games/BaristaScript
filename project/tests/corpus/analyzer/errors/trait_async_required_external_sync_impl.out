@@ -1,0 +1,1 @@
+>> ERROR at line 5: The function "fetch()" must be async because it implements async trait method "RemoteLoadable.fetch()". Implementation comes from "res://tests/corpus/analyzer/errors/trait_async_required_external_sync_impl_base.notest.barista" line 3.

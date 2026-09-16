@@ -1,0 +1,2 @@
+>> ERROR at line 13: Identifier "Hidden" not declared in the current scope.
+>> ERROR at line 13: Type argument 1 for generic class "Box" is not a valid type: "Hidden" does not name a type.

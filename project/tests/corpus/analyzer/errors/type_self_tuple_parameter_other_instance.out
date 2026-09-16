@@ -1,0 +1,1 @@
+>> ERROR at line 11: Invalid argument for "take_pair()" function: argument 1 should be "(int, Self)" but is "(int, Receiver)".

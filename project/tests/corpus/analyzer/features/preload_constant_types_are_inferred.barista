@@ -1,0 +1,5 @@
+const Constants = preload("fs_to_preload.notest.barista")
+
+func test():
+	var a := Constants.A
+	print(a)

@@ -1,0 +1,3 @@
+namespace top_level_enum_demo.other
+
+var unimported_value: TopLevelNamespacedEnum

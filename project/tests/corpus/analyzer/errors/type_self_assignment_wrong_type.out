@@ -1,0 +1,2 @@
+>> ERROR at line 3: Cannot assign a value of type Base to variable "tmp" with specified type Self.
+>> ERROR at line 8: Value of type "Base" cannot be assigned to a variable of type "Self".

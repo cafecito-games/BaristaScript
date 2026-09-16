@@ -1,0 +1,12 @@
+# A case pattern shorthand needs the subject to name a tagged union; an ordinary value supplies none.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func run(subject: int) -> void:
+	match subject:
+		.Ok(payload):
+			print(payload)
+		_:
+			pass

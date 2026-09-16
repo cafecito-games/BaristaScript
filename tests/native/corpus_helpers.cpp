@@ -637,8 +637,8 @@ PackedStringArray fixture_source_paths(const String &p_root) {
 	return paths;
 }
 
-PackedStringArray staging_fixture_paths() {
-	PackedStringArray paths = fixture_source_paths(CORPUS_ANALYZER_STAGING_ROOT);
+PackedStringArray analyzer_fixture_paths() {
+	PackedStringArray paths = fixture_source_paths(CORPUS_ANALYZER_ROOT);
 	paths.append_array(fixture_source_paths("res://tests/corpus/parser"));
 	paths.append_array(fixture_source_paths("res://tests/corpus_support/parser"));
 	paths.sort();
@@ -777,8 +777,8 @@ static CorpusModeReport selected_corpus_case_report() {
 	}
 	selected_case.stage = manifest.stages[selected_case.path];
 	PackedStringArray fixture_paths;
-	if (corpus_path_under(root, CORPUS_ANALYZER_STAGING_ROOT) || corpus_path_under(CORPUS_ANALYZER_STAGING_ROOT, root)) {
-		fixture_paths = staging_fixture_paths();
+	if (corpus_path_under(root, CORPUS_ANALYZER_ROOT) || corpus_path_under(CORPUS_ANALYZER_ROOT, root)) {
+		fixture_paths = analyzer_fixture_paths();
 	}
 	report.outcome = run_corpus_case(selected_case, fixture_paths);
 	return report;

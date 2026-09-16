@@ -1,0 +1,14 @@
+# Supplies frw_gadget() for FrwWidget from a separate file, and specializes a helper generic
+# class's explicit type argument with an alias declared here rather than in the target's file.
+type Meters = float
+
+
+
+
+
+
+extend FrwWidget uses FrwGadgetlike:
+	func frw_gadget() -> String:
+		var box: Array[Meters] = [1.5]
+
+		return "gadget:" + str(box[0])

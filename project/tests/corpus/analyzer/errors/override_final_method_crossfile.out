@@ -1,0 +1,1 @@
+>> ERROR at line 3: Cannot override final function "locked()" declared in "final_method_base.notest.barista".

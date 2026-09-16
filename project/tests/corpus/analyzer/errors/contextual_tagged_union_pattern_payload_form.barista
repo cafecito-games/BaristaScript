@@ -1,0 +1,12 @@
+# The payload form of a case decides how it is matched, exactly as for the qualified spelling.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func run(subject: Result) -> void:
+	match subject:
+		.Ok:
+			pass
+		_:
+			pass

@@ -1,0 +1,1 @@
+>> ERROR at line 3: Cannot return value of type "Other" because the function return type is "Self".

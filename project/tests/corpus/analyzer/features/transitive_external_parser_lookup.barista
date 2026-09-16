@@ -1,0 +1,13 @@
+# Regression for #732: analysis in the leaf script must find symbols owned by a parser two
+# extends hops away (recursive `find_cached_external_parser_for_class`).
+extends "transitive_external_parser_lookup_mid.notest.barista"
+
+
+func use_leaf(p: LeafType) -> void:
+	print(p.MARK)
+
+
+func test() -> void:
+	var leaf := LeafType.new()
+	use_leaf(leaf)
+	print(leaf.MARK)

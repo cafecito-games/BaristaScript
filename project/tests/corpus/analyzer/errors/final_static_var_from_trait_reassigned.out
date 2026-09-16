@@ -1,0 +1,1 @@
+>> ERROR at line 10: Final variable "VERSION" can only be assigned in its declaration or in "_static_init()".

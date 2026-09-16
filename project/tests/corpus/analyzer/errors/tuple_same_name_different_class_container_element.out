@@ -1,0 +1,2 @@
+>> ERROR at line 12: Cannot have an element of type "Pair" in an array of type "Array[Pair]". The element is declared by class "Left"; the array's element type is declared by class "Right".
+>> ERROR at line 13: Cannot have a value of type "Pair" in a dictionary of type "Dictionary[String, Pair]". The value is declared by class "Left"; the dictionary's value type is declared by class "Right".

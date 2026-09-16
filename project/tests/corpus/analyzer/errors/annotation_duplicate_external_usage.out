@@ -1,0 +1,1 @@
+>> ERROR at line 3: Ambiguous annotation "@shared": the canonical identity "cafecito.dupext.shared" is declared in multiple files.

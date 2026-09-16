@@ -1,0 +1,5 @@
+const Provider = preload("../features/typed_rest_parameter_external_provider.notest.barista")
+
+func test() -> void:
+	var provider := Provider.new()
+	print(provider.collect("ab", 1, "bad"))

@@ -1,0 +1,2 @@
+>> ERROR at line 15: Invalid argument 2 for tuple "Link": should be "int | (int, Self)" but is "(int, Receiver)".
+>> ERROR at line 16: Invalid argument 2 for tuple "Link": should be "int | (int, Self)" but is "(int, Foreign)".

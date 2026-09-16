@@ -1,0 +1,2 @@
+>> ERROR at line 15: Cannot assign a value of type Callable[[int], String] to variable "bad_async" with specified type AsyncCallable[[int], String].
+>> ERROR at line 16: Cannot assign a value of type AsyncCallable[[int], String] to variable "bad_sync" with specified type Callable[[int], String].

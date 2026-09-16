@@ -1,0 +1,2 @@
+>> ERROR at line 9: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "Receiver".
+>> ERROR at line 10: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "Self". The payload field's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

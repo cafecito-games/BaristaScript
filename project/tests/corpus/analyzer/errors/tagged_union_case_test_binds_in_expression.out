@@ -1,0 +1,1 @@
+>> ERROR at line 7: Case payload binds are only allowed in the condition of "if", "elif", "while" or "assert", directly or as an "and" operand.

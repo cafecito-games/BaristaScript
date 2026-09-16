@@ -1,0 +1,10 @@
+# A method on a `final` receiver that a reachable conformance supplies is now resolved from that
+# conformance: the instance witness types the call, so it neither errors as a closed-final receiver nor
+# degrades to an unsafe-access warning. This pins that the reachable witness now types instead of
+# leaving the call merely unsafe.
+const _Conformance = preload("frw_conformance.notest.barista")
+
+
+func probe() -> String:
+	var widget := FrwWidget.new()
+	return widget.frw_gadget()

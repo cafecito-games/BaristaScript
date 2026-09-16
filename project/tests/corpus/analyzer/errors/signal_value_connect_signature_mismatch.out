@@ -1,0 +1,1 @@
+>> ERROR at line 11: Cannot connect signal "Signal[[Node]]" to callable "Callable[[Resource], void]": signal argument 1 of type "Node" cannot be passed to callable parameter of type "Resource".

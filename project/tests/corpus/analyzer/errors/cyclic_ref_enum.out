@@ -1,0 +1,2 @@
+>> ERROR at line 7: Could not resolve member "E1": Cyclic reference.
+>> ERROR at line 7: Enum values must be constant.

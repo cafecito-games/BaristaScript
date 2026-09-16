@@ -1,0 +1,28 @@
+# A native engine class (`RefCounted`) is retroactively conformed to the `RtcNativeCounter` trait,
+# supplying the required `live_count()` witness externally. The witness body resolves against the
+# native target's surface: `get_reference_count()` is `RefCounted`'s own engine method, proving witness
+# bodies type-check against the ClassDB surface (not an FS member layout). Once conformed, a native
+# value is assignable to a trait-typed slot, satisfies `is`/`as` against the trait, satisfies a generic
+# bound `T: RtcNativeCounter`, and is accepted by a trait-typed parameter. Compiled but not run.
+extend RefCounted uses RtcNativeCounter:
+	func live_count() -> int:
+		return get_reference_count()
+
+
+func take_counter(c: RtcNativeCounter) -> bool:
+	return c != null
+
+
+func use_bound(value: RtcNativeCounter) -> bool:
+	return value != null
+
+
+func test() -> void:
+	var r := RefCounted.new()
+	var c: RtcNativeCounter = r
+	print(c != null)
+	print(r is RtcNativeCounter)
+	var as_c := r as RtcNativeCounter
+	print(as_c != null)
+	print(take_counter(r))
+	print(use_bound(r))

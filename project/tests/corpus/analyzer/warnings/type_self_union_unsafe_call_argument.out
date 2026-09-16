@@ -1,0 +1,2 @@
+~~ WARNING at line 12: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "take()" requires the subtype "int | (int, Self)" but the supertype "Variant" was provided.
+~~ WARNING at line 13: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "take_plain()" requires the subtype "String | int" but the supertype "Variant" was provided.

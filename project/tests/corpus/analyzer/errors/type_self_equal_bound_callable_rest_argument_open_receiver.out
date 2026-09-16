@@ -1,0 +1,2 @@
+>> ERROR at line 12: Invalid argument for "fan()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Self]], void]". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.
+>> ERROR at line 16: Invalid argument for "mixed()" function: argument 1 should be "Callable[[int, ...Array[Self]], void]" but is "Callable[[int, ...Array[Self]], void]". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

@@ -1,0 +1,1 @@
+>> ERROR at line 4: Cannot test against the type union "String | int", because it has no runtime type. Test one of its alternatives instead.

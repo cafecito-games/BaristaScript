@@ -1,0 +1,5 @@
+namespace generic_union_fixture
+
+enum_name GlobalResult:
+	Ok(value: int)
+	Err(error: String)

@@ -1,0 +1,2 @@
+>> ERROR at line 14: A type handle cannot represent the type union "Left | Right", because a handle names exactly one type at runtime. Use a handle of one alternative instead.
+>> ERROR at line 15: A type handle cannot represent the type union "String | int", because a handle names exactly one type at runtime. Use a handle of one alternative instead.

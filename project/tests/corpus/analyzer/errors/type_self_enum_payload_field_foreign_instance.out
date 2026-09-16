@@ -1,0 +1,4 @@
+>> ERROR at line 11: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "Receiver".
+>> ERROR at line 12: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "Sub".
+>> ERROR at line 13: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "Receiver".
+>> ERROR at line 22: Invalid argument 2 for enum case "Message.Attach": should be "Receiver" but is "String".

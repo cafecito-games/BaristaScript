@@ -1,0 +1,1 @@
+>> ERROR at line 3: Only a tagged-union case can bind payload values, e.g. "value is Message.Move(x, y)".

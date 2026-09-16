@@ -1,0 +1,1 @@
+>> ERROR at line 5: Cannot export type union "String | int": a multi-member union has no single runtime type to export.

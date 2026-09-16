@@ -1,0 +1,1 @@
+>> ERROR at line 9: Cannot pass instance value of type "Factory" as argument 1 of "call()"; expected a class handle whose represented instance type is "Factory" for "Type[Factory]".

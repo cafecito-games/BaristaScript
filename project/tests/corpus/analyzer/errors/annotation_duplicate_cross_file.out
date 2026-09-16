@@ -1,0 +1,1 @@
+>> ERROR at line 3: Duplicate annotation declaration "cafecito.dup_index.shared_marker": the same canonical annotation is declared in another file.

@@ -1,0 +1,16 @@
+# A nullable union subject adds `null` to the domain, which no case pattern covers, so a match over
+# every case with the shorthand still leaves `null` unhandled.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+func describe(subject: Result?) -> void:
+	match subject:
+		.Ok(value):
+			print(value)
+		.Err(error):
+			print(error)
+
+func test():
+	describe(Result.Ok(1))
+	describe(null)

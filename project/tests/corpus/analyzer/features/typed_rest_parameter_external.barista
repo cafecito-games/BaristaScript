@@ -1,0 +1,9 @@
+const Provider = preload("typed_rest_parameter_external_provider.notest.barista")
+
+func test() -> void:
+	var provider := Provider.new()
+	print(provider.collect("ab", 1, 2, 3))
+	print(provider.collect("ab"))
+
+	var handler: Callable[[String, ...Array[int]], int] = provider.callback()
+	print(handler.call("abc", 4, 5))

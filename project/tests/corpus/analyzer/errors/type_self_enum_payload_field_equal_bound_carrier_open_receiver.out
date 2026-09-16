@@ -1,0 +1,1 @@
+>> ERROR at line 10: Invalid argument 2 for enum case "Message.Load": should be "Array[Self]" but is "Array[Self]". The payload field's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

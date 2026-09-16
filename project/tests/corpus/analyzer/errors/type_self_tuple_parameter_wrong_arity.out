@@ -1,0 +1,3 @@
+>> ERROR at line 10: Invalid argument for "take_pair()" function: argument 1 should be "(int, Self)" but is "(int, int, int)".
+>> ERROR at line 11: Invalid argument for "take_pair()" function: argument 1 should be "(int, Self)" but is "(String, Receiver)".
+>> ERROR at line 11: Cannot include a value of type "String" as "int".

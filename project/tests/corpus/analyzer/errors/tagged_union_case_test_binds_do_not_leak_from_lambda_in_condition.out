@@ -1,0 +1,2 @@
+>> ERROR at line 12: Case payload binds are only allowed in the condition of "if", "elif", "while" or "assert", directly or as an "and" operand.
+>> ERROR at line 13: Identifier "x" not declared in the current scope.

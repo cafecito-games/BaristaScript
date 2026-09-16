@@ -1,0 +1,1 @@
+>> ERROR at line 5: Node export is only supported in Node-derived classes, but the current class inherits "Resource".

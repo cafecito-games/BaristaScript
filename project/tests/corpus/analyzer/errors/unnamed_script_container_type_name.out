@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot assign a value of type Array[unnamed_type_name_helper.notest.barista] to variable "value" with specified type int.

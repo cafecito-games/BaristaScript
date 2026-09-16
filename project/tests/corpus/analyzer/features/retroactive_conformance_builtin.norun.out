@@ -1,0 +1,6 @@
+>> ERROR at line 4: Conformance of "int" to trait "RtcBuiltinCounter" must implement trait method "RtcBuiltinCounter.size()".
+>> ERROR at line 24: Cannot assign a value of type int to variable "c" with specified type RtcBuiltinCounter.
+>> ERROR at line 26: Expression is of type "int" so it can't be of type "RtcBuiltinCounter".
+>> ERROR at line 27: Invalid cast. Cannot convert from "int" to "RtcBuiltinCounter".
+>> ERROR at line 29: Invalid argument for "take_counter()" function: argument 1 should be "RtcBuiltinCounter" but is "int".
+>> ERROR at line 30: Type argument "int" does not satisfy the bound "RtcBuiltinCounter" of type parameter "T" of generic method "use_bound()".

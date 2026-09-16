@@ -1,0 +1,7 @@
+# The intermediate file: it declares neither a conformance nor a trait binding of its own, so the walk
+# that looks for what a file's dependencies bind has to keep going rather than stop here.
+const _Holder = preload("sccut_chain_dep_uses.notest.barista")
+
+
+func bridge() -> int:
+	return 1

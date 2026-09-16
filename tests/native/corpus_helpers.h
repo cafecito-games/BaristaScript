@@ -32,7 +32,7 @@ inline constexpr const char *CORPUS_EXPECTATION_EXTENSION = ".out";
 inline constexpr const char *CORPUS_IGNORE_MARKER = ".baristaignore";
 
 /** The corpus root whose cases are evaluated against the shared analyzer fixture sources. */
-inline constexpr const char *CORPUS_ANALYZER_STAGING_ROOT = "res://tests/corpus_staging/analyzer";
+inline constexpr const char *CORPUS_ANALYZER_ROOT = "res://tests/corpus/analyzer";
 
 /**
  * Ordinals are serialized into `BS_CASE_RESULT` and read back by
@@ -153,7 +153,7 @@ CorpusStageManifest validate_stage_manifest(const godot::Dictionary &p_stages, c
 godot::PackedStringArray fixture_source_paths(const godot::String &p_root);
 
 /** The fixture sources an analyzer-staging run makes available, strictly ascending. */
-godot::PackedStringArray staging_fixture_paths();
+godot::PackedStringArray analyzer_fixture_paths();
 
 /** Whether `p_path` is `p_root` or lies beneath it. */
 bool corpus_path_under(const godot::String &p_path, const godot::String &p_root);

@@ -21,7 +21,7 @@ using namespace barista_script::native_tests;
 
 namespace {
 
-const char *const ROOT = "res://tests/corpus_staging/analyzer/features/";
+const char *const ROOT = "res://tests/corpus/analyzer/features/";
 
 String path(const String &p_name) {
 	return String(ROOT) + p_name + ".barista";
@@ -610,7 +610,7 @@ TEST_SUITE("base_outer_analyzer") {
 			MESSAGE(std::string(error_block(parser).utf8().get_data()));
 			CHECK(error_block(parser) == ">> ERROR at line 1: Could not resolve class \"repeated_failure_base.notest.barista\".\n"
 										 ">> ERROR at line 2: Could not resolve external class member \"Pick\".\n"
-										 ">> ERROR at line 1: Could not resolve class \"repeated_failure_base.notest.barista\". The class has errors, the first at line 1: Could not preload resource script \"res://tests/corpus_staging/analyzer/features/repeated_broken_pick.notest.barista\".");
+										 ">> ERROR at line 1: Could not resolve class \"repeated_failure_base.notest.barista\". The class has errors, the first at line 1: Could not preload resource script \"res://tests/corpus/analyzer/features/repeated_broken_pick.notest.barista\".");
 			CHECK(parser.get_tree()->get_member("first").get_datatype().is_variant());
 			CHECK(parser.get_tree()->get_member("second").get_datatype().is_variant());
 		}

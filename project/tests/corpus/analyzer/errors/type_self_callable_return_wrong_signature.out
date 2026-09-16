@@ -1,0 +1,1 @@
+>> ERROR at line 5: Cannot return value of type "Callable[[], int]" because the function return type is "Callable[[], Self]".

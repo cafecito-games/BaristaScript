@@ -1,0 +1,1 @@
+>> ERROR at line 12: Invalid argument for "enum_func()" function: argument 1 should be "enum_function_parameter_wrong_type.barista.MyEnum" but is "enum_function_parameter_wrong_type.barista.MyOtherEnum".

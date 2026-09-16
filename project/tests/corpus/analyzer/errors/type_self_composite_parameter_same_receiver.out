@@ -1,0 +1,2 @@
+>> ERROR at line 15: Invalid argument for "take_items()" function: argument 1 should be "Array[Self]" but is "Base".
+>> ERROR at line 16: Cannot pass instance value of type "Base" as argument 1 of "take_type()"; expected a class handle whose represented instance type is "Self" for "Type[Self]".

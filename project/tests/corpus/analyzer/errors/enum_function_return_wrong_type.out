@@ -1,0 +1,1 @@
+>> ERROR at line 9: Cannot return value of type "enum_function_return_wrong_type.barista.MyOtherEnum" because the function return type is "enum_function_return_wrong_type.barista.MyEnum".

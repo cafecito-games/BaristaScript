@@ -1,0 +1,2 @@
+>> ERROR at line 10: Type alias "Element" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.
+>> ERROR at line 11: Type alias "Meters" is not in scope here. A type alias is visible only inside the file and the body that declare it, so it is neither inherited nor imported.

@@ -49,7 +49,12 @@ class RegistryContract(unittest.TestCase):
         for name in ("corpus_baseline.json", "gdscript_suites.json"):
             shutil.copy2(ROOT / "tests" / name, self.root / "tests" / name)
         shutil.copy2(ROOT / "src/bs_corpus_sentinels.h", self.root / "src/bs_corpus_sentinels.h")
-        shutil.copytree(ROOT / "project/tests/corpus/parser", self.root / "project/tests/corpus/parser")
+        for name in ("parser", "analyzer"):
+            # Hard links, not copies: the analyzer tree is thousands of files and every
+            # test in this class rebuilds the scratch checkout. Nothing here writes into
+            # a corpus file, and a link is not a symlink, which the validator refuses.
+            shutil.copytree(ROOT / "project/tests/corpus" / name,
+                            self.root / "project/tests/corpus" / name, copy_function=os.link)
         self.registry = json.loads((self.root / "scripts/corpus_sources.json").read_text())
         self.baseline = json.loads((self.root / "tests/corpus_baseline.json").read_text())
         self.suites = json.loads((self.root / "tests/gdscript_suites.json").read_text())
@@ -60,6 +65,18 @@ class RegistryContract(unittest.TestCase):
                                    ("tests/gdscript_suites.json", self.suites)):
             (self.root / relative).write_text(json.dumps(document))
         return self.registry_module.validate_registration(self.root)
+
+    def make_analyzer_pending(self):
+        """Return the scratch checkout to the state before the analyzer was imported.
+
+        Several contracts are about a corpus that is registered but not delivered, and
+        that state has to stay reachable: a second corpus will be registered before it
+        is imported again.
+        """
+        import import_parser_corpus
+        self.registry["corpora"]["analyzer"]["state"] = "pending"
+        self.baseline["corpora"]["analyzer"] = import_parser_corpus.analyzer_scaffold_entry()
+        shutil.rmtree(self.root / "project/tests/corpus/analyzer")
 
     def test_committed_and_legacy_parser_metadata(self):
         self.check()
@@ -88,10 +105,6 @@ class RegistryContract(unittest.TestCase):
             self.registry["corpora"]["analyzer"][key] = self.registry["corpora"]["parser"][key]
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "duplicate"):
                 self.check()
-        self.registry = copy.deepcopy(original)
-        self.registry["corpora"]["parser"]["state"] = "pending"
-        with self.assertRaisesRegex(ValueError, "zero active"):
-            self.check()
         self.registry = original
         original_baseline = copy.deepcopy(self.baseline)
         for value in (None, [], "invalid"):
@@ -102,6 +115,12 @@ class RegistryContract(unittest.TestCase):
         self.baseline = original_baseline
         self.baseline["corpora"]["analyzer"]["upstream_helpers"] = True
         with self.assertRaisesRegex(ValueError, "upstream_helpers"):
+            self.check()
+
+    def test_a_registry_with_no_active_corpus_is_rejected(self):
+        self.make_analyzer_pending()
+        self.registry["corpora"]["parser"]["state"] = "pending"
+        with self.assertRaisesRegex(ValueError, "zero active"):
             self.check()
 
     def test_pending_registration_cannot_be_removed_from_both_documents(self):
@@ -176,6 +195,7 @@ class RegistryContract(unittest.TestCase):
             self.check()
 
     def test_pending_cannot_hide_delivery_or_claim_success(self):
+        self.make_analyzer_pending()
         original = copy.deepcopy(self.baseline)
         for key, value in (("total", 1), ("skipped", 1), ("expected_failures", ["x.barista"])):
             with self.subTest(key=key):
@@ -195,10 +215,32 @@ class RegistryContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pending"):
             self.check()
 
-    def test_pending_importer_can_be_staged_but_not_counted(self):
+    def test_pending_importer_can_be_registered_but_not_counted(self):
+        self.make_analyzer_pending()
         self.registry["corpora"]["analyzer"]["importer"] = "scripts/import_analyzer_corpus.py"
-        (self.root / "scripts/import_analyzer_corpus.py").write_text("# staging only")
+        (self.root / "scripts/import_analyzer_corpus.py").write_text("# registered, not yet delivered")
         self.check()
+
+    def test_an_unregistered_execution_supervisor_is_rejected(self):
+        for value in (None, "", "gdscript_or_triage", "GDSCRIPT", True):
+            with self.subTest(value=value):
+                self.registry["corpora"]["analyzer"]["execution"] = value
+                with self.assertRaisesRegex(ValueError, "execution"):
+                    self.check()
+
+    def test_a_triage_supervised_corpus_may_not_claim_a_runner_invocation(self):
+        """Its pinned failures would make the aggregate summary line a red run."""
+        self.suites["extra_invocations"].append({"script": "res://tests/corpus_runner.gd",
+            "args": ["--corpus", "res://tests/corpus/analyzer"], "expect": "^BS_CORPUS 910/1078 skipped=252$"})
+        with self.assertRaisesRegex(ValueError, "triage-supervised"):
+            self.check()
+
+    def test_a_triage_supervised_pin_must_match_the_ledger_beside_the_cases(self):
+        """The cross-check that replaces the anchored pass count a GDScript corpus pins."""
+        self.baseline["corpora"]["analyzer"]["expected_failures"] = (
+            self.baseline["corpora"]["analyzer"]["expected_failures"][1:])
+        with self.assertRaisesRegex(ValueError, "expected_failures"):
+            self.check()
 
     def test_imported_requires_exact_runner_invocation(self):
         pin = self.suites["extra_invocations"][-1]
@@ -291,6 +333,7 @@ class WorkflowContract(unittest.TestCase):
 class WrapperContract(unittest.TestCase):
     setUp = RegistryContract.setUp
     check = RegistryContract.check
+    make_analyzer_pending = RegistryContract.make_analyzer_pending
     def invoke(self, arguments):
         import check_corpus_reproducibility as wrapper
         with patch.object(wrapper, "ROOT", self.root):
@@ -313,6 +356,8 @@ class WrapperContract(unittest.TestCase):
 
     def test_importer_exit_and_pending_reporting(self):
         import check_corpus_reproducibility as wrapper
+        self.make_analyzer_pending()
+        self.check()
         for status in (0, 3, -9):
             stdout, stderr = io.StringIO(), io.StringIO()
             with patch.object(wrapper, "verify_checkout"), patch.object(wrapper.subprocess, "run") as run, redirect_stdout(stdout), redirect_stderr(stderr):
@@ -333,19 +378,8 @@ class WrapperContract(unittest.TestCase):
             self.assertNotEqual(self.invoke(["--foundry", str(self.root)]), 0)
             run.assert_not_called()
 
-    def test_future_analyzer_delivery_uses_same_wrapper_in_sorted_order(self):
-        self.registry["corpora"]["analyzer"].update(state="active", importer="scripts/import_analyzer_corpus.py")
-        (self.root / "scripts/import_analyzer_corpus.py").write_text("# registered staging importer; execution mocked here")
-        destination = self.root / "project/tests/corpus/analyzer"
-        destination.mkdir()
-        (destination / "one.barista").write_text("func test(): pass")
-        from corpus_expectations import success_sentinel
-        (destination / "one.out").write_text(success_sentinel() + "\n")
-        from corpus_stages import write_stages
-        write_stages(destination, {"one.barista"}, set(), self.registry["revision"], "analyzer")
-        self.baseline["corpora"]["analyzer"].update(imported=True, total=1, upstream_total=1)
-        self.suites["extra_invocations"].append({"script": "res://tests/corpus_runner.gd",
-            "args": ["--corpus", "res://tests/corpus/analyzer"], "expect": "^BS_CORPUS 1/1 skipped=0$"})
+    def test_every_delivered_corpus_uses_the_same_wrapper_in_sorted_order(self):
+        """Both corpora are delivered, so both importers run and nothing is pending."""
         self.check()
         import check_corpus_reproducibility as wrapper
         with patch.object(wrapper, "verify_checkout"), patch.object(wrapper.subprocess, "run") as run, redirect_stdout(io.StringIO()) as stdout:

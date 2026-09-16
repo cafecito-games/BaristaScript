@@ -1,0 +1,1 @@
+>> ERROR at line 5: Cannot assign a value of type Vec2 to variable "size" with specified type Size2.

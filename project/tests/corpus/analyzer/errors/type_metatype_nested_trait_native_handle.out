@@ -1,0 +1,1 @@
+>> ERROR at line 6: Cannot use class handle "Node" as an element of "Array[Type[Factory]]"; handle represents "Node", which is not compatible with "Factory".

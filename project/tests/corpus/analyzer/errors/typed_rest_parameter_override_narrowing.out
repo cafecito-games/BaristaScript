@@ -1,0 +1,2 @@
+>> ERROR at line 23: The rest parameter type "Array[Dog]" does not accept every trailing argument allowed by the parent rest parameter type "Array[Animal]".
+>> ERROR at line 35: The rest parameter type "Array[int]" does not accept every trailing argument allowed by the parent rest parameter type "Array".

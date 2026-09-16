@@ -1,0 +1,2 @@
+>> ERROR at line 26: The function "accept()" signature does not match required trait method "AcceptsAnimals.accept()".
+>> ERROR at line 33: The function "accept_bounded()" signature does not match required trait method "AcceptsBounded.accept_bounded()".

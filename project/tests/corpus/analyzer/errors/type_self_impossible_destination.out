@@ -1,0 +1,6 @@
+>> ERROR at line 18: Invalid argument for "take()" function: argument 1 should be "int" but is "Self".
+>> ERROR at line 21: Cannot assign a value of type Self to variable "value" with specified type int.
+>> ERROR at line 25: Value of type "Self" cannot be assigned to a variable of type "int".
+>> ERROR at line 28: Cannot return value of type "Self" because the function return type is "int".
+>> ERROR at line 31: Cannot assign a value of type T to variable "number" with specified type int.
+>> ERROR at line 35: Invalid cast. Cannot convert from "Self" to "Unrelated".

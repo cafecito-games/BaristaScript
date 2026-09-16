@@ -1,0 +1,4 @@
+class_name ExternalSignalGlobalClassProbe
+extends RefCounted
+
+signal pinged(probe: ExternalSignalGlobalClassProbe)

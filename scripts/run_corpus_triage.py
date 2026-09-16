@@ -50,7 +50,6 @@ from run_native_suites import PROTOCOL_VERSION, RESULT_FIELDS, RESULT_PREFIX, st
 NATIVE_SUITE = 'analyzer_corpus'
 # The one registered analyzer_corpus case that evaluates a single externally selected case.
 NATIVE_CORPUS_CASE = 'selected_corpus_case_emits_guards'
-STAGING_ROOT = 'res://tests/corpus_staging/analyzer'
 NATIVE_BUILD_DIRECTORY = 'build/native-scons'
 
 
@@ -63,17 +62,15 @@ def permitted_corpus_roots():
 
     The native suite reads case_stages.json from whatever root it is handed, so a root
     outside this set could carry a planted manifest that evaluates a case at a stage it
-    was never adjudicated for and silently turn a failing case into a passing one. Only
-    the registry's own destinations and the importer-owned staging root are trusted to
-    carry that manifest.
-
-    Discovery triage additionally accepts only the staging root, which today is the narrower
-    restriction and the one that actually refuses a planted root. This set is what remains
-    once a promoted corpus destination becomes acceptable too, so the threat above is the
-    reason this guard exists rather than the reason today's run is safe.
+    was never adjudicated for and silently turn a failing case into a passing one. Only a
+    registered destination whose record declares triage supervision is trusted to carry
+    that manifest, and this is now the sole restriction: it both admits the promoted
+    analyzer corpus and refuses the GDScript-supervised parser destination, which this
+    supervisor has no business restaging.
     """
-    destinations = {record['destination'] for record in load_registry(ROOT)['corpora'].values()}
-    return {'res://' + destination.removeprefix('project/') for destination in destinations} | {STAGING_ROOT}
+    return {'res://' + record['destination'].removeprefix('project/')
+            for record in load_registry(ROOT)['corpora'].values()
+            if record['execution'] == 'triage'}
 
 
 def select_library(explicit, candidates):
@@ -299,13 +296,13 @@ def expected_failure_complaints(results, expected_failures, selected):
     return complaints
 
 
-def validate_staging(root, inventory, *, project_root=None):
+def validate_imported_tree(root, inventory, *, project_root=None):
     from import_analyzer_corpus import shared_source_path
     project_root = project_root or ROOT / "project"
     if (len({r['identity'] for r in inventory['sources']}) != len(inventory['sources'])
             or len({r['imported_path'] for r in inventory['sources']}) != len(inventory['sources'])
             or sum(r['role'] == 'case' for r in inventory['sources']) != inventory['counts']['cases']):
-        raise ValueError('staging source identity/population disagreement')
+        raise ValueError('imported source identity/population disagreement')
     records = {record['imported_path']: record for record in inventory['sources']
                if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
     entries = tree_entries(root)
@@ -313,10 +310,10 @@ def validate_staging(root, inventory, *, project_root=None):
     helpers = {path for path in sources if path.endswith('.notest.barista')}
     helper_records = {r['imported_path'] for r in inventory['sources'] if r['role'] in ('helper', 'support_helper') and 'root' not in r}
     if len(records) != inventory['ledger']['total'] or helpers != helper_records or sources - helpers != set(records):
-        raise ValueError('staging inventory/population disagreement')
-    complaint = validate_triage_ledger('analyzer staging', inventory['ledger'], disk_cases=set(records), disk_helpers=helpers)
+        raise ValueError('imported inventory/population disagreement')
+    complaint = validate_triage_ledger('analyzer', inventory['ledger'], disk_cases=set(records), disk_helpers=helpers)
     if complaint:
-        raise ValueError(f'staging population accounting: {complaint}')
+        raise ValueError(f'imported population accounting: {complaint}')
     validate_stages(read_json(root / 'case_stages.json'), set(records), helpers, inventory['foundry_revision'])
     for record in inventory['sources']:
         if record.get('disposition') in ('excluded', 'deferred'):
@@ -326,13 +323,13 @@ def validate_staging(root, inventory, *, project_root=None):
             continue
         path = root / record['imported_path']
         if digest(path) != record['imported_sha256']:
-            raise ValueError(f'staged source hash drift: {path}')
+            raise ValueError(f'imported source hash drift: {path}')
         if record['role'] == 'case' and decode_expectation(path.with_suffix('.out').read_bytes(), str(path)) != record['expected_block']:
-            raise ValueError(f'staged expectation drift: {path}')
+            raise ValueError(f'imported expectation drift: {path}')
     expected_files = {'inventory.json', 'case_stages.json', 'README.md'} | sources
     expected_files |= {str(Path(case).with_suffix('.out')) for case in records}
     if {path for path, kind in entries.items() if kind == 'file'} != expected_files:
-        raise ValueError('staging inventory/file population disagreement')
+        raise ValueError('imported inventory/file population disagreement')
     return records
 
 
@@ -353,22 +350,18 @@ def main(argv=None):
         if args.jobs < 1:
             raise ValueError('jobs must be a positive integer')
         if args.corpus not in permitted_corpus_roots():
-            raise ValueError('corpus root must be a registered corpus destination or the analyzer staging root')
-        # Narrower than the set above while the analyzer corpus is still staged rather than
-        # promoted; relaxing this leaves permitted_corpus_roots as the operative restriction.
-        if args.corpus != STAGING_ROOT:
-            raise ValueError('discovery triage requires the importer-owned analyzer staging root')
+            raise ValueError('corpus root must be a triage-supervised registered corpus destination')
         root = local_path(ROOT, 'project/' + args.corpus.removeprefix('res://'))
         if args.report.resolve().is_relative_to(ROOT):
             raise ValueError('execution report must be outside the repository')
         inventory = read_json(root / 'inventory.json')
-        if inventory.get('checkpoint') != 'discovery' or inventory.get('imported') is not False or inventory.get('root') != args.corpus:
-            raise ValueError('not a pending discovery inventory')
+        if inventory.get('checkpoint') != 'imported' or inventory.get('imported') is not True or inventory.get('root') != args.corpus:
+            raise ValueError('not an imported corpus inventory')
         from import_analyzer_corpus import default_policy, encoded, sha
         policy = default_policy()
         if inventory['counts'] != policy['counts'] or inventory['policy_sha256'] != sha(encoded(policy)):
-            raise ValueError('staging inventory differs from the current pinned policy; regenerate staging')
-        records = validate_staging(root, inventory)
+            raise ValueError('imported inventory differs from the current pinned policy; regenerate the tree')
+        records = validate_imported_tree(root, inventory)
         if len(set(args.case)) != len(args.case) or set(args.case) - set(records):
             raise ValueError('duplicate or unknown exact case selection')
         selected = args.case or sorted(records)
@@ -390,7 +383,7 @@ def main(argv=None):
                     raise ValueError(f'native test artifact descriptor is missing {key}')
             require_equal('native test artifact', descriptor['sha256'], artifact_sha)
             require_equal('native build id', expected_build_id, descriptor['build_id'])
-        report = {'schema_version': 1, 'checkpoint': 'discovery', 'corpus': args.corpus,
+        report = {'schema_version': 1, 'checkpoint': 'imported', 'corpus': args.corpus,
                   'source_revision': inventory['foundry_revision'], 'inventory_sha256': digest(root / 'inventory.json'),
                   'baristascript_revision': run_git(ROOT, 'rev-parse', 'HEAD'),
                   'baristascript_worktree_diff_sha256': hashlib.sha256(subprocess.run(['git', '-C', str(ROOT), 'diff', 'HEAD'], capture_output=True, check=True).stdout).hexdigest(),
@@ -508,7 +501,7 @@ def main(argv=None):
             for _ in range(worker_count):
                 project = stack.enter_context(staged_project({'library': str(library)}))
                 prepare_triage_project(project)
-                validate_staging(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
+                validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
                 idle_projects.put(project)
             # Only this thread touches the report, so every write stays a consistent snapshot.
             finished = {}

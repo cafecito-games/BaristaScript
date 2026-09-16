@@ -1,0 +1,3 @@
+namespace issue_69_docs.game.characters.controllers.deep
+class_name Issue69DocDeepController
+extends RefCounted

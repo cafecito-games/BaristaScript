@@ -1,0 +1,1 @@
+>> ERROR at line 13: Value of type "enum_class_var_assign_with_wrong_enum_type.barista.MyOtherEnum" cannot be assigned to a variable of type "enum_class_var_assign_with_wrong_enum_type.barista.MyEnum".

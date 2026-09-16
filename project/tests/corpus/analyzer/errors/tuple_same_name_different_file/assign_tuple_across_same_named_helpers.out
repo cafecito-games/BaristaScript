@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot assign a value of type Point to variable "wrong" with specified type Point. The value is declared in "res://tests/corpus/analyzer/errors/tuple_same_name_different_file/a/helper.notest.barista"; the specified type is declared in "res://tests/corpus/analyzer/errors/tuple_same_name_different_file/b/helper.notest.barista".

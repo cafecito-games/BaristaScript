@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot assign class handle "Node" to variable "user_handle" of type "Type[User]"; handle represents "Node", which is not compatible with "User".

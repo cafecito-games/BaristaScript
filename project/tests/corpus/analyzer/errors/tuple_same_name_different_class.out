@@ -1,0 +1,1 @@
+>> ERROR at line 9: Cannot assign a value of type Point to variable "wrong" with specified type Point. The value is declared by class "Left"; the specified type is declared by class "Right".

@@ -1,0 +1,30 @@
+# A contextual case shorthand in argument position resolves against the selected callee's parameter
+# type, which threads through nested shorthands too.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+enum Nested:
+	Wrap(inner: Result)
+
+
+func describe(value: Result) -> String:
+	return str(value)
+
+
+static func described(value: Result) -> String:
+	return str(value)
+
+
+func test():
+	print(describe(.Ok(1)))
+	print(describe(.Err("bad")))
+	print(described(.Ok(2)))
+
+	# A shorthand nested inside another case's payload resolves against that payload's field type.
+	var nested: Nested = .Wrap(.Ok(4))
+	print(nested)
+
+	# The explicit outer form accepts a shorthand payload as well.
+	print(Nested.Wrap(.Err("inner")))

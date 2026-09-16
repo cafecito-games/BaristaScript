@@ -1,0 +1,30 @@
+# A contextual case shorthand is a valid parameter default: the payload form constant-folds to the
+# read-only `[tag, payload...]` Array the case erases to, so it survives as a baked default value.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+enum Option:
+	None
+	Some(value: int)
+
+
+func with_payload(value: Result = .Ok(1)) -> String:
+	return str(value)
+
+
+func without_payload(value: Option = .None) -> String:
+	return str(value)
+
+
+func with_explicit(value: Result = Result.Ok(1)) -> String:
+	return str(value)
+
+
+func test():
+	print(with_payload())
+	print(with_payload(Result.Err("given")))
+	print(without_payload())
+	print(with_explicit())
+	print(with_payload() == with_explicit())

@@ -1,0 +1,16 @@
+# The matching width is admitted and dispatches: a callable's fixed-width parameter is identical on
+# both sides, so the `Self` tail is all that remains to reconcile.
+class Cell:
+	func fan(callback: Callable[[int, ...Array[Self]], void]) -> void:
+		callback.call(9223372036854775807, self)
+
+	func sink(value: int, ...values: Array) -> void:
+		print("sink ", value, " ", values.size())
+
+	func run() -> void:
+		var wide: Callable[[int, ...Array], void] = sink
+		fan(wide)
+
+
+func test() -> void:
+	Cell.new().run()

@@ -1,0 +1,2 @@
+>> ERROR at line 18: Invalid argument for "take_pair()" function: argument 1 should be "(int, Self)" but is "(int, Foreign)".
+>> ERROR at line 19: Invalid argument for "take_pair_static()" function: argument 1 should be "(int, Receiver)" but is "(int, Foreign)".

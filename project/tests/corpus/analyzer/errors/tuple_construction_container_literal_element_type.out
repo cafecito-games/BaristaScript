@@ -1,0 +1,4 @@
+>> ERROR at line 4: Cannot include a value of type "String" as "int".
+>> ERROR at line 4: Cannot have an element of type "String" in an array of type "Array[int]".
+>> ERROR at line 4: Cannot include a value of type "String" as "int".
+>> ERROR at line 4: Cannot have a value of type "String" in a dictionary of type "Dictionary[String, int]".

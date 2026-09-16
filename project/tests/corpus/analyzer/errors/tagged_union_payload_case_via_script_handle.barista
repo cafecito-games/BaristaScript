@@ -1,0 +1,6 @@
+# A payload case has no construction form on the declaring script handle: the case constructor is
+# only spelled on the enum name.
+const EnumFile = preload("./tagged_union_payload_case_via_script_handle.notest.barista")
+
+func test():
+	print(EnumFile.Move(1, 2))

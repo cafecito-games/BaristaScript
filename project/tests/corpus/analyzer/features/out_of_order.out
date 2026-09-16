@@ -1,0 +1,2 @@
+>> ERROR at line 46: Cannot use another enum element before it was declared.
+>> ERROR at line 46: Enum values must be constant.

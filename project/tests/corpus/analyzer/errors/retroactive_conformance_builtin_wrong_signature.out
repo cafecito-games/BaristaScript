@@ -1,0 +1,1 @@
+>> ERROR at line 3: The function "doubled()" signature does not match required trait method "RtcBuiltinWrongSig.doubled()".

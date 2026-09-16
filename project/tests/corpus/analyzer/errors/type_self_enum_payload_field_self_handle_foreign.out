@@ -1,0 +1,1 @@
+>> ERROR at line 10: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "Receiver".

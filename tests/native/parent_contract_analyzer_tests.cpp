@@ -93,7 +93,7 @@ void original(const String &name, const String &source, const String &expected, 
 	if (external) {
 		const String provider = storage.path("final_method_base.notest.barista");
 		BS_TEST_REQUIRE(write_bytes(provider, bytes("extends RefCounted\n\nfinal func locked() -> int:\n\treturn 1\n")));
-		actual_source = source.replace("res://tests/corpus_staging/analyzer/errors/final_method_base.notest.barista", provider);
+		actual_source = source.replace("res://tests/corpus/analyzer/errors/final_method_base.notest.barista", provider);
 	}
 	BSParser parser;
 	BS_TEST_REQUIRE(parser.parse(actual_source, path, false) == OK);
@@ -181,7 +181,7 @@ TEST_SUITE("parent_contract_analyzer") {
 	TEST_CASE("original_function_return_type_invalid_covariance_3") { original("function_return_type_invalid_covariance_3.barista", "class A:\n\tfunc f() -> Node:\n\t\treturn null\n\nclass B extends A:\n\tfunc f() -> void: # No `is_type_compatible()` misuse.\n\t\treturn\n\nfunc test():\n\tpass\n", ">> ERROR at line 6: The function signature doesn't match the parent. Parent signature is \"f() -> Node\".", 6, "B", "f"); }
 	TEST_CASE("original_function_return_type_invalid_covariance_4") { original("function_return_type_invalid_covariance_4.barista", "class A:\n\tfunc f() -> float:\n\t\treturn 0.0\n\nclass B extends A:\n\tfunc f() -> int: # No implicit conversion.\n\t\treturn 0\n\nfunc test():\n\tpass\n", ">> ERROR at line 6: The function signature doesn't match the parent. Parent signature is \"f() -> float\".", 6, "B", "f"); }
 	TEST_CASE("original_override_final_method") { original("override_final_method.barista", "class Base:\n\tfinal func greet() -> String:\n\t\treturn \"base\"\n\nclass Derived extends Base:\n\tfunc greet() -> String:\n\t\treturn \"derived\"\n\nfunc test():\n\tpass\n", ">> ERROR at line 6: Cannot override final function \"greet()\" declared in \"Base\".", 6, "Derived", "greet"); }
-	TEST_CASE("original_override_final_method_crossfile") { original("override_final_method_crossfile.barista", "extends \"res://tests/corpus_staging/analyzer/errors/final_method_base.notest.barista\"\n\nfunc locked() -> int:\n\treturn 2\n\nfunc test():\n\tpass\n", ">> ERROR at line 3: Cannot override final function \"locked()\" declared in \"final_method_base.notest.barista\".", 3, "", "locked", true); }
+	TEST_CASE("original_override_final_method_crossfile") { original("override_final_method_crossfile.barista", "extends \"res://tests/corpus/analyzer/errors/final_method_base.notest.barista\"\n\nfunc locked() -> int:\n\treturn 2\n\nfunc test():\n\tpass\n", ">> ERROR at line 3: Cannot override final function \"locked()\" declared in \"final_method_base.notest.barista\".", 3, "", "locked", true); }
 	TEST_CASE("original_override_final_static_method") { original("override_final_static_method.barista", "class Base:\n\tfinal static func make() -> int:\n\t\treturn 1\n\nclass Derived extends Base:\n\tstatic func make() -> int:\n\t\treturn 2\n\nfunc test():\n\tpass\n", ">> ERROR at line 6: Cannot override final function \"make()\" declared in \"Base\".", 6, "Derived", "make"); }
 	TEST_CASE("original_abstract_async_method_implementation") { original("abstract_async_method_implementation.barista", "abstract class AbstractAsync:\n\tabstract async func fetch() -> String\n\nclass SyncImplementation extends AbstractAsync:\n\tfunc fetch() -> String:\n\t\treturn \"sync\"\n\nfunc test():\n\tpass\n", ">> ERROR at line 5: The function \"fetch()\" must be async because it overrides an async parent function.", 5, "SyncImplementation", "fetch"); }
 

@@ -1,0 +1,1 @@
+>> ERROR at line 24: Cannot connect signal "Signal[[Animal, Animal]]" to callable "Callable": signal argument 1 of type "Animal" cannot be passed to callable rest parameter of type "Array[Dog]".

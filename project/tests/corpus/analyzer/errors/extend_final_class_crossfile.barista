@@ -1,0 +1,4 @@
+extends "res://tests/corpus/analyzer/errors/final_base.notest.barista"
+
+func test():
+	pass

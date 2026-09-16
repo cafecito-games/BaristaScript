@@ -1,0 +1,8 @@
+# A directly-accessed external signal member whose parameter is a user (global-class) type crosses with
+# its signature kept non-explicit, so assigning it to the same annotated Signal type stays accepted
+# (compared by class name) rather than being falsely rejected on a CLASS-vs-SCRIPT kind mismatch.
+const Provider = preload("external_signal_member_global_class_provider.notest.barista")
+
+func test() -> void:
+	var pinged: Signal[[ExternalSignalGlobalClassProbe]] = Provider.new().pinged
+	print(pinged.get_name())

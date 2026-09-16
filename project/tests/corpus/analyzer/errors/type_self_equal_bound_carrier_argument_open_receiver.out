@@ -1,0 +1,2 @@
+>> ERROR at line 15: Invalid argument for "take()" function: argument 1 should be "Array[Self]" but is "Array[Self]". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.
+>> ERROR at line 16: Invalid argument for "take_mapping()" function: argument 1 should be "Dictionary[String, Self]" but is "Dictionary[String, Self]". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

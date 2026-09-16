@@ -1,0 +1,4 @@
+>> ERROR at line 20: Cannot assign a value of type String to variable "wrong" with specified type int | uint.
+>> ERROR at line 22: Cannot assign a value of type Left | Right to variable "text" with specified type String.
+>> ERROR at line 26: Cannot assign a value of type int | uint to variable "as_float" with specified type float.
+>> ERROR at line 27: Invalid argument for "take_string()" function: argument 1 should be "String" but is "int | uint".

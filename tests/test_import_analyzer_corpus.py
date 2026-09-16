@@ -67,7 +67,7 @@ class AnalyzerImport(unittest.TestCase):
         }
 
     def inventory(self):
-        return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus_staging/analyzer')
+        return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus/analyzer')
 
     def disposition_owner(self, path, state, reason):
         owner = copy.deepcopy(self.m.default_policy()['owners']['errors/preload_missing_relative_path.barista'])
@@ -88,7 +88,7 @@ class AnalyzerImport(unittest.TestCase):
         self.assertEqual(record['imported_path'], 'utils.notest.barista')
         self.assertEqual(inv['ledger']['skipped'], inv['counts']['helpers'] + 1)
         stage = self.root / 'stage'
-        self.m.write_stage(inv, self.source, stage)
+        self.m.write_tree(inv, self.source, stage)
         self.assertFalse((stage / '_support/utils.notest.barista').exists())
         self.assertEqual(sum(p.name == 'utils.notest.barista' for p in stage.rglob('*.barista')), 0)
         self.assertEqual(inv['counts']['support_helpers'], 2)
@@ -105,28 +105,28 @@ class AnalyzerImport(unittest.TestCase):
         stage.mkdir()
         (stage / 'previous').write_bytes(b'previous valid stage')
         with self.assertRaisesRegex(ValueError, 'shared support'):
-            self.m.write_stage(inv, self.source, stage, project_root=project)
+            self.m.write_tree(inv, self.source, stage, project_root=project)
         self.assertEqual((stage / 'previous').read_bytes(), b'previous valid stage')
         original = (self.source / 'utils.notest.fs').read_bytes()
         projected = self.m.patch(original, record['transformations'], record['identity'])
         support.write_bytes(projected)
-        self.m.write_stage(inv, self.source, stage, project_root=project)
-        run_corpus_triage.validate_staging(stage, inv, project_root=project)
+        self.m.write_tree(inv, self.source, stage, project_root=project)
+        run_corpus_triage.validate_imported_tree(stage, inv, project_root=project)
         support.write_bytes(projected + b'drift')
         with self.assertRaisesRegex(ValueError, 'shared support'):
-            self.m.check_stage(inv, self.source, stage, project_root=project)
+            self.m.check_tree(inv, self.source, stage, project_root=project)
         with self.assertRaisesRegex(ValueError, 'shared support'):
-            run_corpus_triage.validate_staging(stage, inv, project_root=project)
+            run_corpus_triage.validate_imported_tree(stage, inv, project_root=project)
         support.write_bytes(projected)
         for root in ('res://outside', 'res://tests/corpus_support/parser/../parser'):
             changed = copy.deepcopy(inv)
             next(r for r in changed['sources'] if r['upstream_path'] == 'utils.notest.fs')['root'] = root
             with self.assertRaisesRegex(ValueError, 'identity/root/path'):
-                run_corpus_triage.validate_staging(stage, changed, project_root=project)
+                run_corpus_triage.validate_imported_tree(stage, changed, project_root=project)
         support.unlink()
         support.symlink_to(ROOT / 'project/tests/corpus_support/parser/utils.notest.barista')
         with self.assertRaisesRegex(ValueError, 'symlink'):
-            self.m.check_stage(inv, self.source, stage, project_root=project)
+            self.m.check_tree(inv, self.source, stage, project_root=project)
 
     def test_reviewed_owner_requires_execution_and_source_evidence(self):
         path = 'errors/preload_missing_relative_path.barista'
@@ -268,7 +268,7 @@ class AnalyzerImport(unittest.TestCase):
         negative = records['analyzer/errors/preload_missing_relative_path.fs']
         self.assertEqual(len(negative['references']), 1)
         self.assertTrue(negative['references'][0]['intentional_missing'])
-        self.assertIn('res://tests/corpus_staging/analyzer/', negative['expected_block'])
+        self.assertIn('res://tests/corpus/analyzer/', negative['expected_block'])
         cross = records['analyzer/errors/extends_preloaded_tuple_name_head.fs']
         self.assertEqual(cross['references'][0]['target'], 'parser/features/tuple_name_declaration.norun.fs')
         self.assertEqual(inv['counts']['support_helpers'], 2)
@@ -393,14 +393,14 @@ class AnalyzerImport(unittest.TestCase):
         self.assertEqual(inv['ledger']['total'], before['ledger']['total'])
         self.assertEqual(inv['ledger']['skipped'], before['ledger']['skipped'] + 2)
         destination = self.root / 'projected-stage'
-        self.m.write_stage(inv, self.source, destination)
-        self.m.check_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
+        self.m.check_tree(inv, self.source, destination)
         self.assertEqual((destination / original['imported_path']).read_bytes(),
                          self.m.patch(data, standard, original['identity']))
         self.assertEqual((destination / clone['imported_path']).read_bytes(), clone_bytes)
         first = {path.relative_to(destination): path.read_bytes()
                  for path in destination.rglob('*') if path.is_file()}
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         self.assertEqual(first, {path.relative_to(destination): path.read_bytes()
                                  for path in destination.rglob('*') if path.is_file()})
         self.assertEqual(provider.read_bytes(), data)
@@ -459,25 +459,25 @@ class AnalyzerImport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'helper provider'):
             self.inventory()
 
-    def test_staging_validation_rejects_unlisted_files(self):
+    def test_imported_tree_validation_rejects_unlisted_files(self):
         import run_corpus_triage as triage
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
-        triage.validate_staging(destination, inv)
+        self.m.write_tree(inv, self.source, destination)
+        triage.validate_imported_tree(destination, inv)
         for extra in ['.baristaignore', '_support/.baristaignore', 'orphan.out']:
             path = destination / extra
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'')
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'population'):
-                triage.validate_staging(destination, inv)
+                triage.validate_imported_tree(destination, inv)
             path.unlink()
 
-    def test_staging_removed_case_cannot_shrink_its_declared_population(self):
+    def test_removed_case_cannot_shrink_its_declared_population(self):
         import run_corpus_triage as triage
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         record = next(r for r in inv['sources'] if r['role'] == 'case' and r['disposition'] == 'imported')
         inv['sources'].remove(record)
         inv['ledger']['total'] -= 1
@@ -488,31 +488,32 @@ class AnalyzerImport(unittest.TestCase):
         stages['cases'].pop(record['imported_path'])
         (destination / 'case_stages.json').write_bytes(self.m.encoded(stages))
         with self.assertRaisesRegex(ValueError, 'population|accounting'):
-            triage.validate_staging(destination, inv)
+            triage.validate_imported_tree(destination, inv)
 
-    def test_stage_replacement_is_deterministic_and_detects_byte_drift(self):
+    def test_tree_replacement_is_deterministic_and_detects_byte_drift(self):
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         before = {p.relative_to(destination): p.read_bytes() for p in destination.rglob('*') if p.is_file()}
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         self.assertEqual(before, {p.relative_to(destination): p.read_bytes() for p in destination.rglob('*') if p.is_file()})
         path = next(destination.rglob('*.barista'))
         path.write_bytes(path.read_bytes() + b'# drift\n')
         with self.assertRaisesRegex(ValueError, 'drift'):
-            self.m.check_stage(inv, self.source, destination)
+            self.m.check_tree(inv, self.source, destination)
         path.unlink()
         with self.assertRaises(ValueError):
-            self.m.check_stage(inv, self.source, destination)
+            self.m.check_tree(inv, self.source, destination)
 
     def test_policy_stale_overlap_preimage_and_unsafe_destination(self):
         self.policy['deferred']['errors/nonexistent.barista'] = 'M5: fixture'
         with self.assertRaisesRegex(ValueError, 'stale'):
             self.inventory()
-        for path in ['project/tests/corpus', 'project/tests/corpus/analyzer', 'project',
-                     'project/tests/corpus_staging/analyzer/../escape']:
+        for path in ['project/tests/corpus', 'project/tests/corpus/parser', 'project',
+                     'project/tests/corpus_staging/analyzer',
+                     'project/tests/corpus/analyzer/../escape']:
             with self.subTest(path=path), self.assertRaises(ValueError):
-                self.m.stage_destination(ROOT, path)
+                self.m.import_destination(ROOT, path)
 
     def test_warning_runtime_boundary_and_nonresource_strings(self):
         source = self.source / 'analyzer/features/transport.fs'
@@ -608,7 +609,7 @@ class AnalyzerImport(unittest.TestCase):
                       if record['upstream_path'] == output.removesuffix('.out') + '.fs')
         self.assertEqual(record['expected_block'].count('>> ERROR'), 2)
         self.assertIn('Exact expectation-only second diagnostic.', record['expected_block'])
-        self.assertIn('res://tests/corpus_staging/analyzer/', record['expected_block'])
+        self.assertIn('res://tests/corpus/analyzer/', record['expected_block'])
         self.assertEqual(record['expectation_edits'], [edit])
 
         def expect_failure(mutator, pattern):
@@ -657,7 +658,7 @@ class AnalyzerImport(unittest.TestCase):
         from unittest.mock import patch
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         before = (destination / 'inventory.json').read_bytes()
         rename = Path.rename
         def fail_candidate(path, target):
@@ -665,7 +666,7 @@ class AnalyzerImport(unittest.TestCase):
                 raise OSError('injected publication failure')
             return rename(path, target)
         with patch.object(Path, 'rename', fail_candidate), self.assertRaisesRegex(OSError, 'publication'):
-            self.m.write_stage(inv, self.source, destination)
+            self.m.write_tree(inv, self.source, destination)
         self.assertEqual(before, (destination / 'inventory.json').read_bytes())
 
     def test_duplicate_json_keys_and_count_drift_fail(self):
@@ -1012,7 +1013,7 @@ class FullPinned(unittest.TestCase):
         policy = importer.default_policy()
         self.assert_safe_contextual_policy(policy)
         source = FOUNDRY / importer.SCRIPTS
-        inventory = importer.inventory_sources(source, policy, 'res://tests/corpus_staging/analyzer')
+        inventory = importer.inventory_sources(source, policy, 'res://tests/corpus/analyzer')
         records = {record['imported_path']: record for record in inventory['sources']
                    if record['role'] == 'case'}
         for case, (raw_sha, projected_sha, output_sha, block_sha) in CONTEXTUAL_SPECS.items():
@@ -1085,7 +1086,7 @@ class FullPinned(unittest.TestCase):
 
         policy = importer.default_policy()
         source = FOUNDRY / importer.SCRIPTS
-        uri = 'res://tests/corpus_staging/analyzer'
+        uri = 'res://tests/corpus/analyzer'
         provider_path = 'analyzer/features/typed_rest_parameter_external_provider.notest.fs'
         reintroduced_case = TYPED_CONTAINER_CASE
         reintroduced_source = TYPED_CONTAINER_SOURCE_PATH
@@ -1194,7 +1195,7 @@ class FullPinned(unittest.TestCase):
         self.assertEqual(first, importer.inventory_sources(source, policy, uri))
         self.assertEqual(first['schema_version'], 1)
         self.assertEqual(hashlib.sha256(importer.encoded(first)).hexdigest(),
-                         'f6da2d5169ba888f892ac1040245e8081078412249e126300005dd91bd93c234')
+                         'afe887e96f179b58c9b784a5249f258742b42b8148224e5fa112c201f8a424e7')
         self.assertEqual((first['counts']['sources'], first['counts']['cases'],
                           first['counts']['helpers'], first['counts']['support_helpers']),
                          (1596, 1346, 250, 2))
@@ -1238,16 +1239,16 @@ class FullPinned(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary) / 'stage'
-            importer.write_stage(first, source, stage)
-            importer.check_stage(first, source, stage)
+            importer.write_tree(first, source, stage)
+            importer.check_tree(first, source, stage)
             before = {path.relative_to(stage): path.read_bytes()
                       for path in stage.rglob('*') if path.is_file()}
-            importer.write_stage(first, source, stage)
+            importer.write_tree(first, source, stage)
             self.assertEqual(before, {path.relative_to(stage): path.read_bytes()
                                       for path in stage.rglob('*') if path.is_file()})
             self.assertEqual(len(before), 2411)
             self.assertEqual(hashlib.sha256((stage / 'inventory.json').read_bytes()).hexdigest(),
-                             'f6da2d5169ba888f892ac1040245e8081078412249e126300005dd91bd93c234')
+                             'afe887e96f179b58c9b784a5249f258742b42b8148224e5fa112c201f8a424e7')
             self.assertEqual(hashlib.sha256((stage / 'case_stages.json').read_bytes()).hexdigest(),
                              '3ad070abe3df618bcb3e01bc6c5cdc753884b9e30819c606eae5a2e515ff9202')
             tree = hashlib.sha256()
@@ -1257,7 +1258,7 @@ class FullPinned(unittest.TestCase):
                 tree.update(path.relative_to(stage).as_posix().encode())
                 tree.update(b'\n')
             self.assertEqual(tree.hexdigest(),
-                             '0b5e21050c72cd20bab737465afbe6611fbfc942045ba18b98d75be9aae38107')
+                             '1e649c4dfb66645dcdaa47d6460c5fdd6a1c41b11b2cb7026db9a93ae9985b76')
 
         def expect_inventory_failure(mutator, pattern):
             candidate = copy.deepcopy(policy)
@@ -1327,7 +1328,7 @@ class FullPinned(unittest.TestCase):
         corpus_registry.verify_checkout(FOUNDRY, registry, registry['revision'])
         policy = importer.default_policy()
         source = FOUNDRY / importer.SCRIPTS
-        uri = 'res://tests/corpus_staging/analyzer'
+        uri = 'res://tests/corpus/analyzer'
         first = importer.inventory_sources(source, policy, uri)
         self.assertEqual(first, importer.inventory_sources(source, policy, uri))
         self.assertEqual((first['counts']['sources'], first['counts']['cases'], first['counts']['helpers']), (1596, 1346, 250))
@@ -1506,17 +1507,17 @@ class FullPinned(unittest.TestCase):
             importer.inventory_sources(source, stale, uri)
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary) / 'stage'
-            importer.write_stage(first, source, stage)
-            importer.check_stage(first, source, stage)
+            importer.write_tree(first, source, stage)
+            importer.check_tree(first, source, stage)
             original = next(stage.rglob('*.barista'))
             data = original.read_bytes()
             original.write_bytes(bytes([data[0] ^ 1]) + data[1:])
             with self.assertRaisesRegex(ValueError, 'byte drift'):
-                importer.check_stage(first, source, stage)
+                importer.check_tree(first, source, stage)
             original.write_bytes(data)
             original.unlink()
             with self.assertRaisesRegex(ValueError, 'population'):
-                importer.check_stage(first, source, stage)
+                importer.check_tree(first, source, stage)
 
 
 class ExpectedFailureDerivation(unittest.TestCase):
@@ -1649,7 +1650,7 @@ class ArchivedExecutionDerivation(unittest.TestCase):
     def test_a_real_execution_report_derives_its_own_failing_set(self):
         import import_analyzer_corpus
         self.assertTrue(EXECUTION_REPORT.is_file(), f'execution report not found: {EXECUTION_REPORT}')
-        staging = ROOT / 'project/tests/corpus_staging/analyzer/inventory.json'
+        staging = ROOT / 'project/tests/corpus/analyzer/inventory.json'
         self.assertTrue(staging.is_file(), f'analyzer staging inventory not found: {staging}; stage the corpus first')
         report = json.loads(EXECUTION_REPORT.read_text())
         inventory = json.loads(staging.read_text())

@@ -1,0 +1,13 @@
+namespace generic_union_fixture.consumer
+import generic_union_fixture
+
+const Provider = preload("./generic_tagged_union_global_values.notest.barista")
+
+func test():
+	var imported: GlobalResult = GlobalResult.Ok(10)
+	var qualified = generic_union_fixture.GlobalResult.Err("eleven")
+	var preloaded: GlobalResult = GlobalResult.Ok(12)
+	print(imported)
+	print(qualified)
+	print(preloaded)
+	print(Provider.GlobalResult)

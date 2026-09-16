@@ -1,0 +1,3 @@
+# Companion foreign target for retroactive_conformance_witness_collision.
+class_name RtcWitnessCollisionGadget
+extends RefCounted

@@ -1,0 +1,5 @@
+>> ERROR at line 17: Cannot assign a value of type int | long to variable "narrow" with specified type int.
+>> ERROR at line 19: Cannot assign a value of type long to variable "also_narrow" with specified type int.
+>> ERROR at line 21: Cannot assign a value of type long to variable "from_alias" with specified type int.
+>> ERROR at line 23: Cannot assign a value of type int? | long to variable "from_nullable" with specified type int.
+>> ERROR at line 24: Invalid argument for "take_int()" function: argument 1 should be "int" but is "int | long".

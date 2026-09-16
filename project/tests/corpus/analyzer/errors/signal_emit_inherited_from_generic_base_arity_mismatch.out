@@ -1,0 +1,2 @@
+>> ERROR at line 9: Too few arguments for "emit()" call. Expected at least 2 but received 1.
+>> ERROR at line 10: Too many arguments for "emit()" call. Expected at most 2 but received 3.

@@ -1,0 +1,8 @@
+const Provider = preload("top_level_enum_containers_provider.notest.barista")
+
+func check_containers() -> void:
+	var values: Array[TopLevelStandaloneEnum] = Provider.new().get_values()
+	var lookup: Dictionary[String, TopLevelStandaloneEnum] = Provider.new().get_lookup()
+	var value: TopLevelStandaloneEnum = values[0]
+	var mapped: TopLevelStandaloneEnum = lookup["current"]
+	print(value, mapped)

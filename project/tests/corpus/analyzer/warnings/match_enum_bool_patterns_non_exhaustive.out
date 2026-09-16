@@ -1,0 +1,1 @@
+~~ WARNING at line 7: (OPEN_ENUM_MATCH_WITHOUT_DEFAULT) The "match" over "Toggle" does not handle: OFF, ON. "Toggle" is also carried by an integer that can hold values outside its declared members, so add an unguarded "_" or bind branch rather than the missing patterns alone.

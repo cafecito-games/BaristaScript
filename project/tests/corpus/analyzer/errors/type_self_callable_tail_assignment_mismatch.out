@@ -1,0 +1,4 @@
+>> ERROR at line 6: Cannot assign a value of type Callable[[...Array[String]], void] to variable "declared" with specified type Callable[[...Array[Self]], void].
+>> ERROR at line 10: Cannot assign a value of type Callable[[...Array[String]], void] to variable "slot" with specified type Callable[[...Array[Self]], void].
+>> ERROR at line 11: Value of type "Callable[[...Array[Leaf]], void]" cannot be assigned to a variable of type "Callable[[...Array[Self]], void]".
+>> ERROR at line 15: Cannot return value of type "Callable[[...Array[String]], void]" because the function return type is "Callable[[...Array[Self]], void]".

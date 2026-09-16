@@ -1,0 +1,2 @@
+>> ERROR at line 4: Identifier "HTTPServer" not declared in the current scope.
+>> ERROR at line 4: Cannot infer the type of "server" variable because the value doesn't have a set type.

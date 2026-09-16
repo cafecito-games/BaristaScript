@@ -1,0 +1,7 @@
+extends "./non_tool_extends_tool.notest.barista"
+
+class InnerClass extends "./non_tool_extends_tool.notest.barista":
+	pass
+
+func test():
+	pass

@@ -1,0 +1,2 @@
+>> ERROR at line 6: Enum case "Command.Move" carries a payload and must be constructed, e.g. "Command.Move(...)".
+>> ERROR at line 6: Type "Move" in base "tagged_union_payload_case_as_value.barista.Command" cannot be used on its own.

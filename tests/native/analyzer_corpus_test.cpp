@@ -824,13 +824,13 @@ TEST_SUITE("analyzer_corpus") {
 			}
 		}
 		CHECK(fixture_source_paths("res://tests/does_not_exist").is_empty());
-		const PackedStringArray staging = staging_fixture_paths();
-		for (int i = 1; i < staging.size(); i++) {
-			CHECK(String(staging[i - 1]) < String(staging[i]));
+		const PackedStringArray analyzer_paths = analyzer_fixture_paths();
+		for (int i = 1; i < analyzer_paths.size(); i++) {
+			CHECK(String(analyzer_paths[i - 1]) < String(analyzer_paths[i]));
 		}
-		CHECK(corpus_path_under(CORPUS_ANALYZER_STAGING_ROOT, "res://tests/corpus_staging"));
-		CHECK(corpus_path_under("res://tests/corpus_staging", "res://tests/corpus_staging"));
-		CHECK_FALSE(corpus_path_under("res://tests/corpus_staging_other", "res://tests/corpus_staging"));
+		CHECK(corpus_path_under(CORPUS_ANALYZER_ROOT, "res://tests/corpus"));
+		CHECK(corpus_path_under("res://tests/corpus", "res://tests/corpus"));
+		CHECK_FALSE(corpus_path_under("res://tests/corpus_other", "res://tests/corpus"));
 	}
 
 	TEST_CASE("exact_case_selection_requires_one_discovered_case") {

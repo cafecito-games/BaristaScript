@@ -1,0 +1,1 @@
+>> ERROR at line 7: The function "take_damage()" signature does not match required trait method "Damageable.take_damage()".

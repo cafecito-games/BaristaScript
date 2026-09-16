@@ -1,0 +1,17 @@
+@warning_ignore("mixed_namespace_directory")
+class_name TypeAliasUnionExportSingleMemberRetainsType
+
+# A single-member alias collapses to its member and keeps that member's runtime typing, including
+# numeric width, so it stays exportable exactly like a plain declaration would be.
+type Meters = float
+type Selector = int
+
+@export var distance: Meters = 1.5
+@export var count: Selector = 7
+
+func test():
+	for property in get_property_list():
+		if str(property.name) == "distance" or str(property.name) == "count":
+			Utils.print_property_extended_info(property)
+	print(distance is float)
+	print(count is int)

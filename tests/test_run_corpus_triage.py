@@ -42,6 +42,8 @@ def metadata():
 
 
 BUILD_ID = 'b' * 64
+# The one triage-supervised corpus destination the registry declares.
+ANALYZER_ROOT = 'res://tests/corpus/analyzer'
 
 
 def native_completion_line(nonce, *, cases=1, assertions=3, failed_cases=0, failed_assertions=0,
@@ -73,13 +75,14 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'barista_tests'):
                 triage.select_library(library, [library])
 
-    def test_only_registered_and_staging_roots_may_carry_a_stage_manifest(self):
-        # Discovery triage is narrower still and accepts only the staging root, so this set is
-        # what will refuse a planted root once a promoted corpus destination becomes acceptable.
+    def test_only_triage_supervised_roots_may_carry_a_stage_manifest(self):
+        # The GDScript-supervised parser destination is excluded too: this supervisor has no
+        # business restaging a corpus whose cases the corpus runner already pins as a whole.
         roots = triage.permitted_corpus_roots()
-        self.assertEqual(roots, {'res://tests/corpus/parser', 'res://tests/corpus/analyzer', triage.STAGING_ROOT})
-        for planted in ('res://tests/corpus_staging', 'res://tests/planted/analyzer',
-                        'res://tests/corpus_staging/analyzer/errors', 'user://analyzer'):
+        self.assertEqual(roots, {'res://tests/corpus/analyzer'})
+        for planted in ('res://tests/corpus', 'res://tests/planted/analyzer',
+                        'res://tests/corpus/parser', 'res://tests/corpus_staging/analyzer',
+                        'res://tests/corpus/analyzer/errors', 'user://analyzer'):
             self.assertNotIn(planted, roots)
 
     def test_completion_record_never_turns_a_failed_case_into_a_pass(self):
@@ -108,7 +111,7 @@ class IdentityTests(unittest.TestCase):
             self.assertTrue(record['build_info_error'])
 
     def test_a_completion_record_that_disagrees_with_the_payload_is_not_a_pass(self):
-        case, corpus = 'errors/case.barista', triage.STAGING_ROOT
+        case, corpus = 'errors/case.barista', ANALYZER_ROOT
         payload = dict(path=corpus + '/' + case, passed=True, expected='BS_TEST_OK', actual='BS_TEST_OK')
         process = dict(output='BS_CASE_RESULT ' + json.dumps(payload) + '\nBS_CASE_RAN ' + case,
                        exit_code=0, timed_out=False, duration_seconds=0.1)
@@ -195,10 +198,10 @@ class ReportTests(unittest.TestCase):
             }
             self.assertLessEqual(set(policy['rewritten']), fixture_cases)
             self.assertLessEqual(set(policy['source_edits']), fixture_sources)
-            uri = 'res://tests/corpus_staging/analyzer'
+            uri = 'res://tests/corpus/analyzer'
             policy['counts'] = importer.inventory_sources(source, policy, uri)['counts']
             inventory = importer.inventory_sources(source, policy, uri)
-            corpus = root / 'project/tests/corpus_staging/analyzer'
+            corpus = root / 'project/tests/corpus/analyzer'
             # The native suite lives in the compiled library, so no GDScript corpus runner
             # is staged here: the fixture proves the run no longer depends on one.
             files = ('project/project.godot', 'project/.godot/extension_list.cfg',
@@ -221,7 +224,7 @@ class ReportTests(unittest.TestCase):
             api_destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(api_source, api_destination)
             self.assertEqual(api_source.read_bytes(), api_destination.read_bytes())
-            importer.write_stage(inventory, source, corpus, project_root=root / 'project')
+            importer.write_tree(inventory, source, corpus, project_root=root / 'project')
             (root / 'scripts/analyzer_corpus_policy.json').write_text(json.dumps(policy))
             library = root / triage.NATIVE_BUILD_DIRECTORY / 'bin/libbarista_script.macos.template_debug.dylib'
             library.parent.mkdir(parents=True)
@@ -233,7 +236,7 @@ class ReportTests(unittest.TestCase):
             for command in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                                                         'commit', '-qm', 'fixture']):
                 subprocess.run(['git', '-C', str(root), *command], check=True, capture_output=True)
-            cases = sorted(triage.validate_staging(corpus, inventory, project_root=root / 'project'))[:case_limit]
+            cases = sorted(triage.validate_imported_tree(corpus, inventory, project_root=root / 'project'))[:case_limit]
             report = base / 'report.json'
             checkout = dict(source=dict(revision='c' * 40, state='dirty'), config_sha256='d' * 64)
             real_run = subprocess.run
@@ -326,7 +329,7 @@ class ReportTests(unittest.TestCase):
             self.assertTrue(all(not project.parent.exists() for project in projects))
             self.assertEqual(report['selected_cases'], cases)
             self.assertFalse(report['complete_population'])
-            self.assertEqual(report['inventory_sha256'], triage.digest(root / 'project/tests/corpus_staging/analyzer/inventory.json'))
+            self.assertEqual(report['inventory_sha256'], triage.digest(root / 'project/tests/corpus/analyzer/inventory.json'))
             self.assertEqual(report['checkout_info'], checkout)
             self.assertEqual(report['build_info'], metadata())
             self.assertNotEqual(report['build_info']['source'], report['checkout_info']['source'])
@@ -499,7 +502,7 @@ class ReportTests(unittest.TestCase):
     def test_an_unregistered_root_is_refused_before_any_case_runs(self):
         with self.fixture() as (root, library, report_path, inventory, cases, checkout):
             planted = root / 'project/tests/planted/analyzer'
-            shutil.copytree(root / 'project/tests/corpus_staging/analyzer', planted)
+            shutil.copytree(root / 'project/tests/corpus/analyzer', planted)
             # A planted manifest in an unregistered tree can restage a case at a stage it was
             # never adjudicated for, so the root itself has to be refused.
             arguments = ['--godot', 'fake-godot', '--library', str(library), '--report', str(report_path),
@@ -559,14 +562,14 @@ class ReportTests(unittest.TestCase):
 @unittest.skipUnless(GODOT and LIBRARY, 'pass --godot and --library for actual same-process corpus transport')
 class RuntimeTests(unittest.TestCase):
     def test_optional_transport_uses_the_actual_case_process(self):
-        corpus = triage.STAGING_ROOT
-        staging = ROOT / 'project' / corpus.removeprefix('res://')
-        if not (staging / 'inventory.json').is_file():
-            self.skipTest('regenerate the analyzer staging tree for the actual case transport')
+        corpus = ANALYZER_ROOT
+        corpus_root = ROOT / 'project' / corpus.removeprefix('res://')
+        if not (corpus_root / 'inventory.json').is_file():
+            self.skipTest('regenerate the analyzer corpus tree for the actual case transport')
         library, info, sha = triage.select_library(LIBRARY, [])
         from run_native_suites import staged_project
-        inventory = triage.read_json(staging / 'inventory.json')
-        records = triage.validate_staging(staging, inventory)
+        inventory = triage.read_json(corpus_root / 'inventory.json')
+        records = triage.validate_imported_tree(corpus_root, inventory)
         case = sorted(records)[0]
         expected = records[case]['expected_block']
         with staged_project({'library': str(library)}) as project:

@@ -1,0 +1,7 @@
+# A witness for `label()` is already registered for `RtcWccTarget` in a preloaded file.
+const _FirstConformance = preload("retroactive_conformance_witness_collision_cross_file.notest.barista")
+
+
+extend RtcWccTarget uses RtcWccTraitB:
+	func label() -> String:
+		return "second"

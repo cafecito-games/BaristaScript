@@ -1,0 +1,2 @@
+>> ERROR at line 11: Invalid argument for "attach()" function: argument 1 should be "int | (int, Self)" but is "(int, Self)". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.
+>> ERROR at line 12: Invalid argument for "attach_carrier()" function: argument 1 should be "int | (int, Array[Self])" but is "(int, Array[Receiver])". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

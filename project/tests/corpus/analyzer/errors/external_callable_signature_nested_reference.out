@@ -1,0 +1,1 @@
+>> ERROR at line 5: Cannot assign a value of type Callable[[Callable[[int], void]], void] to variable "fn" with specified type Callable[[Callable[[String], void]], void].

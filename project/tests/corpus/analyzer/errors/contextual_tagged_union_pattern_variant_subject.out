@@ -1,0 +1,2 @@
+>> ERROR at line 9: Contextual shorthand ".Some" needs a tagged-union match subject, but it is of type "Variant".
+>> ERROR at line 11: Contextual shorthand ".None" needs a tagged-union match subject, but it is of type "Variant".

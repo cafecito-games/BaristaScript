@@ -1,0 +1,1 @@
+>> ERROR at line 5: Class "RtcDup" already conforms to trait "RtcDupTrait" via a conformance in "res://tests/corpus/analyzer/errors/retroactive_conformance_duplicate_cross_file.notest.barista".
