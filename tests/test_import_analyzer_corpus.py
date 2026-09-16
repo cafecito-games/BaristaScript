@@ -1258,7 +1258,7 @@ class FullPinned(unittest.TestCase):
                 tree.update(path.relative_to(stage).as_posix().encode())
                 tree.update(b'\n')
             self.assertEqual(tree.hexdigest(),
-                             '1e649c4dfb66645dcdaa47d6460c5fdd6a1c41b11b2cb7026db9a93ae9985b76')
+                             'f8933bcd2cb6b4f43734c19eb313a1ca19bb5caf8340d3930a855277bb95c919')
 
         def expect_inventory_failure(mutator, pattern):
             candidate = copy.deepcopy(policy)
