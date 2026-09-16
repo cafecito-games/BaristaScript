@@ -153,8 +153,24 @@ godot::PackedStringArray staging_fixture_paths();
 /** Whether `p_path` is `p_root` or lies beneath it. */
 bool corpus_path_under(const godot::String &p_path, const godot::String &p_root);
 
-/** Normalize a `res://`, `user://` or absolute filesystem corpus root to a resource path. */
+/**
+ * Normalize a `res://`, `user://` or absolute filesystem corpus root to a resource path.
+ *
+ * A root outside the project, a missing one, and a symlinked one are all refused. Refusing a
+ * symlinked root rather than resolving it is what lets the alias machinery of
+ * `project/tests/corpus_harness.gd` stay unported: that machinery exists to stop an
+ * expectation update writing through an alias, and a read-only run has no reason to follow one.
+ */
 godot::String normalize_corpus_root(const godot::String &p_root, godot::String *r_error);
+
+/**
+ * The index into `p_discovery.cases` of the single case at `p_root`/`p_relative`.
+ *
+ * Returns -1 with `r_error` set when the case was not discovered, and refuses a duplicated
+ * path rather than picking one of the two.
+ */
+int select_discovered_case(const CorpusDiscovery &p_discovery, const godot::String &p_root,
+		const godot::String &p_relative, godot::String *r_error);
 
 struct CorpusModeReport {
 	/** False when no `--corpus-case=` was given, which is every ordinary suite run. */

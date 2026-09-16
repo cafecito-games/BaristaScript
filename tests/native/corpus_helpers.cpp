@@ -678,6 +678,28 @@ String normalize_corpus_root(const String &p_root, String *r_error) {
 	return root;
 }
 
+int select_discovered_case(const CorpusDiscovery &p_discovery, const String &p_root,
+		const String &p_relative, String *r_error) {
+	if (r_error != nullptr) {
+		*r_error = String();
+	}
+	const String selected_path = p_root.path_join(p_relative);
+	int selected = -1;
+	for (int i = 0; i < p_discovery.cases.size(); i++) {
+		if (p_discovery.cases[i].path == selected_path) {
+			// A second match means the identity is ambiguous, so neither is executed.
+			selected = selected >= 0 ? -2 : i;
+		}
+	}
+	if (selected < 0) {
+		if (r_error != nullptr) {
+			*r_error = "exact case was not discovered: " + p_relative;
+		}
+		return -1;
+	}
+	return selected;
+}
+
 CorpusModeReport run_selected_corpus_case() {
 	CorpusModeReport report;
 	report.relative_case = corpus_case();
@@ -704,15 +726,9 @@ CorpusModeReport run_selected_corpus_case() {
 		report.error = "corpus directory is unreadable: " + String(discovery.unreadable_directories[0]);
 		return report;
 	}
-	const String selected_path = root.path_join(report.relative_case);
-	int selected = -1;
-	for (int i = 0; i < discovery.cases.size(); i++) {
-		if (discovery.cases[i].path == selected_path) {
-			selected = selected >= 0 ? -2 : i;
-		}
-	}
+	const int selected = select_discovered_case(discovery, root, report.relative_case, &error);
 	if (selected < 0) {
-		report.error = "exact case was not discovered: " + report.relative_case;
+		report.error = error;
 		return report;
 	}
 	const CorpusJsonDocument registry = read_unique_json("res://../scripts/corpus_sources.json");

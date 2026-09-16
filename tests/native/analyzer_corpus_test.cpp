@@ -15,6 +15,7 @@
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/json.hpp>
+#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 
 #include <iostream>
@@ -97,6 +98,28 @@ public:
 		return write(p_relative, bytes_of(p_text));
 	}
 };
+
+/**
+ * Revoke or restore read permission on one file and confirm the change took effect.
+ *
+ * Only a file is ever locked, never a directory: a mode-000 directory would survive the
+ * disposable `user://` root's own cleanup, while an unreadable file is still unlinkable.
+ */
+bool set_file_readable(const String &p_path, bool p_readable) {
+	OS *os = OS::get_singleton();
+	ProjectSettings *settings = ProjectSettings::get_singleton();
+	if (os == nullptr || settings == nullptr || os->get_name() == "Windows") {
+		return false;
+	}
+	PackedStringArray arguments;
+	arguments.push_back(p_readable ? "644" : "000");
+	arguments.push_back(settings->globalize_path(p_path));
+	Array output;
+	if (os->execute("chmod", arguments, output) != 0) {
+		return false;
+	}
+	return FileAccess::open(p_path, FileAccess::READ).is_valid() == p_readable;
+}
 
 CorpusResult synthetic_result(const String &p_output, bool p_ok = true, bool p_analysis_ran = true,
 		bool p_infrastructure_error = false) {
@@ -333,6 +356,23 @@ TEST_SUITE("analyzer_corpus") {
 		CHECK(int(invalid_expectation["reason"]) == CORPUS_INVALID_EXPECTATION);
 		CHECK(String(invalid_expectation["message"]) ==
 				"expectation " + corpus_case.expectation_path + " is not valid UTF-8");
+
+		// The open-failure branch is distinct from the decode and terminator branches: the
+		// file still exists, so this must not degrade into MISSING_EXPECTATION.
+		corpus.write("case.out", String("BS_TEST_OK\n"));
+		if (set_file_readable(corpus_case.expectation_path, false)) {
+			const Dictionary unreadable = corpus_case_result_dictionary(run_corpus_case(corpus_case, PackedStringArray()));
+			const bool restored = set_file_readable(corpus_case.expectation_path, true);
+			CHECK(sorted_keys(unreadable) == failure_keys);
+			CHECK(int(unreadable["reason"]) == CORPUS_INVALID_EXPECTATION);
+			CHECK(String(unreadable["message"]).begins_with("expectation " + corpus_case.expectation_path + " is unreadable (error "));
+			CHECK_MESSAGE(restored, "the locked expectation must be readable again before cleanup");
+		} else {
+			// Revoking read permission is the only way to reach this branch; an environment
+			// that cannot do it leaves the contract unverified rather than silently passing.
+			CHECK_MESSAGE(FileAccess::file_exists(corpus_case.expectation_path),
+					"could not revoke read permission; the unreadable-expectation branch went unverified");
+		}
 
 		corpus.write("case.out", String("BS_TEST_OK\r\n"));
 		const Dictionary bad_terminator = corpus_case_result_dictionary(run_corpus_case(corpus_case, PackedStringArray()));
@@ -668,6 +708,21 @@ TEST_SUITE("analyzer_corpus") {
 		// An unreadable directory aborts validation instead of shrinking the manifest.
 		CHECK_FALSE(validate_stage_manifest(manifest, "user://analyzer_corpus_absent_stage_root", revision).error.is_empty());
 
+		// So does a symlinked entry: a manifest validated over a tree with an alias in it
+		// would be attesting to cases the run refuses to execute.
+		ProjectSettings *settings = ProjectSettings::get_singleton();
+		Ref<DirAccess> directory = DirAccess::open(corpus.root());
+		BS_TEST_REQUIRE(settings != nullptr);
+		BS_TEST_REQUIRE(directory.is_valid());
+		const String link = corpus.root().path_join("alias.barista");
+		BS_TEST_REQUIRE(directory->create_link(settings->globalize_path(corpus.root().path_join("case.barista")),
+								settings->globalize_path(link)) == OK);
+		const CorpusStageManifest aliased = validate_stage_manifest(manifest, corpus.root(), revision);
+		DirAccess::remove_absolute(link);
+		CHECK(aliased.error == "unsupported corpus symlink: " + link);
+		CHECK(aliased.stages.is_empty());
+		CHECK(validate_stage_manifest(manifest, corpus.root(), revision).error.is_empty());
+
 		// The committed parser corpus validates against the real registry revision.
 		const CorpusJsonDocument registry = read_unique_json("res://../scripts/corpus_sources.json");
 		if (registry.error.is_empty()) {
@@ -699,6 +754,73 @@ TEST_SUITE("analyzer_corpus") {
 		CHECK(corpus_path_under(CORPUS_ANALYZER_STAGING_ROOT, "res://tests/corpus_staging"));
 		CHECK(corpus_path_under("res://tests/corpus_staging", "res://tests/corpus_staging"));
 		CHECK_FALSE(corpus_path_under("res://tests/corpus_staging_other", "res://tests/corpus_staging"));
+	}
+
+	TEST_CASE("exact_case_selection_requires_one_discovered_case") {
+		TemporaryCorpus corpus("selection");
+		corpus.write("errors/case.barista", String("func test():\n\tpass\n"));
+		corpus.write("errors/case.out", String("BS_TEST_OK\n"));
+		corpus.write("errors/helper.notest.barista", String("func helper():\n\tpass\n"));
+		const CorpusDiscovery discovery = discover_corpus(corpus.root());
+		BS_TEST_REQUIRE(discovery.cases.size() == 1);
+
+		String error = "not cleared";
+		const int selected = select_discovered_case(discovery, corpus.root(), "errors/case.barista", &error);
+		BS_TEST_REQUIRE(selected == 0);
+		CHECK(error.is_empty());
+		// The selected identity is the corpus root joined with the relative case, which is
+		// exactly what the supervisor re-derives from the BS_CASE_RESULT payload.
+		CHECK(discovery.cases[selected].path == corpus.root().path_join("errors/case.barista"));
+
+		const PackedStringArray undiscovered = { "errors/missing.barista", "case.barista",
+			"errors/helper.notest.barista", "errors/case.out" };
+		for (int i = 0; i < undiscovered.size(); i++) {
+			CHECK(select_discovered_case(discovery, corpus.root(), undiscovered[i], &error) == -1);
+			CHECK(error == "exact case was not discovered: " + String(undiscovered[i]));
+		}
+
+		// An ambiguous identity is refused rather than resolved to either match.
+		CorpusDiscovery duplicated;
+		duplicated.cases.push_back(discovery.cases[0]);
+		duplicated.cases.push_back(discovery.cases[0]);
+		CHECK(select_discovered_case(duplicated, corpus.root(), "errors/case.barista", &error) == -1);
+		CHECK(error == "exact case was not discovered: errors/case.barista");
+	}
+
+	TEST_CASE("corpus_root_normalization_rejects_aliases_and_outside_paths") {
+		ProjectSettings *settings = ProjectSettings::get_singleton();
+		BS_TEST_REQUIRE(settings != nullptr);
+		String error = "not cleared";
+		const String resource_root = "res://tests/corpus_fixtures/passing";
+		CHECK(normalize_corpus_root(resource_root, &error) == resource_root);
+		CHECK(error.is_empty());
+		// An absolute filesystem spelling of the same directory is one identity with it.
+		CHECK(normalize_corpus_root(settings->globalize_path(resource_root), &error) == resource_root);
+		CHECK(error.is_empty());
+		CHECK(normalize_corpus_root(resource_root + String("/"), &error) == resource_root);
+		CHECK(normalize_corpus_root("res://tests/corpus_fixtures/../corpus_fixtures/passing", &error) == resource_root);
+
+		// A path outside the project has no resource identity at all.
+		CHECK(normalize_corpus_root("/tmp", &error).is_empty());
+		CHECK(error == "corpus root is outside the project: /tmp");
+		CHECK(normalize_corpus_root("res://tests/does_not_exist", &error).is_empty());
+		CHECK(error == "corpus root is not a readable directory: res://tests/does_not_exist");
+
+		// A symlinked root is refused rather than resolved. This is the whole reason the
+		// alias machinery of corpus_harness.gd stays unported: a read-only run never needs
+		// to follow an alias, and refusing one cannot write through it.
+		TemporaryCorpus target("normalize_target");
+		target.write("case.barista", String("func test():\n\tpass\n"));
+		Ref<DirAccess> directory = DirAccess::open("user://");
+		BS_TEST_REQUIRE(directory.is_valid());
+		const String alias = "user://analyzer_corpus_normalize_alias";
+		DirAccess::remove_absolute(alias);
+		BS_TEST_REQUIRE(directory->create_link(settings->globalize_path(target.root()),
+								settings->globalize_path(alias)) == OK);
+		const String refused = normalize_corpus_root(alias, &error);
+		DirAccess::remove_absolute(alias);
+		CHECK(refused.is_empty());
+		CHECK(error == "unsupported corpus symlink: " + alias);
 	}
 
 	TEST_CASE("guard_lines_are_ordered_result_then_ran") {

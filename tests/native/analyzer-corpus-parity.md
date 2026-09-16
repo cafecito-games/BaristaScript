@@ -17,6 +17,12 @@ Baseline sources are `project/tests/corpus_harness.gd` (744 lines),
 `project/tests/corpus_harness_test.gd` (668 lines) and
 `project/tests/corpus_oracle_test.gd` (309 lines) at `7db8f3c`.
 
+The inventory holds **73 rows: 65 with a named pinning test, and 8 deliberate non-ports
+carrying a disposition instead**. The 8 are not covered by any native test and are not
+claimed to be; they name behavior that stays in GDScript until issue #156 retires it. A
+row in the first six tables that named no test would mean the port is incomplete, so
+every one of the 65 names a registered case.
+
 ## Discovery and pairing
 
 | GDScript behavior (file:line) | Native counterpart | Pinning test |
@@ -43,7 +49,7 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | GDScript behavior (file:line) | Native counterpart | Pinning test |
 | --- | --- | --- |
 | Missing `.out` is `MISSING_EXPECTATION` naming the expected path (`corpus_harness.gd:275-276`) | `run_corpus_case` missing-file branch | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
-| Unreadable `.out` is `INVALID_EXPECTATION` (`corpus_harness.gd:278-285`) | open-failure branch | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
+| Unreadable `.out` is `INVALID_EXPECTATION`, distinct from a missing one (`corpus_harness.gd:278-285`) | open-failure branch in `run_corpus_case` | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` (read permission is revoked on the file; the environment-unavailable path fails loudly rather than passing) |
 | Round-trip-exact UTF-8 required: `text.to_utf8_buffer() == bytes` (`corpus_harness.gd:286-292`) | `check_expectation_bytes` round-trip compare | `analyzer_corpus/expectation_gate_accepts_and_rejects_exact_byte_forms` |
 | No NUL byte (`corpus_harness.gd:293`) | gate NUL scan | same |
 | Must end with exactly one LF (`corpus_harness.gd:293`) | `ends_with("\n")` and not `ends_with("\n\n")` | same |
@@ -77,9 +83,10 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | Success sentinel without `ok`, or `parser` `ok` with a non-sentinel block (`corpus_harness.gd:339-340`) | same | same |
 | Block must not contain `\r` or end with `\n` (`corpus_harness.gd:341-342`) | same | same |
 | A shape error is `INVALID_RESULT` (`corpus_harness.gd:298-300`) | `run_corpus_case` | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
+| `UNREADABLE_SOURCE` ordering: GDScript derives it from the evaluation result (`corpus_harness.gd:301-302,346-350`), native reads the source and fails before evaluating (`corpus_helpers.cpp:476-483`) | observationally equivalent, **different order**: the native path never enters the front end for a source it could not read, and the emitted reason, message and payload are byte-identical either way | `analyzer_corpus/unreadable_source_is_reason_three` |
 | An unreadable source is `UNREADABLE_SOURCE`, distinct from empty input (`corpus_harness.gd:301-302,346-350`, `corpus_oracle_test.gd:106-108`) | `run_corpus_case` source read | `analyzer_corpus/unreadable_source_is_reason_three` |
 | `infrastructure_error` is `INVALID_RESULT` carrying the output as the message (`corpus_harness.gd:304-305`) | `run_corpus_case` | `analyzer_corpus/infrastructure_error_is_reason_five` |
-| Ordering: gate, then evaluate, then shape, then unreadable, then infrastructure, then compare (`corpus_harness.gd:273-318`) | same statement order | `analyzer_corpus/gate_precedes_evaluation` |
+| The expectation gate runs before the front end is asked to evaluate anything (`corpus_harness.gd:273-318`) | same | `analyzer_corpus/gate_precedes_evaluation` |
 | Failure keys are `passed,reason,path,expectation_path,message,actual,expected` (`corpus_harness.gd:359-370`) | `corpus_case_result_dictionary` | `analyzer_corpus/case_result_shape_matches_the_gdscript_emitter` |
 | `fixture_index` and `analysis_ran` are added ONLY for `OUTPUT_MISMATCH` (`corpus_harness.gd:308-317`) | same | same |
 | Pass keys are `passed,path,expected,actual,analysis_ran,fixture_index` (`corpus_harness.gd:318`) | same | same |
@@ -92,13 +99,14 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 
 | GDScript behavior (file:line) | Native counterpart | Pinning test |
 | --- | --- | --- |
+| Corpus root normalization: one identity for the `res://` and absolute spellings of a directory, with a path outside the project, a missing one and a symlinked one all refused (`corpus_harness.gd:579-599` in part) | `normalize_corpus_root` | `analyzer_corpus/corpus_root_normalization_rejects_aliases_and_outside_paths` |
 | Exact case must be a valid relative `.barista` path (`corpus_harness.gd:98,533-539`) | `valid_case_relative` | `analyzer_corpus/valid_case_relative_rejects_traversal_and_helpers` |
 | A helper is not selectable as an exact case (`corpus_harness_test.gd:608-611`) | `valid_case_relative` rejects `HELPER_SUFFIX` | same |
-| The exact case must be discovered exactly once (`corpus_harness.gd:100-103`) | `run_selected_corpus_case` selection | `analyzer_corpus/selected_corpus_case_emits_guards` (corpus mode) |
+| The exact case must be discovered exactly once (`corpus_harness.gd:100-103`) | `select_discovered_case` | `analyzer_corpus/exact_case_selection_requires_one_discovered_case` |
 | Stage manifest shape: exactly 3 keys, `schema_version` integer 1, matching `foundry_revision`, `cases` object (`corpus_harness.gd:502-503`) | `validate_stage_manifest` | `analyzer_corpus/stage_manifest_shape_is_validated` |
 | Every manifest key is a valid relative case with stage `parser`/`analyzer` (`corpus_harness.gd:511-513`) | same | same |
 | Every discovered case has an entry; no extra or helper entries remain (`corpus_harness.gd:514-521`) | same | same |
-| Discovery errors or unreadable directories abort manifest validation (`corpus_harness.gd:504-508`) | same | `analyzer_corpus/stage_manifest_shape_is_validated` |
+| Discovery errors and unreadable directories both abort manifest validation (`corpus_harness.gd:504-508`) | same | `analyzer_corpus/stage_manifest_shape_is_validated` (a symlinked entry for the first, an unopenable root for the second) |
 | Strict JSON: grammar, duplicate decoded keys, integer `schema_version` (`corpus_harness.gd:605-729`) | `StrictJsonValidator` / `read_unique_json` | `analyzer_corpus/strict_json_matrix_matches_the_shared_fixture` |
 | Non-UTF-8 or NUL-bearing JSON is rejected (`corpus_harness.gd:718-720`) | `read_unique_json` | same |
 | Fixture sources are collected recursively and sorted strictly ascending (`corpus_harness.gd:472-475,733-744`) | `fixture_source_paths` plus a final sort | `analyzer_corpus/fixture_source_paths_are_sorted_and_barista_only` |
@@ -112,7 +120,8 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | The payload is `JSON.stringify` of the result dictionary (`corpus_runner.gd:66`) | `godot::JSON::stringify` | same |
 | `BS_CASE_RAN` carries the relative case exactly as selected (`corpus_runner.gd:67`) | `corpus_case()` verbatim | same |
 | A failing case still prints both guards; `BS_CASE_RAN` means "ran", not "passed" (`corpus_runner.gd:63-68`, `run_corpus_triage.py:152`) | guards emitted regardless of `passed` | `analyzer_corpus/guard_lines_are_ordered_result_then_ran` |
-| `path` is the corpus root joined with the relative case, which the supervisor re-derives (`run_corpus_triage.py:145`) | `CorpusCase::path` | same |
+| Corpus mode discovers, stages, evaluates and compares the one selected case, then emits its guards (`corpus_runner.gd:35-45,63-68` with `corpus_harness.gd:63-104`) | `run_selected_corpus_case` | `analyzer_corpus/selected_corpus_case_emits_guards`, which runs only when `--corpus-case=` is supplied and is a no-op in an ordinary suite run |
+| `path` is the corpus root joined with the relative case, which the supervisor re-derives (`run_corpus_triage.py:145`) | `select_discovered_case` matches on `p_root.path_join(p_relative)` | `analyzer_corpus/exact_case_selection_requires_one_discovered_case` |
 
 ## Deliberate non-ports (issue #156 owns these)
 
@@ -123,6 +132,6 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | `--update-expectations` and its refusal rules (`corpus_harness.gd:137-160,373-387`) | out of scope |
 | `--allow-empty` (`corpus_harness.gd:131-135`) | out of scope |
 | `ExitCode` vocabulary and `error_result` (`corpus_harness.gd:36-40,175-179`) | out of scope; native suites report through doctest and the native result record |
-| `_path_identity` / `_resolve_filesystem_path` alias resolution (`corpus_harness.gd:542-599`) | out of scope: it exists to stop `--update-expectations` writing through an alias into an importer-owned tree. The native path normalizes with `ProjectSettings::localize_path` and rejects a symlinked root outright, which is fail-closed for a read-only run. |
+| `_path_identity` / `_resolve_filesystem_path` alias resolution (`corpus_harness.gd:542-599`) | out of scope: it exists to stop `--update-expectations` writing through an alias into an importer-owned tree. The native path normalizes with `ProjectSettings::localize_path` and rejects a symlinked root outright, which is fail-closed for a read-only run; that replacement behavior is itself pinned by `analyzer_corpus/corpus_root_normalization_rejects_aliases_and_outside_paths`. |
 | Imported-root ownership lookup through `scripts/corpus_sources.json` (`corpus_harness.gd:437-475`) | partially ported: the registry is read only for `revision`, because the remaining branches exist to refuse updates |
 | `fixture_stages` explicit local-fixture stage selection (`corpus_harness.gd:53,477-493`) | out of scope: native corpus mode always reads `case_stages.json` at the corpus root |
