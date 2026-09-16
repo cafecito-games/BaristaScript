@@ -1,0 +1,3 @@
+>> ERROR at line 10: Generic tagged union "Result" expects 2 type argument(s), but 1 were given.
+>> ERROR at line 13: Generic tagged union "Result" expects 2 type argument(s), but 3 were given.
+>> ERROR at line 16: Enum "generic_tagged_union_arity.barista.Plain" is not generic and cannot take type arguments.

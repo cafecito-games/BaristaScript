@@ -1,0 +1,1 @@
+>> ERROR at line 8: Could not find nested type "LOW" under base "match_case_pattern_on_non_union.barista.PlainPatternLevel".

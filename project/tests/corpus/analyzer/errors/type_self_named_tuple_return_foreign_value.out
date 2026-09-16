@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot return value of type "Pair" because the function return type is "Pair". The return type's "Self" stands for the exact receiver at this use; the returned value has "Receiver" as field "owner".

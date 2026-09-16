@@ -1,0 +1,1 @@
+>> ERROR at line 2: Class "trait_required_method.barista" must implement trait method "Damageable.take_damage()".

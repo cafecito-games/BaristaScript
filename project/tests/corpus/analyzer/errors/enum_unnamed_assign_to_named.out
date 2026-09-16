@@ -1,0 +1,1 @@
+>> ERROR at line 10: Cannot assign a value of type enum_unnamed_assign_to_named.barista.<anonymous enum> to variable "local_var" with specified type enum_unnamed_assign_to_named.barista.MyEnum.

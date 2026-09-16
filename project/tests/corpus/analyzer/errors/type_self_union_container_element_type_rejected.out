@@ -1,0 +1,4 @@
+>> ERROR at line 6: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.
+>> ERROR at line 9: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 12: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Dictionary[Variant, Variant]" for a heterogeneous container.
+>> ERROR at line 15: A typed container cannot have the type union "int | (int, Self)" as an element type, because a container enforces exactly one element type at runtime. Use "Array[Variant]" for a heterogeneous container.

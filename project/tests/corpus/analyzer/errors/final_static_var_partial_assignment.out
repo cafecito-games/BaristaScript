@@ -1,0 +1,1 @@
+>> ERROR at line 3: Final variable "VALUE" must be definitely assigned in its declaration or in "_static_init()".

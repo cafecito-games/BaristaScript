@@ -1,0 +1,14 @@
+# A cross-script trait witness is matched through the compiled `MethodInfo`/`PropertyInfo` boundary,
+# which transports a scalar integer parameter's carrier only, not its declared width (see the width-
+# erasure boundary documented at `FSAnalyzer::type_from_property()`). The base script's `amount: int`
+# parameter decodes wide but carrier-erased at the witness-matching site, and the witness comparison
+# treats a carrier-erased width as an unconstrained wildcard rather than a genuine mismatch, so this
+# matching declared `int` on both sides is accepted.
+extends "trait_inherited_external_impl_base.notest.barista"
+uses Damageable
+
+trait Damageable:
+	abstract func take_damage(amount: int) -> void
+
+func test() -> void:
+	pass

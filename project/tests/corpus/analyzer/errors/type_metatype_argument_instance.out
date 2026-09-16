@@ -1,0 +1,1 @@
+>> ERROR at line 10: Cannot pass instance value of type "User" as argument 1 of "accept_user()"; expected a class handle whose represented instance type is "User" for "Type[User]".

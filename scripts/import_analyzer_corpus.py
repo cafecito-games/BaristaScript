@@ -5,11 +5,11 @@
 # This file is part of BaristaScript, a Godot GDExtension.
 # SPDX-License-Identifier: MIT
 
-"""Discover the pinned analyzer corpus; staging is never final promotion.
+"""Import the pinned analyzer corpus into its registered destination.
 
-The inventory retains every source before policy subtraction. All semantic
-scope observations are candidates until reviewed promotion; observed failures
-never change expectations or dispositions.
+The inventory retains every source before policy subtraction. Dispositions come
+from the pinned policy, never from an observed run; a run only supplies the
+residual-failure pin, and every entry in it needs a written owner reason.
 """
 from __future__ import annotations
 
@@ -31,7 +31,8 @@ from corpus_registry import ROOT, local_path, read_json, tree_entries, validate_
 from corpus_stages import write_stages
 
 SCRIPTS = 'modules/foundry_script/tests/scripts'
-STAGE = 'project/tests/corpus_staging/analyzer'
+DESTINATION = 'project/tests/corpus/analyzer'
+BASELINE = ROOT / 'tests/corpus_baseline.json'
 POLICY = ROOT / 'scripts/analyzer_corpus_policy.json'
 STATUS = {'FS_TEST_OK', 'FS_TEST_ANALYZER_ERROR', 'FS_TEST_PARSER_ERROR', 'FS_TEST_COMPILER_ERROR', 'FS_TEST_RUNTIME_ERROR'}
 LATER = {
@@ -245,7 +246,103 @@ def owner_candidates(source: str, expected: str, references: list):
     return signals
 
 
-def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
+def _recorded_outcomes(report, included_cases):
+    """Return ``case -> passed`` for a run that may be used as a pin basis.
+
+    Absence of a result is only interpretable once the run is known to have finished.
+    A stopped case ran but produced unusable output, and a case that was never
+    dispatched produced nothing at all; neither may be read as a pass.
+    """
+    if not isinstance(report, dict):
+        raise ValueError('execution report must be a JSON object')
+    if report.get('infrastructure_error') is not None:
+        raise ValueError(f'execution report records an infrastructure error: {report["infrastructure_error"]}')
+    if report.get('completed') is not True:
+        raise ValueError('execution report did not complete; a partial run is not a pin basis')
+    if report.get('complete_population') is not True:
+        raise ValueError('execution report covers a case selection, not the complete population')
+    selected = report.get('selected_cases')
+    results = report.get('results')
+    stopped = report.get('stopped_cases')
+    if not isinstance(selected, list) or not isinstance(results, list) or not isinstance(stopped, list):
+        raise ValueError('execution report selected_cases, results and stopped_cases must be lists')
+    outcomes = {}
+    for record in results:
+        if not isinstance(record, dict) or not isinstance(record.get('case'), str) or type(record.get('passed')) is not bool:
+            raise ValueError('execution report result records must carry a case name and a boolean outcome')
+        if record['case'] in outcomes:
+            raise ValueError(f'execution report holds duplicate result records for {record["case"]}')
+        outcomes[record['case']] = record['passed']
+    if set(selected) != set(included_cases):
+        raise ValueError('execution report population differs from the included case set: '
+                         + str(sorted(set(selected) ^ set(included_cases))[:8]))
+    unselected = sorted(set(outcomes) - set(selected))
+    if unselected:
+        raise ValueError(f'execution report records outcomes for cases it did not select: {", ".join(unselected)}')
+    killed = sorted(case for case in stopped if case in selected)
+    if killed:
+        raise ValueError(f'execution report stopped these cases mid-flight: {", ".join(killed)}')
+    undispatched = sorted(case for case in selected if case not in outcomes)
+    if undispatched:
+        raise ValueError(f'execution report has no recorded outcome for: {", ".join(undispatched)}')
+    return outcomes
+
+
+def validate_expected_failures(policy: dict, failures, included_cases, triage: dict) -> list[str]:
+    """Check one residual-failure pin against policy ownership and the included cases.
+
+    Every pinned failure must be an included case that carries a semantic owner with a
+    non-empty reason and no excluded/deferred disposition, so a failure cannot enter the
+    pin without someone having written down why it fails. Both the derivation from a run
+    and the committed pin read back by ``--check`` go through here, so a hand-edited
+    baseline is held to exactly what an execution-derived one had to satisfy.
+    """
+    if (not isinstance(failures, list) or not all(isinstance(case, str) for case in failures)
+            or sorted(set(failures)) != failures):
+        raise ValueError('expected failures must be a sorted list of unique case paths')
+    owners = policy.get('owners')
+    if not isinstance(owners, dict):
+        raise ValueError('policy owners must be an object of path -> owner')
+    excluded = triage.get('excluded', {})
+    deferred = triage.get('deferred', {})
+    for case in failures:
+        if case not in included_cases:
+            raise ValueError(f'{case}: pinned expected failure is not an imported case')
+        if case in excluded:
+            raise ValueError(f'{case}: failing case carries an excluded disposition; a residual failure '
+                             'must be declared, not absorbed into a non-import disposition')
+        if case in deferred:
+            raise ValueError(f'{case}: failing case carries a deferred disposition; a residual failure '
+                             'must be declared, not absorbed into a non-import disposition')
+        owner = owners.get(case)
+        if owner is None:
+            raise ValueError(f'{case}: failing case has no semantic owner; every pinned failure needs a '
+                             'path-specific written reason')
+        if not isinstance(owner, dict) or not isinstance(owner.get('reason'), str) or not owner['reason'].strip():
+            raise ValueError(f'{case}: semantic owner must carry a non-empty reason')
+    return list(failures)
+
+
+def derive_expected_failures(policy: dict, execution_report: dict, included_cases, triage: dict) -> list[str]:
+    """Compute the pinned residual failure set from policy ownership plus one run."""
+    outcomes = _recorded_outcomes(execution_report, included_cases)
+    failures = sorted(case for case, passed in outcomes.items() if not passed)
+    return validate_expected_failures(policy, failures, included_cases, triage)
+
+
+def resolved_expected_failures(policy, execution_report, pinned_failures, included, triage) -> list[str]:
+    """The ledger pin: derived from a completed run, read back from a commit, or empty."""
+    if execution_report is not None and pinned_failures is not None:
+        raise ValueError('a pinned ledger comes from one source: a run or a commit, never both')
+    if execution_report is not None:
+        return derive_expected_failures(policy, execution_report, included, triage)
+    if pinned_failures is not None:
+        return validate_expected_failures(policy, pinned_failures, included, triage)
+    return []
+
+
+def inventory_sources(scripts: Path, policy: dict, uri: str, execution_report: dict | None = None,
+                      pinned_failures: list[str] | None = None) -> dict:
     if set(policy) != {'schema_version', 'foundry_revision', 'counts', 'excluded', 'rewritten',
                        'expectation_overrides', 'deferred', 'source_edits', 'expectation_edits', 'owners'} or type(policy['schema_version']) is not int or policy['schema_version'] != 2:
         raise ValueError('invalid analyzer policy schema')
@@ -290,7 +387,7 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
                     or not re.fullmatch(r'[0-9a-f]{40}', evidence['revision'])
                     or not isinstance(evidence.get('report'), str)
                     or Path(evidence['report']).name != evidence['report']
-                    or evidence.get('terminal') not in ('passed', 'mismatch', 'crash', 'timeout', 'malformed_result', 'missing_guard', 'missing_summary', 'infrastructure_error')
+                    or evidence.get('terminal') not in ('passed', 'mismatch', 'crash', 'timeout', 'malformed_result', 'missing_guard', 'inconsistent_completion', 'infrastructure_error')
                     or type(evidence.get('guard')) is not bool
                     or (evidence['terminal'] in ('passed', 'mismatch') and not evidence['guard'])
                     or not isinstance(owner.get('code_symbols'), list) or not owner['code_symbols']):
@@ -496,12 +593,14 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
               'upstream_helpers': len(helpers) + len(SUPPORT), 'upstream_sources': len(sources) + len(SUPPORT),
               'total': len(included),
               'skipped': len(helpers) + len(SUPPORT) - len(SHARED_SUPPORT_ROOTS) + len(clone_specs),
-              'expected_failures': [], 'triage': triage}
-    complaint = validate_triage_ledger('analyzer staging', ledger, disk_cases=included,
+              'expected_failures': resolved_expected_failures(policy, execution_report, pinned_failures,
+                                                              included, triage),
+              'triage': triage}
+    complaint = validate_triage_ledger('analyzer', ledger, disk_cases=included,
                                       disk_helpers=helpers | {'_support/' + barista_path(p) for p in SUPPORT if p not in SHARED_SUPPORT_ROOTS})
     if complaint:
         raise ValueError(complaint)
-    return {'schema_version': 1, 'checkpoint': 'discovery', 'imported': False,
+    return {'schema_version': 1, 'checkpoint': 'imported', 'imported': True,
             'foundry_revision': policy['foundry_revision'], 'root': uri, 'counts': counts,
             'policy_sha256': sha(encoded(policy)), 'ledger': ledger, 'sources': sorted(records, key=lambda r: r['identity'])}
 
@@ -549,19 +648,21 @@ def generate(inv: dict, source: Path, destination: Path, *, project_root: Path |
             helpers.append(record['imported_path'])
     write_stages(destination, cases, helpers, inv['foundry_revision'], 'analyzer')
     (destination / 'inventory.json').write_bytes(encoded(inv))
-    (destination / 'README.md').write_text(f'# Analyzer discovery staging\n\nPending final promotion. {len(cases)} static cases, {len(helpers)} helpers.\n'
+    (destination / 'README.md').write_text(f'# Analyzer conformance corpus\n\nImported from Foundry. {len(cases)} static cases, {len(helpers)} helpers.\n'
         f'Foundry `{inv["foundry_revision"]}`. Full upstream inventory: {inv["counts"]["cases"]} cases, '
         f'{inv["counts"]["helpers"]} analyzer helpers; {inv["counts"]["support_helpers"]} support identities, '
         f'{len(SHARED_SUPPORT_ROOTS)} supplied by the existing external parser-owned delivery.\n'
         f'Generated helper projections: {sum("projection" in record for record in inv["sources"])}.\n'
-        'Execution selects cases; every included dependency remains available. No script body executes.\n')
+        f'Residual failures pinned in `tests/corpus_baseline.json`: {len(inv["ledger"]["expected_failures"])}.\n'
+        'Cases are supervised case-by-case by `scripts/run_corpus_triage.py`; every included dependency\n'
+        'remains available. No script body executes.\n')
 
 
-def write_stage(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
+def write_tree(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         tree_entries(destination)
-    with tempfile.TemporaryDirectory(prefix='.analyzer-stage-', dir=destination.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix='.analyzer-import-', dir=destination.parent) as temporary:
         candidate = Path(temporary) / 'candidate'
         candidate.mkdir()
         generate(inv, source, candidate, project_root=project_root)
@@ -576,25 +677,66 @@ def write_stage(inv: dict, source: Path, destination: Path, *, project_root: Pat
             raise
 
 
-def check_stage(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
+def check_tree(inv: dict, source: Path, destination: Path, *, project_root: Path | None = None):
     with tempfile.TemporaryDirectory(prefix='analyzer-check-') as temporary:
         fresh = Path(temporary)
         generate(inv, source, fresh, project_root=project_root)
         expected, actual = tree_entries(fresh), tree_entries(destination)
         if expected != actual:
-            raise ValueError('staging population/tree drift')
+            raise ValueError('imported population/tree drift')
         for path, kind in expected.items():
             if kind == 'file' and (fresh / path).read_bytes() != (destination / path).read_bytes():
-                raise ValueError(f'staging byte drift: {path}')
+                raise ValueError(f'imported byte drift: {path}')
 
 
-def stage_destination(root: Path, value: str) -> Path:
-    if value != STAGE:
-        raise ValueError(f'only importer-owned staging destination {STAGE} is allowed')
+def import_destination(root: Path, value: str) -> Path:
+    if value != DESTINATION:
+        raise ValueError(f'only the registered destination {DESTINATION} is allowed')
     destination = local_path(root, value)
     if destination.exists():
         tree_entries(destination)
     return destination
+
+
+def baseline_entry(ledger: dict) -> dict:
+    """The committed ledger entry for the imported analyzer corpus."""
+    return {'imported': True, 'root': ledger['root'], 'total': ledger['total'], 'skipped': ledger['skipped'],
+            'expected_failures': ledger['expected_failures'], 'foundry_revision': ledger['foundry_revision'],
+            'upstream_total': ledger['upstream_total'], 'upstream_helpers': ledger['upstream_helpers'],
+            'upstream_sources': ledger['upstream_sources'], 'triage': ledger['triage']}
+
+
+def committed_expected_failures(baseline_path: Path) -> list[str]:
+    """The pin as committed, so --check regenerates the very tree the repository claims."""
+    corpora = read_json(baseline_path).get('corpora')
+    if not isinstance(corpora, dict) or not isinstance(corpora.get('analyzer'), dict):
+        raise ValueError(f'{baseline_path}: missing analyzer ledger entry')
+    failures = corpora['analyzer'].get('expected_failures')
+    if not isinstance(failures, list):
+        raise ValueError(f'{baseline_path}: analyzer expected_failures must be a list')
+    return failures
+
+
+def check_ledger(ledger: dict, baseline_path: Path) -> None:
+    """The committed entry must be exactly the ledger a regeneration produces."""
+    corpora = read_json(baseline_path).get('corpora')
+    committed = corpora['analyzer'] if isinstance(corpora, dict) else None
+    expected = baseline_entry(ledger)
+    if committed != expected:
+        differing = sorted(key for key in set(expected) | set(committed or {})
+                           if (committed or {}).get(key) != expected.get(key))
+        raise ValueError(f'{baseline_path}: committed analyzer ledger differs from the regenerated one: '
+                         + ', '.join(differing))
+
+
+def publish_baseline(ledger: dict, baseline_path: Path) -> None:
+    document = read_json(baseline_path)
+    document['corpora']['analyzer'] = baseline_entry(ledger)
+    temporary = baseline_path.with_name(baseline_path.name + '.candidate')
+    # Same encoding as scripts/import_parser_corpus.py writes, so either importer
+    # rewriting this file leaves the other's entry byte-identical.
+    temporary.write_text(json.dumps(document, indent=2) + '\n', encoding='utf-8')
+    os.replace(temporary, baseline_path)
 
 
 def main(argv=None):
@@ -603,11 +745,16 @@ def main(argv=None):
     parser.add_argument('--revision', required=True)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('--inventory', type=Path)
-    modes.add_argument('--stage')
+    modes.add_argument('--write-tree')
     modes.add_argument('--check', action='store_true')
+    parser.add_argument('--execution-report', type=Path,
+                        help='completed triage report whose failures become the ledger expected_failures pin')
     args = parser.parse_args(argv)
     try:
-        registry = validate_registration(ROOT)
+        # Writing the tree or an external inventory is the one moment the destination may
+        # legitimately be absent or stale; every other mode validates it as committed.
+        rebuilding = 'analyzer' if args.write_tree or args.inventory else None
+        registry = validate_registration(ROOT, rebuilding=rebuilding)
         verify_checkout(args.foundry, registry, args.revision)
         if registry.get('auxiliary_sources') != sorted(SCRIPTS + '/' + p for p in SUPPORT):
             raise ValueError('registered auxiliary sources do not match the analyzer support requirement')
@@ -616,24 +763,41 @@ def main(argv=None):
             raise ValueError('production policy must retain complete pinned inventory counts')
         if policy['foundry_revision'] != registry['revision']:
             raise ValueError('policy revision differs from shared registry')
-        destination = stage_destination(ROOT, args.stage or STAGE)
-        uri = 'res://' + STAGE.removeprefix('project/')
-        inv = inventory_sources(args.foundry / SCRIPTS, policy, uri)
+        destination = import_destination(ROOT, args.write_tree or DESTINATION)
+        uri = 'res://' + DESTINATION.removeprefix('project/')
+        execution_report = None
+        pinned_failures = None
+        if args.execution_report is not None:
+            if args.check:
+                raise ValueError('--check reads the committed pin; it may not derive a new one from a run')
+            execution_report = read_json(args.execution_report)
+        else:
+            # Only a completed run may change the pin. Without one, both checking and
+            # regenerating carry the committed pin forward: --check can then byte-compare
+            # it along with the case files, and a rebuild cannot silently drop it.
+            pinned_failures = committed_expected_failures(BASELINE)
+        inv = inventory_sources(args.foundry / SCRIPTS, policy, uri, execution_report, pinned_failures)
         if args.inventory:
             # Inventory is metadata-only; forbid a caller using it to corrupt
             # registered generated inputs or any repository-owned source file.
             if args.inventory.resolve().is_relative_to(ROOT) or args.inventory.resolve().is_relative_to(args.foundry.resolve()):
                 raise ValueError('inventory report must be outside repository and source checkout')
             args.inventory.write_bytes(encoded(inv))
-        elif args.stage:
-            write_stage(inv, args.foundry / SCRIPTS, destination)
-        elif destination.exists():
-            check_stage(inv, args.foundry / SCRIPTS, destination)
-        print(f'analyzer discovery: {inv["counts"]["sources"]} sources, {inv["counts"]["cases"]} cases, '
-              f'{inv["counts"]["helpers"]} helpers + {inv["counts"]["support_helpers"]} support; pending imported=false')
+        elif args.write_tree:
+            write_tree(inv, args.foundry / SCRIPTS, destination)
+            publish_baseline(inv['ledger'], BASELINE)
+        else:
+            # An absent destination is drift, not a vacuous pass: the registry records this
+            # corpus as imported, so there is a tree to compare against or the check failed.
+            if not destination.is_dir():
+                raise ValueError(f'imported corpus tree is missing: {destination}')
+            check_tree(inv, args.foundry / SCRIPTS, destination)
+            check_ledger(inv['ledger'], BASELINE)
+        print(f'analyzer corpus: {inv["counts"]["sources"]} sources, {inv["ledger"]["total"]} imported cases, '
+              f'{inv["ledger"]["skipped"]} helpers, {len(inv["ledger"]["expected_failures"])} pinned residual failures')
         return 0
     except (ValueError, OSError) as error:
-        print(f'analyzer discovery: {error}', file=sys.stderr)
+        print(f'analyzer corpus: {error}', file=sys.stderr)
         return 1
 
 

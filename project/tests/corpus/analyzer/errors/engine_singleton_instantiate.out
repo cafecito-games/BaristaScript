@@ -1,0 +1,1 @@
+>> ERROR at line 2: Cannot construct native class "Time" because it is an engine singleton.

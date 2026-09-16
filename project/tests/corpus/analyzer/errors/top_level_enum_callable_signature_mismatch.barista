@@ -1,0 +1,5 @@
+const Provider = preload("top_level_enum_callable_signature_provider.notest.barista")
+
+func test() -> void:
+	var handler: Callable[[String], void] = Provider.new().get_cb()
+	print(handler)

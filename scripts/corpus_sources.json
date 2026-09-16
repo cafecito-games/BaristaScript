@@ -5,12 +5,14 @@
   "corpora": {
     "parser": {
       "state": "active",
+      "execution": "gdscript",
       "source": "modules/foundry_script/tests/scripts/parser",
       "destination": "project/tests/corpus/parser",
       "importer": "scripts/import_parser_corpus.py"
     },
     "analyzer": {
-      "state": "pending",
+      "state": "active",
+      "execution": "triage",
       "source": "modules/foundry_script/tests/scripts/analyzer",
       "destination": "project/tests/corpus/analyzer",
       "importer": "scripts/import_analyzer_corpus.py"

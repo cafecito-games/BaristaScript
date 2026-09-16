@@ -1,0 +1,26 @@
+# A payload-less contextual case shorthand is a value of the expected union in every core context,
+# and folds to the same read-only `[tag]` singleton the explicit spelling folds to.
+enum Option:
+	None
+	Some(value: int)
+
+
+func take(value: Option) -> String:
+	return str(value)
+
+
+func produce() -> Option:
+	return .None
+
+
+func test():
+	var empty: Option = .None
+	print(empty)
+	print(empty == Option.None)
+
+	var reassigned: Option = Option.Some(1)
+	reassigned = .None
+	print(reassigned)
+
+	print(take(.None))
+	print(produce())

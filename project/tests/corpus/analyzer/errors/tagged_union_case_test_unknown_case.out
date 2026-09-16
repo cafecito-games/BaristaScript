@@ -1,0 +1,1 @@
+>> ERROR at line 7: Enum "tagged_union_case_test_unknown_case.barista.UnknownCaseMessage" has no case named "Resize".

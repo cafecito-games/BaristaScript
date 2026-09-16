@@ -1,0 +1,11 @@
+# A coroutine signal parameter whose result type is a script class cannot round-trip through
+# PropertyInfo: the lossy result is dropped, so a directly accessed external signal carrying it crosses
+# gradually (via the MethodInfo fallback) instead of becoming a false strict mismatch against the same
+# annotated type. Direct signal-member access goes through the serialized boundary, unlike a method
+# return, so this exercises the result-less coroutine decode end-to-end.
+const Provider = preload("external_signal_coroutine_lossy_gradual_provider.notest.barista")
+const Helper = preload("coroutine_signal_lossy_helper.notest.barista")
+
+func test() -> void:
+	var s: Signal[[Coroutine[Helper]]] = Provider.new().evt
+	print(s.is_null())

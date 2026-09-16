@@ -1,0 +1,4 @@
+>> ERROR at line 2: The "/" operator on "uint" has a divisor of zero.
+>> ERROR at line 3: The "%" operator on "long" has a divisor of zero.
+>> ERROR at line 4: Invalid shift count for the "<<" operator on "uint": it must be from 0 to 31.
+>> ERROR at line 5: The "<<" operator overflows "uint": the result is outside its range 0 to 4294967295.

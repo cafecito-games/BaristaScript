@@ -1,0 +1,1 @@
+>> ERROR at line 11: Invalid argument for "absorb()" function: argument 1 should be "Array[Self] | int" but is "Array[Receiver]".

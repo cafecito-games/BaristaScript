@@ -1,0 +1,3 @@
+>> ERROR at line 6: The function "load_value()" must be async because it overrides an async parent function.
+>> ERROR at line 14: The function "refresh()" cannot be async because it overrides a synchronous parent function.
+>> ERROR at line 18: The function "refresh()" cannot be async because it overrides a synchronous parent function.

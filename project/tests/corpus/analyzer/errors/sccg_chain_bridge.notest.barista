@@ -1,0 +1,6 @@
+# The intermediate file for the transitive subtrait-specialized fixture: it binds nothing itself.
+const _Holder = preload("sccg_chain_dep_uses.notest.barista")
+
+
+func bridge() -> int:
+	return 1

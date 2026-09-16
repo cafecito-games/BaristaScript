@@ -1,0 +1,1 @@
+>> ERROR at line 8: Contextual shorthand ".Ok" needs an expected tagged-union type, but this position expects "Variant"; spell the case with its union, e.g. "Result[int, String].Ok(...)".

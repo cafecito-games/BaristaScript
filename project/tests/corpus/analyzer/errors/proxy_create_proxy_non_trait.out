@@ -1,0 +1,1 @@
+>> ERROR at line 7: create_proxy[T]() requires a trait or abstract type as its type argument, but "Node" is neither.

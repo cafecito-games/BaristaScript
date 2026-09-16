@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot assign a value of type Pair to variable "mine" with specified type Pair. The specified type's "Self" stands for the exact receiver at this use; the value has "Receiver" as field "owner".

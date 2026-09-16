@@ -1,0 +1,20 @@
+# Declarations resolved across a script boundary keep their exact width, so the assignments, calls,
+# typed containers, and signal handler below type-check exactly as they would inside one file.
+const Producer = preload("fixed_width_integer_cross_script_producer.notest.barista")
+
+
+func on_reported(narrow: uint, wide: ulong) -> void:
+	print(narrow, " ", wide)
+
+
+func test() -> void:
+	var producer := Producer.new()
+	var narrow: uint = producer.narrow_unsigned
+	var wide: ulong = producer.wide_unsigned
+	var wide_list: Array[ulong] = producer.wide_unsigned_list
+	print(narrow, " ", wide, " ", wide_list)
+	print(producer.take_narrow(narrow))
+	# Widening stays implicit in the same direction it is within one file.
+	print(producer.take_wide(narrow))
+	print(producer.reported.connect(on_reported))
+	producer.reported.emit(2U, 3UL)

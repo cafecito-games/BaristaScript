@@ -1,0 +1,8 @@
+const Provider = preload("../features/strict_external_signature_provider.notest.barista")
+
+func test():
+	var provider := Provider.new()
+	var returned_callback: Callable[[String], bool] = provider.get_callback()
+	var property_callback: Callable[[String], bool] = provider.callback
+	var returned_event: Signal[[String]] = provider.get_event()
+	var property_event: Signal[[String]] = provider.typed_event

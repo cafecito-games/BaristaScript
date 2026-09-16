@@ -1,0 +1,1 @@
+>> ERROR at line 8: Class "RtcWitnessCollisionGadget" already provides a witness for method "describe()" through its conformance to trait "RtcWitnessCollisionTraitA" in this file.

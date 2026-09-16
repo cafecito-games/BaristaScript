@@ -1,0 +1,1 @@
+~~ WARNING at line 3: (NON_EXHAUSTIVE_MATCH) The "match" statement does not cover all values of "bool". Unhandled: false, true. Add the missing patterns or a "_" wildcard branch.

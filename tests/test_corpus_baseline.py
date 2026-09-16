@@ -50,6 +50,7 @@ def load_module(name, path):
 
 validate_ci = load_module("validate_ci", ROOT / "tests" / "validate_ci.py")
 importer = load_module("import_parser_corpus", IMPORTER)
+analyzer_importer = load_module("import_analyzer_corpus", ROOT / "scripts" / "import_analyzer_corpus.py")
 
 
 class BaselineGate(unittest.TestCase):
@@ -149,12 +150,20 @@ class BaselineGate(unittest.TestCase):
         self.assertIn(f"{parser['total'] - 1}/{parser['total']}", complaint)
 
 
-class ImportedTree(unittest.TestCase):
-    """The shape of project/tests/corpus/parser, checked without running Godot."""
+class ImportedTreeShape(unittest.TestCase):
+    """The shapes a bad import produces without failing, for any imported corpus.
+
+    Subclasses name a corpus; the class itself checks nothing, because a shared
+    expectation that silently applied to no tree would be worth nothing.
+    """
+
+    corpus = None
 
     @classmethod
     def setUpClass(cls):
-        cls.baseline = json.loads(BASELINE.read_text(encoding="utf-8"))["corpora"]["parser"]
+        if cls.corpus is None:
+            raise unittest.SkipTest("ImportedTreeShape names no corpus of its own")
+        cls.baseline = json.loads(BASELINE.read_text(encoding="utf-8"))["corpora"][cls.corpus]
         cls.root = ROOT / "project" / cls.baseline["root"][len("res://") :]
         cls.sentinel = importer.success_sentinel()
 
@@ -164,6 +173,34 @@ class ImportedTree(unittest.TestCase):
             for path in self.root.rglob("*.barista")
             if not path.name.endswith(".notest.barista")
         )
+
+    def helpers(self):
+        return sorted(self.root.rglob("*.notest.barista"))
+
+    def test_the_tree_holds_exactly_the_population_the_baseline_records(self):
+        self.assertEqual(len(self.cases()), self.baseline["total"])
+        self.assertEqual(len(self.helpers()), self.baseline["skipped"])
+        triage = self.baseline["triage"]
+        self.assertEqual(
+            self.baseline["upstream_total"],
+            self.baseline["total"] + len(triage["excluded"]) + len(triage["deferred"]),
+        )
+
+    def test_the_tree_holds_no_symlink_or_special_file(self):
+        from corpus_registry import tree_entries
+        entries = tree_entries(self.root)
+        self.assertIn("file", entries.values())
+
+    def test_case_stages_covers_exactly_the_case_set(self):
+        from corpus_registry import load_registry
+        from corpus_stages import validate_stages
+        stages = validate_stages(
+            json.loads((self.root / "case_stages.json").read_text(encoding="utf-8")),
+            {path.relative_to(self.root).as_posix() for path in self.cases()},
+            {path.relative_to(self.root).as_posix() for path in self.helpers()},
+            load_registry(ROOT)["revision"],
+        )
+        self.assertEqual(len(stages), self.baseline["total"])
 
     def test_every_case_has_an_expectation(self):
         missing = [
@@ -208,6 +245,24 @@ class ImportedTree(unittest.TestCase):
             if line.upper().startswith("BS_TEST"):
                 self.assertEqual(line, self.sentinel, path)
 
+    def test_the_upstream_ignore_marker_was_not_imported(self):
+        """Foundry's corpus root carries an empty `.fsignore`.
+
+        The harness's marker is `.baristaignore` precisely so that file cannot
+        skip 340 cases at exit code 0, but a stray copy of either would.
+        """
+        strays = [
+            path.relative_to(self.root).as_posix()
+            for path in self.root.rglob("*")
+            if path.name in (".fsignore", ".baristaignore")
+        ]
+        self.assertEqual(strays, [])
+
+class ImportedTree(ImportedTreeShape):
+    """The shape of project/tests/corpus/parser, checked without running Godot."""
+
+    corpus = "parser"
+
     def test_the_d1_grep_gate_returns_only_the_removal_case(self):
         """Issue #10's acceptance grep, run over the imported tree.
 
@@ -236,19 +291,6 @@ class ImportedTree(unittest.TestCase):
             + len(triage["deferred"]),
         )
 
-    def test_the_upstream_ignore_marker_was_not_imported(self):
-        """Foundry's corpus root carries an empty `.fsignore`.
-
-        The harness's marker is `.baristaignore` precisely so that file cannot
-        skip 340 cases at exit code 0, but a stray copy of either would.
-        """
-        strays = [
-            path.relative_to(self.root).as_posix()
-            for path in self.root.rglob("*")
-            if path.name in (".fsignore", ".baristaignore")
-        ]
-        self.assertEqual(strays, [])
-
     def test_restored_analyzer_cases_and_original_accounting(self):
         self.assertNotIn("analyzer_deferred", self.baseline)
         stages = json.loads((self.root / "case_stages.json").read_text())["cases"]
@@ -267,6 +309,67 @@ class ImportedTree(unittest.TestCase):
         for name in ("return_value_discarded", "standalone_expression"):
             self.assertIn('res://tests/corpus_support/parser/utils.notest.barista',
                           (self.root / ("warnings/" + name + ".barista")).read_text())
+
+
+class AnalyzerImportedTree(ImportedTreeShape):
+    """The shape of project/tests/corpus/analyzer, plus its residual-failure pin.
+
+    The analyzer corpus is the one that lands with known failures, so what the
+    shared shape checks is necessary but not sufficient: the pin itself has to
+    name real, owned, still-failing cases and nothing else.
+    """
+
+    corpus = "analyzer"
+
+    def test_the_committed_population_is_the_upstream_population(self):
+        triage = self.baseline["triage"]
+        self.assertEqual(self.baseline["total"], 1078)
+        self.assertEqual(self.baseline["skipped"], 252)
+        self.assertEqual(self.baseline["upstream_total"], 1346)
+        self.assertEqual(len(triage["excluded"]), 33)
+        self.assertEqual(len(triage["deferred"]), 235)
+        self.assertEqual(1078 + 33 + 235, 1346)
+
+    def test_the_pin_is_sorted_unique_and_names_only_imported_cases(self):
+        pin = self.baseline["expected_failures"]
+        self.assertEqual(len(pin), 168)
+        self.assertEqual(pin, sorted(set(pin)))
+        present = {path.relative_to(self.root).as_posix() for path in self.cases()}
+        self.assertEqual(sorted(set(pin) - present), [])
+        triage = self.baseline["triage"]
+        self.assertEqual(sorted(set(pin) & set(triage["excluded"])), [])
+        self.assertEqual(sorted(set(pin) & set(triage["deferred"])), [])
+
+    def test_every_pinned_failure_carries_a_written_owner_reason(self):
+        owners = analyzer_importer.default_policy()["owners"]
+        for case in self.baseline["expected_failures"]:
+            with self.subTest(case=case):
+                self.assertIn(case, owners)
+                self.assertTrue(owners[case]["reason"].strip())
+
+    def test_the_tree_states_the_same_pin_the_baseline_does(self):
+        """The importer writes the ledger beside the cases; the two must agree.
+
+        This is the cross-check that stands in for the aggregate summary line a
+        GDScript-supervised corpus pins: nothing else would make a wrong-sized
+        pin here a failure rather than a claim.
+        """
+        ledger = json.loads((self.root / "inventory.json").read_text(encoding="utf-8"))["ledger"]
+        self.assertEqual(ledger["expected_failures"], self.baseline["expected_failures"])
+        self.assertEqual(ledger["total"], self.baseline["total"])
+        self.assertEqual(ledger["skipped"], self.baseline["skipped"])
+
+    def test_the_analyzer_claims_no_gdscript_runner_invocation(self):
+        """Its cases are run by scripts/run_corpus_triage.py, one process each.
+
+        The aggregate runner root would collect them, and 168 pinned failures
+        would make that run red, so the corpus must be absent from the manifest.
+        """
+        suites = json.loads(SUITES.read_text(encoding="utf-8"))
+        invocations = suites["extra_invocations"] + list(suites["overrides"].values())
+        for invocation in invocations:
+            self.assertNotIn(self.baseline["root"], invocation.get("args", []))
+            self.assertNotEqual(invocation.get("script"), self.baseline["root"])
 
 
 class TriageTable(unittest.TestCase):
@@ -433,21 +536,77 @@ class TriageLedgerGate(unittest.TestCase):
         self.assertIn(some_case, complaint)
         self.assertIn("still imported", complaint)
 
-    def test_analyzer_scaffold_is_pending_and_schema_valid(self):
+    def test_analyzer_is_imported_and_schema_valid(self):
         analyzer = self.baseline["corpora"]["analyzer"]
-        self.assertFalse(analyzer["imported"])
+        self.assertTrue(analyzer["imported"])
         self.assertEqual(analyzer["upstream_total"], 1346)
-        self.assertEqual(analyzer["upstream_helpers"], 250)
-        self.assertEqual(analyzer["total"], 0)
-        self.assertEqual(analyzer["triage"]["excluded"], {})
+        self.assertEqual(analyzer["total"], 1078)
+        self.assertEqual(analyzer["skipped"], 252)
+        self.assertEqual(len(analyzer["expected_failures"]), 168)
         self.assertIsNone(self.check(self.baseline))
 
-    def test_analyzer_scaffold_rejecting_claimed_totals(self):
+    def test_analyzer_rejecting_a_total_the_tree_does_not_hold(self):
         baseline = copy.deepcopy(self.baseline)
         baseline["corpora"]["analyzer"]["total"] = 100
         complaint = self.check(baseline)
         self.assertIsNotNone(complaint)
         self.assertIn("analyzer", complaint)
+
+    def analyzer(self):
+        return copy.deepcopy(self.baseline)["corpora"]["analyzer"]
+
+    def with_analyzer(self, analyzer):
+        baseline = copy.deepcopy(self.baseline)
+        baseline["corpora"]["analyzer"] = analyzer
+        return baseline
+
+    def test_an_expected_failure_may_not_overlap_a_non_import_disposition(self):
+        """A residual failure absorbed into excluded/deferred would go unexplained.
+
+        The case is not in the tree at all, so the pin would name a file no run
+        can produce an outcome for, and the failure it stands for would vanish.
+        """
+        for disposition in ("excluded", "deferred"):
+            with self.subTest(disposition=disposition):
+                analyzer = self.analyzer()
+                path = next(iter(analyzer["triage"][disposition]))
+                analyzer["expected_failures"] = sorted(analyzer["expected_failures"] + [path])
+                complaint = self.check(self.with_analyzer(analyzer))
+                self.assertIsNotNone(complaint)
+                self.assertIn(path, complaint)
+
+    def test_an_expected_failure_may_not_name_a_helper(self):
+        """Helpers are never cases, so a helper can never be a residual failure."""
+        analyzer = self.analyzer()
+        root = ROOT / "project" / analyzer["root"][len("res://") :]
+        helper = sorted(path.relative_to(root).as_posix()
+                        for path in root.rglob("*.notest.barista"))[0]
+        analyzer["expected_failures"] = sorted(analyzer["expected_failures"] + [helper])
+        complaint = self.check(self.with_analyzer(analyzer))
+        self.assertIsNotNone(complaint)
+        self.assertIn(helper, complaint)
+
+    def test_duplicate_expected_failures_are_rejected(self):
+        """Two records for one case would let the pin's size stop meaning its content."""
+        analyzer = self.analyzer()
+        analyzer["expected_failures"] = analyzer["expected_failures"] + [analyzer["expected_failures"][0]]
+        complaint = self.check(self.with_analyzer(analyzer))
+        self.assertIsNotNone(complaint)
+        self.assertIn("unique", complaint)
+
+    def test_a_wrong_sized_pin_disagrees_with_the_tree_that_carries_it(self):
+        """The establishment cross-check: the ratchet abstains on a first pin.
+
+        tests/test_corpus_ratchet.py skips a corpus the previous committed state
+        did not import, because landing a first pin is all additions. What stands
+        in its place is the importer-written ledger beside the cases, which states
+        the same pin and which a hand-edited baseline cannot reach.
+        """
+        analyzer = self.analyzer()
+        analyzer["expected_failures"] = analyzer["expected_failures"][1:]
+        complaint = self.check(self.with_analyzer(analyzer))
+        self.assertIsNotNone(complaint)
+        self.assertIn("expected_failures", complaint)
 
 
 if __name__ == "__main__":

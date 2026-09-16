@@ -1,0 +1,1 @@
+>> ERROR at line 8: Invalid argument for "pair()" function: argument 2 should be "Self" but is "Self". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

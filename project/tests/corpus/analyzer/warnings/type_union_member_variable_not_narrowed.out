@@ -1,0 +1,1 @@
+~~ WARNING at line 12: (UNSAFE_METHOD_ACCESS) The method "length()" is not present on the inferred type "String | int" (but may be present on a subtype).

@@ -1,0 +1,12 @@
+# A decoded explicit Callable from another script keeps a MethodInfo mirror, so a matching
+# MethodInfo-only callable (the native method reference set_process, which is (bool) -> void) stays
+# assignable to a variable inferred from the external Callable[[bool], void] return. Without the mirror
+# the decoded side would carry an empty MethodInfo and wrongly reject the assignment on argument count.
+extends Node
+
+const Provider = preload("external_callable_signature_assign_method_provider.notest.barista")
+
+func test() -> void:
+	var cb := Provider.new().get_cb()
+	cb = set_process
+	print(cb.is_valid())

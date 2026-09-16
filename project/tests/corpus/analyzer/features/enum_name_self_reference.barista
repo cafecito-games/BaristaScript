@@ -1,0 +1,10 @@
+# Inside an `enum_name` file, the enum's own name resolves to the enum type, so its methods can
+# construct its cases, match on them, and call its own static functions.
+const EnumFile = preload("./enum_name_self_reference_values.notest.barista")
+
+func test():
+	print(SelfReferencingUnion.wrap(3))
+	print(SelfReferencingUnion.wrap_twice(4))
+	print(SelfReferencingUnion.End.describe())
+	print(SelfReferencingUnion.wrap(5).describe())
+	print(EnumFile.End)

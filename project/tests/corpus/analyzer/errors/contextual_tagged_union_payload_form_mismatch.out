@@ -1,0 +1,2 @@
+>> ERROR at line 9: Enum case "Option.Some" carries a payload and must be constructed, e.g. ".Some(...)".
+>> ERROR at line 10: Enum case "Option.None" carries no payload, so it is written as a value, e.g. ".None".

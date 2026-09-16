@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot assign a value of type Signal[[AsyncCallable[[int], void]]] to variable "s" with specified type Signal[[Callable[[int], void]]].

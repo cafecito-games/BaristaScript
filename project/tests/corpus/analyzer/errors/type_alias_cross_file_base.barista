@@ -1,0 +1,11 @@
+# The file is the unit of alias visibility: an alias does not travel with the type that declares it,
+# so inheriting a class does not bring its aliases into scope.
+const Base = preload("./type_alias_cross_file_base.notest.barista")
+
+
+class Derived extends Base:
+	var extra: Meters = 2.0
+
+
+func test():
+	print(Derived.new().extra)

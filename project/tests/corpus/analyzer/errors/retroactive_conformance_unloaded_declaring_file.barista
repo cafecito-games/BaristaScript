@@ -1,0 +1,15 @@
+# A conformance takes effect for code that loads its declaring file, the way an import does. This file
+# loads one of RtcScopedWidget's two conformance files and not the other, so the same class satisfies
+# RtcScopedLoadedTrait here and not RtcScopedTrait — even though a sibling fixture loads the second
+# file, which registers it process-wide before this one is analyzed.
+const _Loaded = preload("rtc_scoped_loaded_conformance.notest.barista")
+
+
+func test() -> void:
+	var widget := RtcScopedWidget.new()
+	var loaded: RtcScopedLoadedTrait = widget
+	print(loaded)
+	print(RtcScopedWidget.loaded_mark())
+	var unloaded: RtcScopedTrait = widget
+	print(unloaded)
+	print(RtcScopedWidget.mark())

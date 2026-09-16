@@ -1,0 +1,10 @@
+enum MyEnum:
+	ENUM_VALUE_1 = 0
+	ENUM_VALUE_2 = ENUM_VALUE_1 + 1
+enum MyOtherEnum:
+	OTHER_ENUM_VALUE_1 = 0
+	OTHER_ENUM_VALUE_2 = OTHER_ENUM_VALUE_1 + 1
+	OTHER_ENUM_VALUE_3 = OTHER_ENUM_VALUE_2 + 1
+
+func test():
+	print(MyOtherEnum.OTHER_ENUM_VALUE_3 as MyEnum)

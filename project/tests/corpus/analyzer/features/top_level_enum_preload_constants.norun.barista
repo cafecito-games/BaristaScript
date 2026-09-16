@@ -1,0 +1,10 @@
+const EnumFile = preload("top_level_enum_standalone.notest.barista")
+
+var direct_value: TopLevelStandaloneEnum = EnumFile.RED
+var direct_dictionary: Dictionary = EnumFile.TopLevelStandaloneEnum
+
+func accepts_enum(_value: TopLevelStandaloneEnum) -> void:
+	pass
+
+func check_preloaded_enum_file_constant() -> void:
+	accepts_enum(EnumFile.GREEN)

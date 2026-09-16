@@ -1,0 +1,1 @@
+>> ERROR at line 9: Cannot assign a value of type Callable to variable "handler" with specified type Callable[[Callable[[Array[Array[int]]], void]], void].

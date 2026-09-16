@@ -1,0 +1,4 @@
+>> ERROR at line 7: Cannot return value of type "Array" because the function return type is "Array[Array[Self]]".
+>> ERROR at line 7: Cannot have an element of type "Array[Base]" in an array of type "Array[Array[Self]]".
+>> ERROR at line 11: Cannot return value of type "Array" because the function return type is "Array[Dictionary[String, Self]]".
+>> ERROR at line 11: Cannot have an element of type "Dictionary[String, Base]" in an array of type "Array[Dictionary[String, Self]]".

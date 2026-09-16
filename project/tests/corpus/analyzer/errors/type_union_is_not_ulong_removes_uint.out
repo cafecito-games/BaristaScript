@@ -1,0 +1,3 @@
+>> ERROR at line 9: Cannot infer the type of "probe" variable because the value doesn't have a set type.
+>> ERROR at line 9: Cannot find member "no_such_member" in base "float".
+>> ERROR at line 9: Cannot find member "no_such_member" in base "float".

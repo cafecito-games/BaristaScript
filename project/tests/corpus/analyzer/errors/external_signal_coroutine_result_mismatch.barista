@@ -1,0 +1,8 @@
+# A Coroutine[String] parameter on a signal exposed by another script keeps its result type, so a
+# signal typed with a different coroutine result is rejected. (The serialized MethodInfo/PropertyInfo
+# round-trip itself is covered by a C++ unit test in test_foundry_script_type.h.)
+const Provider = preload("external_signal_coroutine_result_mismatch_provider.notest.barista")
+
+func test() -> void:
+	var s: Signal[[Coroutine[int]]] = Provider.new().get_signal()
+	print(s)

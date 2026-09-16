@@ -1,0 +1,4 @@
+>> ERROR at line 11: Cannot call on an expression. Use ".call()" if it's a Callable.
+>> ERROR at line 12: Cannot call on an expression. Use ".call()" if it's a Callable.
+>> ERROR at line 13: Cannot call on an expression. Use ".call()" if it's a Callable.
+>> ERROR at line 18: Cannot call on an expression. Use ".call()" if it's a Callable.

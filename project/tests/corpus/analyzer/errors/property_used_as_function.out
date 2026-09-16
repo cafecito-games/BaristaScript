@@ -1,0 +1,2 @@
+>> ERROR at line 4: Member "property" is not a function.
+>> ERROR at line 4: Name "property" called as a function but is a "int".

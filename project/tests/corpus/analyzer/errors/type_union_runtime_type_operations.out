@@ -1,0 +1,2 @@
+>> ERROR at line 7: Cannot test against the type union "String | int", because it has no runtime type. Test one of its alternatives instead.
+>> ERROR at line 8: Cannot cast to the type union "String | int", because it has no runtime type. Cast to one of its alternatives instead.

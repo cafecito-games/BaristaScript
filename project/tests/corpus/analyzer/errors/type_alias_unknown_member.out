@@ -1,0 +1,2 @@
+>> ERROR at line 1: Type alias "Mixed" has no expansion, because its definition does not name a resolvable type.
+>> ERROR at line 1: Could not find type "NotAType" in the current scope.

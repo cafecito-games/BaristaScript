@@ -1,0 +1,1 @@
+>> ERROR at line 6: Cannot assign a value of type unnamed_type_name_helper.notest.barista to variable "value" with specified type int.

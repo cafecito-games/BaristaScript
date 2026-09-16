@@ -1,0 +1,1 @@
+>> ERROR at line 4: Cannot assign a value of type (float, float) to variable "point" with specified type Vec2.

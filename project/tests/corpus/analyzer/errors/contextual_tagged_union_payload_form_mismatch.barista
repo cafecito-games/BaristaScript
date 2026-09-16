@@ -1,0 +1,11 @@
+# A payload-carrying case must be constructed and a payload-less case must not be, in the shorthand
+# just as in the explicit spelling.
+enum Option:
+	None
+	Some(value: int)
+
+
+func test():
+	var uncalled: Option = .Some
+	var called: Option = .None()
+	print(uncalled, called)

@@ -20,7 +20,7 @@ using namespace barista_script::native_tests;
 
 namespace {
 
-const char *const CORPUS_ROOT = "res://tests/corpus_staging/analyzer/";
+const char *const CORPUS_ROOT = "res://tests/corpus/analyzer/";
 
 String provider_path() {
 	return String(CORPUS_ROOT) + "errors/resolve_failed_class_nested_type_holder.notest.barista";

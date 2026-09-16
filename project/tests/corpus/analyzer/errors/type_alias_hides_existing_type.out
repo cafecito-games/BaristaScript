@@ -1,0 +1,5 @@
+>> ERROR at line 3: Type alias "int" hides a built-in type.
+>> ERROR at line 4: Type alias "uint" hides a built-in type.
+>> ERROR at line 5: Type alias "long" hides a built-in type.
+>> ERROR at line 6: Type alias "ulong" hides a built-in type.
+>> ERROR at line 7: Type alias "Label" hides a native class.

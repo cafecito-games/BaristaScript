@@ -1,0 +1,11 @@
+# `preload` is a compile-time dependency of the whole file, so where it sits does not change what the
+# file loads. A conformance used above the `preload` that brings it in must still resolve: visibility
+# is a property of the file, not of statement order. Analysis-only, because the point is that this
+# type-checks.
+func check() -> void:
+	var widget := RtcScopedWidget.new()
+	var marked: RtcScopedTrait = widget
+	print(marked != null)
+	print(RtcScopedWidget.mark())
+	var _late_conformance = preload("../errors/rtc_scoped_conformance.notest.barista")
+	print(_late_conformance != null)

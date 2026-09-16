@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot cast a value of type "helper.notest.barista.Result" as "helper.notest.barista.Result". The value is declared in "res://tests/corpus/analyzer/errors/enum_same_name_same_basename/a/helper.notest.barista"; the target type is declared in "res://tests/corpus/analyzer/errors/enum_same_name_same_basename/b/helper.notest.barista".

@@ -1,0 +1,9 @@
+# An explicit type argument inside a retroactive-conformance witness body resolves an alias declared
+# beside the conformance (witness_declaration_scope), the same way the witness's own annotations
+# already do; see type_alias_in_conformance_witness.fs for the annotation-position counterpart.
+const _Conformance = preload("type_alias_explicit_type_argument_witness_conformance.notest.barista")
+
+
+func test():
+	var widget := FrwWidget.new()
+	print(widget.frw_gadget())

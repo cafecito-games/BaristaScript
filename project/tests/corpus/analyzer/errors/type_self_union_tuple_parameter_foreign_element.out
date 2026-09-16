@@ -1,0 +1,2 @@
+>> ERROR at line 17: Invalid argument for "attach()" function: argument 1 should be "int | (int, Self)" but is "(int, Foreign)".
+>> ERROR at line 18: Invalid argument for "attach()" function: argument 1 should be "int | (int, Self)" but is "(int, Receiver)".

@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot export a tagged-union-typed property: "history" has type "Array[tagged_union_export_rejected_in_array.barista.Message]".

@@ -1,0 +1,2 @@
+>> ERROR at line 15: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "Impl".
+>> ERROR at line 16: Invalid argument 2 for enum case "Message.Attach": should be "Self" but is "OtherImpl".

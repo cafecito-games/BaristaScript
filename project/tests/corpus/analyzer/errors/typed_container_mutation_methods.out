@@ -1,0 +1,10 @@
+>> ERROR at line 4: Invalid argument for "append()" function: argument 1 should be "int" but is "String".
+>> ERROR at line 5: Invalid argument for "insert()" function: argument 2 should be "int" but is "String".
+>> ERROR at line 6: Invalid argument for "set()" function: argument 2 should be "int" but is "String".
+>> ERROR at line 7: Invalid argument for "assign()" function: argument 1 should be "Array[int]" but is "Array[String]".
+>> ERROR at line 12: Invalid argument for "set()" function: argument 1 should be "String" but is "int".
+>> ERROR at line 13: Invalid argument for "set()" function: argument 2 should be "int" but is "String".
+>> ERROR at line 14: Invalid argument for "assign()" function: argument 1 should be "Dictionary[String, int]" but is "Dictionary[String, String]".
+>> ERROR at line 15: Invalid argument for "assign()" function: argument 1 should be "Dictionary[String, int]" but is "Dictionary[int, int]".
+>> ERROR at line 16: Invalid argument for "merge()" function: argument 1 should be "Dictionary[String, int]" but is "Dictionary[String, String]".
+>> ERROR at line 17: Invalid argument for "merge()" function: argument 1 should be "Dictionary[String, int]" but is "Dictionary[int, int]".

@@ -1,0 +1,1 @@
+>> ERROR at line 1: Unknown annotation "@nonexistent". Custom annotations must be declared in the current namespace or an imported namespace.

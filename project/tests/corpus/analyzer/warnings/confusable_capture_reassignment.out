@@ -1,0 +1,4 @@
+~~ WARNING at line 13: (CONFUSABLE_CAPTURE_REASSIGNMENT) Reassigning lambda capture does not modify the outer local variable "number".
+~~ WARNING at line 14: (CONFUSABLE_CAPTURE_REASSIGNMENT) Reassigning lambda capture does not modify the outer local variable "string".
+~~ WARNING at line 15: (CONFUSABLE_CAPTURE_REASSIGNMENT) Reassigning lambda capture does not modify the outer local variable "vector".
+~~ WARNING at line 16: (CONFUSABLE_CAPTURE_REASSIGNMENT) Reassigning lambda capture does not modify the outer local variable "array_assign".

@@ -1,0 +1,1 @@
+>> ERROR at line 1: Class "trait_base_abstract_required.barista" must implement "AbstractBase.activate()" and other inherited abstract methods or be marked as "abstract".

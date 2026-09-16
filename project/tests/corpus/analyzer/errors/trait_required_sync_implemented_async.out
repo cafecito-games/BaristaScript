@@ -1,0 +1,1 @@
+>> ERROR at line 7: The function "compute()" cannot be async because it implements synchronous trait method "Syncable.compute()".

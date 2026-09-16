@@ -1,0 +1,2 @@
+>> ERROR at line 2: Payload-carrying cases require a named enum; an unnamed enum cannot qualify its cases.
+>> ERROR at line 3: Payload-carrying cases require a named enum; an unnamed enum cannot qualify its cases.

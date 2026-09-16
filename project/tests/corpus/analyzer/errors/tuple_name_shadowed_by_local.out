@@ -1,0 +1,2 @@
+>> ERROR at line 7: Member "Vec2" is not a function.
+>> ERROR at line 7: Name "Vec2" called as a function but is a "Vec2".

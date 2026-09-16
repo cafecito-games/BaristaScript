@@ -1,0 +1,2 @@
+>> ERROR at line 6: Name "Move" called as a function but is a "ScriptHandleMessage".
+>> ERROR at line 6: Enum case "ScriptHandleMessage.Move" carries a payload and must be constructed through the enum name, e.g. "ScriptHandleMessage.Move(...)".

@@ -1,0 +1,3 @@
+>> ERROR at line 3: Cannot convert 1000000000000000019884624838656.0 to "long": the value is outside its range -9223372036854775808 to 9223372036854775807.
+>> ERROR at line 4: Cannot convert nan to "long": it is not a finite number.
+>> ERROR at line 5: Cannot assign a value of type ulong to variable "narrowed" with specified type uint.

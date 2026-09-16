@@ -33,6 +33,13 @@ ALLOWED_IMPORTERS = {
     "parser": "scripts/import_parser_corpus.py",
     "analyzer": "scripts/import_analyzer_corpus.py",
 }
+# How a corpus proves its baseline. A "gdscript" corpus is run by
+# project/tests/corpus_runner.gd and pins the exact summary line that run prints. A
+# "triage" corpus is run case-by-case in isolated Godot processes by
+# scripts/run_corpus_triage.py, which enforces the residual-failure pin in both
+# directions; it must therefore claim no runner invocation at all, because its
+# expected failures would make that run exit nonzero.
+EXECUTION_SUPERVISORS = ("gdscript", "triage")
 
 
 def read_json(path: Path) -> dict:
@@ -123,6 +130,9 @@ def load_registry(root: Path = ROOT) -> dict:
             raise ValueError(f"unregistered corpus identity {name!r}")
         if record.get("state") not in ("active", "pending"):
             raise ValueError(f"corpus {name!r}: state must be active or pending")
+        if record.get("execution") not in EXECUTION_SUPERVISORS:
+            raise ValueError(f"corpus {name!r}: execution must be one of "
+                             + ", ".join(sorted(EXECUTION_SUPERVISORS)))
         normalized_path(record.get("source"), "modules/foundry_script/tests/scripts/")
         normalized_path(record.get("destination"), "project/tests/corpus/")
         local_path(root, record["destination"])
@@ -254,10 +264,37 @@ def validate_registration(root: Path = ROOT, *, baseline_path: Path | None = Non
             unknown = sorted(set(failures) - cases)
             if unknown:
                 raise ValueError(f"corpus {name!r} records expected failures that are not cases: {', '.join(unknown)}")
-        required = (f"^{re.escape(match.group(1))} {corpus['total'] - len(failures)}/{corpus['total']} "
-                    f"skipped={corpus['skipped']}$")
         pins = [entry for entry in invocations if entry.get("script") == "res://tests/corpus_runner.gd"
                 and entry.get("args") == ["--corpus", root_uri]]
+        if record["execution"] == "triage":
+            # A triage-supervised corpus is proved case-by-case by
+            # scripts/run_corpus_triage.py against the pin its importer wrote, so it
+            # declares no aggregate summary line. Claiming one would pin a pass count
+            # no GDScript run of this root can reach.
+            if pins or mentions:
+                raise ValueError(f"corpus {name!r} is triage-supervised and must claim no runner invocation")
+            # The anchored pass count below is what stops a GDScript corpus from quietly
+            # restating its own numbers, and it is unavailable here: no GDScript run of this
+            # root produces a summary line to compare against. A triage-supervised corpus
+            # states its numbers twice all the same, because its importer writes a ledger
+            # beside the cases and scripts/run_corpus_triage.py runs against that ledger
+            # rather than against this baseline. Requiring the two to agree is what makes a
+            # wrong-sized pin here a failure rather than a claim, and it stands in for the
+            # ratchet on a first promotion. The importer's own tree byte-compare catches the
+            # same tampering a second way, but only with the upstream checkout in hand; this
+            # check needs nothing but the repository.
+            if rebuilding != name:
+                committed = read_json(destination / "inventory.json").get("ledger")
+                if not isinstance(committed, dict):
+                    raise ValueError(f"corpus {name!r}: the imported tree carries no ledger to agree with")
+                disagreeing = sorted(key for key in set(committed) & set(corpus)
+                                     if committed[key] != corpus[key])
+                if disagreeing:
+                    raise ValueError(f"corpus {name!r} baseline disagrees with the ledger its importer "
+                                     f"wrote beside the cases: {', '.join(disagreeing)}")
+            continue
+        required = (f"^{re.escape(match.group(1))} {corpus['total'] - len(failures)}/{corpus['total']} "
+                    f"skipped={corpus['skipped']}$")
         if len(pins) != 1:
             raise ValueError(f"corpus {name!r} requires exactly one explicit runner invocation; an unrun corpus is not a baseline")
         if pins[0].get("expect") != required:

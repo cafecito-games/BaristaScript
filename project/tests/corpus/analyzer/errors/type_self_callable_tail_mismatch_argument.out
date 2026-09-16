@@ -1,0 +1,9 @@
+>> ERROR at line 24: Invalid argument for "self_tail()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[String]], void]".
+>> ERROR at line 25: Invalid argument for "self_tail()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[String]], void]".
+>> ERROR at line 26: Invalid argument for "self_tail_declared()" function: argument 1 should be "Callable[[Self, ...Array], void]" but is "Callable[[Self], void]". The parameter's "Self" at callable parameter 1 is resolved against the receiver expression; the argument is relative to the calling frame's receiver.
+>> ERROR at line 27: Invalid argument for "self_tail_declared()" function: argument 1 should be "Callable[[Self, ...Array], void]" but is "Callable[[Self], void]".
+>> ERROR at line 30: Invalid argument for "self_fixed()" function: argument 1 should be "Callable[[Self], void]" but is "Callable[[Self, ...Array], void]". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.
+>> ERROR at line 34: Invalid argument for "self_tail()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Leaf]], void]".
+>> ERROR at line 35: Invalid argument for "self_tail()" function: argument 1 should be "Callable[[...Array[Self]], void]" but is "Callable[[...Array[Leaf]], void]".
+>> ERROR at line 41: Invalid argument for "self_boxed_tail()" function: argument 1 should be "Callable[[...Array[Box[Self]]], void]" but is "Callable[[...Array[Box[Cell]]], void]".
+>> ERROR at line 42: Invalid argument for "self_boxed_tail()" function: argument 1 should be "Callable[[...Array[Box[Self]]], void]" but is "Callable[[...Array[Box[Cell]]], void]".

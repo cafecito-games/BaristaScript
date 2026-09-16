@@ -1,0 +1,1 @@
+>> ERROR at line 10: Cannot connect signal "Signal[[Node, int]]" to callable "Callable[[Node], void]": signal emits 2 arguments but callable expects 1.

@@ -1,0 +1,3 @@
+namespace issue_69_docs.game.characters
+class_name Issue69DocPlayer
+extends RefCounted

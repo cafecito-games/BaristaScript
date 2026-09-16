@@ -1,0 +1,7 @@
+# The handle layer survives the script-API boundary, so an instance-typed callable annotation does
+# not match a handle-typed one declared in another file.
+const Provider = preload("external_callable_type_handle_mismatch_provider.notest.barista")
+
+func test() -> void:
+	var handler: Callable[[Node], void] = Provider.new().get_cb()
+	print(handler)

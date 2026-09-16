@@ -165,11 +165,15 @@ def supervise(command, timeout):
         return subprocess.CompletedProcess(command, 127, str(error))
 
 
-def invoke(godot, project, suite, case, nonce, timeout, listing=False):
+def invoke(godot, project, suite, case, nonce, timeout, listing=False, corpus_root="", corpus_case=""):
     command = [str(godot), "--headless", "--path", str(project), "--main-loop", "BaristaNativeTestRunner",
                "--", f"--native-suite={suite}", f"--native-case={case}", f"--native-nonce={nonce}"]
     if listing:
         command.append("--native-list")
+    if corpus_root:
+        command.append(f"--corpus-root={corpus_root}")
+    if corpus_case:
+        command.append(f"--corpus-case={corpus_case}")
     return supervise(command, timeout)
 
 

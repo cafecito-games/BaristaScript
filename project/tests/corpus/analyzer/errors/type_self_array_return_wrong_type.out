@@ -1,0 +1,2 @@
+>> ERROR at line 3: Cannot return value of type "Array" because the function return type is "Array[Self]".
+>> ERROR at line 3: Cannot have an element of type "Base" in an array of type "Array[Self]".

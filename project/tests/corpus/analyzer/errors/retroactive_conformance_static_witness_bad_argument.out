@@ -1,0 +1,1 @@
+>> ERROR at line 12: Invalid argument for "scale()" function: argument 1 should be "int" but is "String".

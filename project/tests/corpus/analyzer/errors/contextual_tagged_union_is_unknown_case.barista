@@ -1,0 +1,9 @@
+# The case name of an `is` shorthand is checked against the operand union's declared cases.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func run(subject: Result) -> void:
+	if subject is .Nope(value):
+		print(value)

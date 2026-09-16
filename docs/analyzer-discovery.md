@@ -1,9 +1,20 @@
-# Analyzer discovery and adjudication (issue #45, checkpoints A–B)
+# Analyzer corpus import and adjudication (issue #45)
 
-The analyzer is pending: `corpora.analyzer.imported=false`, and
-`project/tests/corpus/analyzer` must remain absent. Discovery is an inventory and
-an execution report, not a passing M3 analyzer baseline. The parser and default
-aggregate remain pinned to 340/340, with two skipped parser helpers.
+The analyzer corpus is imported: `corpora.analyzer.imported=true` at
+`project/tests/corpus/analyzer`, with 1,078 cases, 252 helpers and a pinned
+residual-failure set of 168 cases. It is triage-supervised rather than
+GDScript-supervised: `scripts/run_corpus_triage.py` runs its cases one process at
+a time and enforces that pin in both directions, so the corpus claims no runner
+invocation in `tests/gdscript_suites.json`. `project/tests/corpus_runner.gd`
+defaults to the parser corpus for the same reason, and the parser corpus stays
+pinned to 340/340 with two skipped parser helpers.
+
+The residual-failure pin may only ever shrink; `tests/test_corpus_ratchet.py`
+enforces that from the next commit onward. On this first pin it abstains, because
+establishment is textually all additions. What stands in its place is the ledger
+the importer writes beside the cases: `corpus_registry` requires the committed
+baseline to state exactly the pin that `inventory.json` carries, so a wrong-sized
+pin is a failure rather than a claim.
 
 The shared `scripts/corpus_sources.json` fixes the Foundry repository/revision,
 parser/analyzer roots, and two exact auxiliary helpers. CI acquires those inputs
@@ -30,7 +41,7 @@ single-carrier contract, and one requires a Foundry-engine-only native surface
 that stock Godot cannot provide. These decisions come from pinned source and
 dependency review, never from whether the current analyzer happens to pass.
 
-The resulting staging equation is `1,346 = 1,078 included + 33 excluded + 235
+The resulting population equation is `1,346 = 1,078 included + 33 excluded + 235
 deferred`. Included cases split into 662 errors, 354 features, and 62 warnings;
 their pinned statuses are 646 analyzer errors, 414 successes, and 18 parser
 errors. All 250 analyzer helpers and the two auxiliary support identities remain
@@ -43,44 +54,71 @@ Run from the repository root with a clean checkout of the registered source:
 
 ```sh
 python3 scripts/import_analyzer_corpus.py --foundry /path/to/Foundry --revision c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 --inventory /tmp/analyzer-inventory.json
-python3 scripts/import_analyzer_corpus.py --foundry /path/to/Foundry --revision c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 --stage project/tests/corpus_staging/analyzer
-scons api_version=4.7 target=template_debug
-godot --headless --path project --editor --quit
-python3 scripts/run_corpus_triage.py --godot /path/to/godot --corpus res://tests/corpus_staging/analyzer --report /tmp/analyzer-results.json
+python3 scripts/import_analyzer_corpus.py --foundry /path/to/Foundry --revision c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6 --write-tree project/tests/corpus/analyzer --execution-report /tmp/analyzer-results.json
+scons api_version=4.7 target=template_debug barista_tests=yes
+python3 scripts/run_corpus_triage.py --godot /path/to/godot --corpus res://tests/corpus/analyzer --report /tmp/analyzer-results.json --jobs 8
 ```
 
-The staging destination is importer-owned and outside aggregate corpus
-discovery. Generation validates into temporary storage before replacing that
-destination, restoring the previous tree if publication fails. `--check` is
-read-only: it validates the complete source inventory and pending delivery
-contract, and checks the staging bytes when staging exists. It never claims an
-imported passing tree. `--inventory` writes only the requested external report.
+The destination is importer-owned. Generation validates into temporary storage
+before replacing it, restoring the previous tree if publication fails, and
+`--write-tree` publishes the analyzer entry of `tests/corpus_baseline.json` from
+the same ledger it writes into the tree. `--execution-report` is the only way to
+change the pin: it derives the residual failures from one completed run, and every
+one of them must carry a written owner reason. `--check` is read-only: it
+regenerates the tree from the committed pin, byte-compares it, and requires the
+committed ledger to be exactly the regenerated one. A missing destination is drift,
+not a pass. `--inventory` writes only the requested external report.
 
 For one exact reproducer append, for example,
 `--case errors/variant_constant_known_value_rejected.barista`. Repeated `--case`
 arguments preserve the requested order for comparisons across separate processes (duplicates are
 rejected; A→B→A restoration is checked in-process by the oracle suite). Selection controls execution, not dependency availability.
 Every case is analyzer-stage, including upstream parser errors, which stop
-before analysis. The debug raw probe populates the existing scoped declaration
-index from production parser/head APIs, retaining full namespace identities,
-annotation-only and conformance-only declarations. It does not register flat
+before analysis. The native corpus evaluator populates the existing scoped
+declaration index from production parser/head APIs, retaining full namespace
+identities, annotation-only and conformance-only declarations. It does not register flat
 Godot global classes, resolve dependencies in Python, or execute `.barista`
 bodies. Each result includes the actual temporary fixture-index counts.
 
-Triage starts a fresh Godot process for each case, with a finite 30-second
-limit; `--timeout SECONDS` explicitly overrides and records it. It requires the
-exact `BS_CASE_RAN` guard, one machine-readable result, the aggregate guard,
-full block equality, and successful exit. Crashes, timeouts, malformed results,
-missing guards, infrastructure errors, and semantic mismatches remain distinct
-failed records. A nonzero complete report is useful discovery evidence, not a
+Each case runs the native `analyzer_corpus` suite in a fresh Godot process,
+with a finite 30-second limit; `--timeout SECONDS` explicitly overrides and
+records it. That suite exists only in a `barista_tests` build, so triage refuses
+an ordinary debug library outright rather than running it; build with
+`scons target=template_debug barista_tests=yes` and let triage select the
+recorded artifact under `build/native-scons/`. A `native build id` mismatch
+means a native source changed since that library was linked: rebuild, because
+the report would otherwise hash sources the run never executed.
+
+Triage requires the exact `BS_CASE_RAN` guard, one machine-readable result, the
+native completion record of that same process, full block equality, and
+successful exit. Crashes, timeouts, malformed results, missing guards,
+completion records inconsistent with the result they accompany, infrastructure
+errors, and semantic mismatches remain distinct failed records.
+
+`--jobs N` executes N cases concurrently, each in its own
+staged project so no two case processes share writable engine state, and
+records the requested count; the default of one case at a time is unchanged.
+Results stay ordered by case and the report is still rewritten after every
+completion, whatever order the cases finish in. Every staged project is built
+and validated before the first case runs, so N is a fixed startup cost of N
+copies of `project/`; around `os.cpu_count()` is the useful range, and a value
+far above the host's parallelism pays that cost for no throughput.
+
+A failed case stops the run before any further case starts, and an interruption
+kills the case processes still running rather than waiting out their timeouts. A
+killed process yields truncated output, so it produces no result and is named in
+`stopped_cases` instead; a case still in flight that finishes on its own keeps
+its record. Selected cases in neither list were never dispatched.
+
+A nonzero complete report is useful discovery evidence, not a
 passing baseline. Reports record source/expectation hashes, source pin,
 BaristaScript revision and source-file hashes, debug-library hashes, official
 engine version, full expected/actual blocks, owner/prerequisite observations,
 commands and terminal conditions. Execution never rewrites policy or goldens.
 
-Remove only the owned staging output before the final registered suite and
-provenance gates. Do not commit that generated tree or change the pending
-baseline to absorb a selected passing subset. Offline miniature regression
+Do not edit the imported tree or the committed pin by hand to absorb a failing
+case; a new residual failure needs an owner record, and the pin may not grow.
+Offline miniature regression
 fixtures retain pinned bytes and hashes in
 `tests/fixtures/analyzer_import/provenance.json`; `--foundry` additionally runs
 the full real producer, same-count drift and removed-case checks.

@@ -1,0 +1,10 @@
+enum MyEnum:
+	VALUE_A = 0
+	VALUE_B = VALUE_A + 1
+	VALUE_C = 42
+
+func test():
+	const P = preload("../features/enum_value_from_parent.barista")
+	var local_var: MyEnum
+	local_var = P.VALUE_B
+	print(local_var)

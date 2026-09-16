@@ -22,7 +22,7 @@ struct ProviderPhaseTestAccess {
 } //namespace barista_script
 namespace {
 // Immutable Foundry c9d5e35 originals; only resource paths and extensions are projected.
-const char *const corpus_root = "res://tests/corpus_staging/analyzer/";
+const char *const corpus_root = "res://tests/corpus/analyzer/";
 void install(StorageFixture &storage, const String &path, const String &source) {
 	BSParser syntax;
 	BS_TEST_REQUIRE(syntax.parse(source, path, false) == OK);
@@ -170,7 +170,7 @@ void original_case(const String &name, const String &source, const String &expec
 } // namespace
 TEST_SUITE("provider_phase_analyzer") {
 	TEST_CASE("extend_final_class_crossfile") {
-		original_case("errors/extend_final_class_crossfile.barista", R"source(extends "res://tests/corpus_staging/analyzer/errors/final_base.notest.barista"
+		original_case("errors/extend_final_class_crossfile.barista", R"source(extends "res://tests/corpus/analyzer/errors/final_base.notest.barista"
 
 func test():
 	pass
@@ -305,7 +305,7 @@ uses CafecitoBadRequirement
 func ping() -> int:
 	return 1
 )source",
-				R"expected(>> ERROR at line 4: Could not resolve body of trait "CafecitoBadRequirement" applied by "trait_body_declaration_error.barista". The trait is declared in "res://tests/corpus_staging/analyzer/errors/trait_body_declaration_error_base.notest.barista", which has errors, the first at line 6: A function must either have a ":" followed by a body, or be marked as "abstract".)expected");
+				R"expected(>> ERROR at line 4: Could not resolve body of trait "CafecitoBadRequirement" applied by "trait_body_declaration_error.barista". The trait is declared in "res://tests/corpus/analyzer/errors/trait_body_declaration_error_base.notest.barista", which has errors, the first at line 6: A function must either have a ":" followed by a body, or be marked as "abstract".)expected");
 	}
 	TEST_CASE("final_static_var_from_trait_qualified_self_init") {
 		original_case("features/final_static_var_from_trait_qualified_self_init.barista", R"source(# A flattened trait `_static_init` that assigns its trait-supplied `final static var` through a

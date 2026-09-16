@@ -1,0 +1,1 @@
+>> ERROR at line 13: Pattern matches a case of "match_case_pattern_foreign_union.barista.ForeignPatternRight", but the "match" subject is of type "match_case_pattern_foreign_union.barista.ForeignPatternLeft".

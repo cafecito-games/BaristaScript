@@ -1,0 +1,1 @@
+>> ERROR at line 7: Class "RtcDup" already has a conformance to trait "RtcDupTrait" in this file.

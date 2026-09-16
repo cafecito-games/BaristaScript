@@ -1,0 +1,2 @@
+>> ERROR at line 20: Cannot connect signal "Signal[[Type[Factory]]]" to callable "Callable[[Factory], void]": signal argument 1 of type "Type[Factory]" cannot be passed to callable parameter of type "Factory".
+>> ERROR at line 21: Cannot connect signal "Signal[[Factory]]" to callable "Callable[[Type[Factory]], void]": signal argument 1 of type "Factory" cannot be passed to callable parameter of type "Type[Factory]".

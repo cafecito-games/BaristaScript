@@ -1,0 +1,16 @@
+# A whole-file generic tagged union is reachable by its global name, a namespace-qualified chain,
+# an imported namespace alias, and the declaring script handle.
+import generic_union_fixture
+
+const Provider = preload("./generic_tagged_union_global_values.notest.barista")
+
+func test():
+	var direct: GlobalResult = GlobalResult.Ok(1)
+	var qualified = generic_union_fixture.GlobalFlippedResult.Ok("two")
+	var imported: GlobalResult = GlobalResult.Err("three")
+	var preloaded: GlobalResult = GlobalResult.Ok(4)
+	print(direct)
+	print(qualified)
+	print(imported)
+	print(preloaded)
+	print(Provider.GlobalResult)

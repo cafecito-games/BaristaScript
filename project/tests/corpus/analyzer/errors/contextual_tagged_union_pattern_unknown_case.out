@@ -1,0 +1,2 @@
+>> ERROR at line 9: Tagged union "Result" has no case "Nope".
+>> ERROR at line 11: Tagged union "Result" has no case "Missing".

@@ -17,7 +17,7 @@ using namespace barista_script;
 using namespace barista_script::native_tests;
 
 namespace {
-const char *const corpus_root = "res://tests/corpus_staging/analyzer/";
+const char *const corpus_root = "res://tests/corpus/analyzer/";
 void install(StorageFixture &storage, const String &path, const String &source) {
 	BSParser syntax;
 	BS_TEST_REQUIRE(syntax.parse(source, path, false) == OK);

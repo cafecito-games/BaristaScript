@@ -1,0 +1,3 @@
+>> ERROR at line 8: Invalid argument 2 for tuple "Pair": should be "Self" but is "Receiver".
+>> ERROR at line 9: Invalid argument 2 for tuple "Pair": should be "Self" but is "Sub".
+>> ERROR at line 18: Invalid argument 2 for tuple "Pair": should be "Receiver" but is "String".

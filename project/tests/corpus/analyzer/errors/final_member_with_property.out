@@ -1,0 +1,1 @@
+>> ERROR at line 3: Final variable "id" cannot declare a getter or setter.

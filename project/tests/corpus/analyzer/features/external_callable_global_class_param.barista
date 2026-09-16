@@ -1,0 +1,8 @@
+# A Callable whose signature contains a user script/class slot crosses the boundary untyped (the slot
+# cannot round-trip a consistent CLASS/SCRIPT kind through the hint), so assigning it to the same
+# annotated type stays accepted (gradual) rather than being falsely rejected on a kind mismatch.
+const Provider = preload("external_callable_global_class_param_provider.notest.barista")
+
+func test() -> void:
+	var handler: Callable[[ExternalCallableGlobalClassProbe], void] = Provider.new().get_cb()
+	print(handler.is_valid())

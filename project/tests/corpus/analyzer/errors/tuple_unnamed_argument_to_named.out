@@ -1,0 +1,1 @@
+>> ERROR at line 7: Invalid argument for "consume()" function: argument 1 should be "Vec2" but is "(float, float)".

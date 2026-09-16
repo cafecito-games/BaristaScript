@@ -1,0 +1,1 @@
+>> ERROR at line 1: Class "abstract_method_in_non_abstract_head.barista" is not abstract but contains abstract methods. Mark the class as "abstract" or remove "abstract" from all methods in this class.

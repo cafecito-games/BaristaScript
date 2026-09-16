@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot export a tagged-union-typed property: "last_message" has type "tagged_union_export_rejected_via_export_custom.barista.Message".

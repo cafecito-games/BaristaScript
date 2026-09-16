@@ -1,0 +1,3 @@
+namespace issue_66.shared
+class_name Issue66NamespaceStats
+extends RefCounted

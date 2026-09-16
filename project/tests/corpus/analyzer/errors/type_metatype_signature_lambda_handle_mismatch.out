@@ -1,0 +1,2 @@
+>> ERROR at line 8: Cannot assign a value of type Callable to variable "handle_cb" with specified type Callable[[Type[Factory]], void].
+>> ERROR at line 10: Cannot assign a value of type Callable to variable "instance_cb" with specified type Callable[[Factory], void].

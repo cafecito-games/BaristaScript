@@ -1,0 +1,35 @@
+# A whole-file tagged union may reference itself in payload position too, directly and
+# through typed collections.
+const EnumFile = preload("./tagged_union_recursive_global_values.notest.barista")
+
+func chain_length(node: RecursiveChain) -> int:
+	match node:
+		RecursiveChain.Link(var next):
+			return 1 + chain_length(next)
+		_:
+			return 0
+
+func leaf_count(node: RecursiveChain) -> int:
+	match node:
+		RecursiveChain.Branch(var children):
+			var total := 0
+			for child: RecursiveChain in children:
+				total += leaf_count(child)
+			return total
+		RecursiveChain.Section(var entries):
+			var total := 0
+			for key: String in entries:
+				total += leaf_count(entries[key])
+			return total
+		RecursiveChain.Link(var next):
+			return leaf_count(next)
+		RecursiveChain.End:
+			return 1
+	return 0
+
+func test():
+	print(chain_length(RecursiveChain.Link(RecursiveChain.Link(RecursiveChain.End))))
+	print(leaf_count(RecursiveChain.Branch([RecursiveChain.End, RecursiveChain.End])))
+	print(leaf_count(RecursiveChain.Section({"a": RecursiveChain.End})))
+	print(leaf_count(RecursiveChain.Link(RecursiveChain.End)))
+	print(EnumFile.End)

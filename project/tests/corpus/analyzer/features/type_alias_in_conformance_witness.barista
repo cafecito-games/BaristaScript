@@ -1,0 +1,8 @@
+# A retroactive conformance witness is written in the file that declares it, so the aliases of that
+# file are in scope in the witness even though the target type lives elsewhere.
+const _Conformance = preload("type_alias_in_conformance_witness_conformance.notest.barista")
+
+
+func test():
+	var widget := FrwWidget.new()
+	print(widget.frw_gadget())

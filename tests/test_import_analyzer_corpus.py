@@ -21,6 +21,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 
+EXECUTION_REPORT = None
+
 
 class AnalyzerImport(unittest.TestCase):
     def setUp(self):
@@ -65,7 +67,7 @@ class AnalyzerImport(unittest.TestCase):
         }
 
     def inventory(self):
-        return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus_staging/analyzer')
+        return self.m.inventory_sources(self.source, self.policy, 'res://tests/corpus/analyzer')
 
     def disposition_owner(self, path, state, reason):
         owner = copy.deepcopy(self.m.default_policy()['owners']['errors/preload_missing_relative_path.barista'])
@@ -86,7 +88,7 @@ class AnalyzerImport(unittest.TestCase):
         self.assertEqual(record['imported_path'], 'utils.notest.barista')
         self.assertEqual(inv['ledger']['skipped'], inv['counts']['helpers'] + 1)
         stage = self.root / 'stage'
-        self.m.write_stage(inv, self.source, stage)
+        self.m.write_tree(inv, self.source, stage)
         self.assertFalse((stage / '_support/utils.notest.barista').exists())
         self.assertEqual(sum(p.name == 'utils.notest.barista' for p in stage.rglob('*.barista')), 0)
         self.assertEqual(inv['counts']['support_helpers'], 2)
@@ -103,28 +105,28 @@ class AnalyzerImport(unittest.TestCase):
         stage.mkdir()
         (stage / 'previous').write_bytes(b'previous valid stage')
         with self.assertRaisesRegex(ValueError, 'shared support'):
-            self.m.write_stage(inv, self.source, stage, project_root=project)
+            self.m.write_tree(inv, self.source, stage, project_root=project)
         self.assertEqual((stage / 'previous').read_bytes(), b'previous valid stage')
         original = (self.source / 'utils.notest.fs').read_bytes()
         projected = self.m.patch(original, record['transformations'], record['identity'])
         support.write_bytes(projected)
-        self.m.write_stage(inv, self.source, stage, project_root=project)
-        run_corpus_triage.validate_staging(stage, inv, project_root=project)
+        self.m.write_tree(inv, self.source, stage, project_root=project)
+        run_corpus_triage.validate_imported_tree(stage, inv, project_root=project)
         support.write_bytes(projected + b'drift')
         with self.assertRaisesRegex(ValueError, 'shared support'):
-            self.m.check_stage(inv, self.source, stage, project_root=project)
+            self.m.check_tree(inv, self.source, stage, project_root=project)
         with self.assertRaisesRegex(ValueError, 'shared support'):
-            run_corpus_triage.validate_staging(stage, inv, project_root=project)
+            run_corpus_triage.validate_imported_tree(stage, inv, project_root=project)
         support.write_bytes(projected)
         for root in ('res://outside', 'res://tests/corpus_support/parser/../parser'):
             changed = copy.deepcopy(inv)
             next(r for r in changed['sources'] if r['upstream_path'] == 'utils.notest.fs')['root'] = root
             with self.assertRaisesRegex(ValueError, 'identity/root/path'):
-                run_corpus_triage.validate_staging(stage, changed, project_root=project)
+                run_corpus_triage.validate_imported_tree(stage, changed, project_root=project)
         support.unlink()
         support.symlink_to(ROOT / 'project/tests/corpus_support/parser/utils.notest.barista')
         with self.assertRaisesRegex(ValueError, 'symlink'):
-            self.m.check_stage(inv, self.source, stage, project_root=project)
+            self.m.check_tree(inv, self.source, stage, project_root=project)
 
     def test_reviewed_owner_requires_execution_and_source_evidence(self):
         path = 'errors/preload_missing_relative_path.barista'
@@ -266,7 +268,7 @@ class AnalyzerImport(unittest.TestCase):
         negative = records['analyzer/errors/preload_missing_relative_path.fs']
         self.assertEqual(len(negative['references']), 1)
         self.assertTrue(negative['references'][0]['intentional_missing'])
-        self.assertIn('res://tests/corpus_staging/analyzer/', negative['expected_block'])
+        self.assertIn('res://tests/corpus/analyzer/', negative['expected_block'])
         cross = records['analyzer/errors/extends_preloaded_tuple_name_head.fs']
         self.assertEqual(cross['references'][0]['target'], 'parser/features/tuple_name_declaration.norun.fs')
         self.assertEqual(inv['counts']['support_helpers'], 2)
@@ -391,14 +393,14 @@ class AnalyzerImport(unittest.TestCase):
         self.assertEqual(inv['ledger']['total'], before['ledger']['total'])
         self.assertEqual(inv['ledger']['skipped'], before['ledger']['skipped'] + 2)
         destination = self.root / 'projected-stage'
-        self.m.write_stage(inv, self.source, destination)
-        self.m.check_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
+        self.m.check_tree(inv, self.source, destination)
         self.assertEqual((destination / original['imported_path']).read_bytes(),
                          self.m.patch(data, standard, original['identity']))
         self.assertEqual((destination / clone['imported_path']).read_bytes(), clone_bytes)
         first = {path.relative_to(destination): path.read_bytes()
                  for path in destination.rglob('*') if path.is_file()}
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         self.assertEqual(first, {path.relative_to(destination): path.read_bytes()
                                  for path in destination.rglob('*') if path.is_file()})
         self.assertEqual(provider.read_bytes(), data)
@@ -457,25 +459,25 @@ class AnalyzerImport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'helper provider'):
             self.inventory()
 
-    def test_staging_validation_rejects_unlisted_files(self):
+    def test_imported_tree_validation_rejects_unlisted_files(self):
         import run_corpus_triage as triage
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
-        triage.validate_staging(destination, inv)
+        self.m.write_tree(inv, self.source, destination)
+        triage.validate_imported_tree(destination, inv)
         for extra in ['.baristaignore', '_support/.baristaignore', 'orphan.out']:
             path = destination / extra
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'')
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'population'):
-                triage.validate_staging(destination, inv)
+                triage.validate_imported_tree(destination, inv)
             path.unlink()
 
-    def test_staging_removed_case_cannot_shrink_its_declared_population(self):
+    def test_removed_case_cannot_shrink_its_declared_population(self):
         import run_corpus_triage as triage
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         record = next(r for r in inv['sources'] if r['role'] == 'case' and r['disposition'] == 'imported')
         inv['sources'].remove(record)
         inv['ledger']['total'] -= 1
@@ -486,31 +488,32 @@ class AnalyzerImport(unittest.TestCase):
         stages['cases'].pop(record['imported_path'])
         (destination / 'case_stages.json').write_bytes(self.m.encoded(stages))
         with self.assertRaisesRegex(ValueError, 'population|accounting'):
-            triage.validate_staging(destination, inv)
+            triage.validate_imported_tree(destination, inv)
 
-    def test_stage_replacement_is_deterministic_and_detects_byte_drift(self):
+    def test_tree_replacement_is_deterministic_and_detects_byte_drift(self):
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         before = {p.relative_to(destination): p.read_bytes() for p in destination.rglob('*') if p.is_file()}
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         self.assertEqual(before, {p.relative_to(destination): p.read_bytes() for p in destination.rglob('*') if p.is_file()})
         path = next(destination.rglob('*.barista'))
         path.write_bytes(path.read_bytes() + b'# drift\n')
         with self.assertRaisesRegex(ValueError, 'drift'):
-            self.m.check_stage(inv, self.source, destination)
+            self.m.check_tree(inv, self.source, destination)
         path.unlink()
         with self.assertRaises(ValueError):
-            self.m.check_stage(inv, self.source, destination)
+            self.m.check_tree(inv, self.source, destination)
 
     def test_policy_stale_overlap_preimage_and_unsafe_destination(self):
         self.policy['deferred']['errors/nonexistent.barista'] = 'M5: fixture'
         with self.assertRaisesRegex(ValueError, 'stale'):
             self.inventory()
-        for path in ['project/tests/corpus', 'project/tests/corpus/analyzer', 'project',
-                     'project/tests/corpus_staging/analyzer/../escape']:
+        for path in ['project/tests/corpus', 'project/tests/corpus/parser', 'project',
+                     'project/tests/corpus_staging/analyzer',
+                     'project/tests/corpus/analyzer/../escape']:
             with self.subTest(path=path), self.assertRaises(ValueError):
-                self.m.stage_destination(ROOT, path)
+                self.m.import_destination(ROOT, path)
 
     def test_warning_runtime_boundary_and_nonresource_strings(self):
         source = self.source / 'analyzer/features/transport.fs'
@@ -606,7 +609,7 @@ class AnalyzerImport(unittest.TestCase):
                       if record['upstream_path'] == output.removesuffix('.out') + '.fs')
         self.assertEqual(record['expected_block'].count('>> ERROR'), 2)
         self.assertIn('Exact expectation-only second diagnostic.', record['expected_block'])
-        self.assertIn('res://tests/corpus_staging/analyzer/', record['expected_block'])
+        self.assertIn('res://tests/corpus/analyzer/', record['expected_block'])
         self.assertEqual(record['expectation_edits'], [edit])
 
         def expect_failure(mutator, pattern):
@@ -655,7 +658,7 @@ class AnalyzerImport(unittest.TestCase):
         from unittest.mock import patch
         inv = self.inventory()
         destination = self.root / 'stage'
-        self.m.write_stage(inv, self.source, destination)
+        self.m.write_tree(inv, self.source, destination)
         before = (destination / 'inventory.json').read_bytes()
         rename = Path.rename
         def fail_candidate(path, target):
@@ -663,7 +666,7 @@ class AnalyzerImport(unittest.TestCase):
                 raise OSError('injected publication failure')
             return rename(path, target)
         with patch.object(Path, 'rename', fail_candidate), self.assertRaisesRegex(OSError, 'publication'):
-            self.m.write_stage(inv, self.source, destination)
+            self.m.write_tree(inv, self.source, destination)
         self.assertEqual(before, (destination / 'inventory.json').read_bytes())
 
     def test_duplicate_json_keys_and_count_drift_fail(self):
@@ -678,25 +681,32 @@ class AnalyzerImport(unittest.TestCase):
 
 
 class TriageGuard(unittest.TestCase):
+    COMPLETION = {'cases': 1, 'assertions': 4, 'failed_cases': 0, 'failed_assertions': 0}
+
     def test_duplicate_result_fields_are_malformed(self):
         import run_corpus_triage as triage
         payload = '{"path":"res://fixture/case.barista","passed":false,"passed":true,"expected":"BS_TEST_OK","actual":"BS_TEST_OK"}'
-        process = {'output': 'BS_CASE_RESULT ' + payload + '\nBS_CASE_RAN case.barista\nBS_CORPUS 1/1 skipped=2\n', 'exit_code': 0, 'timed_out': False}
-        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['terminal'], 'malformed_result')
+        process = {'output': 'BS_CASE_RESULT ' + payload + '\nBS_CASE_RAN case.barista\n', 'exit_code': 0, 'timed_out': False}
+        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['terminal'],
+                         'malformed_result')
 
     def test_exit_zero_without_execution_is_failure(self):
         import run_corpus_triage as triage
         process = {'output': '', 'exit_code': 0, 'timed_out': False}
-        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['terminal'], 'missing_guard')
+        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['terminal'],
+                         'missing_guard')
         payload = {'path': 'res://fixture/case.barista', 'passed': True, 'expected': 'BS_TEST_OK', 'actual': 'BS_TEST_OK'}
-        process['output'] = 'BS_CASE_RESULT ' + json.dumps(payload) + '\nBS_CASE_RAN case.barista\nBS_CORPUS 1/1 skipped=2\n'
-        self.assertTrue(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['passed'])
-        for change in ['BS_CASE_RAN other.barista', 'BS_CORPUS 0/0 skipped=0']:
-            broken = dict(process)
-            broken['output'] = process['output'].replace('BS_CASE_RAN case.barista' if change.startswith('BS_CASE') else 'BS_CORPUS 1/1 skipped=2', change)
-            self.assertFalse(triage.result_record(broken, 'case.barista', 'res://fixture', 'BS_TEST_OK')['passed'])
+        process['output'] = 'BS_CASE_RESULT ' + json.dumps(payload) + '\nBS_CASE_RAN case.barista\n'
+        self.assertTrue(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['passed'])
+        broken = dict(process, output=process['output'].replace('BS_CASE_RAN case.barista', 'BS_CASE_RAN other.barista'))
+        self.assertFalse(triage.result_record(broken, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['passed'])
+        # A completion record that did not run exactly this one case cannot report a pass either.
+        for completion in (dict(self.COMPLETION, cases=0), dict(self.COMPLETION, assertions=0),
+                           dict(self.COMPLETION, failed_cases=1)):
+            self.assertFalse(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', completion)['passed'])
         process['timed_out'] = True
-        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK')['terminal'], 'timeout')
+        self.assertEqual(triage.result_record(process, 'case.barista', 'res://fixture', 'BS_TEST_OK', self.COMPLETION)['terminal'],
+                         'timeout')
 
     def test_timeout_supervises_real_process_and_preserves_output(self):
         import run_corpus_triage as triage
@@ -1003,7 +1013,7 @@ class FullPinned(unittest.TestCase):
         policy = importer.default_policy()
         self.assert_safe_contextual_policy(policy)
         source = FOUNDRY / importer.SCRIPTS
-        inventory = importer.inventory_sources(source, policy, 'res://tests/corpus_staging/analyzer')
+        inventory = importer.inventory_sources(source, policy, 'res://tests/corpus/analyzer')
         records = {record['imported_path']: record for record in inventory['sources']
                    if record['role'] == 'case'}
         for case, (raw_sha, projected_sha, output_sha, block_sha) in CONTEXTUAL_SPECS.items():
@@ -1076,7 +1086,7 @@ class FullPinned(unittest.TestCase):
 
         policy = importer.default_policy()
         source = FOUNDRY / importer.SCRIPTS
-        uri = 'res://tests/corpus_staging/analyzer'
+        uri = 'res://tests/corpus/analyzer'
         provider_path = 'analyzer/features/typed_rest_parameter_external_provider.notest.fs'
         reintroduced_case = TYPED_CONTAINER_CASE
         reintroduced_source = TYPED_CONTAINER_SOURCE_PATH
@@ -1185,7 +1195,7 @@ class FullPinned(unittest.TestCase):
         self.assertEqual(first, importer.inventory_sources(source, policy, uri))
         self.assertEqual(first['schema_version'], 1)
         self.assertEqual(hashlib.sha256(importer.encoded(first)).hexdigest(),
-                         'f6da2d5169ba888f892ac1040245e8081078412249e126300005dd91bd93c234')
+                         'afe887e96f179b58c9b784a5249f258742b42b8148224e5fa112c201f8a424e7')
         self.assertEqual((first['counts']['sources'], first['counts']['cases'],
                           first['counts']['helpers'], first['counts']['support_helpers']),
                          (1596, 1346, 250, 2))
@@ -1229,16 +1239,16 @@ class FullPinned(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary) / 'stage'
-            importer.write_stage(first, source, stage)
-            importer.check_stage(first, source, stage)
+            importer.write_tree(first, source, stage)
+            importer.check_tree(first, source, stage)
             before = {path.relative_to(stage): path.read_bytes()
                       for path in stage.rglob('*') if path.is_file()}
-            importer.write_stage(first, source, stage)
+            importer.write_tree(first, source, stage)
             self.assertEqual(before, {path.relative_to(stage): path.read_bytes()
                                       for path in stage.rglob('*') if path.is_file()})
             self.assertEqual(len(before), 2411)
             self.assertEqual(hashlib.sha256((stage / 'inventory.json').read_bytes()).hexdigest(),
-                             'f6da2d5169ba888f892ac1040245e8081078412249e126300005dd91bd93c234')
+                             'afe887e96f179b58c9b784a5249f258742b42b8148224e5fa112c201f8a424e7')
             self.assertEqual(hashlib.sha256((stage / 'case_stages.json').read_bytes()).hexdigest(),
                              '3ad070abe3df618bcb3e01bc6c5cdc753884b9e30819c606eae5a2e515ff9202')
             tree = hashlib.sha256()
@@ -1248,7 +1258,7 @@ class FullPinned(unittest.TestCase):
                 tree.update(path.relative_to(stage).as_posix().encode())
                 tree.update(b'\n')
             self.assertEqual(tree.hexdigest(),
-                             '0b5e21050c72cd20bab737465afbe6611fbfc942045ba18b98d75be9aae38107')
+                             '1e649c4dfb66645dcdaa47d6460c5fdd6a1c41b11b2cb7026db9a93ae9985b76')
 
         def expect_inventory_failure(mutator, pattern):
             candidate = copy.deepcopy(policy)
@@ -1318,7 +1328,7 @@ class FullPinned(unittest.TestCase):
         corpus_registry.verify_checkout(FOUNDRY, registry, registry['revision'])
         policy = importer.default_policy()
         source = FOUNDRY / importer.SCRIPTS
-        uri = 'res://tests/corpus_staging/analyzer'
+        uri = 'res://tests/corpus/analyzer'
         first = importer.inventory_sources(source, policy, uri)
         self.assertEqual(first, importer.inventory_sources(source, policy, uri))
         self.assertEqual((first['counts']['sources'], first['counts']['cases'], first['counts']['helpers']), (1596, 1346, 250))
@@ -1497,22 +1507,175 @@ class FullPinned(unittest.TestCase):
             importer.inventory_sources(source, stale, uri)
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary) / 'stage'
-            importer.write_stage(first, source, stage)
-            importer.check_stage(first, source, stage)
+            importer.write_tree(first, source, stage)
+            importer.check_tree(first, source, stage)
             original = next(stage.rglob('*.barista'))
             data = original.read_bytes()
             original.write_bytes(bytes([data[0] ^ 1]) + data[1:])
             with self.assertRaisesRegex(ValueError, 'byte drift'):
-                importer.check_stage(first, source, stage)
+                importer.check_tree(first, source, stage)
             original.write_bytes(data)
             original.unlink()
             with self.assertRaisesRegex(ValueError, 'population'):
-                importer.check_stage(first, source, stage)
+                importer.check_tree(first, source, stage)
+
+
+class ExpectedFailureDerivation(unittest.TestCase):
+    """The pinned residual set is computed from policy owners plus one completed run."""
+
+    def setUp(self):
+        import import_analyzer_corpus
+        self.importer = import_analyzer_corpus
+        self.included = {'errors/alpha.barista', 'errors/beta.barista', 'features/gamma.barista'}
+        self.triage = {'excluded': {}, 'rewritten': {}, 'expectation_overrides': {}, 'deferred': {}}
+        self.policy = {'owners': {
+            'errors/alpha.barista': {'reason': 'Contextual union inference is unimplemented.'},
+            'errors/beta.barista': {'reason': 'Trait resolution order differs from upstream.'},
+            'features/gamma.barista': {'reason': 'Typed callable binding is unimplemented.'},
+        }}
+
+    def report(self, failing, **overrides):
+        cases = sorted(self.included)
+        document = {
+            'completed': True,
+            'complete_population': True,
+            'selected_cases': cases,
+            'stopped_cases': [],
+            'results': [{'case': case, 'passed': case not in failing,
+                         'terminal': 'passed' if case not in failing else 'mismatch'}
+                        for case in cases],
+        }
+        document.update(overrides)
+        return document
+
+    def derive(self, report):
+        return self.importer.derive_expected_failures(self.policy, report, self.included, self.triage)
+
+    def test_derives_the_sorted_failing_cases(self):
+        derived = self.derive(self.report({'features/gamma.barista', 'errors/alpha.barista'}))
+        self.assertEqual(derived, ['errors/alpha.barista', 'features/gamma.barista'])
+
+    def test_derivation_is_stable_across_result_ordering(self):
+        failing = {'features/gamma.barista', 'errors/alpha.barista'}
+        forward = self.report(failing)
+        reversed_report = dict(forward, results=list(reversed(forward['results'])))
+        self.assertEqual(self.derive(forward), self.derive(reversed_report))
+        self.assertEqual(self.derive(forward), sorted(self.derive(forward)))
+
+    def test_a_fully_passing_run_derives_an_empty_pin(self):
+        self.assertEqual(self.derive(self.report(set())), [])
+
+    def test_a_failing_case_without_an_owner_is_named(self):
+        del self.policy['owners']['errors/beta.barista']
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*no semantic owner'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_a_failing_case_with_a_blank_owner_reason_is_named(self):
+        self.policy['owners']['errors/beta.barista'] = {'reason': '   '}
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*non-empty reason'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_a_result_for_a_case_the_run_did_not_select_is_refused(self):
+        # A record outside the selection is refused whatever its outcome: a passing one would
+        # otherwise be silently dropped, and a failing one judged against the wrong contract.
+        for passed in (True, False):
+            with self.subTest(passed=passed):
+                report = self.report(set())
+                report['results'].append({'case': 'errors/ghost.barista', 'passed': passed, 'terminal': 'mismatch'})
+                with self.assertRaises(ValueError) as caught:
+                    self.derive(report)
+                self.assertEqual(str(caught.exception),
+                                 'execution report records outcomes for cases it did not select: errors/ghost.barista')
+
+    def test_a_failing_case_carrying_a_deferred_disposition_is_named(self):
+        self.triage['deferred'] = {'errors/beta.barista': 'Deferred to a later milestone.'}
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*deferred'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_a_failing_case_carrying_an_excluded_disposition_is_named(self):
+        self.triage['excluded'] = {'errors/beta.barista': 'Excluded from the imported tree.'}
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*excluded'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_an_incomplete_run_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'did not complete'):
+            self.derive(self.report(set(), completed=False))
+
+    def test_a_run_carrying_an_infrastructure_error_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'infrastructure error'):
+            self.derive(self.report(set(), infrastructure_error='staged library changed'))
+
+    def test_a_partial_population_run_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'complete population'):
+            self.derive(self.report(set(), complete_population=False))
+
+    def test_a_run_with_stopped_cases_is_refused(self):
+        report = self.report(set())
+        report['stopped_cases'] = ['errors/beta.barista']
+        report['results'] = [r for r in report['results'] if r['case'] != 'errors/beta.barista']
+        with self.assertRaisesRegex(ValueError, 'stopped these cases mid-flight: errors/beta.barista'):
+            self.derive(report)
+
+    def test_a_never_dispatched_case_is_refused(self):
+        report = self.report(set())
+        report['results'] = [r for r in report['results'] if r['case'] != 'errors/beta.barista']
+        with self.assertRaisesRegex(ValueError, 'no recorded outcome for: errors/beta.barista'):
+            self.derive(report)
+
+    def test_a_run_over_a_different_population_is_refused(self):
+        report = self.report(set())
+        report['selected_cases'] = [c for c in report['selected_cases'] if c != 'errors/beta.barista']
+        report['results'] = [r for r in report['results'] if r['case'] != 'errors/beta.barista']
+        with self.assertRaises(ValueError) as caught:
+            self.derive(report)
+        self.assertEqual(str(caught.exception), 'execution report population differs from the included '
+                                                "case set: ['errors/beta.barista']")
+
+    def test_duplicate_result_records_are_refused(self):
+        report = self.report({'errors/alpha.barista'})
+        report['results'].append(dict(report['results'][0]))
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            self.derive(report)
+
+
+
+class ArchivedExecutionDerivation(unittest.TestCase):
+    """Derivation against a real completed run, supplied by --execution-report.
+
+    Without the argument there is nothing to derive from and the class does not run. With it,
+    a missing report or staging tree is a failure rather than a skip, so a caller that asked
+    for this evidence is never handed a silent pass instead.
+    """
+
+    def test_a_real_execution_report_derives_its_own_failing_set(self):
+        import import_analyzer_corpus
+        self.assertTrue(EXECUTION_REPORT.is_file(), f'execution report not found: {EXECUTION_REPORT}')
+        staging = ROOT / 'project/tests/corpus/analyzer/inventory.json'
+        self.assertTrue(staging.is_file(), f'analyzer staging inventory not found: {staging}; stage the corpus first')
+        report = json.loads(EXECUTION_REPORT.read_text())
+        inventory = json.loads(staging.read_text())
+        included = {record['imported_path'] for record in inventory['sources']
+                    if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
+        policy = import_analyzer_corpus.default_policy()
+        triage = inventory['ledger']['triage']
+        derived = import_analyzer_corpus.derive_expected_failures(policy, report, included, triage)
+        self.assertEqual(derived, sorted(derived))
+        self.assertEqual(derived, import_analyzer_corpus.derive_expected_failures(policy, report, included, triage))
+        self.assertEqual(set(derived), {r['case'] for r in report['results'] if not r['passed']})
+        # Cross-check the size against a field the derivation never reads, so a report whose
+        # results and summary disagree cannot quietly define its own expectation.
+        self.assertEqual(len(derived), sum(count for terminal, count in report['summary'].items()
+                                           if terminal != 'passed'))
+        self.assertTrue(derived, 'a fully passing report proves nothing about the ownership contract')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--foundry', type=Path)
+    parser.add_argument('--execution-report', type=Path,
+                        help='completed corpus triage report to derive a residual-failure pin from')
     args, remaining = parser.parse_known_args()
     FOUNDRY = args.foundry
+    EXECUTION_REPORT = args.execution_report
+    ArchivedExecutionDerivation.__unittest_skip__ = EXECUTION_REPORT is None
     unittest.main(argv=[sys.argv[0], *remaining])

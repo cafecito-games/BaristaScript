@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot assign a value of type Callable[[Node?], void] to variable "target" with specified type Callable[[Node], void].

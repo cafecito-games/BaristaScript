@@ -1,0 +1,2 @@
+>> ERROR at line 14: Invalid argument for "take_beside()" function: argument 1 should be "(Callable[[int], void] | int, Self)" but is "(Callable[[String], void] | int, Self)".
+>> ERROR at line 15: Invalid argument for "take_within()" function: argument 1 should be "(Callable[[Self], void] | int, bool)" but is "(Callable[[String], void] | int, bool)".

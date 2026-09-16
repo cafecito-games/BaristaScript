@@ -1,0 +1,3 @@
+namespace issue_70.native_conflict
+class_name Node
+extends RefCounted

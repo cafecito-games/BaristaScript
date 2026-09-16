@@ -1,0 +1,8 @@
+extends RefCounted
+
+const HelperA = preload("./a/helper.notest.barista")
+const HelperB = preload("./b/helper.notest.barista")
+
+func test():
+	var wrong := HelperA.Result as HelperB.Result
+	print(wrong)

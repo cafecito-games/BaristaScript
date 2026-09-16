@@ -1,0 +1,14 @@
+# A Variant subject names no union, so neither pattern form of the shorthand can be qualified.
+enum Option:
+	None
+	Some(value: int)
+
+
+func run(subject: Variant) -> void:
+	match subject:
+		.Some(payload):
+			print(payload)
+		.None:
+			pass
+		_:
+			pass

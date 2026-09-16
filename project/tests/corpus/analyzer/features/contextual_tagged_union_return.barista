@@ -1,0 +1,22 @@
+# A contextual case shorthand in return position resolves against the enclosing function's declared
+# return type, including a lambda's.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func make_ok() -> Result:
+	return .Ok(3)
+
+
+func make_err() -> Result:
+	return .Err("bad")
+
+
+func test():
+	print(make_ok())
+	print(make_err())
+
+	var produce := func() -> Result:
+		return .Ok(9)
+	print(produce.call())

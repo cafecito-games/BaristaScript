@@ -1,0 +1,3 @@
+>> ERROR at line 22: Invalid argument for "take_callable()" function: argument 1 should be "Keeper[Callable[[int], void]]" but is "Keeper[Callable[[String], void]]".
+>> ERROR at line 26: Invalid argument for "take_width()" function: argument 1 should be "Keeper[String | int]" but is "Keeper[String | long]".
+>> ERROR at line 30: Invalid argument for "take_plain()" function: argument 1 should be "Callable[[int], void] | String" but is "Callable[[String], void] | String".

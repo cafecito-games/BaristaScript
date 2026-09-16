@@ -1,0 +1,2 @@
+>> ERROR at line 1: Could not resolve member "Chain": Cyclic reference.
+>> ERROR at line 1: Tuple "Chain" cannot contain itself by value.

@@ -1,0 +1,1 @@
+>> ERROR at line 7: Cannot call "cold_gadget()" on "RtcColdWidget": it is supplied by the retroactive conformance to trait "RtcColdTrait" declared in "res://tests/corpus/analyzer/errors/rtc_cold_conformance.notest.barista", which this file does not load. Import that file's namespace, or preload it.

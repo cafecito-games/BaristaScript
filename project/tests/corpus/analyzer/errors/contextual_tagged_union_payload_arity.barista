@@ -1,0 +1,10 @@
+# Payload arity is checked against the expected union's specialization, exactly as the explicit
+# spelling checks it.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func test():
+	var wrong: Result = .Ok(1, 2)
+	print(wrong)

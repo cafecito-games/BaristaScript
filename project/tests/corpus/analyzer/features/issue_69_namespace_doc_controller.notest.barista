@@ -1,0 +1,3 @@
+namespace issue_69_docs.game.characters.controllers
+class_name Issue69DocPlayerController
+extends RefCounted

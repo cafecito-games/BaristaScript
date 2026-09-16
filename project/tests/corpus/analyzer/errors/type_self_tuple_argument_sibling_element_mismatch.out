@@ -1,0 +1,4 @@
+>> ERROR at line 13: Invalid argument for "take()" function: argument 1 should be "(int, Self)" but is "(int, Self)". The parameter's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.
+>> ERROR at line 14: Invalid argument for "take()" function: argument 1 should be "(int, Self)" but is "(String, Self)". The parameter's "Self" at element 2 is resolved against the receiver expression; the argument is relative to the calling frame's receiver.
+>> ERROR at line 14: Cannot include a value of type "String" as "int".
+>> ERROR at line 18: Invalid argument for "take_nested()" function: argument 1 should be "Array[(int, Self)]" but is "Array[(String, Self)]". The parameter's "Self" at element 2 of the element type is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

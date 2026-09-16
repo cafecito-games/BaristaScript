@@ -1,0 +1,3 @@
+>> ERROR at line 7: Cannot assign a value of type tagged_union_in_int_context.barista.Command to variable "as_int" with specified type int.
+>> ERROR at line 8: Operator "+" is not available on tagged union "Command"; its cases carry payloads, so its values are not integers. Match on the case first.
+>> ERROR at line 9: Tagged union "Command" is not int-backed, because its cases carry payloads; it cannot be converted to or from "int".

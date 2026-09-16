@@ -1,0 +1,5 @@
+const Provider = preload("external_callable_signature_roundtrip_provider.notest.barista")
+
+func test() -> void:
+	var handler: Callable[[Callable[[int], void]], void] = Provider.new().get_cb()
+	print(handler.is_valid())

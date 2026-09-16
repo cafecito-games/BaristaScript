@@ -1,0 +1,2 @@
+>> ERROR at line 10: Enum function "read_value()" cannot access containing class instance member "instance_value".
+>> ERROR at line 13: Enum function "call_method()" cannot access containing class instance member "instance_method".

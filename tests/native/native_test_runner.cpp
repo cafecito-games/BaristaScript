@@ -11,6 +11,7 @@
 #include "bs_build_info.h"
 #include "doctest.h"
 #include "native_build_id.h"
+#include "native_corpus_arguments.h"
 #include "result_protocol.h"
 #include <godot_cpp/classes/os.hpp>
 #include <iostream>
@@ -57,7 +58,7 @@ bool BaristaNativeTestRunner::_process(double) {
 		return false;
 	}
 	ran = true;
-	godot::String suite, case_name, nonce;
+	godot::String suite, case_name, nonce, corpus_root_argument, corpus_case_argument;
 	bool listing = false;
 	for (const godot::String &argument : godot::OS::get_singleton()->get_cmdline_user_args()) {
 		if (argument.begins_with("--native-suite=")) {
@@ -68,6 +69,10 @@ bool BaristaNativeTestRunner::_process(double) {
 			nonce = argument.trim_prefix("--native-nonce=");
 		} else if (argument == "--native-list") {
 			listing = true;
+		} else if (argument.begins_with("--corpus-root=")) {
+			corpus_root_argument = argument.trim_prefix("--corpus-root=");
+		} else if (argument.begins_with("--corpus-case=")) {
+			corpus_case_argument = argument.trim_prefix("--corpus-case=");
 		} else {
 			std::cerr << "Unknown native runner argument: " << argument.utf8().get_data() << std::endl;
 			quit(2);
@@ -79,6 +84,12 @@ bool BaristaNativeTestRunner::_process(double) {
 		quit(2);
 		return false;
 	}
+	if (corpus_case_argument.is_empty() != corpus_root_argument.is_empty()) {
+		std::cerr << "Corpus mode requires both --corpus-root= and --corpus-case=" << std::endl;
+		quit(2);
+		return false;
+	}
+	barista_script::native_tests::set_corpus_arguments(corpus_root_argument, corpus_case_argument);
 	doctest::Context context;
 	context.setOption("order-by", "name");
 	context.setOption("case-sensitive", true);

@@ -1,0 +1,1 @@
+>> ERROR at line 8: Cannot assign a value of type Coroutine[int] to variable "job" with specified type Coroutine[String].

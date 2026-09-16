@@ -1,0 +1,3 @@
+# Companion target for retroactive_conformance_cross_file_rejects_conflicting_evidence.
+class_name RcxTarget
+extends RefCounted

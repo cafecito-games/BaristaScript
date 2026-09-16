@@ -1,0 +1,1 @@
+>> ERROR at line 5: Cannot destructure a value of type "Variant"; only a tuple with a statically known shape can be destructured.

@@ -1,0 +1,1 @@
+>> ERROR at line 2: Class "trait_base_constraint.barista" cannot use trait "Movable" because it does not inherit from "Node2D".

@@ -1,0 +1,3 @@
+# Companion foreign target for retroactive_conformance_witness_collision_cross_file.
+class_name RtcWccTarget
+extends RefCounted

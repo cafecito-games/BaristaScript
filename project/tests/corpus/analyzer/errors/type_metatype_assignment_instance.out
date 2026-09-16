@@ -1,0 +1,1 @@
+>> ERROR at line 5: Cannot assign instance value of type "User" to variable "user_handle" with specified type "Type[User]"; expected a class handle whose represented instance type is "User".

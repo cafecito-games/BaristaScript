@@ -1,0 +1,67 @@
+# `is` accepts the same shorthand: the case is named against the tested operand's own union, and the
+# payload binds carry that specialization's field types.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+enum Option:
+	None
+	Some(value: int)
+
+
+func describe(subject: Result) -> String:
+	if subject is .Ok(value):
+		return "ok " + str(value + 1)
+	if subject is .Err(error):
+		return "err " + error.to_upper()
+	return "unreachable"
+
+
+func is_empty(subject: Option) -> bool:
+	return subject is .None
+
+
+func not_empty(subject: Option) -> bool:
+	return subject is not .None
+
+
+func both(subject: Result) -> String:
+	if subject is .Ok(value) and value > 1:
+		return "big " + str(value)
+	return "small"
+
+
+# Without a bind list the shorthand is an ordinary tag test, valid anywhere a bool is.
+func is_ok(subject: Result) -> bool:
+	return subject is .Ok
+
+
+# Binds are allowed in a "while" condition and in an "assert", where they outlive the assertion.
+func drain(values: Array[Result]) -> int:
+	var total := 0
+	while not values.is_empty() and values[0] is .Ok(value):
+		total += value
+		values.remove_at(0)
+	return total
+
+
+func asserted(subject: Result) -> int:
+	assert(subject is .Ok(value))
+	return value
+
+
+func test():
+	print(describe(.Ok(1)))
+	print(describe(.Err("bad")))
+	print(is_empty(.None))
+	print(is_empty(.Some(1)))
+	print(not_empty(.None))
+	print(both(.Ok(2)))
+	print(both(.Ok(0)))
+	print(is_ok(.Ok(1)))
+	print(is_ok(.Err("bad")))
+
+	var values: Array[Result] = [Result.Ok(1), Result.Ok(2), Result.Err("stop")]
+	print(drain(values))
+	print(asserted(.Ok(7)))

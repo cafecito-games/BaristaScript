@@ -1,0 +1,2 @@
+>> ERROR at line 7: Invalid argument 2 for tuple "Pair": should be "Self" but is "Receiver".
+>> ERROR at line 8: Invalid argument 2 for tuple "Pair": should be "Self" but is "Self". The tuple field's "Self" is resolved against the receiver expression; the argument is relative to the calling frame's receiver.

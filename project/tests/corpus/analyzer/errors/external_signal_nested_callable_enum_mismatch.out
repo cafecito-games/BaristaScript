@@ -1,0 +1,1 @@
+>> ERROR at line 4: Cannot assign a value of type Signal[[Callable[[Vector3.Axis], void]]] to variable "s" with specified type Signal[[Callable[[Vector2.Axis], void]]].

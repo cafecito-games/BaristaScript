@@ -1,0 +1,15 @@
+# A dictionary literal qualifies a contextual case shorthand from the key or the value element type,
+# whichever position the shorthand sits in.
+enum Result:
+	Ok(value: int)
+	Err(error: String)
+
+
+func test():
+	var by_id: Dictionary[int, Result] = {1: .Ok(1), 2: .Err("x")}
+	print(by_id)
+	print(by_id[1] == Result.Ok(1))
+
+	var labels: Dictionary[Result, String] = {.Ok(1): "ok"}
+	print(labels)
+	print(labels[Result.Ok(1)])

@@ -1,0 +1,4 @@
+>> ERROR at line 7: Cannot return a value of type "String | int" as "int".
+>> ERROR at line 10: Cannot pass a value of type "String | int" as "int".
+>> ERROR at line 11: Cannot assign a value of type "String | int" as "int".
+>> ERROR at line 13: Cannot assign a value of type "String | int" as "int".

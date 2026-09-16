@@ -1,0 +1,8 @@
+# The runtime has no union carrier, so neither `is` nor `as` can name a multi-alternative union.
+type Scalar = int | String
+
+
+func test():
+	var value: Scalar = 1
+	print(value is Scalar)
+	print(value as Scalar)

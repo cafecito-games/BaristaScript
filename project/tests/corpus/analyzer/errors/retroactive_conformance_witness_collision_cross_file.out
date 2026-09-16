@@ -1,0 +1,1 @@
+>> ERROR at line 5: Class "RtcWccTarget" already has a witness for method "label()" via a conformance in "res://tests/corpus/analyzer/errors/retroactive_conformance_witness_collision_cross_file.notest.barista".

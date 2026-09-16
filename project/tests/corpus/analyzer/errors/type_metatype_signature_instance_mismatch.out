@@ -1,0 +1,2 @@
+>> ERROR at line 17: Cannot assign a value of type Callable[[Factory], void] to variable "expects_handle" with specified type Callable[[Type[Factory]], void].
+>> ERROR at line 18: Cannot assign a value of type Callable[[Type[Factory]], void] to variable "expects_instance" with specified type Callable[[Factory], void].

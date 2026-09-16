@@ -1,0 +1,7 @@
+const Provider = preload("res://tests/corpus/parser/features/tuple_name_declaration.norun.barista")
+
+class Bad extends Provider:
+	pass
+
+func test():
+	pass

@@ -1,0 +1,1 @@
+>> ERROR at line 9: Cannot call static enum function "parse()" on enum value "Status".

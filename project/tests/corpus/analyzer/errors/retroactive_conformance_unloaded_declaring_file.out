@@ -1,0 +1,2 @@
+>> ERROR at line 13: Cannot assign a value of type RtcScopedWidget to variable "unloaded" with specified type RtcScopedTrait.
+>> ERROR at line 15: Static function "mark()" not found in base "RtcScopedWidget".

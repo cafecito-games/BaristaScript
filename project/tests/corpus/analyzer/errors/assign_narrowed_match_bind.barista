@@ -1,0 +1,13 @@
+# A match/case payload bind is read-only, and a type test narrowing it must not weaken that: typing
+# the bind's own identifier node against the narrowing (needed for a compound op's implicit read; see
+# `FSAnalyzer::reduce_assignment()`) must still mark it constant, or this assignment goes unreported.
+enum Box:
+	Value(v: Variant)
+
+func inspect(box: Box) -> void:
+	match box:
+		Box.Value(b):
+			if b is int:
+				b = 5
+		_:
+			pass

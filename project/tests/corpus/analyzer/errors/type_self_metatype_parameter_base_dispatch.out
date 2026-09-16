@@ -1,0 +1,1 @@
+>> ERROR at line 14: Cannot pass class handle "Base" as argument 1 of "accept_type()"; handle represents "Base", which is not compatible with expected represented instance type "Self" for "Type[Self]".

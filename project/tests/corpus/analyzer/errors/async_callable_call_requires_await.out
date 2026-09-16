@@ -1,0 +1,1 @@
+>> ERROR at line 9: Cannot assign a value of type Coroutine[String] to variable "result" with specified type String.

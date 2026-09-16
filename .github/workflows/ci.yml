@@ -77,6 +77,7 @@ jobs:
         run: |
           python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry
           python3 tests/test_import_analyzer_corpus.py --foundry .upstream-foundry
+          python3 tests/test_corpus_ratchet.py
       - name: Check all imported corpora
         shell: bash
         run: python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry
@@ -236,12 +237,13 @@ jobs:
           # here: the runner discovers every project/tests/*_test.gd and fails the job unless the
           # run printed the guard sentinel that only executed code can produce.
           python3 tests/run_gdscript_suites.py --godot "$godot_binary"
-          python3 tests/test_run_corpus_triage.py --godot "$godot_binary" --library project/bin/linux/libbarista_script.linux.template_debug.x86_64.so
 
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/test_run_native_suites.py --godot "$godot_binary"
           python3 tests/test_native_storage.py --godot "$godot_binary"
           python3 tests/run_native_suites.py --godot "$godot_binary"
+          python3 tests/test_run_corpus_triage.py --godot "$godot_binary" \
+            --library "$(python3 -c "import json; print(json.load(open('build/native-scons/native-artifact.json'))['library'])")"
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=no
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_release barista_tests=no
@@ -261,6 +263,23 @@ jobs:
           cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON
           cmake --build build/native-cmake --parallel 2
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+
+      # Two committed guards already refuse a tampered residual-failure pin, but both compare the
+      # pin against other committed bytes. This step is the only place that executes the cases the
+      # pin describes, and it exits non-zero on an undeclared failure, an unowned failure, or a
+      # pinned case that has started passing.
+      - name: Triage the complete analyzer corpus against its residual-failure pin
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: >-
+          python3 scripts/run_corpus_triage.py
+          --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          --corpus res://tests/corpus/analyzer
+          --report "$RUNNER_TEMP/analyzer-corpus-triage.json"
+          --jobs 4
+          --timeout 90
 
       # Focused desktop debug import + SuiteGuard runners for #21 platform evidence. Linux keeps the
       # heavier cmake on/off matrix above; Windows/macOS debug get import + gdscript + native suites

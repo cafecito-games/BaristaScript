@@ -1,0 +1,1 @@
+>> ERROR at line 12: Final variable "MODE" must be definitely assigned before returning from "_static_init()".

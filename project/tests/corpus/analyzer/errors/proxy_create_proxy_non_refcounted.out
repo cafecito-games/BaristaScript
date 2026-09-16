@@ -1,0 +1,1 @@
+>> ERROR at line 11: create_proxy[T]() requires a trait or abstract type rooted on RefCounted, but "AbstractNode" has native base "Node".

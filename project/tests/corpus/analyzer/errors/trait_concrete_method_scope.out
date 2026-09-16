@@ -1,0 +1,1 @@
+>> ERROR at line 2: Class "trait_concrete_method_scope.barista" must implement trait method "RequiresFoo.foo()".

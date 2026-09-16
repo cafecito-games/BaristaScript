@@ -1,0 +1,4 @@
+>> ERROR at line 4: Type alias "Number" hides the compiler-provided type "Number".
+>> ERROR at line 8: Class "Number" hides the compiler-provided type "Number".
+>> ERROR at line 13: The member "Number" cannot have the same name as the compiler-provided type "Number".
+>> ERROR at line 18: The member "Number" cannot have the same name as the compiler-provided type "Number".
