@@ -302,14 +302,17 @@ The M3 import loop (issue #30 / #45) is execution-driven:
 2. Complete pinned import of every upstream runnable case into the ledger.
 3. Full corpus execution.
 4. Case-by-case classification of every residual: fix the implementation, rewrite the source,
-   override the expectation, exclude, or milestone-defer — each with a non-empty path-specific
-   reason in `tests/corpus_baseline.json`.
-5. Rerun until the exact ledger-pinned summary is green with `expected_failures` empty.
+   override the expectation, exclude, milestone-defer, or pin it as an expected failure — each
+   with a non-empty path-specific reason in `tests/corpus_baseline.json` or its policy owner.
+5. Rerun until every residual failure is either resolved or pinned in `expected_failures` with an
+   owner and a path-specific reason. The pin is monotone: it may shrink and may never grow.
 
 An unexplained residual failure remains a failing corpus result; it must not be bulk-added to
 `expected_failures`. Define the global-class index format here (§5.6) — the analyzer is what fills
-it. *Exit: the non-generic analyzer corpus green, with final imported/skipped totals written by
-execution into the ledger/README/runner pin (issue #45).*
+it. *Exit: the non-generic analyzer corpus imported and executing in CI, with final imported/skipped
+totals written by execution into the ledger/README/runner pin, and every residual failure pinned in
+`expected_failures` with an owner and a path-specific reason (issue #45). The pin is monotone: it may
+shrink and may never grow. M3 closes on the pin being complete and enforced, not on it being empty.*
 
 **M4 — Codegen + VM + glue.** Port bytecode and VM, rewrite the glue, implement coroutines. This is
 the first milestone where a `.barista` file *runs*. Load the §5.6 index at startup, since Godot's
