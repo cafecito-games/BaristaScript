@@ -76,7 +76,10 @@ failed records. `--jobs N` executes N cases concurrently, each in its own
 staged project so no two case processes share writable engine state, and
 records the requested count; the default of one case at a time is unchanged.
 Results stay ordered by case and the report is still rewritten after every
-completion, whatever order the cases finish in.
+completion, whatever order the cases finish in. A failed case stops the run
+before any further case starts, and an interruption kills the case processes
+still running rather than waiting out their timeouts; neither a case that never
+started nor one whose process was killed is recorded as an outcome.
 
 A nonzero complete report is useful discovery evidence, not a
 passing baseline. Reports record source/expectation hashes, source pin,

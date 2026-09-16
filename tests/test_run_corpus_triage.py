@@ -11,10 +11,13 @@ from contextlib import ExitStack, contextmanager, redirect_stderr
 import io
 import json
 from pathlib import Path
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -198,8 +201,9 @@ class ReportTests(unittest.TestCase):
             records = {r['imported_path']: r for r in inventory['sources'] if r['role'] == 'case'}
             original_hashes = {str(p.relative_to(root)): triage.digest(p) for p in root.rglob('*') if p.is_file() and '.git' not in p.parts}
             projects = []
+            started_cases = []
 
-            def case_process(command, timeout):
+            def case_process(command, timeout, **process_hooks):
                 project = Path(command[command.index('--path') + 1])
                 projects.append(project)
                 self.assertNotEqual(project, root / 'project')
@@ -211,6 +215,12 @@ class ReportTests(unittest.TestCase):
                 self.assertEqual(list((project / 'bin').glob('*.dylib')), [project / 'bin/native.dylib'])
                 case = command[command.index('--case') + 1]
                 nonce = command[command.index('--build-info-nonce') + 1]
+                started_cases.append(case)
+                if mode == 'fail' and case == cases[1]:
+                    raise ValueError('case process failure')
+                if mode == 'fail':
+                    # The failing case reports first, so the others are still in flight.
+                    time.sleep(0.3)
                 if staggered:
                     # Reversed delays make completion order disagree with case order.
                     time.sleep(0.05 * (len(cases) - cases.index(case)))
@@ -250,8 +260,11 @@ class ReportTests(unittest.TestCase):
             self.assertFalse(report['complete_population'])
             self.assertEqual(report['inventory_sha256'], triage.digest(root / 'project/tests/corpus_staging/analyzer/inventory.json'))
             self.assertEqual(report['checkout_info'], checkout)
-            self.assertEqual(report['build_info'], metadata())
-            self.assertNotEqual(report['build_info']['source'], report['checkout_info']['source'])
+            if report['results']:
+                self.assertEqual(report['build_info'], metadata())
+                self.assertNotEqual(report['build_info']['source'], report['checkout_info']['source'])
+            else:
+                self.assertIsNone(report['build_info'])
             self.assertEqual(len(report['build_artifacts']), 2)
             self.assertEqual(len(report['execution_files']), 6)
             self.assertEqual(report['godot_version'], 'actual-host-version')
@@ -263,6 +276,7 @@ class ReportTests(unittest.TestCase):
                     self.assertEqual(record[field], source[source_field])
             self.assertEqual(original_hashes, {str(p.relative_to(root)): triage.digest(p) for p in root.rglob('*') if p.is_file() and '.git' not in p.parts})
             self.staged_projects = list(projects)
+            self.started_cases = list(started_cases)
             self.report_snapshots = snapshots
             return result, report
 
@@ -323,6 +337,65 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(all(snapshot == sorted(snapshot) for snapshot in populated))
         self.assertNotEqual(populated[0], parallel['selected_cases'][:1],
                             'staggered cases did not actually complete out of order')
+
+    def test_a_failing_case_stops_the_run_before_the_next_case_starts(self):
+        # Default jobs must start and record exactly what a serial supervisor did.
+        result, report = self.exercise('fail', case_limit=6)
+        self.assertEqual(result, 2)
+        self.assertEqual(self.started_cases, report['selected_cases'][:2])
+        self.assertEqual([record['case'] for record in report['results']], report['selected_cases'][:1])
+        self.assertIn('case process failure', report['infrastructure_error'])
+        for jobs in (4, 8):
+            result, report = self.exercise('fail', jobs=jobs, case_limit=12)
+            self.assertEqual(result, 2)
+            selected = report['selected_cases']
+            # Cases are dispatched in order, so at most the in-flight window may follow the failure.
+            self.assertLessEqual(len(self.started_cases), jobs + 1, self.started_cases)
+            self.assertLessEqual(set(self.started_cases), set(selected))
+            self.assertLessEqual({record['case'] for record in report['results']}, set(self.started_cases))
+
+    def test_main_thread_interrupt_kills_case_processes_without_waiting_for_the_timeout(self):
+        with self.fixture(case_limit=4) as (root, library, report_path, inventory, cases, checkout):
+            children = []
+            original_popen = subprocess.Popen
+
+            def start(command, *positional, **keyword):
+                if isinstance(command, list) and '--headless' in command:
+                    command = [sys.executable, '-c', 'import time; time.sleep(60)']
+                    child = original_popen(command, *positional, **keyword)
+                    children.append(child)
+                    return child
+                return original_popen(command, *positional, **keyword)
+
+            def interrupt_when_all_cases_are_running():
+                while len(children) < len(cases):
+                    time.sleep(0.01)
+                # A real Ctrl-C is a signal delivered to this process, handled on the main thread.
+                os.kill(os.getpid(), signal.SIGINT)
+
+            arguments = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
+                         '--report', str(report_path), '--jobs', str(len(cases)), '--timeout', '60']
+            for case in cases:
+                arguments += ['--case', case]
+            interrupter = threading.Thread(target=interrupt_when_all_cases_are_running)
+            try:
+                with patch.object(triage.subprocess, 'Popen', side_effect=start):
+                    interrupter.start()
+                    began = time.monotonic()
+                    self.assertRaises(KeyboardInterrupt, triage.main, arguments)
+                    elapsed = time.monotonic() - began
+            finally:
+                interrupter.join()
+                for child in children:
+                    if child.poll() is None:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    child.communicate()
+            self.assertEqual(len(children), len(cases))
+            for child in children:
+                self.assertIsNotNone(child.poll(), 'a case process outlived the interrupted run')
+                self.assertLess(child.returncode, 0)
+            self.assertLess(elapsed, 15, 'the interrupted run waited on the per-case timeout')
+            self.assertFalse(json.loads(report_path.read_text())['results'])
 
     def test_non_positive_jobs_is_rejected(self):
         with self.fixture() as (root, library, report_path, inventory, cases, checkout):

@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -99,28 +100,43 @@ def atomic_report(path, document):
             os.unlink(temporary)
 
 
-def supervise(command: list[str], timeout: float):
-    started = time.monotonic()
+def kill_process_group(process):
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def supervise(command: list[str], timeout: float, started=None, finished=None):
+    """Run one isolated case process. The optional hooks expose it while it is alive.
+
+    A supervisor running cases concurrently receives an interruption on its own thread, never
+    inside this call, so it needs the live process to kill the group it created.
+    """
+    begun = time.monotonic()
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                start_new_session=True)
     timed_out = False
     try:
-        output, _ = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        os.killpg(process.pid, signal.SIGKILL)
-        output, _ = process.communicate()
-    except BaseException:
-        # A user interruption must not leave the isolated case process running after cleanup.
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        process.communicate()
-        raise
+        if started is not None:
+            started(process)
+        try:
+            output, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
+        except BaseException:
+            # A user interruption must not leave the isolated case process running after cleanup.
+            kill_process_group(process)
+            process.communicate()
+            raise
+    finally:
+        if finished is not None:
+            finished(process)
     return {'exit_code': process.returncode, 'timed_out': timed_out,
-            'duration_seconds': round(time.monotonic() - started, 4),
+            'duration_seconds': round(time.monotonic() - begun, 4),
             'output': output.decode('utf-8', errors='replace')}
 
 
@@ -265,8 +281,35 @@ def main(argv=None):
         # engine state, descriptor and library copy that the artifact bracket below hashes.
         worker_count = max(1, min(args.jobs, len(selected)))
         idle_projects = queue.SimpleQueue()
+        # A worker cannot see an interruption raised on the supervising thread, so a stop is
+        # published here: no further case starts, and any case process still alive is killed.
+        stop_requested = threading.Event()
+        live_processes = set()
+        live_lock = threading.Lock()
+
+        def note_process(process):
+            with live_lock:
+                live_processes.add(process)
+                stopping = stop_requested.is_set()
+            if stopping:
+                kill_process_group(process)
+
+        def forget_process(process):
+            with live_lock:
+                live_processes.discard(process)
+
+        def request_stop():
+            with live_lock:
+                stop_requested.set()
+                doomed = list(live_processes)
+            for process in doomed:
+                kill_process_group(process)
 
         def run_case(case):
+            # A case that never ran, and one whose process a stop request killed, are both
+            # absent outcomes rather than records: only real executions reach the report.
+            if stop_requested.is_set():
+                return None
             project = idle_projects.get()
             try:
                 copied = project / 'bin' / ('native' + library.suffix)
@@ -276,7 +319,9 @@ def main(argv=None):
                 command = [str(args.godot), '--headless', '--path', str(project), '--script',
                            'res://tests/corpus_runner.gd', '--', '--corpus', args.corpus, '--case', case,
                            '--build-info-nonce', nonce]
-                process = supervise(command, args.timeout)
+                process = supervise(command, args.timeout, started=note_process, finished=forget_process)
+                if stop_requested.is_set():
+                    return None
                 record = result_record(process, case, args.corpus, records[case]['expected_block'])
                 attach_build_info(record, nonce, inspected_info)
                 after = digest(copied) if copied.is_file() else None
@@ -292,6 +337,10 @@ def main(argv=None):
                                'semantic_owner': records[case]['semantic_owner'],
                                'candidate_observations': records[case]['candidate_observations'], 'command': command})
                 return record
+            except BaseException:
+                # A failing case stops the run here, before this worker dequeues the next one.
+                stop_requested.set()
+                raise
             finally:
                 idle_projects.put(project)
 
@@ -318,19 +367,26 @@ def main(argv=None):
             pool = stack.enter_context(ThreadPoolExecutor(max_workers=worker_count))
             futures = {pool.submit(run_case, case): case for case in selected}
             try:
-                for index, future in enumerate(as_completed(futures)):
+                for future in as_completed(futures):
                     case = futures[future]
-                    finished[case] = future.result()
+                    record = future.result()
+                    if record is None:
+                        continue
+                    finished[case] = record
                     # Each completed record is durable even if the supervisor is interrupted.
                     publish_finished_records()
-                    print(f'{index + 1}/{len(selected)} {finished[case]["terminal"]} {case}', flush=True)
+                    print(f'{len(finished)}/{len(selected)} {record["terminal"]} {case}', flush=True)
             except BaseException:
                 # A failing or interrupted run must not keep spawning further case processes,
-                # while the cases that did finish stay recorded.
+                # and must not leave one behind; the cases that did finish stay recorded.
+                request_stop()
                 pool.shutdown(wait=True, cancel_futures=True)
                 for future, case in futures.items():
-                    if case not in finished and not future.cancelled() and future.done() and future.exception() is None:
-                        finished[case] = future.result()
+                    if case in finished or future.cancelled() or not future.done() or future.exception() is not None:
+                        continue
+                    record = future.result()
+                    if record is not None:
+                        finished[case] = record
                 publish_finished_records()
                 raise
         report['completed'] = True
