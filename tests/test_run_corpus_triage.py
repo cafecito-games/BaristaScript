@@ -216,14 +216,15 @@ class ReportTests(unittest.TestCase):
                 case = command[command.index('--case') + 1]
                 nonce = command[command.index('--build-info-nonce') + 1]
                 started_cases.append(case)
-                if mode == 'fail' and case == cases[1]:
-                    raise ValueError('case process failure')
                 if mode == 'fail':
-                    # The failing case reports first, so the others are still in flight.
-                    time.sleep(0.3)
+                    # Every worker is dispatched before the failure reports, and the cases
+                    # already in flight when it does outlive it and finish cleanly.
+                    time.sleep(0.15 if case == cases[1] else 0.6)
+                    if case == cases[1]:
+                        raise ValueError('case process failure')
                 if staggered:
                     # Reversed delays make completion order disagree with case order.
-                    time.sleep(0.05 * (len(cases) - cases.index(case)))
+                    time.sleep(0.2 * (len(cases) - cases.index(case)))
                 if mode == 'interrupt' and case == cases[1]:
                     raise KeyboardInterrupt()
                 expected = records[case]['expected_block']
@@ -260,11 +261,8 @@ class ReportTests(unittest.TestCase):
             self.assertFalse(report['complete_population'])
             self.assertEqual(report['inventory_sha256'], triage.digest(root / 'project/tests/corpus_staging/analyzer/inventory.json'))
             self.assertEqual(report['checkout_info'], checkout)
-            if report['results']:
-                self.assertEqual(report['build_info'], metadata())
-                self.assertNotEqual(report['build_info']['source'], report['checkout_info']['source'])
-            else:
-                self.assertIsNone(report['build_info'])
+            self.assertEqual(report['build_info'], metadata())
+            self.assertNotEqual(report['build_info']['source'], report['checkout_info']['source'])
             self.assertEqual(len(report['build_artifacts']), 2)
             self.assertEqual(len(report['execution_files']), 6)
             self.assertEqual(report['godot_version'], 'actual-host-version')
@@ -344,15 +342,18 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertEqual(self.started_cases, report['selected_cases'][:2])
         self.assertEqual([record['case'] for record in report['results']], report['selected_cases'][:1])
+        self.assertEqual(report['stopped_cases'], [])
         self.assertIn('case process failure', report['infrastructure_error'])
         for jobs in (4, 8):
             result, report = self.exercise('fail', jobs=jobs, case_limit=12)
             self.assertEqual(result, 2)
-            selected = report['selected_cases']
-            # Cases are dispatched in order, so at most the in-flight window may follow the failure.
-            self.assertLessEqual(len(self.started_cases), jobs + 1, self.started_cases)
-            self.assertLessEqual(set(self.started_cases), set(selected))
-            self.assertLessEqual({record['case'] for record in report['results']}, set(self.started_cases))
+            dispatched = report['selected_cases'][:jobs]
+            # Cases are dispatched in order, so the failure stops the run within one window.
+            self.assertEqual(sorted(self.started_cases), dispatched)
+            # A sibling's failure must not discard a case that had already finished cleanly.
+            self.assertEqual([record['case'] for record in report['results']],
+                             [case for case in dispatched if case != report['selected_cases'][1]])
+            self.assertEqual(report['stopped_cases'], [])
 
     def test_main_thread_interrupt_kills_case_processes_without_waiting_for_the_timeout(self):
         with self.fixture(case_limit=4) as (root, library, report_path, inventory, cases, checkout):
@@ -361,20 +362,27 @@ class ReportTests(unittest.TestCase):
 
             def start(command, *positional, **keyword):
                 if isinstance(command, list) and '--headless' in command:
-                    command = [sys.executable, '-c', 'import time; time.sleep(60)']
+                    command = [sys.executable, '-c', 'import time; time.sleep(30)']
                     child = original_popen(command, *positional, **keyword)
                     children.append(child)
                     return child
                 return original_popen(command, *positional, **keyword)
 
+            interrupt_sent = threading.Event()
+
             def interrupt_when_all_cases_are_running():
-                while len(children) < len(cases):
+                # If the run aborts before dispatching every case, send nothing: the assertions
+                # below then report that instead of this thread spinning forever.
+                deadline = time.monotonic() + 30
+                while len(children) < len(cases) and time.monotonic() < deadline:
                     time.sleep(0.01)
-                # A real Ctrl-C is a signal delivered to this process, handled on the main thread.
-                os.kill(os.getpid(), signal.SIGINT)
+                if len(children) == len(cases):
+                    interrupt_sent.set()
+                    # A real Ctrl-C is a signal to this process, handled on the main thread.
+                    os.kill(os.getpid(), signal.SIGINT)
 
             arguments = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
-                         '--report', str(report_path), '--jobs', str(len(cases)), '--timeout', '60']
+                         '--report', str(report_path), '--jobs', str(len(cases)), '--timeout', '30']
             for case in cases:
                 arguments += ['--case', case]
             interrupter = threading.Thread(target=interrupt_when_all_cases_are_running)
@@ -385,17 +393,22 @@ class ReportTests(unittest.TestCase):
                     self.assertRaises(KeyboardInterrupt, triage.main, arguments)
                     elapsed = time.monotonic() - began
             finally:
-                interrupter.join()
+                interrupter.join(45)
                 for child in children:
                     if child.poll() is None:
                         os.killpg(child.pid, signal.SIGKILL)
                     child.communicate()
+            self.assertFalse(interrupter.is_alive())
+            self.assertTrue(interrupt_sent.is_set(), 'the run never dispatched every case')
             self.assertEqual(len(children), len(cases))
             for child in children:
                 self.assertIsNotNone(child.poll(), 'a case process outlived the interrupted run')
                 self.assertLess(child.returncode, 0)
-            self.assertLess(elapsed, 15, 'the interrupted run waited on the per-case timeout')
-            self.assertFalse(json.loads(report_path.read_text())['results'])
+            self.assertLess(elapsed, 10, 'the interrupted run waited on the per-case timeout')
+            report = json.loads(report_path.read_text())
+            self.assertFalse(report['results'])
+            # Killed mid-flight is a distinct state from never dispatched.
+            self.assertEqual(report['stopped_cases'], sorted(cases))
 
     def test_non_positive_jobs_is_rejected(self):
         with self.fixture() as (root, library, report_path, inventory, cases, checkout):

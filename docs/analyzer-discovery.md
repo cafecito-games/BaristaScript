@@ -76,10 +76,16 @@ failed records. `--jobs N` executes N cases concurrently, each in its own
 staged project so no two case processes share writable engine state, and
 records the requested count; the default of one case at a time is unchanged.
 Results stay ordered by case and the report is still rewritten after every
-completion, whatever order the cases finish in. A failed case stops the run
-before any further case starts, and an interruption kills the case processes
-still running rather than waiting out their timeouts; neither a case that never
-started nor one whose process was killed is recorded as an outcome.
+completion, whatever order the cases finish in. Every staged project is built
+and validated before the first case runs, so N is a fixed startup cost of N
+copies of `project/`; around `os.cpu_count()` is the useful range, and a value
+far above the host's parallelism pays that cost for no throughput.
+
+A failed case stops the run before any further case starts, and an interruption
+kills the case processes still running rather than waiting out their timeouts. A
+killed process yields truncated output, so it produces no result and is named in
+`stopped_cases` instead; a case still in flight that finishes on its own keeps
+its record. Selected cases in neither list were never dispatched.
 
 A nonzero complete report is useful discovery evidence, not a
 passing baseline. Reports record source/expectation hashes, source pin,
