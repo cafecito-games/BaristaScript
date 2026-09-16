@@ -369,15 +369,58 @@ class RuntimeTests(unittest.TestCase):
                           "integer_range_is_exact", "corpus-accept", artifact["build_id"],
                           artifact["build_info"]), completed.stdout)
 
-    def test_incomplete_corpus_argument_pair_is_rejected(self):
+    def invoke_runner_arguments(self, artifact, corpus_arguments):
+        """Runs the native runner with corpus arguments `invoke` cannot express."""
+        with runner.staged_project(artifact) as project:
+            command = [str(GODOT), "--headless", "--path", str(project), "--main-loop",
+                       "BaristaNativeTestRunner", "--", "--native-suite=tokenizer",
+                       "--native-case=", "--native-nonce=corpus-argument-check", *corpus_arguments]
+            return runner.supervise(command, 60)
+
+    def test_a_corpus_case_without_a_root_is_rejected(self):
         artifact = runner.read_artifact(BUILD_DIR)
-        for selection in (dict(corpus_case="cases/example.barista"), dict(corpus_root="/tmp/corpus")):
-            with self.subTest(**selection):
-                with runner.staged_project(artifact) as project:
-                    completed = runner.invoke(GODOT, project, "tokenizer", "", "corpus-pair-check",
-                                              60, **selection)
+        with runner.staged_project(artifact) as project:
+            completed = runner.invoke(GODOT, project, "tokenizer", "", "corpus-pair-check", 60,
+                                      corpus_case="cases/example.barista")
+        self.assertEqual(2, completed.returncode, completed.stdout)
+        self.assertIn("--corpus-case= requires --corpus-root=", completed.stdout)
+
+    def test_a_corpus_root_alone_selects_the_whole_corpus(self):
+        # A root with no case names the whole corpus; it is not an incomplete pair.
+        artifact = runner.read_artifact(BUILD_DIR)
+        with runner.staged_project(artifact) as project:
+            completed = runner.invoke(GODOT, project, "tokenizer", "integer_range_is_exact",
+                                      "corpus-root-alone", 60, corpus_root=str(project))
+        self.assertEqual([], runner.evaluate(completed.returncode, completed.stdout, "tokenizer",
+                          "integer_range_is_exact", "corpus-root-alone", artifact["build_id"],
+                          artifact["build_info"]), completed.stdout)
+
+    def test_whole_corpus_arguments_are_rejected_for_a_single_case(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        single_case = ["--corpus-root=/tmp/corpus", "--corpus-case=cases/example.barista"]
+        for extra, message in (
+                (["--corpus-order=reverse"], "only for a whole-corpus run"),
+                (["--corpus-shard=0", "--corpus-shards=2"], "only for a whole-corpus run")):
+            with self.subTest(extra=extra):
+                completed = self.invoke_runner_arguments(artifact, single_case + extra)
                 self.assertEqual(2, completed.returncode, completed.stdout)
-                self.assertIn("Corpus mode requires both", completed.stdout)
+                self.assertIn(message, completed.stdout)
+
+    def test_malformed_whole_corpus_arguments_are_rejected(self):
+        artifact = runner.read_artifact(BUILD_DIR)
+        whole_corpus = ["--corpus-root=/tmp/corpus"]
+        for extra, message in (
+                (["--corpus-order=sideways"], "accepts ascending or reverse"),
+                (["--corpus-shard=0"], "required together"),
+                (["--corpus-shards=2"], "required together"),
+                (["--corpus-shard=first", "--corpus-shards=2"], "are integers"),
+                (["--corpus-shard=2", "--corpus-shards=2"], "must name one of"),
+                (["--corpus-shard=-1", "--corpus-shards=2"], "must name one of"),
+                (["--corpus-shard=0", "--corpus-shards=0"], "must name one of")):
+            with self.subTest(extra=extra):
+                completed = self.invoke_runner_arguments(artifact, whole_corpus + extra)
+                self.assertEqual(2, completed.returncode, completed.stdout)
+                self.assertIn(message, completed.stdout)
 
     def test_unknown_argument_is_still_rejected(self):
         artifact = runner.read_artifact(BUILD_DIR)
