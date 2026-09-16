@@ -19,6 +19,11 @@
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+
 using namespace godot;
 using namespace barista_script;
 using namespace barista_script::native_tests;
@@ -103,6 +108,21 @@ CorpusResult synthetic_result(const String &p_output, bool p_ok = true, bool p_a
 	result.analysis_ran = p_analysis_ran;
 	result.infrastructure_error = p_infrastructure_error;
 	return result;
+}
+
+/** Capture what `emit_corpus_guards` writes to stdout so an ordinary run emits no guards. */
+std::vector<std::string> captured_guard_lines(const CorpusModeReport &p_report) {
+	std::ostringstream capture;
+	std::streambuf *previous = std::cout.rdbuf(capture.rdbuf());
+	emit_corpus_guards(p_report);
+	std::cout.rdbuf(previous);
+	std::vector<std::string> lines;
+	std::string line;
+	std::istringstream stream(capture.str());
+	while (std::getline(stream, line)) {
+		lines.push_back(line);
+	}
+	return lines;
 }
 
 PackedStringArray sorted_keys(const Dictionary &p_dictionary) {
@@ -708,7 +728,12 @@ TEST_SUITE("analyzer_corpus") {
 		// The payload is one line: JSON escaping keeps tabs and quotes out of the transport.
 		CHECK_FALSE(payload.contains("\n"));
 		CHECK_FALSE(payload.contains("\t"));
-		emit_corpus_guards(report);
+
+		const std::vector<std::string> lines = captured_guard_lines(report);
+		BS_TEST_REQUIRE(lines.size() == 2);
+		// BS_CASE_RESULT comes first; BS_CASE_RAN reports that the case ran, not that it passed.
+		CHECK(lines[0] == std::string("BS_CASE_RESULT ") + payload.utf8().get_data());
+		CHECK(lines[1] == "BS_CASE_RAN errors/case.barista");
 	}
 
 	TEST_CASE("selected_corpus_case_emits_guards") {
