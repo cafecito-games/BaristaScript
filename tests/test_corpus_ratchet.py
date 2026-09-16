@@ -53,9 +53,17 @@ def imported_corpora(document):
 def growth(previous_document, current_document):
     """Every pin entry present now and absent before, named with its corpus.
 
-    A corpus the previous state did not import contributes nothing: the ledger forbids it a
-    pin at all while it is pending, so its first pin is establishment rather than growth.
-    Once imported, every later entry has to have been there before.
+    A corpus the previous state did not import contributes nothing, which covers two cases:
+    a corpus recorded as pending, whose pin corpus_ledger forbids outright until promotion,
+    and a corpus absent from the previous baseline altogether, which a rename also produces.
+    Either way its first pin is establishment rather than growth, and every entry after that
+    is judged against it.
+
+    What keeps that opening safe is not this function but execution. corpus_registry requires
+    the runner expectation to read ``total - len(expected_failures)`` passes out of ``total``,
+    anchored, so a pin of the wrong size demands a pass count the run does not produce and
+    fails there. A reader deciding whether a newly appearing entry is legitimate should look
+    to that cross-check; growth() only enforces monotonicity on an already-established pin.
     """
     previous = expected_failures_by_corpus(previous_document)
     current = expected_failures_by_corpus(current_document)
@@ -109,13 +117,7 @@ def previous_references(repository):
     """
     current = expected_failures_by_corpus(working_baseline(repository))
     head = committed_baseline(repository, 'HEAD')
-    candidates = []
-    if head is None:
-        candidates.append('HEAD')
-    elif current != expected_failures_by_corpus(head):
-        candidates.append('HEAD')
-    else:
-        candidates.append('HEAD~1')
+    candidates = ['HEAD' if head is None or current != expected_failures_by_corpus(head) else 'HEAD~1']
     candidates.append(merge_base_commit(repository))
     references = []
     seen = set()
@@ -176,7 +178,9 @@ class GrowthDetection(unittest.TestCase):
         self.assertEqual(len(after), 1)
         self.assertIn('c.barista', after[0])
 
-    def test_a_corpus_absent_from_the_previous_baseline_is_establishment(self):
+    def test_a_corpus_absent_from_the_previous_baseline_is_also_establishment(self):
+        # A rename reaches the carve-out by this second entrance; the runner pass-count
+        # cross-check, not this function, is what refuses a pin of the wrong size.
         self.assertEqual(growth(document({'parser': ([], True)}),
                                 document({'parser': ([], True), 'analyzer': (['a.barista'], True)})), [])
 

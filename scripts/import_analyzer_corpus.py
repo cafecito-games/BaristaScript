@@ -275,6 +275,9 @@ def _recorded_outcomes(report, included_cases):
     if set(selected) != set(included_cases):
         raise ValueError('execution report population differs from the included case set: '
                          + str(sorted(set(selected) ^ set(included_cases))[:8]))
+    unselected = sorted(set(outcomes) - set(selected))
+    if unselected:
+        raise ValueError(f'execution report records outcomes for cases it did not select: {", ".join(unselected)}')
     killed = sorted(case for case in stopped if case in selected)
     if killed:
         raise ValueError(f'execution report stopped these cases mid-flight: {", ".join(killed)}')
@@ -299,8 +302,6 @@ def derive_expected_failures(policy: dict, execution_report: dict, included_case
     deferred = triage.get('deferred', {})
     failures = sorted(case for case, passed in outcomes.items() if not passed)
     for case in failures:
-        if case not in included_cases:
-            raise ValueError(f'{case}: failing case is not an included corpus case')
         if case in excluded:
             raise ValueError(f'{case}: failing case carries an excluded disposition; a residual failure '
                              'must be declared, not absorbed into a non-import disposition')

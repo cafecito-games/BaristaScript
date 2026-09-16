@@ -21,6 +21,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 
+EXECUTION_REPORT = None
+
 
 class AnalyzerImport(unittest.TestCase):
     def setUp(self):
@@ -1522,7 +1524,7 @@ class ExpectedFailureDerivation(unittest.TestCase):
 
     def setUp(self):
         import import_analyzer_corpus
-        self.m = import_analyzer_corpus
+        self.importer = import_analyzer_corpus
         self.included = {'errors/alpha.barista', 'errors/beta.barista', 'features/gamma.barista'}
         self.triage = {'excluded': {}, 'rewritten': {}, 'expectation_overrides': {}, 'deferred': {}}
         self.policy = {'owners': {
@@ -1546,7 +1548,7 @@ class ExpectedFailureDerivation(unittest.TestCase):
         return document
 
     def derive(self, report):
-        return self.m.derive_expected_failures(self.policy, report, self.included, self.triage)
+        return self.importer.derive_expected_failures(self.policy, report, self.included, self.triage)
 
     def test_derives_the_sorted_failing_cases(self):
         derived = self.derive(self.report({'features/gamma.barista', 'errors/alpha.barista'}))
@@ -1572,12 +1574,17 @@ class ExpectedFailureDerivation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*non-empty reason'):
             self.derive(self.report({'errors/beta.barista'}))
 
-    def test_a_failing_case_outside_the_included_set_is_named(self):
-        report = self.report(set())
-        report['selected_cases'] = sorted(self.included | {'errors/ghost.barista'})
-        report['results'].append({'case': 'errors/ghost.barista', 'passed': False, 'terminal': 'mismatch'})
-        with self.assertRaisesRegex(ValueError, 'errors/ghost.barista'):
-            self.derive(report)
+    def test_a_result_for_a_case_the_run_did_not_select_is_refused(self):
+        # A record outside the selection is refused whatever its outcome: a passing one would
+        # otherwise be silently dropped, and a failing one judged against the wrong contract.
+        for passed in (True, False):
+            with self.subTest(passed=passed):
+                report = self.report(set())
+                report['results'].append({'case': 'errors/ghost.barista', 'passed': passed, 'terminal': 'mismatch'})
+                with self.assertRaises(ValueError) as caught:
+                    self.derive(report)
+                self.assertEqual(str(caught.exception),
+                                 'execution report records outcomes for cases it did not select: errors/ghost.barista')
 
     def test_a_failing_case_carrying_a_deferred_disposition_is_named(self):
         self.triage['deferred'] = {'errors/beta.barista': 'Deferred to a later milestone.'}
@@ -1618,8 +1625,10 @@ class ExpectedFailureDerivation(unittest.TestCase):
         report = self.report(set())
         report['selected_cases'] = [c for c in report['selected_cases'] if c != 'errors/beta.barista']
         report['results'] = [r for r in report['results'] if r['case'] != 'errors/beta.barista']
-        with self.assertRaisesRegex(ValueError, 'population'):
+        with self.assertRaises(ValueError) as caught:
             self.derive(report)
+        self.assertEqual(str(caught.exception), 'execution report population differs from the included '
+                                                "case set: ['errors/beta.barista']")
 
     def test_duplicate_result_records_are_refused(self):
         report = self.report({'errors/alpha.barista'})
@@ -1627,24 +1636,45 @@ class ExpectedFailureDerivation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'duplicate'):
             self.derive(report)
 
-    def test_the_archived_production_report_derives_the_measured_residual(self):
-        archive = Path('/Users/christian/.codex/baristascript-m3/artifacts/native-corpus-e735e5a-claude.json')
-        if not archive.is_file():
-            self.skipTest('archived production execution report is unavailable')
-        report = json.loads(archive.read_text())
-        inventory = json.loads((ROOT / 'project/tests/corpus_staging/analyzer/inventory.json').read_text())
-        ledger = inventory['ledger']
+
+
+class ArchivedExecutionDerivation(unittest.TestCase):
+    """Derivation against a real completed run, supplied by --execution-report.
+
+    Without the argument there is nothing to derive from and the class does not run. With it,
+    a missing report or staging tree is a failure rather than a skip, so a caller that asked
+    for this evidence is never handed a silent pass instead.
+    """
+
+    def test_a_real_execution_report_derives_its_own_failing_set(self):
+        import import_analyzer_corpus
+        self.assertTrue(EXECUTION_REPORT.is_file(), f'execution report not found: {EXECUTION_REPORT}')
+        staging = ROOT / 'project/tests/corpus_staging/analyzer/inventory.json'
+        self.assertTrue(staging.is_file(), f'analyzer staging inventory not found: {staging}; stage the corpus first')
+        report = json.loads(EXECUTION_REPORT.read_text())
+        inventory = json.loads(staging.read_text())
         included = {record['imported_path'] for record in inventory['sources']
                     if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
-        derived = self.m.derive_expected_failures(self.m.default_policy(), report, included, ledger['triage'])
-        self.assertEqual(len(derived), 168)
+        policy = import_analyzer_corpus.default_policy()
+        triage = inventory['ledger']['triage']
+        derived = import_analyzer_corpus.derive_expected_failures(policy, report, included, triage)
         self.assertEqual(derived, sorted(derived))
+        self.assertEqual(derived, import_analyzer_corpus.derive_expected_failures(policy, report, included, triage))
         self.assertEqual(set(derived), {r['case'] for r in report['results'] if not r['passed']})
+        # Cross-check the size against a field the derivation never reads, so a report whose
+        # results and summary disagree cannot quietly define its own expectation.
+        self.assertEqual(len(derived), sum(count for terminal, count in report['summary'].items()
+                                           if terminal != 'passed'))
+        self.assertTrue(derived, 'a fully passing report proves nothing about the ownership contract')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--foundry', type=Path)
+    parser.add_argument('--execution-report', type=Path,
+                        help='completed corpus triage report to derive a residual-failure pin from')
     args, remaining = parser.parse_known_args()
     FOUNDRY = args.foundry
+    EXECUTION_REPORT = args.execution_report
+    ArchivedExecutionDerivation.__unittest_skip__ = EXECUTION_REPORT is None
     unittest.main(argv=[sys.argv[0], *remaining])

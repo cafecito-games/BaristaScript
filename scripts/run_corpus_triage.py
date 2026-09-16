@@ -271,11 +271,18 @@ def expected_failure_complaints(results, expected_failures, selected):
     that passes would let the pin outlive the bug it describes. Cases outside this run's
     selection are not judged, so an exact-case run never reads a whole-population pin.
     """
-    selected = list(selected)
-    outcomes = {record['case']: record for record in results}
-    pinned = set(expected_failures) & set(selected)
+    ordered = list(dict.fromkeys(selected))
+    outcomes = {}
     complaints = []
-    for case in selected:
+    for record in results:
+        # derive_expected_failures refuses a report holding two records for one case; the two
+        # readers of this structure must not disagree about what a well-formed run looks like.
+        if record['case'] in outcomes:
+            complaints.append(f'{record["case"]}: the run recorded more than one outcome for this case')
+            continue
+        outcomes[record['case']] = record
+    pinned = set(expected_failures) & set(ordered)
+    for case in ordered:
         record = outcomes.get(case)
         if record is None:
             complaints.append(f'{case}: selected case has no recorded outcome; the run cannot be judged against the pin')
