@@ -258,6 +258,40 @@ def result_record(process, case, corpus, expected, completion):
             'actual_block': actual, 'frontend_result': result, 'passed': terminal == 'passed'}
 
 
+def owned_failure(record):
+    """Whether a failing case names a semantic owner carrying a written reason."""
+    owner = record.get('semantic_owner')
+    return isinstance(owner, dict) and isinstance(owner.get('reason'), str) and bool(owner['reason'].strip())
+
+
+def expected_failure_complaints(results, expected_failures, selected):
+    """Enforce the residual-failure pin in both directions over the cases this run covered.
+
+    A failure missing from the pin would let new breakage land unnoticed, and a pinned case
+    that passes would let the pin outlive the bug it describes. Cases outside this run's
+    selection are not judged, so an exact-case run never reads a whole-population pin.
+    """
+    selected = list(selected)
+    outcomes = {record['case']: record for record in results}
+    pinned = set(expected_failures) & set(selected)
+    complaints = []
+    for case in selected:
+        record = outcomes.get(case)
+        if record is None:
+            complaints.append(f'{case}: selected case has no recorded outcome; the run cannot be judged against the pin')
+            continue
+        if record['passed']:
+            if case in pinned:
+                complaints.append(f'{case}: pinned expected failure now passes; remove it from expected_failures')
+            continue
+        if not owned_failure(record):
+            complaints.append(f'{case}: failing case has no semantic owner with a written reason')
+        if case not in pinned:
+            complaints.append(f'{case}: failing case is not declared in expected_failures; new breakage must be '
+                              'declared with an owner, never silently absorbed')
+    return complaints
+
+
 def validate_staging(root, inventory, *, project_root=None):
     from import_analyzer_corpus import shared_source_path
     project_root = project_root or ROOT / "project"
@@ -516,10 +550,14 @@ def main(argv=None):
                 raise
         report['completed'] = True
         report['summary'] = dict(sorted(Counter(r['terminal'] for r in report['results']).items()))
-        report['unowned_failures'] = [r['case'] for r in report['results'] if not r['passed'] and not r['semantic_owner']]
+        report['unowned_failures'] = [r['case'] for r in report['results'] if not r['passed'] and not owned_failure(r)]
+        complaints = expected_failure_complaints(report['results'], inventory['ledger']['expected_failures'], selected)
+        report['expected_failure_complaints'] = complaints
         atomic_report(args.report, report)
         print(json.dumps(report['summary'], sort_keys=True))
-        return 0 if all(r['passed'] for r in report['results']) else 1
+        for complaint in complaints:
+            print(f'corpus triage: {complaint}', file=sys.stderr)
+        return 1 if complaints else 0
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         if report is not None:
             report['infrastructure_error'] = str(error)

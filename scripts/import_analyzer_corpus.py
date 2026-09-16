@@ -245,7 +245,78 @@ def owner_candidates(source: str, expected: str, references: list):
     return signals
 
 
-def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
+def _recorded_outcomes(report, included_cases):
+    """Return ``case -> passed`` for a run that may be used as a pin basis.
+
+    Absence of a result is only interpretable once the run is known to have finished.
+    A stopped case ran but produced unusable output, and a case that was never
+    dispatched produced nothing at all; neither may be read as a pass.
+    """
+    if not isinstance(report, dict):
+        raise ValueError('execution report must be a JSON object')
+    if report.get('infrastructure_error') is not None:
+        raise ValueError(f'execution report records an infrastructure error: {report["infrastructure_error"]}')
+    if report.get('completed') is not True:
+        raise ValueError('execution report did not complete; a partial run is not a pin basis')
+    if report.get('complete_population') is not True:
+        raise ValueError('execution report covers a case selection, not the complete population')
+    selected = report.get('selected_cases')
+    results = report.get('results')
+    stopped = report.get('stopped_cases')
+    if not isinstance(selected, list) or not isinstance(results, list) or not isinstance(stopped, list):
+        raise ValueError('execution report selected_cases, results and stopped_cases must be lists')
+    outcomes = {}
+    for record in results:
+        if not isinstance(record, dict) or not isinstance(record.get('case'), str) or type(record.get('passed')) is not bool:
+            raise ValueError('execution report result records must carry a case name and a boolean outcome')
+        if record['case'] in outcomes:
+            raise ValueError(f'execution report holds duplicate result records for {record["case"]}')
+        outcomes[record['case']] = record['passed']
+    if set(selected) != set(included_cases):
+        raise ValueError('execution report population differs from the included case set: '
+                         + str(sorted(set(selected) ^ set(included_cases))[:8]))
+    killed = sorted(case for case in stopped if case in selected)
+    if killed:
+        raise ValueError(f'execution report stopped these cases mid-flight: {", ".join(killed)}')
+    undispatched = sorted(case for case in selected if case not in outcomes)
+    if undispatched:
+        raise ValueError(f'execution report has no recorded outcome for: {", ".join(undispatched)}')
+    return outcomes
+
+
+def derive_expected_failures(policy: dict, execution_report: dict, included_cases, triage: dict) -> list[str]:
+    """Compute the pinned residual failure set from policy ownership plus one run.
+
+    Every failing case must be an included case that carries a semantic owner with a
+    non-empty reason and no excluded/deferred disposition, so a new failure cannot be
+    absorbed into the pin without someone having written down why it fails.
+    """
+    outcomes = _recorded_outcomes(execution_report, included_cases)
+    owners = policy.get('owners')
+    if not isinstance(owners, dict):
+        raise ValueError('policy owners must be an object of path -> owner')
+    excluded = triage.get('excluded', {})
+    deferred = triage.get('deferred', {})
+    failures = sorted(case for case, passed in outcomes.items() if not passed)
+    for case in failures:
+        if case not in included_cases:
+            raise ValueError(f'{case}: failing case is not an included corpus case')
+        if case in excluded:
+            raise ValueError(f'{case}: failing case carries an excluded disposition; a residual failure '
+                             'must be declared, not absorbed into a non-import disposition')
+        if case in deferred:
+            raise ValueError(f'{case}: failing case carries a deferred disposition; a residual failure '
+                             'must be declared, not absorbed into a non-import disposition')
+        owner = owners.get(case)
+        if owner is None:
+            raise ValueError(f'{case}: failing case has no semantic owner; every pinned failure needs a '
+                             'path-specific written reason')
+        if not isinstance(owner, dict) or not isinstance(owner.get('reason'), str) or not owner['reason'].strip():
+            raise ValueError(f'{case}: semantic owner must carry a non-empty reason')
+    return failures
+
+
+def inventory_sources(scripts: Path, policy: dict, uri: str, execution_report: dict | None = None) -> dict:
     if set(policy) != {'schema_version', 'foundry_revision', 'counts', 'excluded', 'rewritten',
                        'expectation_overrides', 'deferred', 'source_edits', 'expectation_edits', 'owners'} or type(policy['schema_version']) is not int or policy['schema_version'] != 2:
         raise ValueError('invalid analyzer policy schema')
@@ -496,7 +567,9 @@ def inventory_sources(scripts: Path, policy: dict, uri: str) -> dict:
               'upstream_helpers': len(helpers) + len(SUPPORT), 'upstream_sources': len(sources) + len(SUPPORT),
               'total': len(included),
               'skipped': len(helpers) + len(SUPPORT) - len(SHARED_SUPPORT_ROOTS) + len(clone_specs),
-              'expected_failures': [], 'triage': triage}
+              'expected_failures': ([] if execution_report is None
+                                    else derive_expected_failures(policy, execution_report, included, triage)),
+              'triage': triage}
     complaint = validate_triage_ledger('analyzer staging', ledger, disk_cases=included,
                                       disk_helpers=helpers | {'_support/' + barista_path(p) for p in SUPPORT if p not in SHARED_SUPPORT_ROOTS})
     if complaint:
@@ -605,6 +678,8 @@ def main(argv=None):
     modes.add_argument('--inventory', type=Path)
     modes.add_argument('--stage')
     modes.add_argument('--check', action='store_true')
+    parser.add_argument('--execution-report', type=Path,
+                        help='completed triage report whose failures become the ledger expected_failures pin')
     args = parser.parse_args(argv)
     try:
         registry = validate_registration(ROOT)
@@ -618,7 +693,14 @@ def main(argv=None):
             raise ValueError('policy revision differs from shared registry')
         destination = stage_destination(ROOT, args.stage or STAGE)
         uri = 'res://' + STAGE.removeprefix('project/')
-        inv = inventory_sources(args.foundry / SCRIPTS, policy, uri)
+        execution_report = None
+        if args.execution_report is not None:
+            # A staged tree is byte-compared against a freshly generated one, so a pinned
+            # ledger may only be produced as a standalone report, never written into staging.
+            if not args.inventory:
+                raise ValueError('--execution-report derives a pinned ledger and requires --inventory')
+            execution_report = read_json(args.execution_report)
+        inv = inventory_sources(args.foundry / SCRIPTS, policy, uri, execution_report)
         if args.inventory:
             # Inventory is metadata-only; forbid a caller using it to corrupt
             # registered generated inputs or any repository-owned source file.

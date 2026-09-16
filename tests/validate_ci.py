@@ -293,7 +293,7 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
                 "persist-credentials": "false", "fetch-depth": "1",
                 "sparse-checkout-cone-mode": "false",
                 "sparse-checkout": "${{ steps.source.outputs.sparse_paths }}"}},
-            {"shell": "bash", "run": "python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry\npython3 tests/test_import_analyzer_corpus.py --foundry .upstream-foundry"},
+            {"shell": "bash", "run": "python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry\npython3 tests/test_import_analyzer_corpus.py --foundry .upstream-foundry\npython3 tests/test_corpus_ratchet.py"},
             {"shell": "bash", "run": "python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry"},
             {"shell": "bash", "run": "python3 tests/validate_analyzer_port_inventory.py --foundry-dir .upstream-foundry --require-m3-complete\npython3 tests/test_analyzer_port_inventory.py --foundry-dir .upstream-foundry"},
         ]

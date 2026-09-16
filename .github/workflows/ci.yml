@@ -77,6 +77,7 @@ jobs:
         run: |
           python3 tests/test_corpus_reproducibility.py --foundry .upstream-foundry
           python3 tests/test_import_analyzer_corpus.py --foundry .upstream-foundry
+          python3 tests/test_corpus_ratchet.py
       - name: Check all imported corpora
         shell: bash
         run: python3 scripts/check_corpus_reproducibility.py --foundry .upstream-foundry

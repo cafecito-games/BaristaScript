@@ -1517,6 +1517,131 @@ class FullPinned(unittest.TestCase):
                 importer.check_stage(first, source, stage)
 
 
+class ExpectedFailureDerivation(unittest.TestCase):
+    """The pinned residual set is computed from policy owners plus one completed run."""
+
+    def setUp(self):
+        import import_analyzer_corpus
+        self.m = import_analyzer_corpus
+        self.included = {'errors/alpha.barista', 'errors/beta.barista', 'features/gamma.barista'}
+        self.triage = {'excluded': {}, 'rewritten': {}, 'expectation_overrides': {}, 'deferred': {}}
+        self.policy = {'owners': {
+            'errors/alpha.barista': {'reason': 'Contextual union inference is unimplemented.'},
+            'errors/beta.barista': {'reason': 'Trait resolution order differs from upstream.'},
+            'features/gamma.barista': {'reason': 'Typed callable binding is unimplemented.'},
+        }}
+
+    def report(self, failing, **overrides):
+        cases = sorted(self.included)
+        document = {
+            'completed': True,
+            'complete_population': True,
+            'selected_cases': cases,
+            'stopped_cases': [],
+            'results': [{'case': case, 'passed': case not in failing,
+                         'terminal': 'passed' if case not in failing else 'mismatch'}
+                        for case in cases],
+        }
+        document.update(overrides)
+        return document
+
+    def derive(self, report):
+        return self.m.derive_expected_failures(self.policy, report, self.included, self.triage)
+
+    def test_derives_the_sorted_failing_cases(self):
+        derived = self.derive(self.report({'features/gamma.barista', 'errors/alpha.barista'}))
+        self.assertEqual(derived, ['errors/alpha.barista', 'features/gamma.barista'])
+
+    def test_derivation_is_stable_across_result_ordering(self):
+        failing = {'features/gamma.barista', 'errors/alpha.barista'}
+        forward = self.report(failing)
+        reversed_report = dict(forward, results=list(reversed(forward['results'])))
+        self.assertEqual(self.derive(forward), self.derive(reversed_report))
+        self.assertEqual(self.derive(forward), sorted(self.derive(forward)))
+
+    def test_a_fully_passing_run_derives_an_empty_pin(self):
+        self.assertEqual(self.derive(self.report(set())), [])
+
+    def test_a_failing_case_without_an_owner_is_named(self):
+        del self.policy['owners']['errors/beta.barista']
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*no semantic owner'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_a_failing_case_with_a_blank_owner_reason_is_named(self):
+        self.policy['owners']['errors/beta.barista'] = {'reason': '   '}
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*non-empty reason'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_a_failing_case_outside_the_included_set_is_named(self):
+        report = self.report(set())
+        report['selected_cases'] = sorted(self.included | {'errors/ghost.barista'})
+        report['results'].append({'case': 'errors/ghost.barista', 'passed': False, 'terminal': 'mismatch'})
+        with self.assertRaisesRegex(ValueError, 'errors/ghost.barista'):
+            self.derive(report)
+
+    def test_a_failing_case_carrying_a_deferred_disposition_is_named(self):
+        self.triage['deferred'] = {'errors/beta.barista': 'Deferred to a later milestone.'}
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*deferred'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_a_failing_case_carrying_an_excluded_disposition_is_named(self):
+        self.triage['excluded'] = {'errors/beta.barista': 'Excluded from the imported tree.'}
+        with self.assertRaisesRegex(ValueError, 'errors/beta.barista.*excluded'):
+            self.derive(self.report({'errors/beta.barista'}))
+
+    def test_an_incomplete_run_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'did not complete'):
+            self.derive(self.report(set(), completed=False))
+
+    def test_a_run_carrying_an_infrastructure_error_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'infrastructure error'):
+            self.derive(self.report(set(), infrastructure_error='staged library changed'))
+
+    def test_a_partial_population_run_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'complete population'):
+            self.derive(self.report(set(), complete_population=False))
+
+    def test_a_run_with_stopped_cases_is_refused(self):
+        report = self.report(set())
+        report['stopped_cases'] = ['errors/beta.barista']
+        report['results'] = [r for r in report['results'] if r['case'] != 'errors/beta.barista']
+        with self.assertRaisesRegex(ValueError, 'stopped these cases mid-flight: errors/beta.barista'):
+            self.derive(report)
+
+    def test_a_never_dispatched_case_is_refused(self):
+        report = self.report(set())
+        report['results'] = [r for r in report['results'] if r['case'] != 'errors/beta.barista']
+        with self.assertRaisesRegex(ValueError, 'no recorded outcome for: errors/beta.barista'):
+            self.derive(report)
+
+    def test_a_run_over_a_different_population_is_refused(self):
+        report = self.report(set())
+        report['selected_cases'] = [c for c in report['selected_cases'] if c != 'errors/beta.barista']
+        report['results'] = [r for r in report['results'] if r['case'] != 'errors/beta.barista']
+        with self.assertRaisesRegex(ValueError, 'population'):
+            self.derive(report)
+
+    def test_duplicate_result_records_are_refused(self):
+        report = self.report({'errors/alpha.barista'})
+        report['results'].append(dict(report['results'][0]))
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            self.derive(report)
+
+    def test_the_archived_production_report_derives_the_measured_residual(self):
+        archive = Path('/Users/christian/.codex/baristascript-m3/artifacts/native-corpus-e735e5a-claude.json')
+        if not archive.is_file():
+            self.skipTest('archived production execution report is unavailable')
+        report = json.loads(archive.read_text())
+        inventory = json.loads((ROOT / 'project/tests/corpus_staging/analyzer/inventory.json').read_text())
+        ledger = inventory['ledger']
+        included = {record['imported_path'] for record in inventory['sources']
+                    if record['role'] == 'case' and record['disposition'] not in ('excluded', 'deferred')}
+        derived = self.m.derive_expected_failures(self.m.default_policy(), report, included, ledger['triage'])
+        self.assertEqual(len(derived), 168)
+        self.assertEqual(derived, sorted(derived))
+        self.assertEqual(set(derived), {r['case'] for r in report['results'] if not r['passed']})
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--foundry', type=Path)
