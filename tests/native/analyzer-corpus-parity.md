@@ -17,11 +17,11 @@ Baseline sources are `project/tests/corpus_harness.gd` (744 lines),
 `project/tests/corpus_harness_test.gd` (668 lines) and
 `project/tests/corpus_oracle_test.gd` (309 lines) at `7db8f3c`.
 
-The inventory holds **76 rows: 68 with a named pinning test, and 8 deliberate non-ports
+The inventory holds **77 rows: 69 with a named pinning test, and 8 deliberate non-ports
 carrying a disposition instead**. The 8 are not covered by any native test and are not
 claimed to be; they name behavior that stays in GDScript until issue #156 retires it, and
 each says which caller would break if it were deleted today. A row in the first six tables
-that named no test would mean the port is incomplete, so every one of the 68 names a
+that named no test would mean the port is incomplete, so every one of the 69 names a
 registered case. Where a named test covers only part of a row, the row says which part.
 
 ## Discovery and pairing
@@ -106,9 +106,10 @@ break the runner's own cleanup, and the open-failure branch is the same one eith
 | A helper is not selectable as an exact case (`corpus_harness_test.gd:608-611`) | `valid_case_relative` rejects `HELPER_SUFFIX` | same |
 | The exact case must be discovered exactly once (`corpus_harness.gd:100-103`) | `select_discovered_case` | `analyzer_corpus/exact_case_selection_requires_one_discovered_case` |
 | An absent case and an ambiguous one are different problems and say so: GDScript reports both through one `selected.size() != 1` check (`corpus_harness.gd:101-102`) | `select_discovered_case` counts matches and emits `exact case was not discovered:` or `exact case is ambiguous:` | `analyzer_corpus/exact_case_selection_requires_one_discovered_case` |
-| Stage manifest shape: exactly 3 keys, `schema_version` integer 1, matching `foundry_revision`, `cases` object (`corpus_harness.gd:502-503`) | `validate_stage_manifest` requires `Variant::INT` exactly, so this entry point is never looser than the `StrictJsonValidator` gate in front of it | `analyzer_corpus/stage_manifest_shape_is_validated`, which passes hand-built dictionaries that bypass the gate entirely, including `1.0` and `true` |
+| Stage manifest shape: exactly 3 keys, `schema_version` numerically 1, matching `foundry_revision`, `cases` object (`corpus_harness.gd:502-503`) | `validate_stage_manifest` accepts `Variant::INT` or `Variant::FLOAT` equal to 1, matching GDScript. It cannot demand `INT`: Godot's JSON decoder yields `FLOAT` for the integer `1`, so an `INT` requirement rejects every real manifest while every hand-built test `Dictionary` still passes. The integer **spelling** is enforced one layer up, on the JSON text, by `StrictJsonValidator` | `analyzer_corpus/stage_manifest_shape_is_validated` pins the decoded type of the committed manifest and the rejection of `2`, `2.0`, `true`, `"1"` and absent; `analyzer_corpus/strict_json_matrix_matches_the_shared_fixture` pins the spelling gate on `1.0`, `2` and `true` |
 | Every manifest key is a valid relative case with stage `parser`/`analyzer` (`corpus_harness.gd:511-513`) | same | same |
 | Every discovered case has an entry; no extra or helper entries remain (`corpus_harness.gd:514-521`) | same | same |
+| The committed `case_stages.json` validates as it is actually decoded (`corpus_harness.gd:453-459`) | `read_unique_json` then `validate_stage_manifest`, taking the revision from the manifest so the assertion cannot be skipped when the registry is absent from the staged project | `analyzer_corpus/stage_manifest_shape_is_validated` |
 | Discovery errors and unreadable directories both abort manifest validation (`corpus_harness.gd:504-508`) | same | `analyzer_corpus/stage_manifest_shape_is_validated` (a symlinked entry for the first, an unopenable root for the second) |
 | Strict JSON: grammar, duplicate decoded keys, integer `schema_version` (`corpus_harness.gd:605-729`) | `StrictJsonValidator` / `read_unique_json` | `analyzer_corpus/strict_json_matrix_matches_the_shared_fixture` |
 | Non-UTF-8 or NUL-bearing JSON is rejected (`corpus_harness.gd:718-720`) | `read_unique_json` | same |

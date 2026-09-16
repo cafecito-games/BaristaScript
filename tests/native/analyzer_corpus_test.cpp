@@ -735,14 +735,20 @@ TEST_SUITE("analyzer_corpus") {
 			stale[field] = "stale";
 			CHECK_FALSE(validate_stage_manifest(stale, corpus.root(), revision).error.is_empty());
 		}
-		// The strict JSON gate rejects a float spelling first in production, but this entry
-		// point is called directly and must not be looser than the gate in front of it.
+		// `1.0` is accepted here on purpose: Godot's JSON decoder produces a FLOAT for the
+		// integer 1, so this layer cannot demand Variant::INT without rejecting every real
+		// manifest. The integer spelling is enforced on the JSON text by the strict gate,
+		// pinned in strict_json_matrix_matches_the_shared_fixture.
 		Dictionary float_schema = manifest.duplicate(true);
 		float_schema["schema_version"] = 1.0;
-		CHECK_FALSE(validate_stage_manifest(float_schema, corpus.root(), revision).error.is_empty());
-		Dictionary boolean_schema = manifest.duplicate(true);
-		boolean_schema["schema_version"] = true;
-		CHECK_FALSE(validate_stage_manifest(boolean_schema, corpus.root(), revision).error.is_empty());
+		CHECK(validate_stage_manifest(float_schema, corpus.root(), revision).error.is_empty());
+		// A value that is not numerically 1, and one that is not a number at all, are refused
+		// by this layer whatever the strict gate did.
+		for (const Variant &rejected : { Variant(2), Variant(2.0), Variant(true), Variant("1"), Variant() }) {
+			Dictionary invalid_schema = manifest.duplicate(true);
+			invalid_schema["schema_version"] = rejected;
+			CHECK_FALSE(validate_stage_manifest(invalid_schema, corpus.root(), revision).error.is_empty());
+		}
 
 		Dictionary extra_key = manifest.duplicate(true);
 		extra_key["unexpected"] = 1;
@@ -792,16 +798,18 @@ TEST_SUITE("analyzer_corpus") {
 		CHECK(aliased.stages.is_empty());
 		CHECK(validate_stage_manifest(manifest, corpus.root(), revision).error.is_empty());
 
-		// The committed parser corpus validates against the real registry revision.
-		const CorpusJsonDocument registry = read_unique_json("res://../scripts/corpus_sources.json");
-		if (registry.error.is_empty()) {
-			const CorpusJsonDocument document = read_unique_json("res://tests/corpus/parser/case_stages.json");
-			CHECK(document.error.is_empty());
-			const CorpusStageManifest imported = validate_stage_manifest(
-					document.document, "res://tests/corpus/parser", registry.document["revision"]);
-			CHECK(imported.error.is_empty());
-			CHECK(imported.stages.size() > 300);
-		}
+		// The committed manifest is validated as it is actually decoded, unconditionally: the
+		// registry that carries the revision is absent from the native staged project, so
+		// taking the revision from the manifest itself keeps this from silently skipping.
+		// Guarding it on the registry is what let a Variant::INT requirement pass this suite
+		// while rejecting all 340 real cases.
+		const CorpusJsonDocument committed = read_unique_json("res://tests/corpus/parser/case_stages.json");
+		BS_TEST_REQUIRE(committed.error.is_empty());
+		CHECK(committed.document["schema_version"].get_type() == Variant::FLOAT);
+		const CorpusStageManifest imported = validate_stage_manifest(
+				committed.document, "res://tests/corpus/parser", committed.document["foundry_revision"]);
+		CHECK_MESSAGE(imported.error.is_empty(), imported.error.utf8().get_data());
+		CHECK(imported.stages.size() > 300);
 	}
 
 	TEST_CASE("fixture_source_paths_are_sorted_and_barista_only") {

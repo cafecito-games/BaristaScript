@@ -568,9 +568,12 @@ CorpusJsonDocument read_unique_json(const String &p_path) {
 CorpusStageManifest validate_stage_manifest(const Dictionary &p_stages, const String &p_root, const String &p_revision) {
 	CorpusStageManifest manifest;
 	const Variant schema_version = p_stages.get("schema_version", Variant());
-	// Integer 1 exactly, matching StrictJsonValidator. This entry point is called directly,
-	// so it cannot lean on the strict gate having rejected a float spelling first.
-	if (p_stages.keys().size() != 3 || schema_version.get_type() != Variant::INT || int64_t(schema_version) != 1 ||
+	// FLOAT is accepted because Godot's JSON decoder produces it for the integer 1: requiring
+	// Variant::INT here rejects every real manifest while every hand-built Dictionary in a
+	// test still passes. The integer *spelling* is enforced one layer up, on the JSON text,
+	// by StrictJsonValidator; this layer only rejects a value that is not numerically 1.
+	const bool numeric_schema = schema_version.get_type() == Variant::INT || schema_version.get_type() == Variant::FLOAT;
+	if (p_stages.keys().size() != 3 || !numeric_schema || double(schema_version) != 1.0 ||
 			p_stages.get("foundry_revision", Variant()) != Variant(p_revision) ||
 			p_stages.get("cases", Variant()).get_type() != Variant::DICTIONARY) {
 		manifest.error = "invalid/stale case stage manifest: " + p_root;
