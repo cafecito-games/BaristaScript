@@ -59,11 +59,22 @@ def growth(previous_document, current_document):
     Either way its first pin is establishment rather than growth, and every entry after that
     is judged against it.
 
-    What keeps that opening safe is not this function but execution. corpus_registry requires
-    the runner expectation to read ``total - len(expected_failures)`` passes out of ``total``,
-    anchored, so a pin of the wrong size demands a pass count the run does not produce and
-    fails there. A reader deciding whether a newly appearing entry is legitimate should look
-    to that cross-check; growth() only enforces monotonicity on an already-established pin.
+    What keeps that opening safe is not this function. Two independent guards refuse a
+    committed pin that does not match the tree it describes:
+
+    * ``scripts/corpus_registry.py`` (the triage branch of ``validate_registration``) requires
+      the baseline entry to equal the ledger the importer wrote beside the cases in
+      ``inventory.json``. ``tests/validate_ci.py`` runs it, with no upstream checkout.
+    * ``import_analyzer_corpus.check_tree`` regenerates the whole tree from the committed pin
+      and byte-compares it. The tree's README states the pin count, so a mis-sized pin shows
+      up as byte drift. ``scripts/check_corpus_reproducibility.py --foundry`` runs it, which
+      needs the pinned Foundry checkout.
+
+    Both of those guard *tampering* with a committed pin. What constrains how a pin is
+    *derived* is upstream of all three: ``derive_expected_failures`` extracts the failing set
+    mechanically from one completed run, and ``validate_expected_failures`` requires every
+    entry to be an imported case with a written owner reason and no excluded/deferred
+    disposition. growth() only enforces monotonicity on an already-established pin.
     """
     previous = expected_failures_by_corpus(previous_document)
     current = expected_failures_by_corpus(current_document)
@@ -179,8 +190,9 @@ class GrowthDetection(unittest.TestCase):
         self.assertIn('c.barista', after[0])
 
     def test_a_corpus_absent_from_the_previous_baseline_is_also_establishment(self):
-        # A rename reaches the carve-out by this second entrance; the runner pass-count
-        # cross-check, not this function, is what refuses a pin of the wrong size.
+        # A rename reaches the carve-out by this second entrance. What refuses a pin of the
+        # wrong size is the baseline/ledger agreement in corpus_registry and the tree
+        # byte-compare in import_analyzer_corpus.check_tree, not this function.
         self.assertEqual(growth(document({'parser': ([], True)}),
                                 document({'parser': ([], True), 'analyzer': (['a.barista'], True)})), [])
 

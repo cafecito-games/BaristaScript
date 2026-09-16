@@ -825,6 +825,14 @@ TEST_SUITE("analyzer_corpus") {
 		}
 		CHECK(fixture_source_paths("res://tests/does_not_exist").is_empty());
 		const PackedStringArray analyzer_paths = analyzer_fixture_paths();
+		// A nonexistent root yields an empty array rather than an error, so sortedness alone
+		// holds vacuously and a renamed corpus root would silently evaluate every case with
+		// its cross-file dependencies missing. Asserting only that the concatenation is
+		// non-empty does not catch that either, because the two parser roots keep it
+		// non-empty on their own: each contributing root has to be shown to contribute.
+		const PackedStringArray corpus_only = fixture_source_paths(CORPUS_ANALYZER_ROOT);
+		CHECK(corpus_only.size() > 0);
+		CHECK(analyzer_paths.size() > corpus_only.size());
 		for (int i = 1; i < analyzer_paths.size(); i++) {
 			CHECK(String(analyzer_paths[i - 1]) < String(analyzer_paths[i]));
 		}
