@@ -118,7 +118,8 @@ completion record returns nonzero. `--suite tokenizer --case integer_range_is_ex
 one exact case. `--list` is informational and never counts as verification. See the
 [native test conventions and parity checklist](tests/native/README.md).
 
-All remaining GDScript suites still run against the ordinary debug artifact:
+All remaining GDScript suites still run against the ordinary debug artifact until they are
+ported; add new tests as native cases, not GDScript:
 
 ```sh
 scons target=template_debug barista_tests=no
