@@ -115,3 +115,4 @@ python3 tests/test_native_cmake_rebuild.py --godot /path/to/godot --build-dir bu
 This native check requires a current test-enabled CMake artifact and exclusive access to
 the source tree while it temporarily edits inputs. It restores their original bytes and
 rebuilds the restored inputs before returning.
+
