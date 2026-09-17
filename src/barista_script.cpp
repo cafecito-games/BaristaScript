@@ -116,7 +116,10 @@ bool BaristaScript::_editor_can_reload_from_file() {
 void BaristaScript::_placeholder_erased(void *) {}
 
 bool BaristaScript::_can_instantiate() const {
-	return valid;
+	// Two separate questions, and both have to be yes: the source compiled, and the declaration it
+	// carries is one that may be instantiated at all. An `abstract class_name` compiles perfectly
+	// well and is still not something the Create Node dialog may offer.
+	return valid && !_is_abstract();
 }
 
 godot::Ref<godot::Script> BaristaScript::_get_base_script() const {

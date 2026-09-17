@@ -71,6 +71,22 @@ Error BSCompiler::resolve_base(BaristaScript *p_script, const BSParser::ClassNod
 Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNode *p_class) {
 	p_script->release_compiled_state();
 
+	// A file that declares a trait, an enum or a tuple declares a type, not a runnable class, and a
+	// generic class has no runtime form until its type arguments are reified. None of them has an
+	// instance to build, so none of them compiles to one.
+	if (p_class->is_trait) {
+		set_error("A trait declares a contract, not a runnable class.", p_class);
+		return ERR_COMPILATION_FAILED;
+	}
+	if (p_class->is_enum_file || p_class->is_tuple_file) {
+		set_error("A type declaration file has no runnable class.", p_class);
+		return ERR_COMPILATION_FAILED;
+	}
+	if (!p_class->type_parameters.is_empty()) {
+		set_error("A generic class has no runtime form until its type arguments are reified.", p_class);
+		return ERR_COMPILATION_FAILED;
+	}
+
 	if (resolve_base(p_script, p_class) != OK) {
 		return ERR_COMPILATION_FAILED;
 	}
