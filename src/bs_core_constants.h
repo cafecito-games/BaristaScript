@@ -226,6 +226,9 @@ public:
 	}
 	static bool is_global_enum(const StringName &p_name) { return metadata().enums.has(p_name); }
 	static bool is_global_constant(const StringName &p_name) { return metadata().indices.has(p_name); }
+	static int get_global_constant_count() {
+		return metadata().constants.size();
+	}
 	static int get_global_constant_index(const StringName &p_name) {
 		const int *index = metadata().indices.getptr(p_name);
 		return index != nullptr ? *index : -1;
@@ -243,6 +246,15 @@ public:
 		if (values != nullptr && r_values != nullptr) {
 			*r_values = *values;
 		}
+	}
+	/** The pinned engine hash a runtime lookup of `p_name` must present. */
+	static bool get_utility_function_hash(const StringName &p_name, int64_t &r_hash) {
+		const int64_t *hash = metadata().utility_hashes.getptr(p_name);
+		if (hash == nullptr) {
+			return false;
+		}
+		r_hash = *hash;
+		return true;
 	}
 	static bool get_utility_function(const StringName &p_name, MethodInfo &r_info) {
 		const MethodInfo *info = metadata().utilities.getptr(p_name);

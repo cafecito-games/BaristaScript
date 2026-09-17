@@ -171,6 +171,36 @@ target_sources(${LIBNAME}
     src/bs_builtin_sources.cpp
     src/bs_builtin_sources.h
     src/bs_function.h
+    src/bs_function.cpp
+    src/bs_codegen.h
+    src/bs_byte_codegen.cpp
+    src/bs_byte_codegen.h
+    src/bs_compiler.cpp
+    src/bs_compiler.h
+    src/bs_compiler_class.cpp
+    src/bs_compiler_conformance.cpp
+    src/bs_compiler_expressions.cpp
+    src/bs_compiler_lambdas.cpp
+    src/bs_compiler_statements.cpp
+    src/bs_compiler_types.cpp
+    src/bs_function_state.cpp
+    src/bs_function_state.h
+    src/bs_lambda_callable.cpp
+    src/bs_lambda_callable.h
+    src/bs_runtime_type.cpp
+    src/bs_runtime_type.h
+    src/bs_script_instance.cpp
+    src/bs_script_instance.h
+    src/bs_static_self_callable.cpp
+    src/bs_static_self_callable.h
+    src/bs_utility_callable.cpp
+    src/bs_utility_callable.h
+    src/bs_vm.cpp
+    src/bs_vm_ops_async.inc
+    src/bs_vm_ops_core.inc
+    src/bs_vm_ops_iterators.inc
+    src/bs_vm_ops_members.inc
+    src/bs_vm_ops_types.inc
     src/bs_script_server.h
     src/bs_core_constants.h
     src/bs_native_db.h

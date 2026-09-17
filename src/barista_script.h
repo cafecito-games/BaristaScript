@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "bs_function.h"
 #include "bs_global_class.h"
 
 #include <godot_cpp/classes/script_extension.hpp>
@@ -15,15 +16,41 @@
 
 namespace barista_script {
 
+class BSInstance;
+
 class BaristaScript final : public godot::ScriptExtension {
 	GDCLASS(BaristaScript, godot::ScriptExtension)
 
+	friend class BSCompiler;
+	friend class BSInstance;
+
 	godot::String source_code;
+
+	/**
+	 * The compiled form, rebuilt from source by every `_reload`.
+	 *
+	 * `valid` is the single answer to "can this script run": it is false until a compilation
+	 * succeeds and false again the moment one fails, and `_can_instantiate` and `_instance_create`
+	 * both read it, so a failed compilation can never leave a half-built function reachable.
+	 */
+	bool valid = false;
+	godot::String compile_error;
+	godot::StringName instance_base_type;
+	godot::Ref<BaristaScript> base_script;
+	godot::Vector<godot::StringName> member_names;
+	godot::HashMap<godot::StringName, int> member_indices;
+	godot::HashMap<godot::StringName, BSFunction *> member_functions;
+	BSFunction *implicit_initializer = nullptr;
+	godot::HashSet<BSInstance *> instances;
+
+	void release_compiled_state();
 
 protected:
 	static void _bind_methods();
 
 public:
+	~BaristaScript();
+
 	godot::Dictionary get_build_info() const;
 	bool _editor_can_reload_from_file() override;
 	void _placeholder_erased(void *p_placeholder) override;
@@ -88,6 +115,19 @@ public:
 	static bool is_canonically_equal_paths(const godot::String &p_path_a, const godot::String &p_path_b) {
 		return canonicalize_path(p_path_a) == canonicalize_path(p_path_b);
 	}
+
+	/** The diagnostic the last failed compilation produced, empty when the script compiled. */
+	godot::String get_compile_error() const { return compile_error; }
+	/** The compiled function this script or one of its bases declares, or null. */
+	BSFunction *find_function(const godot::StringName &p_name) const;
+	BaristaScript *get_base_barista_script() const { return base_script.ptr(); }
+	const godot::Vector<godot::StringName> &get_member_names() const { return member_names; }
+	int get_member_index(const godot::StringName &p_name) const;
+	/** Appends this script's methods, and its bases', with each one's declared argument count. */
+	void collect_method_signatures(godot::Vector<godot::StringName> &r_names, godot::Vector<int> &r_argument_counts) const;
+	/** Compiles the current source, replacing any previous compiled form. */
+	godot::Error compile();
+	void notify_instance_freed(BSInstance *p_instance) { instances.erase(p_instance); }
 };
 
 } // namespace barista_script
