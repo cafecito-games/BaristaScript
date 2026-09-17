@@ -433,6 +433,11 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/run_gdscript_suites.py --godot "$godot_binary"',
     ),
     linux_verification_step(
+        "Run the committed runtime fixture on stock Godot",
+        LINUX_GODOT_BINARY,
+        'python3 tests/test_runtime_scene.py --godot "$godot_binary"',
+    ),
+    linux_verification_step(
         "Build and run the native suites with SCons",
         LINUX_GODOT_BINARY,
         "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes",
