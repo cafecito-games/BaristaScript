@@ -539,6 +539,7 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
         ])
         self.assertEqual([steps[index]["name"] for index in unconditional], [
             "Verify editor recognition and GDScript suites",
+            "Run the committed runtime fixture on stock Godot",
             "Build and run the native suites with SCons",
             "Decide whether to verify native build-system transitions",
         ])
@@ -562,6 +563,8 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
                 "github.event_name != 'pull_request'", "github.event_name == 'workflow_dispatch'"),
             "a gate reading another step": rewrite_gates("steps.transition_scope.", "steps.versions."),
             "the gate applied to the SCons test build": lambda document: document["jobs"]["build"]["steps"][
+                unconditional[2]].update({"if": validate_ci.LINUX_TRANSITION_CONDITION}),
+            "the gate applied to the runtime fixture": lambda document: document["jobs"]["build"]["steps"][
                 unconditional[1]].update({"if": validate_ci.LINUX_TRANSITION_CONDITION}),
             "the gate applied to the GDScript suites": lambda document: document["jobs"]["build"]["steps"][
                 unconditional[0]].update({"if": validate_ci.LINUX_TRANSITION_CONDITION}),
