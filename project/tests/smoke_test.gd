@@ -23,7 +23,7 @@ func _initialize() -> void:
 			failures.append("loaded resource is %s" % script.get_class())
 		if script.get_source_code() != "# BaristaScript recognition fixture\n":
 			failures.append("source text was not preserved: %s" % var_to_str(script.get_source_code()))
-		if script.can_instantiate():
-			failures.append("recognition-only script can instantiate")
+		if not script.can_instantiate():
+			failures.append("a recognized script did not compile to something instantiable")
 
 	quit(SuiteGuard.report("smoke_test", failures))

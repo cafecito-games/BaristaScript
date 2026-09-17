@@ -264,12 +264,15 @@ TEST_SUITE("global_class") {
 			const char *file;
 			const char *name;
 			bool abstract;
+			// A concrete class that compiles is instantiable. An abstract declaration is not, whatever
+			// it compiled to, and a head that does not parse compiles to nothing at all.
+			bool instantiable;
 		};
-		const Row rows[] = { { "namespaced_weapon.barista", "app.combat.Weapon", false },
-			{ "flat_weapon.barista", "FlatWeapon", false }, { "damage_kind.barista", "app.combat.DamageKind", true },
-			{ "damageable.barista", "Damageable", true }, { "grid_position.barista", "GridPosition", true },
-			{ "boxed.barista", "Boxed", true }, { "abstract_weapon.barista", "AbstractWeapon", true },
-			{ "plain_script.barista", "", false }, { "broken_head.barista", "", false } };
+		const Row rows[] = { { "namespaced_weapon.barista", "app.combat.Weapon", false, true },
+			{ "flat_weapon.barista", "FlatWeapon", false, true }, { "damage_kind.barista", "app.combat.DamageKind", true, false },
+			{ "damageable.barista", "Damageable", true, false }, { "grid_position.barista", "GridPosition", true, false },
+			{ "boxed.barista", "Boxed", true, false }, { "abstract_weapon.barista", "AbstractWeapon", true, false },
+			{ "plain_script.barista", "", false, true }, { "broken_head.barista", "", false, false } };
 		for (const auto &row : rows) {
 			const Ref<Script> script = ResourceLoader::get_singleton()->load(fixture_path(row.file));
 			CHECK(script.is_valid());
@@ -278,7 +281,7 @@ TEST_SUITE("global_class") {
 			}
 			CHECK(String(script->get_global_name()) == row.name);
 			CHECK(script->is_abstract() == row.abstract);
-			CHECK_FALSE(script->can_instantiate());
+			CHECK(script->can_instantiate() == row.instantiable);
 		}
 	}
 	TEST_CASE("script_surface") { scenario_script_surface(); }

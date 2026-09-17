@@ -241,6 +241,15 @@ jobs:
           grep -q 'example.barista::BaristaScript' project/.godot/editor/filesystem_cache*
           python3 tests/run_gdscript_suites.py --godot "$godot_binary"
 
+      - name: Run the committed runtime fixture on stock Godot
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          python3 tests/test_runtime_scene.py --godot "$godot_binary"
+
       - name: Build and run the native suites with SCons
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash

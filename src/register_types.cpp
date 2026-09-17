@@ -16,9 +16,11 @@
 #include "bs_corpus_sentinels.h"
 #include "bs_declaration_index_probe.h"
 #include "bs_parser_probe.h"
+#include "bs_script_instance.h"
 
 #ifdef BARISTA_TESTS
 #include "native_test_runner.h"
+#include "runtime_error_capture.h"
 #endif
 
 #ifdef DEBUG_ENABLED
@@ -44,8 +46,17 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 		return;
 	}
 
+	// The script-instance vtable is written by hand and has no compiler check of its own, so a
+	// missing callback is caught here rather than as a null-pointer call the first time the engine
+	// asks the instance a question it was never given an answer for.
+	if (!barista_script::BSInstance::vtable_is_complete()) {
+		godot::UtilityFunctions::push_error("The BaristaScript script-instance vtable is incomplete; the language was not registered.");
+		return;
+	}
+
 #ifdef BARISTA_TESTS
 	GDREGISTER_CLASS(BaristaNativeTestRunner);
+	GDREGISTER_CLASS(BaristaRuntimeErrorCapture);
 #endif
 	GDREGISTER_CLASS(barista_script::BaristaScriptLanguage);
 	GDREGISTER_CLASS(barista_script::BaristaScript);

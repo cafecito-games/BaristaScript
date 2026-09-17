@@ -72,8 +72,10 @@
 
 // core/config/engine.h
 #include <godot_cpp/classes/engine.hpp>
-// scene/main/node.h -- deliberately omitted. The build profile does not generate Node; ClassDB
-// ancestry checks (SNAME("Node")) do not need the typed Node binding. See the manifest.
+// scene/main/node.h -- deliberately omitted. ClassDB ancestry checks (SNAME("Node")) do not need
+// the typed Node binding, so the ported frontend never reaches for it. The build profile does
+// generate Node, because a script instance is attached to one at run time, but that is a runtime
+// dependency taken directly on godot-cpp rather than a mapping of this include. See the manifest.
 // core/object/method_bind.h
 #include <godot_cpp/core/method_bind.hpp>
 // core/variant/type_info.h

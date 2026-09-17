@@ -1,0 +1,44 @@
+# The runtime fixture's assertions. They are written here, in BaristaScript, because what is being
+# proven is that BaristaScript runs: a supervisor that asserted in Python would only be proving
+# that Python runs. The process exit code is the number of failed checks.
+extends Node
+
+var failures: int = 0
+var counter: int = 0
+var label: String = "idle"
+
+func check(condition: bool, name: String) -> void:
+	if not condition:
+		self.failures += 1
+		print("BS_RUNTIME_SCENE_FAIL " + name)
+
+func accumulate(limit: int) -> int:
+	var total: int = 0
+	for step in range(limit):
+		total += step
+	return total
+
+func _ready() -> void:
+	self.name = "DrivenByBarista"
+	self.check(self.name == "DrivenByBarista", "sets_a_property_on_its_own_node")
+
+	self.counter = self.accumulate(5)
+	self.check(self.counter == 10, "runs_a_loop_and_stores_a_member")
+
+	if self.counter > 0:
+		self.label = "counted"
+	else:
+		self.label = "empty"
+	self.check(self.label == "counted", "takes_the_branch_the_condition_selects")
+
+	var values: Array = [2, 3, 4]
+	var sum: int = 0
+	for value in values:
+		sum += value
+	self.check(sum == 9, "iterates_an_array")
+
+	self.check(self.get_class() == "Node", "calls_a_native_method_on_its_owner")
+
+	if self.failures == 0:
+		print("BS_RUNTIME_SCENE_OK")
+	self.get_tree().quit(self.failures)

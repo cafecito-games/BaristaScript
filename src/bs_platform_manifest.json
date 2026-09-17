@@ -555,7 +555,7 @@
 			],
 			"resolution": "guarded-out",
 			"omission_reason": "unreferenced",
-			"rationale": "Upstream includes Node for TypedArray<Node*> and scene helpers. This analyzer slice checks Node ancestry via ClassDB / SNAME(\"Node\") only. The build profile does not generate godot_cpp/classes/node.hpp, so the include is dropped rather than expanding the binding surface."
+			"rationale": "Upstream includes Node for TypedArray<Node*> and scene helpers. The ported frontend checks Node ancestry via ClassDB / SNAME(\"Node\") only, so it needs no typed Node binding and the include stays dropped. The runtime milestone enables Node in build_profile.json because a script instance is attached to one and the scene fixture drives one, but that is a runtime and test dependency reached through godot-cpp directly, not a mapping of this upstream include."
 		},
 		{
 			"core_header": "core/object/method_bind.h",

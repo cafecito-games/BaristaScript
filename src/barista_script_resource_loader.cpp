@@ -82,6 +82,10 @@ godot::Variant BaristaScriptResourceLoader::_load(const godot::String &p_path, c
 	script.instantiate();
 	script->_set_source_code(source);
 	script->set_path(p_original_path.is_empty() ? p_path : p_original_path);
+	// The path is what a compiled script is diagnosed and cached against, so compilation happens
+	// once the resource knows its own identity. A script that does not compile still loads: it is a
+	// valid resource that simply cannot be instantiated, which is what the editor has to show.
+	script->_reload(false);
 	return script;
 }
 

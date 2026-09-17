@@ -17,7 +17,10 @@ from build_metadata import inspect_artifact, repository_identity
 
 
 def build_identity():
-    inputs = sorted({*ROOT.glob("src/*.h"), *ROOT.glob("src/*.cpp"),
+    # `src/*.inc` carries the virtual machine's opcode handlers, which are compiled into a
+    # translation unit rather than being one; leaving them out would let an edited handler reuse an
+    # artifact built before it.
+    inputs = sorted({*ROOT.glob("src/*.h"), *ROOT.glob("src/*.cpp"), *ROOT.glob("src/*.inc"),
                      *ROOT.glob("tests/native/*"), *ROOT.glob("thirdparty/doctest/*"), *ROOT.glob("doc_classes/*.xml"),
                      ROOT / "SConstruct", ROOT / "CMakeLists.txt", ROOT / "build_profile.json", Path(__file__).resolve(),
                      ROOT / "scripts/generate_global_api.py", ROOT / ".gitmodules",
