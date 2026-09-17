@@ -80,7 +80,7 @@ class IdentityTests(unittest.TestCase):
         # The GDScript-supervised parser destination is excluded too: this supervisor has no
         # business restaging a corpus whose cases the corpus runner already pins as a whole.
         roots = triage.permitted_corpus_roots()
-        self.assertEqual(roots, {'res://tests/corpus/analyzer'})
+        self.assertEqual(roots, {'res://tests/corpus/analyzer', 'res://tests/corpus/runtime'})
         for planted in ('res://tests/corpus', 'res://tests/planted/analyzer',
                         'res://tests/corpus/parser', 'res://tests/corpus_staging/analyzer',
                         'res://tests/corpus/analyzer/errors', 'user://analyzer'):
@@ -210,6 +210,7 @@ class ReportTests(unittest.TestCase):
                      'project/tests/corpus_support/parser/source_map.json',
                      'scripts/corpus_sources.json', 'scripts/run_corpus_triage.py',
                      'scripts/import_parser_corpus.py', 'scripts/import_analyzer_corpus.py',
+                     'scripts/import_runtime_corpus.py',
                      'src/bs_corpus_sentinels.h', 'src/bs_corpus_evaluation.cpp', 'src/bs_corpus_evaluation.h',
                      'tests/native/corpus_helpers.cpp', 'tests/native/corpus_helpers.h',
                      'tests/native/analyzer_corpus_test.cpp',
