@@ -51,7 +51,9 @@
     "external_enum_constant_analyzer",
     "top_level_enum_analyzer",
     "corpus_evaluation",
-    "analyzer_corpus"
+    "analyzer_corpus",
+    "runtime",
+    "runtime_scene"
   ],
   "editor_import": [
     "global_class"
