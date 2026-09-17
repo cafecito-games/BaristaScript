@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 8: (RETURN_VALUE_DISCARDED) The function "emit_signal()" returns a value that will be discarded if not used.
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_metatype_signature_emit_instance.barista:8 on test(): Trying to assign value of type 'RefCounted' to a variable of type 'Type[RefCounted]'.

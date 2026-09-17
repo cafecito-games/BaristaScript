@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_slot_wrong_element_type.barista:9 on test(): Trying to assign a value of type "Array" to a variable of type "(int, String)".

@@ -1,0 +1,9 @@
+import enum_preload.repro
+
+const Provider = preload("enum_preload_namespaced.notest.barista")
+
+func test() -> void:
+	var ready: Status = Provider.READY
+	var done: Status = Status.DONE
+	print(ready)
+	print(done)

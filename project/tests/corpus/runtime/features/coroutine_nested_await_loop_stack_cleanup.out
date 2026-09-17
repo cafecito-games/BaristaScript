@@ -1,0 +1,6 @@
+FS_TEST_OK
+nested done, inner=1
+case done: 1
+case done: 2
+case done: 3
+all done, suites=3

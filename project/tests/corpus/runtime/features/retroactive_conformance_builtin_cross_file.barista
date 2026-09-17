@@ -1,0 +1,16 @@
+# A builtin retroactive conformance declared in a preloaded file is visible to the using code.
+const _Conformance = preload("rtc_builtin_ext.notest.barista")
+
+
+func via_param(g: RtcBuiltinGreeter) -> int:
+	return g.greet()
+
+
+func test() -> void:
+	var n := 0
+	var g: RtcBuiltinGreeter = n
+	print(g.greet())
+	print(via_param(n))
+	print(n is RtcBuiltinGreeter)
+	var as_greeter := n as RtcBuiltinGreeter
+	print(as_greeter.greet())

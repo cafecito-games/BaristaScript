@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/cast_object_to_int.barista:4 on test(): Invalid cast: could not convert value of type 'Object' to 'int'.

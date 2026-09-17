@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/constant_dictionary_is_deep.barista:6 on test(): Invalid assignment on read-only value (on base: 'Array').

@@ -1,0 +1,7 @@
+FS_TEST_OK
+1 2 3
+eval ["c", "b", "a"]
+1 2 3
+eval ["a", "c", "b"]
+1 10 3
+eval ["c", "a"]

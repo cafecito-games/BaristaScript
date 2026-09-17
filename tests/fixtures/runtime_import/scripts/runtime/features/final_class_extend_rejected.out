@@ -1,0 +1,4 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://runtime/features/final_derived.notest.fs:1 on FoundryScript::reload(): Parse Error: Cannot extend final class "final_base.notest.fs".
+>> ERROR: Failed to load script "res://runtime/features/final_derived.notest.fs" with error "Parse error".
+derived loaded: true

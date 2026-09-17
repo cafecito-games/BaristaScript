@@ -1,0 +1,6 @@
+FS_TEST_OK
+before resume: ''
+resumed: is derived true, is base true
+nested steps: 1
+nested: is derived true, is base true
+base: is derived false, is base true

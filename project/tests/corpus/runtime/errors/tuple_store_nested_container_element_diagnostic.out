@@ -1,0 +1,10 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 28: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "keep_nested()" requires the subtype "Variant" but the supertype "Variant" was provided.
+~~ WARNING at line 29: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "keep_deeply_nested()" requires the subtype "Variant" but the supertype "Variant" was provided.
+~~ WARNING at line 30: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "keep_nested_with_second_failure()" requires the subtype "Variant" but the supertype "Variant" was provided.
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_store_nested_container_element_diagnostic.barista:9 on keep_nested(): Trying to assign a value of type "Array" to a variable of type "(int, (int, Array[int]))". Tuple element 1's element 1 expects "Array[int]", but the value is "Array": a tuple store never converts, so a container element has to arrive already typed.
+nested: <null>
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_store_nested_container_element_diagnostic.barista:14 on keep_deeply_nested(): Trying to assign a value of type "Array" to a variable of type "(int, (int, (String, Array[int])))". Tuple element 1's element 1's element 1 expects "Array[int]", but the value is "Array": a tuple store never converts, so a container element has to arrive already typed.
+deeply nested: <null>
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_store_nested_container_element_diagnostic.barista:19 on keep_nested_with_second_failure(): Trying to assign a value of type "Array" to a variable of type "(int, (Node, Array[int]))".
+nested second failure: <null>

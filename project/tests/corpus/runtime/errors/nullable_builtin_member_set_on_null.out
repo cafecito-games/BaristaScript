@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/nullable_builtin_member_set_on_null.barista:3 on test(): Invalid assignment of property or key 'x' with value of type 'float' on a base object of type 'Nil'.

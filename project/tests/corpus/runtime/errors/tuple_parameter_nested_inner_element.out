@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_parameter_nested_inner_element.barista:10 on test(): Invalid type in function 'RefCounted::take (Callable)'. Argument 1 has type "Array", but the parameter requires "(int, (String, bool))".

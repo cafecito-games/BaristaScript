@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/features/type_self_static_lambda_signature_error.barista:17 on test(): Invalid type in function '<anonymous lambda>(lambda) (Callable)'. The Object-derived class of argument 1 (RefCounted (Base)) is not a subclass of the expected argument class.

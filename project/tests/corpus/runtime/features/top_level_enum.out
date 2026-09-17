@@ -1,0 +1,14 @@
+FS_TEST_OK
+true
+1
+5
+6
+{ "RED": 0, "GREEN": 1, "X": 5, "NEXT": 6 }
+true
+[["RED", 0], ["GREEN", 1], ["X", 5], ["NEXT", 6]]
+0
+1
+5
+6
+{ "RED": 0, "GREEN": 1, "X": 5, "NEXT": 6 }
+true

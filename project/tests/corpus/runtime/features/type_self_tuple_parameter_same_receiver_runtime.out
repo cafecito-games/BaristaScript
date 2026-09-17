@@ -1,0 +1,5 @@
+FS_TEST_OK
+1 same=true leaf=Receiver
+2 same=true leaf=Receiver
+3 same=true leaf=Sub
+2 same=true leaf=Sub

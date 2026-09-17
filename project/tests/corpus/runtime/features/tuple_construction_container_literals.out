@@ -1,0 +1,8 @@
+FS_TEST_OK
+[[1, 2], { "a": 1 }]
+true
+true
+[[[1], [2, 3]], { "a": [4] }]
+true
+true
+true

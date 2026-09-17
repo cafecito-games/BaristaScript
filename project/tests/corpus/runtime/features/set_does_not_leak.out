@@ -1,0 +1,2 @@
+FS_TEST_OK
+~~ WARNING at line 10: (UNSAFE_CALL_ARGUMENT) The argument 2 of the function "set()" requires the subtype "WeakRef" but the supertype "Variant" was provided.

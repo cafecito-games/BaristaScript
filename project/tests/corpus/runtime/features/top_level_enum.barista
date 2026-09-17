@@ -1,0 +1,29 @@
+const EnumFile = preload("./top_level_enum_values.notest.barista")
+
+func test():
+	print(RuntimeTopLevelEnum.RED == 0)
+	print(RuntimeTopLevelEnum.GREEN)
+	print(RuntimeTopLevelEnum.X)
+	print(RuntimeTopLevelEnum.NEXT)
+	print(RuntimeTopLevelEnum)
+	print(RuntimeTopLevelEnum.is_read_only())
+
+	var iterated := []
+	for name in RuntimeTopLevelEnum:
+		iterated.append([name, RuntimeTopLevelEnum[name]])
+	print(iterated)
+
+	var enum_file: Variant = EnumFile
+	@warning_ignore("unsafe_property_access")
+	print(enum_file.RED)
+	@warning_ignore("unsafe_property_access")
+	print(enum_file.GREEN)
+	@warning_ignore("unsafe_property_access")
+	print(enum_file.X)
+	@warning_ignore("unsafe_property_access")
+	print(enum_file.NEXT)
+	@warning_ignore("unsafe_property_access")
+	print(enum_file.RuntimeTopLevelEnum)
+	@warning_ignore("unsafe_property_access")
+	@warning_ignore("unsafe_method_access")
+	print(enum_file.RuntimeTopLevelEnum.is_read_only())

@@ -1,0 +1,16 @@
+# A constant container is folded by the analyzer rather than built by the compiler, so its element
+# descriptor comes from a separate construction path. It must describe the same class-handle slot,
+# including after a round trip through compiled bytecode.
+const External = preload("type_metatype_nested_constant_handle_container_external.notest.barista")
+const HelperClass = External.Helper
+
+const HANDLES: Array[Type[HelperClass]] = [HelperClass]
+const REGISTRY: Dictionary[String, Type[HelperClass]] = {"helper": HelperClass}
+
+
+func test():
+	print(HANDLES.size())
+	var copied: Array[Type[HelperClass]] = HANDLES
+	print(copied.size())
+	print(HANDLES[0].make() != null)
+	print(REGISTRY["helper"].make() != null)

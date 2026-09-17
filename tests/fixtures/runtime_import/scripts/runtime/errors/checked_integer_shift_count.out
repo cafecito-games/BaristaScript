@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at runtime/errors/checked_integer_shift_count.fs:4 on test(): Invalid shift count for the "<<" operator on "uint": it must be from 0 to 31.

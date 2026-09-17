@@ -1,0 +1,5 @@
+FS_TEST_OK
+~~ WARNING at line 15: (UNSAFE_METHOD_ACCESS) The method "take()" is not present on the inferred type "Variant" (but may be present on a subtype).
+~~ WARNING at line 16: (UNSAFE_METHOD_ACCESS) The method "take_first()" is not present on the inferred type "Variant" (but may be present on a subtype).
+rest element is Child: true
+control element is Child: true

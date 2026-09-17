@@ -1,0 +1,24 @@
+FS_TEST_OK
+null String? == null: true
+null String? != null: false
+null int? == null: true
+null int? != null: false
+null float? == null: true
+null float? != null: false
+null bool? == null: true
+null bool? != null: false
+null Vector2? == null: true
+null Vector2? != null: false
+filled String? == null: false
+filled String? != null: true
+filled int? == null: false
+filled int? != null: true
+null Node? == null: true
+null Node? != null: false
+filled Node? == null: false
+filled Node? != null: true
+null int? == null int?: true
+null int? != null int?: false
+null int? == filled int?: false
+null int? != filled int?: true
+null String? correctly failed the null guard

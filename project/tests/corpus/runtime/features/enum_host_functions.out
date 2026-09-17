@@ -1,0 +1,6 @@
+FS_TEST_OK
+announce:1
+state:ready
+done
+fallback:ready
+["UNKNOWN", "READY", "DONE"]

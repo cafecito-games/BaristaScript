@@ -1,0 +1,5 @@
+FS_TEST_OK
+await one: result
+await two: result
+await three: result
+drain finished

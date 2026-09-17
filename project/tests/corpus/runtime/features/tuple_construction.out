@@ -1,0 +1,15 @@
+FS_TEST_OK
+~~ WARNING at line 31: (UNSAFE_METHOD_ACCESS) The method "is_read_only()" is not present on the inferred type "Variant" (but may be present on a subtype).
+[1, 2]
+1
+2
+[1.5, 2.5]
+1.5
+2.5
+2.5
+[3, 4]
+7
+[[1, 2], [1.5, 2.5]]
+2
+1.5
+true

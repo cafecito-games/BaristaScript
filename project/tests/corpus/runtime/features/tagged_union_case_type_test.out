@@ -1,0 +1,18 @@
+FS_TEST_OK
+move 1,2
+write hi
+quit
+2
+true
+false
+true
+true
+true
+3
+hi
+2
+true
+false
+true
+true
+false

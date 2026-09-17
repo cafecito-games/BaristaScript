@@ -1,0 +1,4 @@
+FS_TEST_OK
+absorbed [1, 2]
+absorbed ["a", "b"]
+absorbed []

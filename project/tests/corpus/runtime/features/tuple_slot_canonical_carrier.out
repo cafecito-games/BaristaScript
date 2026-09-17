@@ -1,0 +1,25 @@
+FS_TEST_OK
+~~ WARNING at line 20: (UNSAFE_CAST) Casting "Variant" to "Array" is unsafe.
+~~ WARNING at line 32: (UNSAFE_CAST) Casting "Variant" to "Array" is unsafe.
+true
+[1, "one"]
+["laundered", "one"]
+false
+true
+false
+[10, 20]
+true
+false
+[4, ["four", true]]
+["mutated", true]
+true
+false
+true
+false
+[9, [99, 2]]
+true
+true
+stored
+true
+false
+true

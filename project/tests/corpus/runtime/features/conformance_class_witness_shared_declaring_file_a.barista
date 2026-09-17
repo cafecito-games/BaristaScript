@@ -1,0 +1,10 @@
+# Class-target counterpart of the shared-declaring-file regression for issue #1965. This fixture and
+# `conformance_class_witness_shared_declaring_file_b` deliberately share one declaring file
+# (`csw_shared_class_doubler_ext.notest.fs`) so the fix is pinned for non-builtin conformance targets,
+# not just builtins. This fixture calls the witness on a directly typed local.
+const _Conformance = preload("csw_shared_class_doubler_ext.notest.barista")
+
+
+func test() -> void:
+	var target := CswSharedClassTarget.new()
+	print(target.csw_shared_class_doubled())

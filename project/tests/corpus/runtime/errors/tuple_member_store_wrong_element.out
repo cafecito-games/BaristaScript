@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_member_store_wrong_element.barista:6 on Holder.store(): Trying to assign a value of type "Array" to a variable of type "(int, String)".
+[0, "zero"]

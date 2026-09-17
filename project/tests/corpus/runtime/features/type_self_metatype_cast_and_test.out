@@ -1,0 +1,7 @@
+FS_TEST_OK
+~~ WARNING at line 8: (UNSAFE_CAST) Casting "Variant" to "Type[Self]" is unsafe.
+~~ WARNING at line 9: (UNSAFE_CAST) Casting "Variant" to "Type[Self]" is unsafe.
+true
+false
+true
+true

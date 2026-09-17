@@ -1,0 +1,4 @@
+FS_TEST_OK
+func clone() -> TypeSelfMethodInfo
+func copy(other: TypeSelfMethodInfo) -> void
+func maybe_clone() -> TypeSelfMethodInfo?

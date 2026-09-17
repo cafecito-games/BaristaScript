@@ -1,0 +1,9 @@
+FS_TEST_OK
+bool:true
+bool:false
+level:2
+shape
+variant:7
+covered:true
+false
+rest:true

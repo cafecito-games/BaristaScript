@@ -44,12 +44,13 @@ class RegistryContract(unittest.TestCase):
         self.root = Path(self.temp.name)
         for directory in ("scripts", "tests", "src"):
             (self.root / directory).mkdir()
-        for name in ("corpus_sources.json", "import_parser_corpus.py", "import_analyzer_corpus.py"):
+        for name in ("corpus_sources.json", "import_parser_corpus.py", "import_analyzer_corpus.py",
+                     "import_runtime_corpus.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         for name in ("corpus_baseline.json", "gdscript_suites.json"):
             shutil.copy2(ROOT / "tests" / name, self.root / "tests" / name)
         shutil.copy2(ROOT / "src/bs_corpus_sentinels.h", self.root / "src/bs_corpus_sentinels.h")
-        for name in ("parser", "analyzer"):
+        for name in ("parser", "analyzer", "runtime"):
             # Hard links, not copies: the analyzer tree is thousands of files and every
             # test in this class rebuilds the scratch checkout. Nothing here writes into
             # a corpus file, and a link is not a symlink, which the validator refuses.
@@ -70,13 +71,23 @@ class RegistryContract(unittest.TestCase):
         """Return the scratch checkout to the state before the analyzer was imported.
 
         Several contracts are about a corpus that is registered but not delivered, and
-        that state has to stay reachable: a second corpus will be registered before it
-        is imported again.
+        that state has to stay reachable: a later corpus is registered before it is
+        imported again.
         """
         import import_parser_corpus
         self.registry["corpora"]["analyzer"]["state"] = "pending"
         self.baseline["corpora"]["analyzer"] = import_parser_corpus.analyzer_scaffold_entry()
         shutil.rmtree(self.root / "project/tests/corpus/analyzer")
+
+    def make_pending(self, name):
+        """Return one delivered corpus to the registered-but-not-imported state."""
+        import corpus_ledger
+        self.registry["corpora"][name]["state"] = "pending"
+        self.baseline["corpora"][name] = {
+            "imported": False, "root": "res://tests/corpus/" + name, "total": 0, "skipped": 0,
+            "expected_failures": [], "foundry_revision": self.registry["revision"],
+            "upstream_total": 0, "upstream_helpers": 0, "triage": corpus_ledger.empty_triage()}
+        shutil.rmtree(self.root / "project/tests/corpus" / name)
 
     def test_committed_and_legacy_parser_metadata(self):
         self.check()
@@ -119,6 +130,7 @@ class RegistryContract(unittest.TestCase):
 
     def test_a_registry_with_no_active_corpus_is_rejected(self):
         self.make_analyzer_pending()
+        self.make_pending("runtime")
         self.registry["corpora"]["parser"]["state"] = "pending"
         with self.assertRaisesRegex(ValueError, "zero active"):
             self.check()
@@ -126,7 +138,7 @@ class RegistryContract(unittest.TestCase):
     def test_pending_registration_cannot_be_removed_from_both_documents(self):
         del self.registry["corpora"]["analyzer"]
         del self.baseline["corpora"]["analyzer"]
-        with self.assertRaisesRegex(ValueError, "parser and analyzer"):
+        with self.assertRaisesRegex(ValueError, "allowlisted corpus registration"):
             self.check()
 
     def test_importer_symlink_and_missing_file_are_rejected(self):
@@ -713,6 +725,8 @@ class WrapperContract(unittest.TestCase):
     setUp = RegistryContract.setUp
     check = RegistryContract.check
     make_analyzer_pending = RegistryContract.make_analyzer_pending
+    make_pending = RegistryContract.make_pending
+
     def invoke(self, arguments):
         import check_corpus_reproducibility as wrapper
         with patch.object(wrapper, "ROOT", self.root):
@@ -736,6 +750,7 @@ class WrapperContract(unittest.TestCase):
     def test_importer_exit_and_pending_reporting(self):
         import check_corpus_reproducibility as wrapper
         self.make_analyzer_pending()
+        self.make_pending("runtime")
         self.check()
         for status in (0, 3, -9):
             stdout, stderr = io.StringIO(), io.StringIO()
@@ -758,14 +773,15 @@ class WrapperContract(unittest.TestCase):
             run.assert_not_called()
 
     def test_every_delivered_corpus_uses_the_same_wrapper_in_sorted_order(self):
-        """Both corpora are delivered, so both importers run and nothing is pending."""
+        """Every corpus is delivered, so every importer runs and nothing is pending."""
         self.check()
         import check_corpus_reproducibility as wrapper
         with patch.object(wrapper, "verify_checkout"), patch.object(wrapper.subprocess, "run") as run, redirect_stdout(io.StringIO()) as stdout:
             run.return_value.returncode = 0
             self.assertEqual(self.invoke(["--foundry", str(self.root)]), 0)
         self.assertEqual([Path(call.args[0][1]).name for call in run.call_args_list],
-                         ["import_analyzer_corpus.py", "import_parser_corpus.py"])
+                         ["import_analyzer_corpus.py", "import_parser_corpus.py",
+                          "import_runtime_corpus.py"])
         self.assertNotIn("pending", stdout.getvalue())
 
 

@@ -1,0 +1,5 @@
+FS_TEST_OK
+script ["receiver", "argument"]
+native ["receiver", "argument"]
+combined 2
+enum ["receiver", "argument"]

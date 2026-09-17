@@ -1,0 +1,4 @@
+FS_TEST_OK
+static init called
+foo is bar
+done

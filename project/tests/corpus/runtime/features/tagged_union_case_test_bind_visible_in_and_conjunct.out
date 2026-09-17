@@ -1,0 +1,5 @@
+FS_TEST_OK
+positive 3
+non-positive -1
+quit
+11

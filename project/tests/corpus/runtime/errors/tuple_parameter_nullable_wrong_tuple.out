@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+took <null>
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_parameter_nullable_wrong_tuple.barista:12 on test(): Invalid type in function 'RefCounted::take (Callable)'. Argument 1 has type "Array", but the parameter requires "(int, String)?".

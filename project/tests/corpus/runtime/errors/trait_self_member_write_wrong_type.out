@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/trait_self_member_write_wrong_type.barista:16 on test(): Invalid assignment of property or key 'owner' with value of type 'RefCounted (Other)' on a base object of type 'RefCounted (User)'.

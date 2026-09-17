@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_self_static_abstract_receiver_new.barista:8 on make(): Invalid call function 'new' in base 'FoundryScript': Cannot construct abstract class "Derived".
+constructed: <null>

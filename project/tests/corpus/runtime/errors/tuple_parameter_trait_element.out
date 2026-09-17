@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+took true
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_parameter_trait_element.barista:24 on test(): Invalid type in function 'RefCounted::take (Callable)'. Argument 1 has type "Array", but the parameter requires "(int, Marker)".

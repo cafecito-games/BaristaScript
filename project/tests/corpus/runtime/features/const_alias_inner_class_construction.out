@@ -1,0 +1,17 @@
+FS_TEST_OK
+5
+box:5
+true
+true
+inner
+true
+5
+true
+true
+true
+local
+external
+true
+external
+true
+const alias inner class construction ok

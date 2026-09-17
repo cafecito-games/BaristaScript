@@ -1,0 +1,8 @@
+FS_TEST_OK
+inner array is Child typed: true
+nested element is Child: true
+innermost array is Child typed: true
+innermost element is Child: true
+nested dictionary is Child typed: true
+nested dictionary value is Child: true
+nested dictionary key is Child typed: true

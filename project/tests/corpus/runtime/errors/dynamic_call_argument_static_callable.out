@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+took { "one": 1 }
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/dynamic_call_argument_static_callable.barista:10 on test(): Invalid type in function 'FoundryScript::take (Callable)'. Argument 1 has type "Dictionary[String, float]", but the parameter requires "Dictionary[String, int]".

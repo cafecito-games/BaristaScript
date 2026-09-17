@@ -1,0 +1,7 @@
+FS_TEST_OK
+[1, []]
+true
+[1, [2, 3]]
+true
+[1, [4]]
+true

@@ -8,6 +8,11 @@
 import json
 from pathlib import PurePosixPath
 
+# The pipeline stages a case may be adjudicated at. A stage names how far a case is
+# carried before its expectation is compared, so admitting one is a reviewed change:
+# 'runtime' evaluates the whole transcript a case emits, not a static block.
+STAGES = ('parser', 'analyzer', 'runtime')
+
 
 def validate_stages(document: dict, cases: set[str], helpers: set[str], revision: str) -> dict[str, str]:
     if (set(document) != {'schema_version', 'foundry_revision', 'cases'}
@@ -21,7 +26,7 @@ def validate_stages(document: dict, cases: set[str], helpers: set[str], revision
         if (not isinstance(path, str) or not path.endswith('.barista') or path.endswith('.notest.barista')
                 or '\\' in path or path.startswith('/') or str(PurePosixPath(path)) != path
                 or any(part in ('', '.', '..') for part in path.split('/')) or path in helpers
-                or stage not in ('parser', 'analyzer')):
+                or stage not in STAGES):
             raise ValueError(f'invalid case stage entry: {path!r}: {stage!r}')
     if set(stages) != cases:
         raise ValueError(f'case stages missing {sorted(cases - stages.keys())}, extra {sorted(stages.keys() - cases)}')

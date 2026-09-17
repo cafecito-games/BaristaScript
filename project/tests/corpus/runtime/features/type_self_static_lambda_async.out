@@ -1,0 +1,5 @@
+FS_TEST_OK
+~~ WARNING at line 25: (INFERENCE_ON_VARIANT) The variable type is being inferred from a Variant value, so it will be typed as Variant.
+before resume: ''
+child: is child true
+base: is child false

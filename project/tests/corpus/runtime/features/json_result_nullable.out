@@ -1,0 +1,15 @@
+FS_TEST_OK
+true
+true
+true
+true
+7
+false
+bad
+$.value
+false
+$.outer.value
+false
+false
+false
+false

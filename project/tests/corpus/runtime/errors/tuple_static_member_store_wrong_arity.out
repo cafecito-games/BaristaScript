@@ -1,0 +1,4 @@
+FS_TEST_RUNTIME_ERROR
+[1, "one"]
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_static_member_store_wrong_arity.barista:7 on store(): Trying to assign a value of type "Array" to a variable of type "(int, String)".
+[1, "one"]

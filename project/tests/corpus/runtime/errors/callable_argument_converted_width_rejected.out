@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+2147483647
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/callable_argument_converted_width_rejected.barista:11 on test(): Invalid type in function 'RefCounted::take (Callable)'. Argument 1 cannot be passed to parameter of type "int": value 2147483648 is outside the declared range.

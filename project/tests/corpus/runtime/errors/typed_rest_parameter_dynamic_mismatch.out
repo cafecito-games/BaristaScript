@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+before
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/typed_rest_parameter_dynamic_mismatch.barista:7 on test(): Invalid type in function 'RefCounted::collect (Callable)'. Argument 1 has type "String", but the rest parameter element requires "int".

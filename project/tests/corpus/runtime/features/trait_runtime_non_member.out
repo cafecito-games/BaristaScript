@@ -1,0 +1,7 @@
+FS_TEST_OK
+~~ WARNING at line 22: (UNSAFE_CAST) Casting "Variant" to "Damageable" is unsafe.
+~~ WARNING at line 23: (UNSAFE_CAST) Casting "Variant" to "Damageable" is unsafe.
+true
+false
+true
+true

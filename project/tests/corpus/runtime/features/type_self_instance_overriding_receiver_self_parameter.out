@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 21: Invalid argument for "consume()" function: argument 1 should be "Self" but is "Sibling".

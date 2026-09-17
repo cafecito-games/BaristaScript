@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 4: Cannot return value of type "Variant" because the function return type is "Self".

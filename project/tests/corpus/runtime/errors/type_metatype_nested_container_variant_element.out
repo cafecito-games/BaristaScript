@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 6: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "append()" requires the subtype "Type[Node]" but the supertype "Variant" was provided.
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_metatype_nested_container_variant_element.barista:6 on test(): Trying to assign value of type 'RefCounted' to a variable of type 'Type[Node]'.

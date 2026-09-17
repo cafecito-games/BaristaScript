@@ -1,0 +1,75 @@
+# A `const` aliasing an inner class (no generic specialization) can be instantiated through the
+# alias with `.new()`, exactly like the inner class name itself. The alias must resolve to the live
+# compiled subclass rather than the analyzer's shallow, uncompiled folded class object. The same
+# holds across compilation units: an alias of an *external* (preloaded) inner class also constructs,
+# resolving to the live external subclass held by FSCache.
+# https://github.com/cafecito-games/godot/issues/377
+# https://github.com/cafecito-games/godot/issues/391
+
+class Box:
+	var value: int = 5
+
+	func describe() -> String:
+		return "box:" + str(value)
+
+
+class Outer:
+	class Inner:
+		var label: String = "inner"
+
+
+# A local inner class deliberately sharing the external script's inner-class simple name (`Class`),
+# so the external-alias resolution is forced to discriminate by fully-qualified name, not by name.
+class Class:
+	var origin: String = "local"
+
+
+const External = preload("const_class_reference_external.notest.barista")
+
+const Alias = Box
+const NestedAlias = Outer.Inner
+const ExternalClassAlias = External.Class
+
+
+func test() -> void:
+	# Construct through the const alias.
+	var from_alias = Alias.new()
+	print(from_alias.value)
+	print(from_alias.describe())
+
+	# The alias and the direct class name resolve to the same class object.
+	print(Alias == Box)
+	print(from_alias is Box)
+
+	# A const alias of a nested inner class also constructs.
+	var nested = NestedAlias.new()
+	print(nested.label)
+	print(nested is Outer.Inner)
+
+	# A local const alias inside a function body constructs too.
+	const LocalAlias = Box
+	var from_local = LocalAlias.new()
+	print(from_local.value)
+	print(from_local is Box)
+
+	# A const alias of an external inner class keeps its own value: the same-unit guard must never
+	# redirect a class from another script into this unit's subclass tree. Even though a local class
+	# of the same simple name (`Class`) exists here, the fully-qualified-name guard keeps the alias
+	# pointing at the external class and never substitutes the local one.
+	print(ExternalClassAlias == External.Class)
+	print(ExternalClassAlias != Class)
+	print(Class.new().origin)
+
+	# Construction through the external alias works as well: the cross-unit external subclass is held
+	# live and valid by FSCache, so the folded constant is already a compiled class and `.new()`
+	# constructs it directly. This is the cross-unit companion to the same-unit case above (#391).
+	var from_external_alias = ExternalClassAlias.new()
+	print(from_external_alias.origin)
+	print(from_external_alias is External.Class)
+
+	# The direct external inner-class name constructs to the same external class, not the local one.
+	var from_external_direct = External.Class.new()
+	print(from_external_direct.origin)
+	print(from_external_direct is External.Class)
+
+	print("const alias inner class construction ok")

@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_union_membership_gradual_value.barista:13 on test(): Cannot store a value of type "RefCounted (Box)" in a slot of type "String | int": the value is none of the alternatives.
