@@ -38,6 +38,10 @@ class BaristaScript final : public godot::ScriptExtension {
 	godot::StringName instance_base_type;
 	godot::Ref<BaristaScript> base_script;
 	godot::Vector<godot::StringName> member_names;
+	// The declared carrier of each member, by the same index. A value stored from outside a compiled
+	// function -- the inspector, a scene, GDScript -- has to meet the declaration the same way a
+	// compiled store does, and this is what it is checked against.
+	godot::Vector<godot::Variant::Type> member_carriers;
 	godot::HashMap<godot::StringName, int> member_indices;
 	godot::HashMap<godot::StringName, BSFunction *> member_functions;
 	BSFunction *implicit_initializer = nullptr;
@@ -122,12 +126,18 @@ public:
 	BSFunction *find_function(const godot::StringName &p_name) const;
 	BaristaScript *get_base_barista_script() const { return base_script.ptr(); }
 	const godot::Vector<godot::StringName> &get_member_names() const { return member_names; }
+	/** The declared carrier of the member at `p_index`, or NIL when it is untyped. */
+	godot::Variant::Type get_member_carrier(int p_index) const {
+		return p_index >= 0 && p_index < member_carriers.size() ? member_carriers[p_index] : godot::Variant::NIL;
+	}
 	int get_member_index(const godot::StringName &p_name) const;
 	/** Appends this script's methods, and its bases', with each one's declared argument count. */
 	void collect_method_signatures(godot::Vector<godot::StringName> &r_names, godot::Vector<int> &r_argument_counts) const;
 	/** Compiles the current source, replacing any previous compiled form. */
 	godot::Error compile();
 	void notify_instance_freed(BSInstance *p_instance) { instances.erase(p_instance); }
+	/** How many instances this script still lists. Zero once every owner has been freed. */
+	int get_instance_count() const { return instances.size(); }
 };
 
 } // namespace barista_script

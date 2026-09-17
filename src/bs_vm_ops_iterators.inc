@@ -79,9 +79,22 @@ case OPCODE_ITERATE_BEGIN_RANGE: {
 	BS_GET_VARIANT_PTR(from_value, 1);
 	BS_GET_VARIANT_PTR(to_value, 2);
 	BS_GET_VARIANT_PTR(step_value, 3);
+	if (unlikely(from_value->get_type() != Variant::INT || to_value->get_type() != Variant::INT ||
+				step_value->get_type() != Variant::INT)) {
+		// The integer range is a distinct loop form, not a coercion: silently truncating 2.5 would
+		// run a different loop than the one that was written.
+		error_text = vformat(R"(A range loop takes integer bounds, not "%s", "%s" and "%s".)",
+				Variant::get_type_name(from_value->get_type()), Variant::get_type_name(to_value->get_type()),
+				Variant::get_type_name(step_value->get_type()));
+		goto vm_error;
+	}
 	const int64_t from = *from_value;
 	const int64_t to = *to_value;
 	const int64_t step = *step_value;
+	if (unlikely(step == 0)) {
+		error_text = "A range loop's step cannot be zero.";
+		goto vm_error;
+	}
 	*counter = from;
 	const bool has_first = from == to ? false : (from < to ? step > 0 : step < 0);
 	if (has_first) {

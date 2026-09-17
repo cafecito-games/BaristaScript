@@ -159,6 +159,9 @@ public:
 	virtual void write_call(const Address &p_target, const Address &p_base, const StringName &p_function_name, const Vector<Address> &p_arguments) = 0;
 	virtual void write_super_call(const Address &p_target, const StringName &p_function_name, const Vector<Address> &p_arguments) = 0;
 	virtual void write_call_async(const Address &p_target, const Address &p_base, const StringName &p_function_name, const Vector<Address> &p_arguments) = 0;
+	// `await super.method()`. It is declared here rather than added when suspension lands, because a
+	// pure virtual added to a frozen interface changes every implementor at once.
+	virtual void write_super_call_async(const Address &p_target, const StringName &p_function_name, const Vector<Address> &p_arguments) = 0;
 	virtual void write_enum_call(const Address &p_target, const Address &p_base, const Vector<Address> &p_arguments,
 			const StringName &p_owner_script_path, const StringName &p_owner_class, const StringName &p_enum_type,
 			const StringName &p_function_name, bool p_static, bool p_async) = 0;

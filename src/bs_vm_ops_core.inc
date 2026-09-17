@@ -172,12 +172,14 @@ case OPCODE_CONSTRUCT: {
 	Variant constructed;
 	godot::gdextension_interface::variant_construct((GDExtensionVariantType)type_index, &constructed,
 			reinterpret_cast<const GDExtensionConstVariantPtr *>(instruction_argument_ptr), argument_count, &construct_error);
-	*destination = constructed;
 	if (unlikely(construct_error.error != GDEXTENSION_CALL_OK)) {
+		// The destination keeps whatever it held: a rejected construction leaves no half-built value
+		// for the next instruction to read.
 		error_text = vformat(R"(Cannot construct a value of type "%s" from the given arguments.)",
 				Variant::get_type_name((Variant::Type)type_index));
 		goto vm_error;
 	}
+	*destination = constructed;
 	BS_IP += 3;
 } break;
 
@@ -232,8 +234,20 @@ case OPCODE_CALL_RETURN: {
 	Variant result;
 	GDExtensionCallError call_error;
 	call_error.error = GDEXTENSION_CALL_OK;
-	base->callp(method, const_cast<const Variant **>(instruction_argument_ptr), argument_count, result, call_error);
-	if (unlikely(call_error.error != GDEXTENSION_CALL_OK)) {
+	// A call on this frame's own receiver is dispatched through the instance rather than through the
+	// owner object. The instance is what knows the script's functions, and it knows them before the
+	// engine has been handed it -- which is what lets a member initializer call one. Anything the
+	// script does not declare is still the owner's to answer.
+	BSFunction *own_function = base == &address_spaces[ADDR_TYPE_STACK][ADDR_STACK_SELF] &&
+					p_instance != nullptr && p_instance->script.is_valid()
+			? p_instance->script->find_function(method)
+			: nullptr;
+	if (own_function != nullptr) {
+		result = own_function->call(p_instance, const_cast<const Variant **>(instruction_argument_ptr), argument_count, call_error);
+	} else {
+		base->callp(method, const_cast<const Variant **>(instruction_argument_ptr), argument_count, result, call_error);
+	}
+	if (unlikely(call_error.error != GDEXTENSION_CALL_OK || bs_runtime_error_was_reported())) {
 		error_text = vformat(R"(Invalid call to "%s" on a value of type "%s".)",
 				String(method), Variant::get_type_name(base->get_type()));
 		goto vm_error;
@@ -270,17 +284,18 @@ case OPCODE_CALL_SELF_BASE: {
 			error_text = vformat(R"(Invalid super call to "%s".)", String(method));
 			goto vm_error;
 		}
-	} else if (p_instance != nullptr && p_instance->owner != nullptr && p_instance->owner->has_method(method)) {
-		Array forwarded;
-		forwarded.resize(argument_count);
-		for (int argument = 0; argument < argument_count; argument++) {
-			forwarded[argument] = *instruction_argument_ptr[argument];
-		}
-		*destination = p_instance->owner->callv(method, forwarded);
-	} else {
-		// A base that declares the method only as an engine lifecycle hook has nothing to run, which
-		// is what Godot itself does for an unimplemented virtual.
+	} else if (method == SNAME("_init")) {
+		// A base with no `_init` of its own has nothing to run, which is what the engine does for an
+		// unimplemented virtual.
 		*destination = Variant();
+	} else {
+		// The owner cannot be asked for it: `Object::has_method` and `Object::call` consult the
+		// script instance before the engine's own methods, so forwarding there would re-enter this
+		// very function. Reaching a native implementation past the script needs a dispatch the
+		// extension interface does not offer, so the call is refused by name instead.
+		error_text = vformat(R"*(Cannot call "super.%s()": no base script declares it, and a native implementation cannot be reached past the script.)*",
+				String(method));
+		goto vm_error;
 	}
 	BS_IP += 3;
 } break;

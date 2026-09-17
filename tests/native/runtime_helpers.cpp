@@ -8,6 +8,8 @@
 
 #include "runtime_helpers.h"
 
+#include "bs_cache.h"
+
 #include <godot_cpp/classes/os.hpp>
 
 namespace barista_script {
@@ -22,6 +24,11 @@ Ref<BaristaScript> compile_script(const String &p_source, const String &p_path) 
 	script->set_source_code(p_source);
 	script->compile();
 	return script;
+}
+
+RuntimeCacheScope::~RuntimeCacheScope() {
+	BSCache::clear();
+	BSCache::clear_source_overrides();
 }
 
 RuntimeErrorScope::RuntimeErrorScope() {

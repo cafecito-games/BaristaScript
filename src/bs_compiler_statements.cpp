@@ -21,9 +21,14 @@ Error BSCompiler::parse_block(CodeGen &p_codegen, const BSParser::SuiteNode *p_b
 		// A block's locals exist for the whole block: a later statement can name one a jump skipped
 		// over, so the slots are allocated on entry rather than at each declaration.
 		for (const BSParser::SuiteNode::Local &local : p_block->locals) {
-			if (local.type == BSParser::SuiteNode::Local::VARIABLE) {
-				p_codegen.add_local(local.name, member_slot_type(local.get_datatype()));
+			if (local.type != BSParser::SuiteNode::Local::VARIABLE) {
+				continue;
 			}
+			if (refuse_unchecked_slot(member_slot_type(local.get_datatype()),
+						vformat(R"(the local "%s")", String(local.name)), local.variable)) {
+				return ERR_COMPILATION_FAILED;
+			}
+			p_codegen.add_local(local.name, member_slot_type(local.get_datatype()));
 		}
 	}
 
@@ -92,16 +97,25 @@ Error BSCompiler::parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode 
 			// The iteration variable and the loop's bookkeeping slots belong to a scope of their own,
 			// outside the body, so the body can be re-entered without reallocating them.
 			p_codegen.start_block();
+			if (refuse_unchecked_slot(member_slot_type(node->variable->get_datatype()),
+						vformat(R"(the loop variable "%s")", String(node->variable->name)), node->variable)) {
+				return ERR_COMPILATION_FAILED;
+			}
 			const BSCodeGenerator::Address iterator = p_codegen.add_local(node->variable->name,
 					member_slot_type(node->variable->get_datatype()));
 
-			// `for i in range(...)` iterates an integer range directly instead of materializing an array.
+			// `for i in range(...)` iterates an integer range directly instead of materializing an
+			// array. The shortcut belongs to the engine's `range`, so a class that declares its own
+			// keeps the ordinary call: the analyzer's classification of the callee is what decides.
 			const BSParser::CallNode *range_call = nullptr;
 			if (node->list != nullptr && node->list->type == BSParser::Node::CALL) {
 				const BSParser::CallNode *call = static_cast<const BSParser::CallNode *>(node->list);
-				if (call->get_callee_type() == BSParser::Node::IDENTIFIER &&
-						static_cast<const BSParser::IdentifierNode *>(call->callee)->name == StringName("range")) {
-					range_call = call;
+				if (call->get_callee_type() == BSParser::Node::IDENTIFIER) {
+					const BSParser::IdentifierNode *callee = static_cast<const BSParser::IdentifierNode *>(call->callee);
+					if (callee->name == StringName("range") &&
+							callee->source == BSParser::IdentifierNode::UNDEFINED_SOURCE) {
+						range_call = call;
+					}
 				}
 			}
 

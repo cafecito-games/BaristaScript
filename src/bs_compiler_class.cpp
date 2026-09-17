@@ -91,6 +91,25 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 		return ERR_COMPILATION_FAILED;
 	}
 
+	// Every member is accounted for before any of them is lowered. A kind that is skipped instead of
+	// refused produces a script that compiles, runs, and is missing whatever the skipped member
+	// declared -- a signal that cannot be emitted, an enum whose qualified form resolves to nothing.
+	for (const BSParser::ClassNode::Member &member : p_class->members) {
+		switch (member.type) {
+			case BSParser::ClassNode::Member::VARIABLE:
+			case BSParser::ClassNode::Member::FUNCTION:
+			case BSParser::ClassNode::Member::CONSTANT:
+				// A constant is folded into the expressions that read it, so it needs no member slot.
+				break;
+			default:
+				set_error(vformat(R"(Cannot run a script with the %s "%s": the runtime does not compile that member kind yet.)",
+								  member.get_type_name().to_lower(), member.get_name()),
+						member.get_source_node());
+				p_script->release_compiled_state();
+				return ERR_COMPILATION_FAILED;
+		}
+	}
+
 	for (const BSParser::ClassNode::Member &member : p_class->members) {
 		if (member.type != BSParser::ClassNode::Member::VARIABLE) {
 			continue;
@@ -101,8 +120,23 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 			return ERR_COMPILATION_FAILED;
 		}
 		const StringName name = member.variable->identifier->name;
+		if (refuse_unchecked_slot(member_slot_type(member.variable->get_datatype()),
+					vformat(R"(the member "%s")", String(name)), member.variable)) {
+			p_script->release_compiled_state();
+			return ERR_COMPILATION_FAILED;
+		}
+		if (p_script->member_names.size() > BSFunction::ADDR_MASK) {
+			// A member address packs its index beside an address-space tag; see the emitter's bound.
+			set_error(vformat("Cannot run a script with more than %d members.", (int)BSFunction::ADDR_MASK),
+					member.variable);
+			p_script->release_compiled_state();
+			return ERR_COMPILATION_FAILED;
+		}
+		const BSParser::DataType slot = member_slot_type(member.variable->get_datatype());
 		p_script->member_indices[name] = p_script->member_names.size();
 		p_script->member_names.push_back(name);
+		p_script->member_carriers.push_back(
+				slot.kind == BSParser::DataType::BUILTIN ? slot.builtin_type : Variant::NIL);
 	}
 
 	if (compile_implicit_initializer(p_script, p_class) != OK) {
@@ -169,7 +203,14 @@ Error BSCompiler::compile_implicit_initializer(BaristaScript *p_script, const BS
 		if (result != OK) {
 			return result;
 		}
-		generator.write_assign(target, value);
+		if (member.variable->use_conversion_assign) {
+			// The same rule a local declaration follows: a declared carrier that the initializer does
+			// not already have is converted on the way in, or `var ratio: float = 1` would hold an
+			// integer and divide like one.
+			generator.write_assign_with_conversion(target, value);
+		} else {
+			generator.write_assign(target, value);
+		}
 		if (value.mode == BSCodeGenerator::Address::TEMPORARY) {
 			generator.pop_temporary();
 		}
@@ -213,7 +254,15 @@ Error BSCompiler::compile_function(BaristaScript *p_script, const BSParser::Clas
 	generator.set_initial_line(p_function->start_line);
 	generator.set_signature(vformat("%s::%s", p_script->get_path(), String(codegen.function_name)));
 
+	if (refuse_unchecked_slot(member_slot_type(p_function->get_datatype()),
+				vformat(R"*(the return value of "%s()")*", String(codegen.function_name)), p_function)) {
+		return ERR_COMPILATION_FAILED;
+	}
 	for (const BSParser::ParameterNode *parameter : p_function->parameters) {
+		if (refuse_unchecked_slot(member_slot_type(parameter->get_datatype()),
+					vformat(R"(the parameter "%s")", String(parameter->identifier->name)), parameter)) {
+			return ERR_COMPILATION_FAILED;
+		}
 		codegen.add_parameter(parameter->identifier->name, parameter->initializer != nullptr,
 				member_slot_type(parameter->get_datatype()));
 	}

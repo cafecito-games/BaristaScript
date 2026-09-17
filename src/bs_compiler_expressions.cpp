@@ -41,7 +41,15 @@ BSCodeGenerator::Address BSCompiler::parse_identifier(CodeGen &p_codegen, Error 
 		p_codegen.generator->write_store_global(target, BSCoreConstants::get_global_constant_index(name), name);
 		return target;
 	}
-	// Anything else names a property of the object the script drives, which only the owner can answer.
+	// The only remaining reading that has a lowering is a property the native base declares, which
+	// the owner object answers. Every other classification -- a signal, an inner class, a method
+	// used as a value, a static variable -- would silently become a property read that returns null,
+	// so it is refused by name instead.
+	if (p_identifier->source != BSParser::IdentifierNode::INHERITED_VARIABLE) {
+		set_error(vformat(R"(The runtime cannot compile a reference to "%s" here.)", String(name)), p_identifier);
+		r_error = ERR_COMPILATION_FAILED;
+		return BSCodeGenerator::Address();
+	}
 	const BSCodeGenerator::Address target = p_codegen.add_temporary(member_slot_type(p_identifier->get_datatype()));
 	p_codegen.generator->write_get_member(target, name);
 	return target;
@@ -402,9 +410,16 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 	// object rather than into a compiled slot.
 	StringName owner_property;
 	if (assignee->type == BSParser::Node::IDENTIFIER) {
-		const StringName &name = static_cast<const BSParser::IdentifierNode *>(assignee)->name;
+		const BSParser::IdentifierNode *identifier = static_cast<const BSParser::IdentifierNode *>(assignee);
+		const StringName &name = identifier->name;
 		if (!is_local_or_parameter(p_codegen, name) &&
 				(p_codegen.script == nullptr || p_codegen.script->get_member_index(name) < 0)) {
+			// As on the reading side, only a property of the native base is written through the owner.
+			if (identifier->source != BSParser::IdentifierNode::INHERITED_VARIABLE) {
+				set_error(vformat(R"(The runtime cannot compile an assignment to "%s".)", String(name)), assignee);
+				r_error = ERR_COMPILATION_FAILED;
+				return BSCodeGenerator::Address();
+			}
 			owner_property = name;
 		}
 	} else if (assignee->type == BSParser::Node::SUBSCRIPT) {

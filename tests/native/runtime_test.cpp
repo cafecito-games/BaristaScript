@@ -37,6 +37,23 @@ struct BSFunctionTestAccess {
 		function->code.push_back(BSFunction::OPCODE_END);
 		return function;
 	}
+
+	/** A single `super.<name>()` whose result is discarded, for the handler's own resolution path. */
+	static BSFunction *make_super_call_function(const StringName &p_name) {
+		BSFunction *function = memnew(BSFunction);
+		function->name = SNAME("probe_super");
+		function->source = "res://runtime_probe.barista";
+		function->stack_size = BSFunction::FIXED_ADDRESSES_MAX;
+		function->instruction_arguments_size = 1;
+		function->global_names.push_back(p_name);
+		function->code.push_back(BSFunction::OPCODE_CALL_SELF_BASE);
+		function->code.push_back(1);
+		function->code.push_back(BSFunction::ADDR_NIL);
+		function->code.push_back(0);
+		function->code.push_back(0);
+		function->code.push_back(BSFunction::OPCODE_END);
+		return function;
+	}
 };
 
 } // namespace barista_script
@@ -226,6 +243,100 @@ TEST_SUITE("runtime") {
 		CHECK_MESSAGE(errors.errors().is_empty(), errors.joined().utf8().get_data());
 	}
 
+	TEST_CASE("a member initializer can call the script's own functions") {
+		const Ref<BaristaScript> script = compile_script(
+				"var ratio: float = int_factory()\n"
+				"var doubled: int = 0\n"
+				"\n"
+				"func int_factory() -> int:\n"
+				"\treturn 2\n"
+				"\n"
+				"func _init() -> void:\n"
+				"\tself.doubled = self.int_factory() * 2\n",
+				"res://runtime/self_call_initializer.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		RuntimeErrorScope errors;
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		CHECK_MESSAGE(errors.errors().is_empty(), errors.joined().utf8().get_data());
+		CHECK(owner->get("ratio").get_type() == Variant::FLOAT);
+		CHECK(owner->get("ratio") == Variant(2.0));
+		CHECK(owner->get("doubled") == Variant(4));
+	}
+
+	TEST_CASE("an initializer that raises leaves no instance behind") {
+		const Ref<BaristaScript> script = compile_script(
+				"var slot: int = 0\n"
+				"\n"
+				"func _init() -> void:\n"
+				"\tself.slot = self.missing_thing()\n"
+				"\n"
+				"func missing_thing() -> int:\n"
+				"\tvar values: Array = []\n"
+				"\treturn values[4]\n",
+				"res://runtime/raising_initializer.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+
+		RuntimeErrorScope errors;
+		Ref<RefCounted> owner;
+		owner.instantiate();
+		CHECK(script->_instance_create(owner.ptr()) == nullptr);
+		CHECK(script->get_instance_count() == 0);
+		CHECK_FALSE(errors.errors().is_empty());
+	}
+
+	TEST_CASE("a slot the runtime cannot check is refused by name") {
+		struct Row {
+			const char *source;
+			const char *path;
+		};
+		const Row rows[] = {
+			{ "func take(value: (int, String)) -> int:\n\treturn 7\n",
+					"res://runtime/tuple_parameter.barista" },
+			{ "func take(value: Variant) -> int:\n\tvar copy: (int, String) = value\n\treturn 7\n",
+					"res://runtime/tuple_local.barista" },
+			{ "var pair: (int, String)\n\nfunc run() -> int:\n\treturn 7\n",
+					"res://runtime/tuple_member.barista" },
+		};
+		for (const Row &row : rows) {
+			const Ref<BaristaScript> script = compile_script(row.source, row.path);
+			BS_TEST_REQUIRE(script.is_valid());
+			CHECK_MESSAGE(!script->_can_instantiate(), row.path);
+			CHECK_FALSE(script->get_compile_error().is_empty());
+		}
+	}
+
+	TEST_CASE("a super call with no script implementation reports instead of recursing") {
+		const Ref<BaristaScript> script = compile_script(
+				"var slot: int = 0\n"
+				"\n"
+				"func probe() -> int:\n"
+				"\treturn 1\n",
+				"res://runtime/super_fallback.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		BSInstance *instance = BSInstance::from_owner(owner.ptr());
+		BS_TEST_REQUIRE(instance != nullptr);
+
+		// The analyzer refuses every `super` form this runtime can reach, so the handler's own
+		// resolution is exercised directly. The script declares `probe`, and `Object::has_method`
+		// answers for the script instance before ClassDB does, so a fallback that asks the owner
+		// would call this very function again.
+		RuntimeErrorScope errors;
+		BSFunction *function = BSFunctionTestAccess::make_super_call_function(SNAME("probe"));
+		BS_TEST_REQUIRE(function != nullptr);
+		GDExtensionCallError error;
+		function->call(instance, nullptr, 0, error);
+		memdelete(function);
+		CHECK_MESSAGE(errors.has_error_containing("probe"), errors.joined().utf8().get_data());
+		CHECK_MESSAGE(!errors.has_error_containing("Stack overflow"), errors.joined().utf8().get_data());
+		CHECK(errors.errors().size() == 1);
+	}
+
 	TEST_CASE("an opcode with no handler names itself") {
 		RuntimeErrorScope errors;
 		// A reserved validated opcode: the emitter never writes one, and the runtime must refuse it
@@ -237,9 +348,14 @@ TEST_SUITE("runtime") {
 		memdelete(function);
 
 		CHECK(result == Variant());
-		CHECK(error.error != GDEXTENSION_CALL_OK);
+		// The call itself completed; the fault is reported on the script-error channel, which is why
+		// the call error stays OK -- a call-error code would surface a second time as a missing
+		// method that in fact exists.
+		CHECK(error.error == GDEXTENSION_CALL_OK);
+		CHECK(bs_runtime_error_was_reported());
 		CHECK_MESSAGE(errors.has_error_containing("Opcode not implemented: OPCODE_OPERATOR_VALIDATED."),
 				errors.joined().utf8().get_data());
+		CHECK(errors.errors().size() == 1);
 	}
 
 	TEST_CASE("every opcode enumerator has a name") {
@@ -255,6 +371,9 @@ TEST_SUITE("runtime") {
 	}
 
 	TEST_CASE("a script whose base is a GDScript class is refused by name") {
+		// Resolving a base by path leaves that file's parser in the shared cache; the case puts the
+		// process back the way it found it.
+		RuntimeCacheScope cache_scope;
 		const Ref<BaristaScript> script = compile_script(
 				"extends \"res://tests/runtime_fixtures/gdscript_base.gd\"\n"
 				"\n"
@@ -402,15 +521,120 @@ TEST_SUITE("runtime") {
 				"var slot: int = 1\n",
 				"res://runtime/lifetime.barista");
 		BS_TEST_REQUIRE(script.is_valid());
+		CHECK(script->get_instance_count() == 0);
 		{
 			const Ref<RefCounted> owner = attach(script);
 			BS_TEST_REQUIRE(owner.is_valid());
 			CHECK(script->_instance_has(owner.ptr()));
+			CHECK(script->get_instance_count() == 1);
 		}
-		// The owner is gone, so the engine has run the vtable's free callback; a script that still
-		// listed the instance would be holding a dangling pointer.
+		// The owner is gone, so the engine has run the vtable's free callback. The count is what
+		// proves it: asking whether some other object has an instance would pass even if the script
+		// were still holding the freed pointer, which is the defect this rules out.
+		CHECK(script->get_instance_count() == 0);
+
+		// A positive control, so a count that is always zero cannot pass this case either.
 		Ref<RefCounted> replacement;
 		replacement.instantiate();
-		CHECK_FALSE(script->_instance_has(replacement.ptr()));
+		replacement->set_script(script);
+		CHECK(script->get_instance_count() == 1);
+		CHECK(script->_instance_has(replacement.ptr()));
+	}
+
+	TEST_CASE("a declared carrier converts the value it is initialized with") {
+		// The initializers are non-constant on purpose: a constant one is folded to the slot's own
+		// carrier by the analyzer, so only a value produced at run time can show whether the store
+		// converts.
+		const Ref<BaristaScript> script = compile_script(
+				"var whole: int = 1\n"
+				"var ratio: float = self.whole\n"
+				"\n"
+				"func halved() -> float:\n"
+				"\treturn self.ratio / 2\n"
+				"\n"
+				"func local_ratio(from: int) -> float:\n"
+				"\tvar value: float = from\n"
+				"\treturn value / 2\n",
+				"res://runtime/conversion.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		// An integer 1 stored in a float member would divide as an integer and answer 0.
+		CHECK(owner->get("ratio").get_type() == Variant::FLOAT);
+		CHECK(owner->call("halved") == Variant(0.5));
+		CHECK(owner->call("local_ratio", 1) == Variant(0.5));
+	}
+
+	TEST_CASE("a loop variable converts the element it is given") {
+		const Ref<BaristaScript> script = compile_script(
+				"func halve_each(values: Array) -> float:\n"
+				"\tvar total: float = 0.0\n"
+				"\tfor value: float in values:\n"
+				"\t\ttotal += value / 2\n"
+				"\treturn total\n"
+				"\n"
+				"func halve_range(limit: int) -> float:\n"
+				"\tvar total: float = 0.0\n"
+				"\tfor step: float in range(limit):\n"
+				"\t\ttotal += step / 2\n"
+				"\treturn total\n",
+				"res://runtime/loop_conversion.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+
+		Array values;
+		values.push_back(1);
+		values.push_back(3);
+		// Integer elements left in a float loop variable would halve to 0 and 1 rather than 0.5 and 1.5.
+		CHECK(owner->call("halve_each", values) == Variant(2.0));
+		CHECK(owner->call("halve_range", 4) == Variant(3.0));
+	}
+
+	TEST_CASE("a member kind the runtime cannot compile is refused by name") {
+		struct Row {
+			const char *source;
+			const char *path;
+			const char *named;
+		};
+		const Row rows[] = {
+			{ "signal done(value: int)\n\nfunc run() -> int:\n\treturn 1\n",
+					"res://runtime/member_signal.barista", "done" },
+			{ "enum Kind:\n\tA = 0\n\tB = 1\n\nfunc run() -> int:\n\treturn 1\n",
+					"res://runtime/member_enum.barista", "Kind" },
+			{ "class Inner:\n\tvar value: int = 1\n\nfunc run() -> int:\n\treturn 1\n",
+					"res://runtime/member_class.barista", "Inner" },
+		};
+		for (const Row &row : rows) {
+			const Ref<BaristaScript> script = compile_script(row.source, row.path);
+			BS_TEST_REQUIRE(script.is_valid());
+			CHECK_FALSE(script->_can_instantiate());
+			const String diagnostic = script->get_compile_error();
+			CHECK_MESSAGE(diagnostic.contains(row.named), diagnostic.utf8().get_data());
+			CHECK(script->_instance_create(nullptr) == nullptr);
+		}
+	}
+
+	TEST_CASE("an abstract class cannot be instantiated through the engine's own entry point") {
+		const Ref<BaristaScript> script = compile_script(
+				"abstract class_name RuntimeAbstractProbe\n"
+				"\n"
+				"func run() -> int:\n"
+				"\treturn 1\n",
+				"res://runtime/abstract.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK(script->_is_abstract());
+		CHECK_FALSE(script->_can_instantiate());
+
+		// `Object::set_script` reaches `_instance_create` directly and never consults
+		// `_can_instantiate`, so the refusal has to live in both.
+		Ref<RefCounted> owner;
+		owner.instantiate();
+		CHECK(script->_instance_create(owner.ptr()) == nullptr);
+		owner->set_script(script);
+		CHECK(script->get_instance_count() == 0);
+		CHECK_FALSE(script->_instance_has(owner.ptr()));
 	}
 }

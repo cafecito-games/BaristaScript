@@ -36,10 +36,15 @@ GDScript source.
 ## The opcode enum is frozen
 
 `src/bs_function.h` owns the opcode list, the address encoding and the function tables.
-`src/bs_codegen.h` owns the emitter interface. Both are frozen for the milestone: **an opcode keeps
-its number, and a family that needs a new one appends to the end of `BS_OPCODE_LIST` rather than
-renumbering.** A compiled function built by one translation unit has to be read the same way by
-every other, and a renumbering breaks that silently.
+`src/bs_codegen.h` owns the emitter interface. Both are frozen: **an opcode keeps its number.** A
+compiled function built by one translation unit has to be read the same way by every other, and a
+renumbering breaks that silently.
+
+**A new opcode is inserted immediately before `END`, never after it.** `END` is the list's
+terminator and the dispatch loop's stop condition, and its own number is never written into a
+compiled function, so moving `END` is the one renumbering that is safe. Appending after `END` would
+leave the terminator in the middle of the list and give the new opcode a number the loop never
+reaches.
 
 The list holds **171 opcodes** plus the `OPCODE_END` terminator, derived from Foundry's 180 at
 `c9d5e35` by removing two families:
@@ -78,6 +83,30 @@ script-error channel with the function, file and line of the frame that raised i
 channel a runtime transcript is made of, and it is the channel the native cases read back through a
 `Logger`.
 
+## The instruction encoding
+
+A compiled function is a flat `Vector<int>`. Every instruction is its opcode followed by that
+opcode's own operands, and each handler's trailing `instruction_pointer += n` is the authoritative
+statement of how many words it occupies -- there is no separate table to keep in step.
+
+Two operand shapes exist:
+
+- **Fixed.** The operands follow the opcode directly, and the handler advances by a constant.
+- **Counted.** The word after the opcode is how many *address* operands follow; those addresses are
+  loaded into the frame's instruction-argument array, and the opcode's own trailing operands come
+  after them. Every call, every construction and every literal uses this shape.
+
+An **address word** packs a 24-bit index beside a 2-bit space tag: the frame's stack, the function's
+constant pool, or the instance's members. The emitter refuses an index that does not fit rather than
+letting it carry into the tag. The nullable flag on a *type* operand also uses bit 24; the two never
+meet, because a type operand is a plain integer that the address decoder never reads.
+
+**Jumps are absolute indices into the same `Vector<int>`, and they are patched in place while the
+function is being emitted.** Nothing relocates a compiled function afterwards: there is no
+serialized form, and no pass reorders or rewrites instructions once `write_end()` has run. A family
+that adds a pass which moves instructions has to patch every jump operand with them, which today
+means every `write_*` that records a position in one of the emitter's patch lists.
+
 ## Lane ownership
 
 The milestone's families work concurrently, separated by file ownership rather than by intention. A
@@ -96,6 +125,21 @@ child that needs to edit outside its column opens a pull request against the own
 file to `src/` changes what one build system compiles and not the other. The lane files therefore
 exist already, with their guards and includes in place, so a family adds handlers rather than
 restructuring a translation unit.
+
+## What is declared but not enforced
+
+Two declarations are accepted and lowered to something weaker than they say, and both are recorded
+here rather than left to be discovered:
+
+- **A script-typed slot loses its identity.** `member_slot_type` erases `CLASS` and `SCRIPT` to
+  `Variant`, because the identity is a pointer into a parse tree that does not outlive the
+  compilation. Such a slot accepts any value. Restoring the check needs an identity a compiled
+  function can own, which is the type model's to introduce.
+- **A slot the runtime cannot check is refused rather than accepted.** A tuple, a union, an enum or
+  a type parameter has writers on the frozen emitter interface that refuse, and every declaration
+  site -- member, local, parameter, return and loop variable -- now routes through
+  `BSCompiler::refuse_unchecked_slot` so none of them can reach a slot that would accept anything
+  while claiming to be checked.
 
 ## What the slice does not do yet
 

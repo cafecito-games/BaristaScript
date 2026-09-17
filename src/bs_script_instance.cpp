@@ -49,9 +49,13 @@ const GDExtensionPropertyInfo *instance_get_property_list(GDExtensionScriptInsta
 	// has to outlive the call rather than live on this frame.
 	List<PropertyInfo> *properties = memnew(List<PropertyInfo>);
 	if (instance != nullptr && instance->script.is_valid()) {
-		for (const StringName &member : instance->script->get_member_names()) {
-			properties->push_back(PropertyInfo(Variant::NIL, member, PROPERTY_HINT_NONE, "",
-					PROPERTY_USAGE_SCRIPT_VARIABLE | PROPERTY_USAGE_NIL_IS_VARIANT));
+		const Vector<StringName> &names = instance->script->get_member_names();
+		for (int index = 0; index < names.size(); index++) {
+			const Variant::Type carrier = instance->script->get_member_carrier(index);
+			properties->push_back(PropertyInfo(carrier, names[index], PROPERTY_HINT_NONE, "",
+					carrier == Variant::NIL
+							? uint32_t(PROPERTY_USAGE_SCRIPT_VARIABLE | PROPERTY_USAGE_NIL_IS_VARIANT)
+							: uint32_t(PROPERTY_USAGE_SCRIPT_VARIABLE)));
 		}
 	}
 	return godot::internal::create_c_property_list(properties, r_count);
@@ -328,7 +332,27 @@ bool BSInstance::set_property(const StringName &p_name, const Variant &p_value) 
 	if (index < 0 || index >= members.size()) {
 		return false;
 	}
-	members.write[index] = p_value;
+	// A store from outside a compiled function meets the same declaration a compiled store does: a
+	// declared carrier takes the value converted, or refuses it. Storing whatever arrived would let
+	// the inspector or a scene put a value in a slot the script's own code cannot produce.
+	const Variant::Type carrier = script->get_member_carrier(index);
+	if (carrier == Variant::NIL || p_value.get_type() == carrier) {
+		members.write[index] = p_value;
+		return true;
+	}
+	if (!Variant::can_convert_strict(p_value.get_type(), carrier)) {
+		return false;
+	}
+	GDExtensionCallError conversion_error;
+	conversion_error.error = GDEXTENSION_CALL_OK;
+	const Variant *arguments[1] = { &p_value };
+	Variant converted;
+	godot::gdextension_interface::variant_construct((GDExtensionVariantType)carrier, &converted,
+			reinterpret_cast<const GDExtensionConstVariantPtr *>(arguments), 1, &conversion_error);
+	if (conversion_error.error != GDEXTENSION_CALL_OK) {
+		return false;
+	}
+	members.write[index] = converted;
 	return true;
 }
 

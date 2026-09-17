@@ -29,6 +29,7 @@ void BaristaScript::release_compiled_state() {
 	instance_base_type = godot::StringName();
 	base_script = godot::Ref<BaristaScript>();
 	member_names.clear();
+	member_carriers.clear();
 	member_indices.clear();
 	for (const godot::KeyValue<godot::StringName, BSFunction *> &entry : member_functions) {
 		memdelete(entry.value);
@@ -143,7 +144,9 @@ godot::StringName BaristaScript::_get_instance_base_type() const {
 }
 
 void *BaristaScript::_instance_create(godot::Object *p_for_object) const {
-	if (!valid || p_for_object == nullptr) {
+	// The same two questions `_can_instantiate()` asks, asked here too: the engine reaches this
+	// entry point directly from `Object::set_script`, which never consults `_can_instantiate()`.
+	if (!_can_instantiate() || p_for_object == nullptr) {
 		return nullptr;
 	}
 	if (!instance_base_type.is_empty() && !ClassDB::is_parent_class(p_for_object->get_class(), instance_base_type)) {
@@ -159,6 +162,36 @@ void *BaristaScript::_instance_create(godot::Object *p_for_object) const {
 	instance->members.resize(member_names.size());
 	self->instances.insert(instance);
 
+	// The initializers run before the engine is handed anything. They are what decides whether an
+	// instance exists at all: one that raised has members the declaration does not describe, and
+	// handing it over would put a half-built object into the scene. Running them first also means
+	// `self.method()` works inside them, because the instance answers for its own script from the
+	// moment it is built, without waiting to be attached.
+	instance->initializing = true;
+	bool initialized = true;
+	if (implicit_initializer != nullptr) {
+		GDExtensionCallError initializer_error;
+		initializer_error.error = GDEXTENSION_CALL_OK;
+		implicit_initializer->call(instance, nullptr, 0, initializer_error);
+		initialized = initializer_error.error == GDEXTENSION_CALL_OK && !bs_runtime_error_was_reported();
+	}
+	if (initialized) {
+		if (BSFunction *initializer = find_function(SNAME("_init"))) {
+			GDExtensionCallError initializer_error;
+			initializer_error.error = GDEXTENSION_CALL_OK;
+			initializer->call(instance, nullptr, 0, initializer_error);
+			initialized = initializer_error.error == GDEXTENSION_CALL_OK && !bs_runtime_error_was_reported();
+		}
+	}
+	instance->initializing = false;
+
+	if (!initialized) {
+		// The reason is already on the script-error channel; this says what became of the instance.
+		ERR_PRINT(vformat(R"(Cannot create an instance of "%s": its initializers did not run to completion.)", get_path()));
+		memdelete(instance);
+		return nullptr;
+	}
+
 	void *handle = godot::gdextension_interface::script_instance_create3(BSInstance::get_vtable(), instance);
 	if (handle == nullptr) {
 		// The owner would be left with an instance it never received; release it rather than hand
@@ -167,17 +200,6 @@ void *BaristaScript::_instance_create(godot::Object *p_for_object) const {
 		ERR_PRINT(vformat(R"(Cannot create a script instance for "%s".)", get_path()));
 		return nullptr;
 	}
-
-	instance->initializing = true;
-	if (implicit_initializer != nullptr) {
-		GDExtensionCallError initializer_error;
-		implicit_initializer->call(instance, nullptr, 0, initializer_error);
-	}
-	if (BSFunction *initializer = find_function(SNAME("_init"))) {
-		GDExtensionCallError initializer_error;
-		initializer->call(instance, nullptr, 0, initializer_error);
-	}
-	instance->initializing = false;
 	return handle;
 }
 
@@ -212,18 +234,19 @@ godot::Error BaristaScript::_reload(bool) {
 	// FoundryScript::reload analyzes its existing source; load_source_code is the
 	// separate disk producer. Keep unsaved and empty resource buffers authoritative.
 	const String path = canonicalize_path(get_path());
+	if (!instances.is_empty()) {
+		// A live instance holds pointers into the compiled functions this would replace, and there is
+		// no cancellation for a suspended frame yet, so the reload is refused before it changes
+		// anything at all -- including the declaration index, which would otherwise be republished
+		// from a source the instances are not running.
+		ERR_PRINT(vformat(R"(Cannot reload "%s" while %d instance(s) are alive.)", path, instances.size()));
+		return godot::ERR_BUSY;
+	}
 	godot::Error status = godot::OK;
 	if (!path.is_empty()) {
 		if (auto *language = BaristaScriptLanguage::get_singleton()) {
 			status = language->synchronize_declaration_path_from_source(path, source_code);
 		}
-	}
-	if (!instances.is_empty()) {
-		// A live instance holds pointers into the compiled functions this would replace, and there
-		// is no cancellation for a suspended frame yet, so recompiling under one is refused rather
-		// than left to crash later.
-		ERR_PRINT(vformat(R"(Cannot reload "%s" while %d instance(s) are alive.)", path, instances.size()));
-		return godot::ERR_BUSY;
 	}
 	const godot::Error compile_status = compile();
 	return status != godot::OK ? status : compile_status;

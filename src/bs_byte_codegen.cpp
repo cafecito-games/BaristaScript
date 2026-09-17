@@ -25,6 +25,18 @@ void BSByteCodeGenerator::refuse(const String &p_what) {
 	}
 }
 
+bool BSByteCodeGenerator::check_address_fits(int p_index, const char *p_what) {
+	// The instruction word packs a 24-bit index beside its address-space tag. An index that does not
+	// fit would carry into the tag and name a slot in a different address space, so it is refused
+	// rather than truncated. Nothing a real script produces comes close; silent corruption in a
+	// frozen encoding is what this rules out.
+	if (unlikely(p_index < 0 || p_index > BSFunction::ADDR_MASK)) {
+		refuse(vformat("a function with more than %d %s", (int)BSFunction::ADDR_MASK, p_what));
+		return false;
+	}
+	return true;
+}
+
 int BSByteCodeGenerator::address_of(const Address &p_address) {
 	switch (p_address.mode) {
 		case Address::SELF:
@@ -54,6 +66,7 @@ int BSByteCodeGenerator::get_constant_position(const Variant &p_constant) {
 		return existing->value;
 	}
 	const int index = constant_map.size();
+	check_address_fits(index, "constants");
 	constant_map[p_constant] = index;
 	return index;
 }
@@ -104,18 +117,18 @@ uint32_t BSByteCodeGenerator::add_parameter(const StringName &p_name, bool p_is_
 
 uint32_t BSByteCodeGenerator::add_local(const StringName &p_name, const BSParser::DataType &p_type) {
 	const int stack_position = locals.size() + BSFunction::FIXED_ADDRESSES_MAX;
+	check_address_fits(stack_position, "stack slots");
 	locals.push_back(StackSlot(p_type.kind == BSParser::DataType::BUILTIN ? p_type.builtin_type : Variant::NIL));
 	if (locals.size() > max_locals) {
 		max_locals = locals.size();
 	}
-	stack_identifiers[p_name] = stack_position;
 	return stack_position;
 }
 
-uint32_t BSByteCodeGenerator::add_local_constant(const StringName &p_name, const Variant &p_constant) {
-	const int index = add_or_get_constant(p_constant);
-	local_constants[p_name] = index;
-	return index;
+uint32_t BSByteCodeGenerator::add_local_constant(const StringName &, const Variant &p_constant) {
+	// A local constant has no slot of its own: the compiler records the address and every read of the
+	// name becomes a read of the constant pool.
+	return add_or_get_constant(p_constant);
 }
 
 uint32_t BSByteCodeGenerator::add_or_get_constant(const Variant &p_constant) {
@@ -210,14 +223,11 @@ void BSByteCodeGenerator::end_parameters() {
 }
 
 void BSByteCodeGenerator::start_block() {
-	stack_identifier_stack.push_back(stack_identifiers);
 	block_local_counts.push_back(locals.size());
 }
 
 void BSByteCodeGenerator::end_block() {
-	ERR_FAIL_COND(stack_identifier_stack.is_empty());
-	stack_identifiers = stack_identifier_stack.back()->get();
-	stack_identifier_stack.pop_back();
+	ERR_FAIL_COND(block_local_counts.is_empty());
 	// The slots a block declared are reusable by its siblings; `max_locals` keeps the frame's
 	// high-water mark, so the stack is still sized for the deepest block.
 	locals.resize(block_local_counts.back()->get());
@@ -263,10 +273,6 @@ BSFunction *BSByteCodeGenerator::write_end() {
 	function->methods = method_binds;
 	function->lambdas = lambda_table;
 	function->code = opcodes;
-	function->stack_debug.clear();
-	for (const BSFunction::StackDebug &entry : stack_debug) {
-		function->stack_debug.push_back(entry);
-	}
 	function->stack_size = BSFunction::FIXED_ADDRESSES_MAX + max_locals + temporaries.size();
 	function->instruction_arguments_size = instruction_arguments_max;
 
@@ -526,12 +532,11 @@ void BSByteCodeGenerator::write_get_static_variable(const Address &, const Addre
 }
 
 void BSByteCodeGenerator::write_assign(const Address &p_target, const Address &p_source) {
-	append_opcode(BSFunction::OPCODE_ASSIGN);
-	append(p_target);
-	append(p_source);
-}
-
-void BSByteCodeGenerator::write_assign_with_conversion(const Address &p_target, const Address &p_source) {
+	// A slot with a declared carrier is stored into through the typed opcode whether or not the
+	// analyzer flagged the store as converting. The flag marks where a conversion is *expected*;
+	// it is not the only place one is needed, because a value's run-time carrier can differ from
+	// the slot's without the declaration saying so -- an `int` member read into a `float` slot is
+	// the plain case. An untyped slot takes the value exactly as it is.
 	if (p_target.type.kind == BSParser::DataType::BUILTIN && p_target.type.builtin_type != Variant::NIL) {
 		append_opcode(BSFunction::OPCODE_ASSIGN_TYPED_BUILTIN);
 		append(p_target);
@@ -539,6 +544,12 @@ void BSByteCodeGenerator::write_assign_with_conversion(const Address &p_target, 
 		append((int)p_target.type.builtin_type | (p_target.type.is_nullable ? BSFunction::NULLABLE_TYPE_OPERAND_FLAG : 0));
 		return;
 	}
+	append_opcode(BSFunction::OPCODE_ASSIGN);
+	append(p_target);
+	append(p_source);
+}
+
+void BSByteCodeGenerator::write_assign_with_conversion(const Address &p_target, const Address &p_source) {
 	write_assign(p_target, p_source);
 }
 
@@ -653,6 +664,10 @@ void BSByteCodeGenerator::write_super_call(const Address &p_target, const String
 
 void BSByteCodeGenerator::write_call_async(const Address &, const Address &, const StringName &, const Vector<Address> &) {
 	refuse("an awaited call");
+}
+
+void BSByteCodeGenerator::write_super_call_async(const Address &, const StringName &, const Vector<Address> &) {
+	refuse("an awaited super call");
 }
 
 void BSByteCodeGenerator::write_enum_call(const Address &, const Address &, const Vector<Address> &,
@@ -837,8 +852,8 @@ void BSByteCodeGenerator::write_end_jump_if_shared() {
 }
 
 void BSByteCodeGenerator::start_for(const BSParser::DataType &p_iterator_type, const BSParser::DataType &, bool p_is_range) {
-	const Address counter(Address::LOCAL_VARIABLE, add_local("@counter_pos", BSParser::DataType()), BSParser::DataType());
-	const Address container(Address::LOCAL_VARIABLE, add_local(p_is_range ? "@range_from" : "@container_pos", BSParser::DataType()), BSParser::DataType());
+	const Address counter(Address::LOCAL_VARIABLE, add_local("@counter_position", BSParser::DataType()), BSParser::DataType());
+	const Address container(Address::LOCAL_VARIABLE, add_local(p_is_range ? "@range_from" : "@container_position", BSParser::DataType()), BSParser::DataType());
 	for_counter_variables.push_back(counter);
 	for_container_variables.push_back(container);
 	if (p_is_range) {
@@ -860,17 +875,24 @@ void BSByteCodeGenerator::write_for_range_assignment(const Address &p_from, cons
 	write_assign(for_range_step_variables.back()->get(), p_step);
 }
 
-void BSByteCodeGenerator::write_for(const Address &p_variable, bool, bool p_is_range) {
+void BSByteCodeGenerator::write_for(const Address &p_variable, bool p_use_conversion, bool p_is_range) {
 	// The loop is laid out as begin, a jump over the advance step, the advance step, then the body.
 	// `continue` targets the advance step, and both the begin's empty-sequence jump and the advance
 	// step's exhausted jump are patched to the loop's exit by `write_endfor`.
+	//
+	// A loop variable whose declared carrier differs from the element's is filled through a hidden
+	// slot and converted at the top of the body. Both ways into the body -- the first element and
+	// every later one -- arrive at that point, so one conversion covers the whole loop.
+	const Address element = p_use_conversion
+			? Address(Address::LOCAL_VARIABLE, add_local("@loop_element", BSParser::DataType()), BSParser::DataType())
+			: p_variable;
 	if (p_is_range) {
 		append_opcode(BSFunction::OPCODE_ITERATE_BEGIN_RANGE);
 		append(for_counter_variables.back()->get());
 		append(for_range_from_variables.back()->get());
 		append(for_range_to_variables.back()->get());
 		append(for_range_step_variables.back()->get());
-		append(p_variable);
+		append(element);
 		for_jump_addresses.push_back(opcodes.size());
 		append(0);
 		append_opcode(BSFunction::OPCODE_JUMP);
@@ -881,14 +903,14 @@ void BSByteCodeGenerator::write_for(const Address &p_variable, bool, bool p_is_r
 		append(for_counter_variables.back()->get());
 		append(for_range_to_variables.back()->get());
 		append(for_range_step_variables.back()->get());
-		append(p_variable);
+		append(element);
 		for_jump_addresses.push_back(opcodes.size());
 		append(0);
 	} else {
 		append_opcode(BSFunction::OPCODE_ITERATE_BEGIN);
 		append(for_counter_variables.back()->get());
 		append(for_container_variables.back()->get());
-		append(p_variable);
+		append(element);
 		for_jump_addresses.push_back(opcodes.size());
 		append(0);
 		append_opcode(BSFunction::OPCODE_JUMP);
@@ -898,9 +920,12 @@ void BSByteCodeGenerator::write_for(const Address &p_variable, bool, bool p_is_r
 		append_opcode(BSFunction::OPCODE_ITERATE);
 		append(for_counter_variables.back()->get());
 		append(for_container_variables.back()->get());
-		append(p_variable);
+		append(element);
 		for_jump_addresses.push_back(opcodes.size());
 		append(0);
+	}
+	if (p_use_conversion) {
+		write_assign_with_conversion(p_variable, element);
 	}
 }
 

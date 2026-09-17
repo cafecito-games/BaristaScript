@@ -30,6 +30,7 @@ namespace {
 constexpr int MAX_CALL_DEPTH = 1024;
 
 thread_local int call_depth = 0;
+thread_local bool runtime_error_reported = false;
 
 struct CallDepthGuard {
 	bool entered = false;
@@ -122,7 +123,20 @@ bool call_engine_utility(const StringName &p_name, const Variant **p_arguments, 
 	return true;
 }
 
+/** Reports only the frame that found the fault, not every frame the fault unwinds through. */
+void report_runtime_error_once(const String &p_description, const StringName &p_function, const String &p_file, int p_line) {
+	if (runtime_error_reported) {
+		return;
+	}
+	runtime_error_reported = true;
+	bs_report_runtime_error(p_description, p_function, p_file, p_line);
+}
+
 } // namespace
+
+bool bs_runtime_error_was_reported() {
+	return runtime_error_reported;
+}
 
 Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, int p_argument_count, GDExtensionCallError &r_error) {
 	r_error.error = GDEXTENSION_CALL_OK;
@@ -134,9 +148,12 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	}
 
 	CallDepthGuard depth_guard;
+	if (call_depth == 1) {
+		// A new outermost call: whatever the previous one reported is answered for and done with.
+		runtime_error_reported = false;
+	}
 	if (unlikely(!depth_guard.entered)) {
-		bs_report_runtime_error("Stack overflow. Check for infinite recursion in your script.", name, source, initial_line);
-		r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
+		report_runtime_error_once("Stack overflow. Check for infinite recursion in your script.", name, source, initial_line);
 		return Variant();
 	}
 
@@ -221,6 +238,7 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	const StringName &m_name = global_names[m_index]
 
 #define BS_LOAD_INSTRUCTION_ARGUMENTS                                           \
+	BS_CHECK_SPACE(2);                                                          \
 	const int instruction_argument_count = code_ptr[BS_IP + 1];                 \
 	if (unlikely(instruction_argument_count < 0 ||                              \
 				instruction_argument_count > instruction_arguments.size())) {   \
@@ -250,8 +268,10 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	error_text = "Ran past the end of a compiled function.";
 
 vm_error:
-	bs_report_runtime_error(error_text, name, source, line);
-	r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
+	// The call happened; it raised. The engine is told the call completed, because the script-error
+	// channel already carries the reason and a call-error code would be reported a second time as a
+	// missing method that in fact exists.
+	report_runtime_error_once(error_text, name, source, line);
 	return Variant();
 
 vm_exit:

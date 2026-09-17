@@ -117,6 +117,10 @@ private:
 	// Type lowering (core lane).
 	static bool is_local_or_parameter(const CodeGen &p_codegen, const StringName &p_name);
 	static BSParser::DataType member_slot_type(const BSParser::DataType &p_type);
+	/** Whether a lowered slot type is one the runtime can check a stored value against. */
+	static bool slot_is_checkable(const BSParser::DataType &p_slot);
+	/** Refuses a slot the runtime cannot check, naming what declared it. */
+	bool refuse_unchecked_slot(const BSParser::DataType &p_slot, const String &p_subject, const BSParser::Node *p_origin);
 };
 
 } // namespace barista_script

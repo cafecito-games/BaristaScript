@@ -35,18 +35,24 @@ struct BSMethodBindHandle {
 /**
  * Every opcode, in one list, expanded into both the enumerator and its name.
  *
- * The list is frozen. An opcode keeps its number for the whole runtime, and a family that needs a
- * new one appends to the end rather than renumbering, because a compiled function built by one
- * translation unit has to be read the same way by every other one. Fourteen entries are reserved
- * and never emitted -- the ten `*_VALIDATED` opcodes, and the four validated method-bind and
- * native-static calls -- because every call goes through the generic Variant paths; keeping their
- * slots is what makes a later validated fast path a local change instead of a renumbering.
+ * The list is frozen: an opcode keeps its number, because a compiled function built by one
+ * translation unit has to be read the same way by every other one.
  *
- * Two upstream families are absent rather than reserved. The five numeric opcodes went with the
- * D1 numeric tower, which is deleted and not deferred. The four specialization opcodes --
- * `GET_TYPE_PARAMETER`, `ASSIGN_TYPED_CLASS_PARAMETER`, `CONSTRUCT_SPECIALIZED` and
- * `MAKE_SPECIALIZED_CLASS_HANDLE` -- cannot be given meaning before a receiver carries reified
- * type arguments, so generics appends them.
+ * **A new opcode is inserted immediately before `END`, never after it.** `END` is the list's
+ * terminator and the dispatch loop's stop condition, and its own number is never written into a
+ * compiled function, so moving it is the one renumbering that is safe. Appending after `END` would
+ * leave the terminator in the middle of the list and give the new opcode a number the loop would
+ * never reach.
+ *
+ * Fourteen entries are reserved and never emitted -- the ten `*_VALIDATED` opcodes, and the four
+ * validated method-bind and native-static calls. Every call goes through the generic Variant paths;
+ * keeping their slots is what makes a validated fast path a local change rather than a renumbering.
+ *
+ * Two families of upstream opcodes are absent rather than reserved, because neither has anything to
+ * mean here. The five numeric opcodes belonged to a fixed-width integer tower this language does not
+ * have: one integer type, one carrier. The four specialization opcodes -- `GET_TYPE_PARAMETER`,
+ * `ASSIGN_TYPED_CLASS_PARAMETER`, `CONSTRUCT_SPECIALIZED` and `MAKE_SPECIALIZED_CLASS_HANDLE` --
+ * read reified type arguments from a receiver, and no receiver carries any.
  */
 #define BS_OPCODE_LIST(X)                     \
 	X(OPERATOR)                               \
@@ -238,6 +244,10 @@ public:
 	// mark the target as nullable, so a null source is stored as-is instead of being rejected or
 	// converted. The flag sits well above Variant::VARIANT_MAX, so the real type is recovered by
 	// masking it off.
+	//
+	// Bit 24 is also where an *address* word's space tag begins, and the two never meet: this flag
+	// is only ever set on a type operand, which is a plain integer the address decoder never reads.
+	// A flag added here must stay on type operands for the same reason.
 	static constexpr int NULLABLE_TYPE_OPERAND_FLAG = 1 << 24;
 
 	enum Opcode {
@@ -268,13 +278,6 @@ public:
 		ADDR_SELF = ADDR_STACK_SELF | (ADDR_TYPE_STACK << ADDR_BITS),
 		ADDR_CLASS = ADDR_STACK_CLASS | (ADDR_TYPE_STACK << ADDR_BITS),
 		ADDR_NIL = ADDR_STACK_NIL | (ADDR_TYPE_STACK << ADDR_BITS),
-	};
-
-	struct StackDebug {
-		int line = 0;
-		int pos = 0;
-		bool added = false;
-		StringName identifier;
 	};
 
 	BSFunction() = default;
@@ -326,7 +329,6 @@ private:
 	// Code positions of each optional parameter's default-value block, indexed from the first
 	// optional parameter. `JUMP_TO_DEF_ARGUMENT` selects one from the actual argument count.
 	Vector<int> default_arguments;
-	Vector<StackDebug> stack_debug;
 };
 
 /**
@@ -334,5 +336,15 @@ private:
  * made of. `p_function`, `p_file` and `p_line` name the frame the error was raised in.
  */
 void bs_report_runtime_error(const String &p_description, const String &p_function, const String &p_file, int p_line);
+
+/**
+ * Whether the call that just returned reported a runtime error.
+ *
+ * A frame that fails abandons its caller too, and reporting at every level turns one fault into as
+ * many messages as the call stack is deep. Only the frame that found the fault reports; the flag is
+ * cleared when a new outermost call begins, so a caller outside the virtual machine can still ask
+ * whether the call it just made ran to completion.
+ */
+bool bs_runtime_error_was_reported();
 
 } // namespace barista_script

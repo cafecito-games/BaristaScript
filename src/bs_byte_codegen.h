@@ -42,9 +42,6 @@ class BSByteCodeGenerator final : public BSCodeGenerator {
 	String error;
 
 	Vector<int> opcodes;
-	List<HashMap<StringName, int>> stack_identifier_stack;
-	HashMap<StringName, int> stack_identifiers;
-	HashMap<StringName, int> local_constants;
 
 	Vector<StackSlot> locals;
 	HashSet<int> dirty_locals;
@@ -53,8 +50,6 @@ class BSByteCodeGenerator final : public BSCodeGenerator {
 	List<int> used_temporaries;
 	HashSet<int> temporaries_pending_clear;
 	HashMap<int, List<int>> temporaries_pool;
-
-	List<BSFunction::StackDebug> stack_debug;
 
 	int max_locals = 0;
 	int current_line = 0;
@@ -85,6 +80,8 @@ class BSByteCodeGenerator final : public BSCodeGenerator {
 	List<int> ternary_jump_skip_positions;
 	List<List<int>> breaks_to_patch;
 
+	/** Refuses an index the frozen 24-bit address encoding cannot carry. */
+	bool check_address_fits(int p_index, const char *p_what);
 	int address_of(const Address &p_address);
 	int get_constant_position(const Variant &p_constant);
 	int get_name_position(const StringName &p_name);
@@ -171,6 +168,7 @@ public:
 	void write_call(const Address &p_target, const Address &p_base, const StringName &p_function_name, const Vector<Address> &p_arguments) override;
 	void write_super_call(const Address &p_target, const StringName &p_function_name, const Vector<Address> &p_arguments) override;
 	void write_call_async(const Address &p_target, const Address &p_base, const StringName &p_function_name, const Vector<Address> &p_arguments) override;
+	void write_super_call_async(const Address &p_target, const StringName &p_function_name, const Vector<Address> &p_arguments) override;
 	void write_enum_call(const Address &p_target, const Address &p_base, const Vector<Address> &p_arguments,
 			const StringName &p_owner_script_path, const StringName &p_owner_class, const StringName &p_enum_type,
 			const StringName &p_function_name, bool p_static, bool p_async) override;

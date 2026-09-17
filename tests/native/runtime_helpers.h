@@ -18,6 +18,18 @@ namespace native_tests {
 /** Compiles `p_source` into a fresh script, or returns an invalid script carrying the diagnostic. */
 Ref<BaristaScript> compile_script(const String &p_source, const String &p_path);
 
+/**
+ * Clears the shared parse cache when it goes out of scope.
+ *
+ * Compiling a script that names a dependency leaves that dependency's parser in the cache, which is
+ * what a cache is for and what production wants. A case that triggers one has to put the process
+ * back the way it found it, the same way the storage suites do.
+ */
+class RuntimeCacheScope {
+public:
+	~RuntimeCacheScope();
+};
+
 /** Installs an error-channel reader for as long as it is alive. */
 class RuntimeErrorScope {
 	Ref<BaristaRuntimeErrorCapture> capture;
