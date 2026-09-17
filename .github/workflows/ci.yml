@@ -288,6 +288,11 @@ jobs:
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/run_native_suites.py --godot "$godot_binary"
 
+      # Every CMake build in this step and the two after it, including the rebuild script's --jobs,
+      # uses four jobs to match the public-repository ubuntu-22.04 runner (4 vCPU, 16 GB). GCC 11
+      # peaks near 0.94 GB for the largest analyzer translation unit, so four concurrent compiles
+      # stay near 3.5 GB. Keep an explicit count: with the Makefiles generator a bare --parallel is
+      # an unbounded `make -j` that would start about a hundred compilers at once.
       - name: Build and run the native suites with CMake
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
         shell: bash
@@ -296,7 +301,7 @@ jobs:
         run: |
           godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
-          cmake --build build/native-cmake --parallel 2
+          cmake --build build/native-cmake --parallel 4
           python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
@@ -308,7 +313,7 @@ jobs:
           GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
         run: |
           godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
-          python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake
+          python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake --jobs 4
 
       - name: Verify the CMake native test off/on transition
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
@@ -318,10 +323,10 @@ jobs:
         run: |
           godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF
-          cmake --build build/native-cmake --parallel 2
+          cmake --build build/native-cmake --parallel 4
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
           cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON
-          cmake --build build/native-cmake --parallel 2
+          cmake --build build/native-cmake --parallel 4
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
 
       # Two committed guards already refuse a tampered residual-failure pin, but both compare the
