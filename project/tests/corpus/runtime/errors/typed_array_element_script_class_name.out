@@ -1,0 +1,6 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 12: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "append()" requires the subtype "Box" but the supertype "Variant" was provided.
+>> ERROR: Method/function failed. Returning: false
+>>   Attempted to push_back an object into a TypedArray, that does not inherit from 'Box'.
+>> ERROR: Condition "!_p->typed.validate(value, "push_back")" is true.
+not ok

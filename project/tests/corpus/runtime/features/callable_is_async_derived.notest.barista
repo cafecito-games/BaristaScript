@@ -1,0 +1,1 @@
+extends "res://tests/corpus/runtime/features/callable_is_async_base.notest.barista"

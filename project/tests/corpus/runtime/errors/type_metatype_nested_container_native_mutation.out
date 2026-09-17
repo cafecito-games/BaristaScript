@@ -1,0 +1,14 @@
+FS_TEST_RUNTIME_ERROR
+>> ERROR: Method/function failed. Returning: false
+>>   Attempted to push_back an object of type 'RefCounted' into a TypedArray of type 'Type[Node]', which requires a class handle.
+>> ERROR: Condition "!_p->typed.validate(value, "push_back")" is true.
+0
+>> ERROR: Method/function failed. Returning: false
+>>   Attempted to push_back a class handle for 'Resource' into a TypedArray of type 'Type[Node]', whose represented type is not compatible.
+>> ERROR: Condition "!_p->typed.validate(value, "push_back")" is true.
+0
+>> ERROR: Method/function failed. Returning: false
+>>   Attempted to push_back a variable of type 'int' into a TypedArray of type 'Type[Node]'.
+>> ERROR: Condition "!_p->typed.validate(value, "push_back")" is true.
+0
+1

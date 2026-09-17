@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_self_tuple_parameter_gradual_element.barista:15 on test(): Invalid type in function 'take_pair' in base 'RefCounted (Receiver)'. The array of argument 1 (Array) does not have the same element type as the expected typed array argument.

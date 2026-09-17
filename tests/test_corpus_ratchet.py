@@ -336,6 +336,56 @@ class RepositoryRatchet(unittest.TestCase):
         self.assertEqual(complaints, [], '\n'.join(complaints))
 
 
+class RuntimeRatchet(unittest.TestCase):
+    """The runtime pin is established once at 100% and is monotone from then on.
+
+    Establishment is the whole included population, because the corpus lands before any
+    virtual machine exists. That makes growth the only direction that can hide a
+    regression, and it is refused here exactly as it is for the analyzer corpus.
+    """
+
+    def setUp(self):
+        import import_runtime_corpus
+        self.importer = import_runtime_corpus
+        self.included = {'a.barista', 'b.barista'}
+        self.policy = {'owners': {case: {'reason': '#244: no runtime yet — expressions'}
+                                  for case in self.included}}
+        self.triage = {'excluded': {}, 'deferred': {}}
+
+    def test_a_grown_runtime_pin_is_refused(self):
+        complaints = growth(document({'runtime': (['a.barista'], True)}),
+                            document({'runtime': (['a.barista', 'b.barista'], True)}))
+        self.assertEqual(len(complaints), 1)
+        self.assertIn("corpus 'runtime'", complaints[0])
+        self.assertIn('b.barista', complaints[0])
+
+    def test_a_shrinking_runtime_pin_is_accepted(self):
+        self.assertEqual(growth(document({'runtime': (['a.barista', 'b.barista'], True)}),
+                                document({'runtime': (['a.barista'], True)})), [])
+
+    def test_the_committed_runtime_pin_is_the_established_population(self):
+        baseline = working_baseline(ROOT)['corpora']['runtime']
+        self.assertEqual(len(baseline['expected_failures']), baseline['total'])
+        self.assertEqual(baseline['expected_failures'], sorted(set(baseline['expected_failures'])))
+
+    def test_a_runtime_pin_entry_without_an_owner_or_a_reason_is_refused(self):
+        self.assertEqual(self.importer.established_expected_failures(
+            self.policy, None, None, self.included, self.triage), sorted(self.included))
+        self.policy['owners']['b.barista'] = {'reason': '  '}
+        with self.assertRaisesRegex(ValueError, 'non-empty reason'):
+            self.importer.established_expected_failures(self.policy, None, ['b.barista'],
+                                                        self.included, self.triage)
+        self.policy['owners'].pop('b.barista')
+        with self.assertRaisesRegex(ValueError, 'no semantic owner'):
+            self.importer.established_expected_failures(self.policy, None, ['b.barista'],
+                                                        self.included, self.triage)
+
+    def test_a_runtime_pin_entry_that_is_not_an_included_case_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'not an imported case'):
+            self.importer.established_expected_failures(self.policy, None, ['c.barista'],
+                                                        self.included, self.triage)
+
+
 class PinEnforcement(unittest.TestCase):
     """The shrinking half of the ratchet, enforced by the triage run against real outcomes."""
 

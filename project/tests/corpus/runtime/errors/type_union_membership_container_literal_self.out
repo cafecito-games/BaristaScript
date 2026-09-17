@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_union_membership_container_literal_self.barista:11 on Receiver.drive(): Invalid type in function 'absorb' in base 'RefCounted (Receiver)'. Argument 1 has type "Array", but the parameter requires "Array[Array[Receiver]] | Array[Receiver]".

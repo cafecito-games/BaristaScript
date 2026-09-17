@@ -1,0 +1,26 @@
+{
+  "files": {
+    "analyzer/errors/rtc_scoped_conformance.notest.fs": "3c26a51e9754825c8401f5bddd446984cc76909f1101087bec471fe2ed338064",
+    "analyzer/features/generic_tagged_union_global_values.notest.fs": "092dba1d8f5db2282c5f363be89218bd11a72ebb5b270b73bbc897bb6116d317",
+    "runtime/errors/checked_integer_shift_count.fs": "93b995ed4d937f13400037aefb22ccd0635a177e6171eae9321a0abb036e6269",
+    "runtime/errors/checked_integer_shift_count.out": "8a581899c32aa5d798a641e6abc628382256c5d00dc8f997649fac38ad21f500",
+    "runtime/errors/division_by_zero.fs": "44d3cdc57759aa55f7aa0fd3e06b2c70007551fb5fbe73e0b5b3bdb975fb824d",
+    "runtime/errors/division_by_zero.out": "c3b4bd1f90a39a23bc9a8b6666164276d20b4239a5a9a2e12fd0222c0ceea6cf",
+    "runtime/errors/reload_suspended_function.notest.fs": "e177602cd90785872f306c6f6b7b95141b1fe4f9923b1cf6832b961a16b03a27",
+    "runtime/errors/reload_suspended_function.out": "b54aa730f9ea4e0472dac6db658679822a69f8964b1c289cbb42622a4be1802c",
+    "runtime/errors/reload_suspended_function_helper.notest.fs": "789e30a2803508dbe11c393d6b4cb301c712dca6a09e86b07d3f328ab7f8e221",
+    "runtime/features/final_base.notest.fs": "45bff5fad9bd9c4110edac075d91e7415bc89f739bb76c92a97a89cea67571f4",
+    "runtime/features/final_class_extend_rejected.fs": "7d8f991187d0f48faaa5749abda7654fda925ef84dc8e34d141a03aff391c999",
+    "runtime/features/final_class_extend_rejected.out": "83774a96a3b344f729449f922c2d387c3c89bc933ad25d012f4fe7ee2fbeda76",
+    "runtime/features/final_derived.notest.fs": "b4e352a8e91aae4e81feb7b948d5378ad6c8580a1c83575132f0c0b4435894b2",
+    "runtime/features/generic_tagged_union_global.fs": "c833dda1d91b5108629392529cf7034fc345f1610409d7a049d6e737ba8c2c9d",
+    "runtime/features/generic_tagged_union_global.out": "400d8431a47af3a93ad68fe84e500e1e7a9c1420d4432ab35e89073c8b48934a",
+    "runtime/features/match_plain_enum_open_domain.fs": "c94a41b59c6f157d790abefca9501523f7133df5bd58a4ac0c88bb2c7761bd68",
+    "runtime/features/match_plain_enum_open_domain.out": "d3efc834c7894660ffecabcbc258373c92b215328de4ab810b32a44744021f23",
+    "runtime/features/retroactive_conformance_loaded_declaring_file.fs": "ad7e2efba873b1f944da334afd14b6ea948501c03e7a3d07d79fb6384da378e4",
+    "runtime/features/retroactive_conformance_loaded_declaring_file.out": "ecd09aafd9eec22635165a933d5f589c5064f64c50571aab2d8ba42be2658710",
+    "runtime/features/type_self_static_var_self_container.fs": "58b033984a4a5ee6f660c0f89b135478266ae3fdf58aa65e210dea1e65ea8676",
+    "runtime/features/type_self_static_var_self_container.out": "1f8ab1e39e3e45dc69bee2c4ee6dee4b13bfef784af690cfbb009bd0156f7e09"
+  },
+  "revision": "c9d5e35e9c7f5e481dc0639d5af639cabaaea7b6"
+}

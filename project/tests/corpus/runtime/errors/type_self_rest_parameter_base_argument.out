@@ -1,0 +1,4 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 13: (UNSAFE_METHOD_ACCESS) The method "take()" is not present on the inferred type "Variant" (but may be present on a subtype).
+before
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_self_rest_parameter_base_argument.barista:13 on test(): Invalid type in function 'take' in base 'FoundryScript'. The Object-derived class of argument 1 (RefCounted (Base)) is not a subclass of the expected argument class.

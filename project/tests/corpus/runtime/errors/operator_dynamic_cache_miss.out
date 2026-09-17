@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+3
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/operator_dynamic_cache_miss.barista:2 on dyn_add(): Invalid operands 'String' and 'Array' in operator '+'.

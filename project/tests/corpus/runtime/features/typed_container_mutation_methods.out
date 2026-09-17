@@ -1,0 +1,10 @@
+FS_TEST_OK
+~~ WARNING at line 23: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "append()" requires the subtype "int" but the supertype "Variant" was provided.
+~~ WARNING at line 24: (UNSAFE_CALL_ARGUMENT) The argument 2 of the function "insert()" requires the subtype "int" but the supertype "Variant" was provided.
+~~ WARNING at line 25: (UNSAFE_CALL_ARGUMENT) The argument 2 of the function "set()" requires the subtype "int" but the supertype "Variant" was provided.
+~~ WARNING at line 29: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "assign()" requires the subtype "Array[int]" but the supertype "Variant" was provided.
+~~ WARNING at line 34: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "set()" requires the subtype "String" but the supertype "Variant" was provided.
+~~ WARNING at line 34: (UNSAFE_CALL_ARGUMENT) The argument 2 of the function "set()" requires the subtype "int" but the supertype "Variant" was provided.
+~~ WARNING at line 39: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "assign()" requires the subtype "Dictionary[String, int]" but the supertype "Variant" was provided.
+~~ WARNING at line 40: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "merge()" requires the subtype "Dictionary[String, int]" but the supertype "Variant" was provided.
+ok

@@ -1,0 +1,3 @@
+FS_TEST_OK
+~~ WARNING at line 8: (UNSAFE_METHOD_ACCESS) The method "accept_type()" is not present on the inferred type "Variant" (but may be present on a subtype).
+true

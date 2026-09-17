@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_metatype_nested_container_reference_mismatch.barista:6 on test(): Trying to assign an array of type "Array[Type[Button]]" to a variable of type "Array[Type[Node]]".

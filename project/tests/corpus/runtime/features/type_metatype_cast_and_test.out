@@ -1,0 +1,10 @@
+FS_TEST_OK
+~~ WARNING at line 5: (UNSAFE_CAST) Casting "Variant" to "Type[Node]" is unsafe.
+~~ WARNING at line 13: (UNSAFE_CAST) Casting "Variant" to "Type[Node]" is unsafe.
+~~ WARNING at line 14: (UNSAFE_CAST) Casting "Variant" to "Type[Node]" is unsafe.
+true
+true
+false
+false
+true
+true

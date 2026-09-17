@@ -1,0 +1,8 @@
+FS_TEST_OK
+ok 3
+err 4
+ok 5
+err 3
+[0, 7]
+true
+{ "Ok": 0, "Err": 1 }

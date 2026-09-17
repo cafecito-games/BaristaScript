@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+[1, "one"]
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_slot_reassignment_wrong_type.barista:10 on test(): Trying to assign a value of type "Array" to a variable of type "(int, String)".

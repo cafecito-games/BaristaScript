@@ -1,0 +1,4 @@
+FS_TEST_RUNTIME_ERROR
+before return
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/gradual_return_int_width_out_of_range.barista:6 on produce(): Cannot return 5000000000 from a function whose return type is "int": the value is outside the "int" range -2147483648 to 2147483647. Use an explicit cast.
+after failed return

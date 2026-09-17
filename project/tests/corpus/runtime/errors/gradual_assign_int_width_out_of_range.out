@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+before store
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/gradual_assign_int_width_out_of_range.barista:7 on test(): Cannot assign 5000000000 to a variable of type "int": the value is outside the "int" range -2147483648 to 2147483647. Use an explicit cast.

@@ -1,0 +1,4 @@
+FS_TEST_OK
+held handles: true
+before resume: []
+after resume: ["done:ternary", "done:cast"]

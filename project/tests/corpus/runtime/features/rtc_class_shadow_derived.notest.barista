@@ -1,0 +1,3 @@
+# Companion derived class for retroactive_conformance_class_shadowing.
+class_name RtcClassShadowDerived
+extends RtcClassShadowBase

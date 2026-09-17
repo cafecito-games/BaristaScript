@@ -1,0 +1,9 @@
+FS_TEST_OK
+~~ WARNING at line 28: (UNSAFE_METHOD_ACCESS) The method "is_read_only()" is not present on the inferred type "Variant" (but may be present on a subtype).
+~~ WARNING at line 28: (UNSAFE_METHOD_ACCESS) The method "is_typed()" is not present on the inferred type "Variant" (but may be present on a subtype).
+~~ WARNING at line 35: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "exact_first()" requires the subtype "Array[int] | (int, int)" but the supertype "Variant" was provided.
+~~ WARNING at line 36: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "exact_first_reversed()" requires the subtype "Array[int] | (int, int)" but the supertype "Variant" was provided.
+~~ WARNING at line 39: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "retype_when_no_exact()" requires the subtype "Array[int] | (String, String)" but the supertype "Variant" was provided.
+exact first read_only=true typed=false
+exact first reversed read_only=true typed=false
+retype fallback read_only=false typed=true

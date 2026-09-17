@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/nullable_builtin_method_call_on_null.barista:3 on test(): Invalid call. Nonexistent function 'length' in base 'Nil'.

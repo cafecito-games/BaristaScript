@@ -1,0 +1,20 @@
+# A native engine class (`RefCounted`) is retroactively conformed to `RtcNativeGreeter` in a SEPARATE
+# file that this fixture `preload`s, rather than inline. This proves a native retroactive conformance
+# declared cross-file is visible to the using code: the witness dispatches through the trait type (via
+# a trait-typed local and a trait-typed parameter), and `is`/`as` against the externally-conformed
+# trait both work on the native value.
+const _Conformance = preload("rtc_native_greeter_ext.notest.barista")
+
+
+func via_param(g: RtcNativeGreeter) -> int:
+	return g.greet()
+
+
+func test() -> void:
+	var r := RefCounted.new()
+	var g: RtcNativeGreeter = r
+	print(g.greet())
+	print(via_param(r))
+	print(r is RtcNativeGreeter)
+	var as_greeter := r as RtcNativeGreeter
+	print(as_greeter.greet())

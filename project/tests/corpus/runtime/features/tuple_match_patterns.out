@@ -1,0 +1,18 @@
+FS_TEST_OK
+~~ WARNING at line 41: (MATCH_WITHOUT_DEFAULT) The "match" statement has no "_" wildcard branch; some values may go unhandled.
+~~ WARNING at line 46: (MATCH_WITHOUT_DEFAULT) The "match" statement has no "_" wildcard branch; some values may go unhandled.
+~~ WARNING at line 51: (MATCH_WITHOUT_DEFAULT) The "match" statement has no "_" wildcard branch; some values may go unhandled.
+~~ WARNING at line 59: (MATCH_WITHOUT_DEFAULT) The "match" statement has no "_" wildcard branch; some values may go unhandled.
+origin
+y axis 3
+x axis 4
+first 2,5
+elsewhere
+origin here
+skipped 7,8
+other
+pair 5 6
+array pattern 1 2
+grouped literal
+7
+middle 2

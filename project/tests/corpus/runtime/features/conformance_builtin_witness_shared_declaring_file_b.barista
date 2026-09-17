@@ -1,0 +1,15 @@
+# Regression for issue #1965: this fixture and
+# `conformance_builtin_witness_shared_declaring_file_a` deliberately share one declaring file
+# (`csw_shared_int_doubler_ext.notest.fs`) instead of each getting a private copy. Whichever of the
+# two fixtures runs first in the process compiles the declaring file and registers its runtime
+# witness; the other must get a cached-script hit and still be able to dispatch that witness. This
+# fixture calls the witness on an `int` function parameter rather than a local.
+const _Conformance = preload("csw_shared_int_doubler_ext.notest.barista")
+
+
+func via_param(value: int) -> int:
+	return value.csw_shared_doubled()
+
+
+func test() -> void:
+	print(via_param(4))

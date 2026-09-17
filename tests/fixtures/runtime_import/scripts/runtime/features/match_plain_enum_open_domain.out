@@ -1,0 +1,5 @@
+FS_TEST_OK
+~~ WARNING at line 27: (INT_AS_ENUM_WITHOUT_MATCH) Cannot cast 99 as Enum "match_plain_enum_open_domain.fs.Level": no enum member has matching value.
+~~ WARNING at line 28: (INT_AS_ENUM_WITHOUT_MATCH) Cannot cast 99 as Enum "match_plain_enum_open_domain.fs.Level": no enum member has matching value.
+low undeclared
+declared undeclared

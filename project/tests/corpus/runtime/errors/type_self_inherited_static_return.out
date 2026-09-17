@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 3: Cannot return value of type "Base" because the function return type is "Self".

@@ -1,0 +1,12 @@
+FS_TEST_OK
+~~ WARNING at line 31: (MATCH_WITHOUT_DEFAULT) The "match" statement has no "_" wildcard branch; some values may go unhandled.
+~~ WARNING at line 53: (MATCH_WITHOUT_DEFAULT) The "match" statement has no "_" wildcard branch; some values may go unhandled.
+guards work
+a is 0 and b is 1
+a is equal to zero
+3rd element is 3
+works with wildcard too.
+guard with multiple patterns
+regular pattern after guard mismatch
+side effect
+side effect only ran once

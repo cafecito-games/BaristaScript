@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+false
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_slot_element_width_overflow.barista:11 on test(): Trying to assign a value of type "Array" to a variable of type "(int, String)".

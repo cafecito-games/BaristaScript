@@ -1,0 +1,5 @@
+FS_TEST_OK
+~~ WARNING at line 15: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "expect_node_class()" requires the subtype "Type[Node]" but the supertype "Variant" was provided.
+true
+true
+true

@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 7: Static variable "pool" cannot be typed by class type parameter "@Self": every specialization of "Base" shares one static storage slot.

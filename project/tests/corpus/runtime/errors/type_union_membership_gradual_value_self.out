@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_union_membership_gradual_value_self.barista:8 on Receiver.drive(): Cannot store a value of type "int" in a slot of type "(String, Receiver) | (int, Receiver)": the value is none of the alternatives.

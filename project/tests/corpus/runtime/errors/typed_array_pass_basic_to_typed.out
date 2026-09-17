@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/typed_array_pass_basic_to_typed.barista:6 on test(): Invalid type in function 'expect_typed' in base 'RefCounted (typed_array_pass_basic_to_typed.barista)'. Argument 1 has type "Array", but the parameter requires "Array[int]".

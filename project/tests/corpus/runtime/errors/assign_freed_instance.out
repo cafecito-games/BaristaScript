@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/assign_freed_instance.barista:10 on subtest_native(): Trying to assign invalid previously freed instance.
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/assign_freed_instance.barista:18 on subtest_script(): Trying to assign invalid previously freed instance.

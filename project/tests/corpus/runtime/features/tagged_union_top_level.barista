@@ -1,0 +1,18 @@
+# A whole-file tagged-union declaration registers a global enum whose payload-less cases are the same
+# read-only `[tag]` singletons a nested declaration produces. The cases are reachable through the
+# global enum name and, unqualified, as constants of the declaring script.
+const EnumFile = preload("./tagged_union_top_level_values.notest.barista")
+
+func test():
+	print(RuntimeTopLevelMessage.Quit)
+	print(RuntimeTopLevelMessage.Move(1, 2))
+	print(RuntimeTopLevelMessage.Quit == RuntimeTopLevelMessage.Quit)
+	print(RuntimeTopLevelMessage.Quit == RuntimeTopLevelMessage.Move(1, 2))
+	print(RuntimeTopLevelMessage)
+
+	# The same value is reached through the declaring script handle, statically and dynamically.
+	print(EnumFile.Quit)
+	print(EnumFile.Quit == RuntimeTopLevelMessage.Quit)
+	var enum_file: Variant = EnumFile
+	@warning_ignore("unsafe_property_access")
+	print(enum_file.Quit)

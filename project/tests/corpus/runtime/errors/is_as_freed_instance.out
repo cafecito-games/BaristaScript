@@ -1,0 +1,6 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 10: (UNSAFE_METHOD_ACCESS) The method "free()" is not present on the inferred type "Variant" (but may be present on a subtype).
+~~ WARNING at line 16: (UNSAFE_METHOD_ACCESS) The method "free()" is not present on the inferred type "Variant" (but may be present on a subtype).
+~~ WARNING at line 17: (UNSAFE_CAST) Casting "Variant" to "Trinket" is unsafe.
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/is_as_freed_instance.barista:11 on subtest_is(): Left operand of 'is' is a previously freed instance.
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/is_as_freed_instance.barista:17 on subtest_as(): Trying to cast a freed object.

@@ -1,0 +1,5 @@
+FS_TEST_OK
+~~ WARNING at line 17: (UNSAFE_METHOD_ACCESS) The method "take()" is not present on the inferred type "Variant" (but may be present on a subtype).
+~~ WARNING at line 19: (UNSAFE_METHOD_ACCESS) The method "take_items()" is not present on the inferred type "Variant" (but may be present on a subtype).
+instance rest is Child: true
+instance declared is Child: true

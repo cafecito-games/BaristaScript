@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+took true
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/dynamic_call_argument_names_declared_type_handle.barista:10 on test(): Invalid type in function 'RefCounted::take (Callable)'. Argument 1 has type "RefCounted", but the parameter requires "Type[RefCounted]".

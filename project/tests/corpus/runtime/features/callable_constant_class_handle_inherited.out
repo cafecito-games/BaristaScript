@@ -1,0 +1,5 @@
+FS_TEST_OK
+inherited object == Child: true
+inherited method: spawn
+inherited result: 7
+inherited equals indirect: true

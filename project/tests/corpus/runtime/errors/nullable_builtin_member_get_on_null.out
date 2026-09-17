@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/nullable_builtin_member_get_on_null.barista:3 on test(): Invalid access to property or key 'x' on a base object of type 'Nil'.

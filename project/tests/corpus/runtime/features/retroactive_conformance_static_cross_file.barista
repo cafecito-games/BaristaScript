@@ -1,0 +1,9 @@
+# The `extend RtcTool uses RtcBuildable` conformance that supplies the static witness is declared in a
+# SEPARATE file that this fixture `preload`s. This is the reported shape: a static witness added
+# retroactively from another file must be found by a static call on the target type.
+const _Conformance = preload("rtc_runtime_tool_buildable.notest.barista")
+
+
+func test() -> void:
+	var tag: String = RtcTool.build_tag()
+	print(tag)

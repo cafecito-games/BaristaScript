@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/features/type_self_instance_argument_receiver.barista:20 on test(): Invalid type in function 'consume (via call)' in base 'RefCounted (Child)'. The Object-derived class of argument 2 (RefCounted (Sibling)) is not a subclass of the expected argument class.

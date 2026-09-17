@@ -1,0 +1,6 @@
+FS_TEST_OK
+direct shadow: sub helper
+class handle nested call: base helper
+instance receiver nested call: base helper
+class handle Self is Sub: true
+instance receiver Self is Sub: true

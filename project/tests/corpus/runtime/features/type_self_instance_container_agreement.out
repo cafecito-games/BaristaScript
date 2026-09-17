@@ -1,0 +1,8 @@
+FS_TEST_OK
+literal: true
+local: true
+mapping: true
+member: true
+member mapping: true
+base literal: true
+base member: true

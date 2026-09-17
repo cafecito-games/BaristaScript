@@ -1,0 +1,4 @@
+FS_TEST_OK
+first await: done
+second await: done
+drain finished

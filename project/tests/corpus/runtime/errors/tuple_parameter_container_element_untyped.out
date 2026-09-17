@@ -1,0 +1,4 @@
+FS_TEST_RUNTIME_ERROR
+took [1, [1, 2]]
+took [1, []]
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_parameter_container_element_untyped.barista:18 on test(): Invalid type in function 'take' in base 'RefCounted (Receiver)'. Argument 1 has type "Array", but the parameter requires "(int, Array[int])".

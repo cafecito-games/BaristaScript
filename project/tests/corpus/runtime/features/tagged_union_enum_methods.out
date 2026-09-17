@@ -1,0 +1,9 @@
+FS_TEST_OK
+quit
+move 1 2
+other
+true
+false
+true
+move 1 2
+false

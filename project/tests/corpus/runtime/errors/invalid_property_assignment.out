@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/invalid_property_assignment.barista:9 on test(): Invalid assignment of property or key 'obj' with value of type 'RefCounted (MyObj)' on a base object of type 'RefCounted (MyObj)'.

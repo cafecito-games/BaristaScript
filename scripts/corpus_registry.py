@@ -32,6 +32,7 @@ TRUSTED_REPOSITORY = "cafecito-games/Foundry"
 ALLOWED_IMPORTERS = {
     "parser": "scripts/import_parser_corpus.py",
     "analyzer": "scripts/import_analyzer_corpus.py",
+    "runtime": "scripts/import_runtime_corpus.py",
 }
 # How a corpus proves its baseline. A "gdscript" corpus is run by
 # project/tests/corpus_runner.gd and pins the exact summary line that run prints. A
@@ -123,7 +124,8 @@ def load_registry(root: Path = ROOT) -> dict:
     if not isinstance(corpora, dict) or not corpora:
         raise ValueError("corpus registry must contain nonempty corpora")
     if set(corpora) != set(ALLOWED_IMPORTERS):
-        raise ValueError("corpus registry must retain parser and analyzer registrations")
+        raise ValueError("corpus registry must retain every allowlisted corpus registration: "
+                         + ", ".join(sorted(ALLOWED_IMPORTERS)))
     seen = {key: set() for key in ("source", "destination", "importer")}
     for name, record in sorted(corpora.items()):
         if name not in ALLOWED_IMPORTERS or not isinstance(record, dict):

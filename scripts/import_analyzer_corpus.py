@@ -757,8 +757,16 @@ def main(argv=None):
         rebuilding = 'analyzer' if args.write_tree or args.inventory else None
         registry = validate_registration(ROOT, rebuilding=rebuilding)
         verify_checkout(args.foundry, registry, args.revision)
-        if registry.get('auxiliary_sources') != sorted(SCRIPTS + '/' + p for p in SUPPORT):
-            raise ValueError('registered auxiliary sources do not match the analyzer support requirement')
+        # Each support identity must be verified against the pin by the registry, either as
+        # a registered auxiliary source or as a file inside a registered corpus source root,
+        # and the registry may claim no auxiliary source this importer does not require.
+        required = sorted(SCRIPTS + '/' + p for p in SUPPORT)
+        registered = registry.get('auxiliary_sources', [])
+        roots = tuple(record['source'] for record in registry['corpora'].values())
+        covered = [path for path in required
+                   if path in registered or any(path.startswith(root + '/') for root in roots)]
+        if covered != required or any(path not in required for path in registered):
+            raise ValueError('registered corpus sources do not cover the analyzer support requirement')
         policy = default_policy()
         if policy['counts'] is None:
             raise ValueError('production policy must retain complete pinned inventory counts')

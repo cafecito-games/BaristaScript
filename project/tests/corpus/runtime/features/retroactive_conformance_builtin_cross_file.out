@@ -1,0 +1,2 @@
+FS_TEST_ANALYZER_ERROR
+>> ERROR at line 15: Invalid cast. Cannot convert from "int" to "RtcBuiltinGreeter".

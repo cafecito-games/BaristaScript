@@ -372,6 +372,60 @@ class AnalyzerImportedTree(ImportedTreeShape):
             self.assertNotEqual(invocation.get("script"), self.baseline["root"])
 
 
+class RuntimeImportedTree(ImportedTreeShape):
+    """The shape of project/tests/corpus/runtime, and the pin it lands with.
+
+    A runtime expectation is the whole transcript the upstream producer wrote, status
+    token line included, so the shared "no upstream status word survived" check is
+    replaced rather than inherited: for this corpus the token is the expectation's own
+    first line and nothing else may repeat it.
+    """
+
+    corpus = "runtime"
+
+    def test_no_upstream_status_word_survived(self):
+        for path in self.root.rglob("*.out"):
+            lines = path.read_text(encoding="utf-8")[:-1].split("\n")
+            with self.subTest(path=path):
+                self.assertIn(lines[0], ("FS_TEST_OK", "FS_TEST_RUNTIME_ERROR", "FS_TEST_ANALYZER_ERROR"))
+                for line in lines[1:]:
+                    for word in UPSTREAM_STATUS_WORDS + ("FS_TEST_RUNTIME_ERROR", "FS_TEST_COMPILER_ERROR"):
+                        self.assertNotIn(word, line)
+
+    def test_the_committed_population_is_the_verified_upstream_population(self):
+        triage = self.baseline["triage"]
+        self.assertEqual(self.baseline["upstream_total"], 757)
+        self.assertEqual(self.baseline["upstream_helpers"], 82)
+        self.assertEqual(self.baseline["upstream_sources"], 839)
+        self.assertEqual(self.baseline["skipped"], 82)
+        self.assertEqual(self.baseline["total"] + len(triage["excluded"]) + len(triage["deferred"]), 757)
+
+    def test_every_included_case_is_pinned_with_an_owning_child(self):
+        runtime_importer = load_module("import_runtime_corpus", ROOT / "scripts" / "import_runtime_corpus.py")
+        owners = runtime_importer.default_policy()["owners"]
+        pin = self.baseline["expected_failures"]
+        self.assertEqual(pin, sorted(set(pin)))
+        present = {path.relative_to(self.root).as_posix() for path in self.cases()}
+        self.assertEqual(sorted(present - set(pin)), [])
+        for case in pin:
+            with self.subTest(case=case):
+                owner = owners[case]
+                self.assertTrue(owner["reason"].strip())
+                self.assertTrue(owner["reason"].startswith(f'#{owner["primary_issue"]}: '))
+
+    def test_the_tree_states_the_same_pin_the_baseline_does(self):
+        ledger = json.loads((self.root / "inventory.json").read_text(encoding="utf-8"))["ledger"]
+        self.assertEqual(ledger["expected_failures"], self.baseline["expected_failures"])
+        self.assertEqual(ledger["total"], self.baseline["total"])
+        self.assertEqual(ledger["skipped"], self.baseline["skipped"])
+
+    def test_the_runtime_corpus_claims_no_gdscript_runner_invocation(self):
+        suites = json.loads(SUITES.read_text(encoding="utf-8"))
+        for invocation in suites["extra_invocations"] + list(suites["overrides"].values()):
+            self.assertNotIn(self.baseline["root"], invocation.get("args", []))
+            self.assertNotEqual(invocation.get("script"), self.baseline["root"])
+
+
 class TriageTable(unittest.TestCase):
     """The importer's triage table, which is the only copy of the reason text."""
 

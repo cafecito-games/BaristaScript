@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/return_typed_int_mismatch.barista:3 on get_wrong_int(): Trying to return value of type "String" from a function whose return type is "int".
+0

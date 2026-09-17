@@ -1,0 +1,3 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/type_metatype_return_invalid.barista:3 on get_node_class(): Trying to return value of type "Resource" from a function whose return type is "Type[Node]".
+<null>

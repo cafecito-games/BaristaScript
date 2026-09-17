@@ -1,0 +1,10 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 30: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "keep_untyped()" requires the subtype "Variant" but the supertype "Variant" was provided.
+~~ WARNING at line 31: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "keep_wrongly_typed()" requires the subtype "Variant" but the supertype "Variant" was provided.
+~~ WARNING at line 32: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "keep_with_second_failure()" requires the subtype "Variant" but the supertype "Variant" was provided.
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_store_container_element_diagnostic.barista:10 on keep_untyped(): Trying to assign a value of type "Array" to a variable of type "(int, Array[int])". Tuple element 1 expects "Array[int]", but the value is "Array": a tuple store never converts, so a container element has to arrive already typed.
+untyped: <null>
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_store_container_element_diagnostic.barista:15 on keep_wrongly_typed(): Trying to assign a value of type "Array" to a variable of type "(int, Array[int])". Tuple element 1 expects "Array[int]", but the value is "Array[String]": a tuple store never converts, so a container element's own typing has to match exactly.
+wrongly typed: <null>
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/tuple_store_container_element_diagnostic.barista:20 on keep_with_second_failure(): Trying to assign a value of type "Array" to a variable of type "(Node, Array[int])".
+second failure: <null>

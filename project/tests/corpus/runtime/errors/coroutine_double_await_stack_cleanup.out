@@ -1,0 +1,2 @@
+FS_TEST_RUNTIME_ERROR
+>> SCRIPT ERROR at res://tests/corpus/runtime/errors/coroutine_double_await_stack_cleanup.barista:10 on _job(): Out of bounds get index '10' (on base: 'Array[int]')

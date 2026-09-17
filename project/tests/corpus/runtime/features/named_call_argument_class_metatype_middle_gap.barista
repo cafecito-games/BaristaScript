@@ -1,0 +1,50 @@
+# A named call may leave a middle gap on a parameter whose default is a class
+# metatype. The default is inlined at the call site, but a class metatype must
+# resolve to the live compiled subclass rather than a baked shallow class object,
+# mirroring how class-constant identifiers and `const` aliases resolve. Same-unit
+# inner classes, `const` aliases, nested inner classes, and external (preloaded)
+# classes all construct correctly when supplied as the skipped middle default.
+# https://github.com/cafecito-games/godot/issues/453
+
+class Inner:
+	var value := 7
+
+class Outer:
+	class Nested:
+		var label := "nested"
+
+const Alias = Inner
+
+const External = preload("const_class_reference_external.notest.barista")
+
+
+func make_inner(prefix: String, cls := Inner, count := 0) -> String:
+	return prefix + str(cls.new().value) + str(count)
+
+
+func make_alias(prefix: String, cls := Alias, count := 0) -> String:
+	return prefix + str(cls.new().value) + str(count)
+
+
+func make_nested(prefix: String, cls := Outer.Nested, count := 0) -> String:
+	return prefix + cls.new().label + str(count)
+
+
+func make_external(prefix: String, cls := External.Class, count := 0) -> String:
+	return prefix + cls.new().origin + str(count)
+
+
+func test():
+	# Skip the class-metatype middle default; it resolves to the live `Inner`
+	# class and `.new()` constructs it, while the named `count` keeps its value.
+	print(make_inner("inner:", count = 2))
+	# Trailing-omit baseline: with no named argument the callee fills both
+	# `cls` and `count` itself, producing the same live-class construction.
+	print(make_inner("inner:"))
+	# A `const` alias of an inner class resolves to the same live class.
+	print(make_alias("alias:", count = 3))
+	# A nested inner class default constructs to the live nested class.
+	print(make_nested("nested:", count = 4))
+	# An external (preloaded) class default resolves to the live external
+	# subclass held by FSCache.
+	print(make_external("external:", count = 5))

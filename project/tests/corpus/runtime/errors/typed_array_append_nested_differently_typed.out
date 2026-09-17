@@ -1,0 +1,6 @@
+FS_TEST_RUNTIME_ERROR
+~~ WARNING at line 6: (UNSAFE_CALL_ARGUMENT) The argument 1 of the function "append()" requires the subtype "Dictionary[String, int]" but the supertype "Variant" was provided.
+>> ERROR: Method/function failed. Returning: false
+>>   Attempted to push_back a variable of type 'String' into a container of type 'int'.
+>> ERROR: Condition "!_p->typed.validate(value, "push_back")" is true.
+0

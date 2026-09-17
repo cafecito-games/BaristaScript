@@ -1,0 +1,3 @@
+FS_TEST_OK
+completed before await
+awaited after complete: value:7
