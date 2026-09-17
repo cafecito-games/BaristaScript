@@ -34,7 +34,10 @@ case names and `tests/native_suites.json` owns required suites. Never construct 
 objects in static initializers. Use the supervisor for verification; list/query mode and exit
 0 alone are not execution evidence. Verify both build systems and on/off/on transitions when
 changing native build infrastructure; `tests/verify_native_surface.py` checks ordinary debug
-and release artifacts. Native runs must leave ordinary fixtures, descriptors and libraries intact.
+and release artifacts. CI re-verifies those transitions on a pull request only when it changes
+a build input named in `scripts/native_transition_scope.py`, and on every push and merge group;
+add a new build input there and to `REQUIRED_TRANSITION_INPUTS` in `tests/validate_ci.py`.
+Native runs must leave ordinary fixtures, descriptors and libraries intact.
 After a native CMake build, `python3 tests/test_native_cmake_rebuild.py --godot "$(command -v godot)"`
 checks incremental XML/build-script/profile changes using only `cmake --build`. It temporarily
 edits those inputs and restores their exact bytes and rebuilds even if a check fails; run it

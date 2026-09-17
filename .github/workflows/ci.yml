@@ -138,6 +138,7 @@ jobs:
         run: |
           python3 -m pip install -r tests/requirements.txt
           python3 tests/validate_ci.py
+          python3 tests/test_native_transition_scope.py
           python3 tests/test_build_config.py
           python3 tests/test_build_consumers.py
           python3 tests/test_query_build_info.py
@@ -239,7 +240,7 @@ jobs:
           grep -q 'example.barista::BaristaScript' project/.godot/editor/filesystem_cache*
           python3 tests/run_gdscript_suites.py --godot "$godot_binary"
 
-      - name: Verify the SCons native test on/off/on sequence
+      - name: Build and run the native suites with SCons
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash
         env:
@@ -252,6 +253,34 @@ jobs:
           python3 tests/run_native_suites.py --godot "$godot_binary"
           python3 tests/test_run_corpus_triage.py --godot "$godot_binary" \
             --library "$(python3 -c "import json; print(json.load(open('build/native-scons/native-artifact.json'))['library'])")"
+
+      # The steps from here to the corpus triage re-prove that toggling native tests on and off
+      # under SCons and CMake never leaves test code in an ordinary artifact. That is decided by
+      # the build descriptions, not by the sources they compile: every matrix entry already
+      # checks its freshly built ordinary artifact above. A pull request that changes none of
+      # the build inputs listed, with the reasoning, in scripts/native_transition_scope.py
+      # skips them. Every other event runs them, and so does any pull request whose changes
+      # cannot be computed, because the steps run unless the decision is an explicit 'false'.
+      - name: Decide whether to verify native build-system transitions
+        id: transition_scope
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 scripts/native_transition_scope.py
+          --event "$EVENT_NAME"
+          --pull-request-head "$PULL_REQUEST_HEAD"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify the SCons native test off/on transition
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=no
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_release barista_tests=no
@@ -260,7 +289,7 @@ jobs:
           python3 tests/run_native_suites.py --godot "$godot_binary"
 
       - name: Build and run the native suites with CMake
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
         shell: bash
         env:
           GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
@@ -273,7 +302,7 @@ jobs:
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
 
       - name: Verify incremental native CMake rebuilds
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
         shell: bash
         env:
           GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
@@ -282,7 +311,7 @@ jobs:
           python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake
 
       - name: Verify the CMake native test off/on transition
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
         shell: bash
         env:
           GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
