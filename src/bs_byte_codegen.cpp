@@ -178,10 +178,15 @@ void BSByteCodeGenerator::clear_temporaries() {
 }
 
 void BSByteCodeGenerator::clear_address(const Address &p_address) {
-	// Clearing writes a value of the slot's own carrier, so a pooled slot keeps its type.
-	if (p_address.mode == Address::TEMPORARY && temporaries[p_address.address].type != Variant::NIL) {
+	// Clearing gives the slot a value of its own carrier: a declared `int` that was never assigned
+	// has to read back as 0, not as the cheap placeholder an untyped slot can take. A pooled
+	// temporary keeps the carrier its pool entry was taken for.
+	if (p_address.type.kind == BSParser::DataType::BUILTIN && p_address.type.builtin_type != Variant::NIL) {
+		write_type_adjust(p_address, p_address.type.builtin_type);
+	} else if (p_address.mode == Address::TEMPORARY && temporaries[p_address.address].type != Variant::NIL) {
 		write_type_adjust(p_address, temporaries[p_address.address].type);
 	} else {
+		// An untyped or object slot is about to be overwritten, so false is as good as null and cheaper.
 		write_assign_false(p_address);
 	}
 	if (p_address.mode == Address::LOCAL_VARIABLE) {

@@ -139,6 +139,30 @@ TEST_SUITE("runtime") {
 		CHECK(owner->call("describe") == Variant("hello"));
 	}
 
+	TEST_CASE("a declared slot with no initializer holds a value of its own carrier") {
+		const Ref<BaristaScript> script = compile_script(
+				"var member_without_initializer: int\n"
+				"\n"
+				"func local_without_initializer() -> int:\n"
+				"\tvar value: int\n"
+				"\treturn value\n"
+				"\n"
+				"func text_without_initializer() -> String:\n"
+				"\tvar value: String\n"
+				"\treturn value\n",
+				"res://runtime/uninitialized.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		const Variant zero = owner->call("local_without_initializer");
+		CHECK(zero.get_type() == Variant::INT);
+		CHECK(zero == Variant(0));
+		const Variant empty = owner->call("text_without_initializer");
+		CHECK(empty.get_type() == Variant::STRING);
+		CHECK(empty == Variant(""));
+	}
+
 	TEST_CASE("print reaches the engine's utility functions") {
 		const Ref<BaristaScript> script = compile_script(
 				"func announce() -> void:\n"
