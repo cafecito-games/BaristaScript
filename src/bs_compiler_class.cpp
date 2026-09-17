@@ -146,16 +146,25 @@ Error BSCompiler::compile_implicit_initializer(BaristaScript *p_script, const BS
 
 	Error result = OK;
 	for (const BSParser::ClassNode::Member &member : p_class->members) {
-		if (member.type != BSParser::ClassNode::Member::VARIABLE || member.variable->initializer == nullptr) {
+		if (member.type != BSParser::ClassNode::Member::VARIABLE) {
 			continue;
 		}
 		const int index = p_script->get_member_index(member.variable->identifier->name);
 		if (index < 0) {
 			continue;
 		}
-		generator.write_newline(member.variable->start_line);
 		const BSCodeGenerator::Address target(BSCodeGenerator::Address::MEMBER, index,
 				member_slot_type(member.variable->get_datatype()));
+		generator.write_newline(member.variable->start_line);
+		if (member.variable->initializer == nullptr) {
+			// A member slot starts out nil, which is the right answer for an untyped one. A declared
+			// carrier has to start out as that carrier's own empty value instead, the same way a
+			// local does, so a never-assigned `int` member reads back as 0.
+			if (target.type.kind == BSParser::DataType::BUILTIN && target.type.builtin_type != Variant::NIL) {
+				generator.clear_address(target);
+			}
+			continue;
+		}
 		const BSCodeGenerator::Address value = parse_expression(codegen, result, member.variable->initializer);
 		if (result != OK) {
 			return result;

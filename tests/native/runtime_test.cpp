@@ -161,6 +161,55 @@ TEST_SUITE("runtime") {
 		const Variant empty = owner->call("text_without_initializer");
 		CHECK(empty.get_type() == Variant::STRING);
 		CHECK(empty == Variant(""));
+		const Variant member = owner->get("member_without_initializer");
+		CHECK(member.get_type() == Variant::INT);
+		CHECK(member == Variant(0));
+	}
+
+	TEST_CASE("optional parameters take their declared defaults") {
+		const Ref<BaristaScript> script = compile_script(
+				"func greet(name: String, greeting: String = \"hello\", mark: String = \"!\") -> String:\n"
+				"\treturn greeting + \" \" + name + mark\n",
+				"res://runtime/defaults.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		CHECK(owner->call("greet", "world") == Variant("hello world!"));
+		CHECK(owner->call("greet", "world", "hi") == Variant("hi world!"));
+		CHECK(owner->call("greet", "world", "hi", "?") == Variant("hi world?"));
+	}
+
+	TEST_CASE("the logical operators short-circuit") {
+		const Ref<BaristaScript> script = compile_script(
+				"var right_hand_evaluations: int = 0\n"
+				"\n"
+				"func right_hand(value: bool) -> bool:\n"
+				"\tself.right_hand_evaluations += 1\n"
+				"\treturn value\n"
+				"\n"
+				"func both(left: bool, right: bool) -> bool:\n"
+				"\treturn left and self.right_hand(right)\n"
+				"\n"
+				"func either(left: bool, right: bool) -> bool:\n"
+				"\treturn left or self.right_hand(right)\n",
+				"res://runtime/short_circuit.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+
+		CHECK(owner->call("both", false, true) == Variant(false));
+		CHECK(owner->get("right_hand_evaluations") == Variant(0));
+		CHECK(owner->call("both", true, true) == Variant(true));
+		CHECK(owner->call("both", true, false) == Variant(false));
+		CHECK(owner->get("right_hand_evaluations") == Variant(2));
+
+		CHECK(owner->call("either", true, false) == Variant(true));
+		CHECK(owner->get("right_hand_evaluations") == Variant(2));
+		CHECK(owner->call("either", false, true) == Variant(true));
+		CHECK(owner->call("either", false, false) == Variant(false));
+		CHECK(owner->get("right_hand_evaluations") == Variant(4));
 	}
 
 	TEST_CASE("print reaches the engine's utility functions") {
