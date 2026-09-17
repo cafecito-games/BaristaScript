@@ -14,6 +14,8 @@
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/godot.hpp>
+#include <godot_cpp/variant/callable.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 
 using namespace barista_script;
 using namespace barista_script::native_tests;
@@ -76,7 +78,7 @@ TEST_SUITE("runtime") {
 				"\treturn a + b\n",
 				"res://runtime/add.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		BS_TEST_REQUIRE(script->_can_instantiate());
 		CHECK(script->_get_instance_base_type() == StringName("RefCounted"));
 
@@ -123,7 +125,7 @@ TEST_SUITE("runtime") {
 				"\treturn sum\n",
 				"res://runtime/flow.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		BS_TEST_REQUIRE(script->_can_instantiate());
 
 		const Ref<RefCounted> owner = attach(script);
@@ -148,7 +150,7 @@ TEST_SUITE("runtime") {
 				"\treturn self.greeting\n",
 				"res://runtime/initializers.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 		CHECK(owner->get("greeting") == Variant("hello"));
@@ -169,7 +171,7 @@ TEST_SUITE("runtime") {
 				"\treturn value\n",
 				"res://runtime/uninitialized.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 		const Variant zero = owner->call("local_without_initializer");
@@ -189,7 +191,7 @@ TEST_SUITE("runtime") {
 				"\treturn greeting + \" \" + name + mark\n",
 				"res://runtime/defaults.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 		CHECK(owner->call("greet", "world") == Variant("hello world!"));
@@ -212,7 +214,7 @@ TEST_SUITE("runtime") {
 				"\treturn left or self.right_hand(right)\n",
 				"res://runtime/short_circuit.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 
@@ -235,12 +237,12 @@ TEST_SUITE("runtime") {
 				"\tprint(\"BS_RUNTIME_PRINT\")\n",
 				"res://runtime/print.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 		RuntimeErrorScope errors;
 		owner->call("announce");
-		CHECK_MESSAGE(errors.errors().is_empty(), errors.joined().utf8().get_data());
+		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
 	}
 
 	TEST_CASE("a member initializer can call the script's own functions") {
@@ -255,11 +257,11 @@ TEST_SUITE("runtime") {
 				"\tself.doubled = self.int_factory() * 2\n",
 				"res://runtime/self_call_initializer.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		RuntimeErrorScope errors;
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
-		CHECK_MESSAGE(errors.errors().is_empty(), errors.joined().utf8().get_data());
+		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
 		CHECK(owner->get("ratio").get_type() == Variant::FLOAT);
 		CHECK(owner->get("ratio") == Variant(2.0));
 		CHECK(owner->get("doubled") == Variant(4));
@@ -277,7 +279,7 @@ TEST_SUITE("runtime") {
 				"\treturn values[4]\n",
 				"res://runtime/raising_initializer.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 
 		RuntimeErrorScope errors;
 		Ref<RefCounted> owner;
@@ -316,7 +318,7 @@ TEST_SUITE("runtime") {
 				"\treturn 1\n",
 				"res://runtime/super_fallback.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 		BSInstance *instance = BSInstance::from_owner(owner.ptr());
@@ -332,9 +334,159 @@ TEST_SUITE("runtime") {
 		GDExtensionCallError error;
 		function->call(instance, nullptr, 0, error);
 		memdelete(function);
-		CHECK_MESSAGE(errors.has_error_containing("probe"), errors.joined().utf8().get_data());
-		CHECK_MESSAGE(!errors.has_error_containing("Stack overflow"), errors.joined().utf8().get_data());
+		CHECK_MESSAGE(errors.has_error_containing("probe"), readable(errors.joined()));
+		CHECK_MESSAGE(!errors.has_error_containing("Stack overflow"), readable(errors.joined()));
 		CHECK(errors.errors().size() == 1);
+	}
+
+	TEST_CASE("a fault under a call does not abandon the frame that made it") {
+		const Ref<BaristaScript> healthy = compile_script(
+				"var after: int = 0\n"
+				"\n"
+				"func run() -> int:\n"
+				"\tself.emit_signal(\"script_changed\")\n"
+				"\tself.after = 7\n"
+				"\treturn 7\n",
+				"res://runtime/healthy_frame.barista");
+		const Ref<BaristaScript> raiser = compile_script(
+				"func boom() -> int:\n"
+				"\tvar values: Array = []\n"
+				"\treturn values[4]\n",
+				"res://runtime/raising_listener.barista");
+		BS_TEST_REQUIRE(healthy->_can_instantiate());
+		BS_TEST_REQUIRE(raiser->_can_instantiate());
+
+		const Ref<RefCounted> owner = attach(healthy);
+		const Ref<RefCounted> listener = attach(raiser);
+		BS_TEST_REQUIRE(owner.is_valid());
+		BS_TEST_REQUIRE(listener.is_valid());
+		CHECK(owner->connect("script_changed", Callable(listener.ptr(), "boom")) == OK);
+
+		RuntimeErrorScope errors;
+		// The listener raises while `run` is emitting. That is the listener's fault to report, and
+		// `run` has no reason to stop: a shared "something failed" bit read as "my callee failed"
+		// abandons a frame whose own call completed.
+		CHECK(owner->call("run") == Variant(7));
+		CHECK(owner->get("after") == Variant(7));
+		CHECK(errors.errors().size() == 1);
+		CHECK_MESSAGE(errors.has_error_containing("Invalid index"), readable(errors.joined()));
+	}
+
+	TEST_CASE("subscripting reads and writes a sequence and a map") {
+		const Ref<BaristaScript> script = compile_script(
+				"func first(values: Array) -> int:\n"
+				"\treturn values[0]\n"
+				"\n"
+				"func replace_first(values: Array, value: int) -> Array:\n"
+				"\tvalues[0] = value\n"
+				"\treturn values\n"
+				"\n"
+				"func look_up(entries: Dictionary, key: String) -> int:\n"
+				"\treturn entries[key]\n"
+				"\n"
+				"func sum_all(values: Array) -> int:\n"
+				"\tvar total: int = 0\n"
+				"\tvar position: int = 0\n"
+				"\twhile position < 3:\n"
+				"\t\ttotal += values[position]\n"
+				"\t\tposition += 1\n"
+				"\treturn total\n",
+				"res://runtime/subscript.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+
+		RuntimeErrorScope errors;
+		Array values;
+		values.push_back(10);
+		values.push_back(20);
+		values.push_back(30);
+		CHECK(owner->call("first", values) == Variant(10));
+		CHECK(owner->call("sum_all", values) == Variant(60));
+		const Array replaced = owner->call("replace_first", values, 99);
+		CHECK(replaced[0] == Variant(99));
+
+		Dictionary entries;
+		entries["gold"] = 3;
+		CHECK(owner->call("look_up", entries, "gold") == Variant(3));
+		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
+	}
+
+	TEST_CASE("a native slot refuses a value that is not of its class") {
+		const Ref<BaristaScript> script = compile_script(
+				"var holder: RefCounted\n"
+				"\n"
+				"func store(value: Variant) -> int:\n"
+				"\tself.holder = value\n"
+				"\treturn 1\n",
+				"res://runtime/native_slot.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		// An object slot with nothing in it holds null, not the placeholder an untyped slot takes.
+		CHECK(owner->get("holder").get_type() == Variant::NIL);
+
+		Ref<RefCounted> stored;
+		stored.instantiate();
+		CHECK(owner->call("store", stored) == Variant(1));
+		CHECK(owner->get("holder") == Variant(stored));
+
+		RuntimeErrorScope errors;
+		owner->call("store", 5);
+		CHECK_MESSAGE(errors.has_error_containing("RefCounted"), readable(errors.joined()));
+		CHECK(owner->get("holder") == Variant(stored));
+	}
+
+	TEST_CASE("a declared function keeps its name from an engine utility") {
+		const Ref<BaristaScript> script = compile_script(
+				"func abs(value: int) -> int:\n"
+				"\tif value < 0:\n"
+				"\t\treturn 0 - value\n"
+				"\treturn value\n"
+				"\n"
+				"func run() -> int:\n"
+				"\treturn abs(-5)\n",
+				"res://runtime/shadowed_utility.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		RuntimeErrorScope errors;
+		CHECK(owner->call("run") == Variant(5));
+		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
+	}
+
+	TEST_CASE("a utility this runtime cannot reach is refused where it is written") {
+		const Ref<BaristaScript> script = compile_script(
+				"func run() -> int:\n"
+				"\treturn abs(-5)\n",
+				"res://runtime/unreachable_utility.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_FALSE(script->_can_instantiate());
+		const String diagnostic = script->get_compile_error();
+		CHECK_MESSAGE(diagnostic.contains("abs"), readable(diagnostic));
+	}
+
+	TEST_CASE("an initializer can call through a local that holds the receiver") {
+		const Ref<BaristaScript> script = compile_script(
+				"var value: int = 0\n"
+				"\n"
+				"func helper() -> int:\n"
+				"\treturn 3\n"
+				"\n"
+				"func _init() -> void:\n"
+				"\tvar me: RefCounted = self\n"
+				"\tself.value = me.helper()\n",
+				"res://runtime/aliased_self.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		RuntimeErrorScope errors;
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
+		CHECK(owner->get("value") == Variant(3));
 	}
 
 	TEST_CASE("an opcode with no handler names itself") {
@@ -354,7 +506,7 @@ TEST_SUITE("runtime") {
 		CHECK(error.error == GDEXTENSION_CALL_OK);
 		CHECK(bs_runtime_error_was_reported());
 		CHECK_MESSAGE(errors.has_error_containing("Opcode not implemented: OPCODE_OPERATOR_VALIDATED."),
-				errors.joined().utf8().get_data());
+				readable(errors.joined()));
 		CHECK(errors.errors().size() == 1);
 	}
 
@@ -383,8 +535,8 @@ TEST_SUITE("runtime") {
 		BS_TEST_REQUIRE(script.is_valid());
 		CHECK_FALSE(script->_can_instantiate());
 		const String diagnostic = script->get_compile_error();
-		CHECK_MESSAGE(diagnostic.contains("gdscript_base.gd"), diagnostic.utf8().get_data());
-		CHECK_MESSAGE(diagnostic.contains("GDScript"), diagnostic.utf8().get_data());
+		CHECK_MESSAGE(diagnostic.contains("gdscript_base.gd"), readable(diagnostic));
+		CHECK_MESSAGE(diagnostic.contains("GDScript"), readable(diagnostic));
 		CHECK(script->_instance_create(nullptr) == nullptr);
 	}
 
@@ -426,7 +578,7 @@ TEST_SUITE("runtime") {
 				"\treturn value * 2\n",
 				"res://runtime/instance_abi.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 
@@ -557,7 +709,7 @@ TEST_SUITE("runtime") {
 				"\treturn value / 2\n",
 				"res://runtime/conversion.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 		// An integer 1 stored in a float member would divide as an integer and answer 0.
@@ -581,7 +733,7 @@ TEST_SUITE("runtime") {
 				"\treturn total\n",
 				"res://runtime/loop_conversion.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		const Ref<RefCounted> owner = attach(script);
 		BS_TEST_REQUIRE(owner.is_valid());
 
@@ -612,7 +764,7 @@ TEST_SUITE("runtime") {
 			BS_TEST_REQUIRE(script.is_valid());
 			CHECK_FALSE(script->_can_instantiate());
 			const String diagnostic = script->get_compile_error();
-			CHECK_MESSAGE(diagnostic.contains(row.named), diagnostic.utf8().get_data());
+			CHECK_MESSAGE(diagnostic.contains(row.named), readable(diagnostic));
 			CHECK(script->_instance_create(nullptr) == nullptr);
 		}
 	}

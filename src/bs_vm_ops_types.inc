@@ -32,6 +32,28 @@ case OPCODE_TYPE_TEST_NATIVE: {
 	BS_IP += 4;
 } break;
 
+case OPCODE_ASSIGN_TYPED_NATIVE: {
+	BS_CHECK_SPACE(4);
+	BS_GET_VARIANT_PTR(destination, 0);
+	BS_GET_VARIANT_PTR(source, 1);
+	BS_GET_NAME(native_class, code_ptr[BS_IP + 3]);
+	if (source->get_type() == Variant::NIL) {
+		// An object slot holds a reference or nothing; nothing is a value it admits.
+		*destination = Variant();
+	} else {
+		Object *object = source->get_validated_object();
+		if (unlikely(object == nullptr || !ClassDB::is_parent_class(object->get_class(), native_class))) {
+			error_text = vformat(R"(Cannot assign a value of type "%s" to a slot of type "%s".)",
+					source->get_type() == Variant::OBJECT ? String("a freed or unrelated object")
+														  : Variant::get_type_name(source->get_type()),
+					String(native_class));
+			goto vm_error;
+		}
+		*destination = *source;
+	}
+	BS_IP += 4;
+} break;
+
 case OPCODE_CAST_TO_BUILTIN: {
 	BS_CHECK_SPACE(4);
 	BS_GET_VARIANT_PTR(source, 0);

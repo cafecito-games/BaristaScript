@@ -34,10 +34,15 @@ BSParser::DataType BSCompiler::member_slot_type(const BSParser::DataType &p_type
 }
 
 bool BSCompiler::slot_is_checkable(const BSParser::DataType &p_slot) {
-	// A value stored into a slot is checked against the slot's carrier, its native class, or not at
-	// all when the slot is untyped. A tuple, a union, an enum or a type parameter is none of those:
-	// the writers that would check them exist and refuse, and nothing may reach a slot that would
-	// accept anything while claiming to be checked.
+	// A value stored into a slot is checked against the slot's carrier, against its native class, or
+	// not at all when the slot is untyped. A tuple, a union, an enum or a type parameter is none of
+	// those: the writers that would check them exist and refuse, and nothing may reach a slot that
+	// would accept anything while claiming to be checked.
+	//
+	// A builtin carrier is checked exactly; a native class is checked by class identity. What a
+	// container slot says about its *elements* is not checked -- `Array[int]` is an `Array` here --
+	// and neither is the script identity of a `CLASS`/`SCRIPT` slot, which `member_slot_type` erases
+	// above. Both are recorded in docs/runtime.md rather than implied by this list.
 	return p_slot.is_variant() || p_slot.kind == BSParser::DataType::BUILTIN ||
 			p_slot.kind == BSParser::DataType::NATIVE;
 }

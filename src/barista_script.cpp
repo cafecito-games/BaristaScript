@@ -172,15 +172,20 @@ void *BaristaScript::_instance_create(godot::Object *p_for_object) const {
 	if (implicit_initializer != nullptr) {
 		GDExtensionCallError initializer_error;
 		initializer_error.error = GDEXTENSION_CALL_OK;
+		// What matters is whether *this* call raised, not whether anything raised while it ran.
+		const bool raised_before = bs_runtime_error_was_reported();
 		implicit_initializer->call(instance, nullptr, 0, initializer_error);
-		initialized = initializer_error.error == GDEXTENSION_CALL_OK && !bs_runtime_error_was_reported();
+		initialized = initializer_error.error == GDEXTENSION_CALL_OK &&
+				(raised_before || !bs_runtime_error_was_reported());
 	}
 	if (initialized) {
 		if (BSFunction *initializer = find_function(SNAME("_init"))) {
 			GDExtensionCallError initializer_error;
 			initializer_error.error = GDEXTENSION_CALL_OK;
+			const bool raised_before = bs_runtime_error_was_reported();
 			initializer->call(instance, nullptr, 0, initializer_error);
-			initialized = initializer_error.error == GDEXTENSION_CALL_OK && !bs_runtime_error_was_reported();
+			initialized = initializer_error.error == GDEXTENSION_CALL_OK &&
+					(raised_before || !bs_runtime_error_was_reported());
 		}
 	}
 	instance->initializing = false;

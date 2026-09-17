@@ -37,8 +37,11 @@ case OPCODE_SET_KEYED: {
 	BS_GET_VARIANT_PTR(destination, 0);
 	BS_GET_VARIANT_PTR(index, 1);
 	BS_GET_VARIANT_PTR(value, 2);
+	// `Variant::set` is the engine's subscript assignment: it selects the indexed accessor for a
+	// sequence and the keyed one for a map, which is what `base[key] = value` means. The keyed
+	// accessor alone has no meaning for an Array.
 	bool valid = false;
-	destination->set_keyed(*index, *value, valid);
+	destination->set(*index, *value, &valid);
 	if (unlikely(!valid)) {
 		error_text = vformat(R"(Invalid index "%s" for a value of type "%s".)",
 				index->stringify(), Variant::get_type_name(destination->get_type()));
@@ -52,8 +55,9 @@ case OPCODE_GET_KEYED: {
 	BS_GET_VARIANT_PTR(source, 0);
 	BS_GET_VARIANT_PTR(index, 1);
 	BS_GET_VARIANT_PTR(destination, 2);
+	// `Variant::get` is the engine's subscript read; see the matching store.
 	bool valid = false;
-	const Variant result = source->get_keyed(*index, valid);
+	const Variant result = source->get(*index, &valid);
 	if (unlikely(!valid)) {
 		error_text = vformat(R"(Invalid index "%s" for a value of type "%s".)",
 				index->stringify(), Variant::get_type_name(source->get_type()));
@@ -236,18 +240,24 @@ case OPCODE_CALL_RETURN: {
 	call_error.error = GDEXTENSION_CALL_OK;
 	// A call on this frame's own receiver is dispatched through the instance rather than through the
 	// owner object. The instance is what knows the script's functions, and it knows them before the
-	// engine has been handed it -- which is what lets a member initializer call one. Anything the
-	// script does not declare is still the owner's to answer.
-	BSFunction *own_function = base == &address_spaces[ADDR_TYPE_STACK][ADDR_STACK_SELF] &&
-					p_instance != nullptr && p_instance->script.is_valid()
-			? p_instance->script->find_function(method)
-			: nullptr;
+	// engine has been handed it -- which is what lets a member initializer call one, whether it names
+	// the receiver as `self` or through a local that holds it. Anything the script does not declare
+	// is still the owner's to answer.
+	BSFunction *own_function = nullptr;
+	if (p_instance != nullptr && p_instance->script.is_valid() && base->get_type() == Variant::OBJECT &&
+			base->get_validated_object() == p_instance->owner) {
+		own_function = p_instance->script->find_function(method);
+	}
 	if (own_function != nullptr) {
 		result = own_function->call(p_instance, const_cast<const Variant **>(instruction_argument_ptr), argument_count, call_error);
 	} else {
 		base->callp(method, const_cast<const Variant **>(instruction_argument_ptr), argument_count, result, call_error);
 	}
-	if (unlikely(call_error.error != GDEXTENSION_CALL_OK || bs_runtime_error_was_reported())) {
+	// Only this call's own outcome decides whether the frame continues. A fault raised somewhere
+	// under the call -- a signal handler the callee emitted to, say -- has already reported for
+	// itself and is not this frame's to abandon, which is also what the engine does for its own
+	// callers.
+	if (unlikely(call_error.error != GDEXTENSION_CALL_OK)) {
 		error_text = vformat(R"(Invalid call to "%s" on a value of type "%s".)",
 				String(method), Variant::get_type_name(base->get_type()));
 		goto vm_error;

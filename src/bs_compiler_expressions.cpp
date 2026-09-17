@@ -375,11 +375,28 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 		generator->write_super_call(result, p_call->function_name, arguments);
 	} else if (receiver_is_self) {
 		const StringName &function_name = p_call->function_name;
+		// A name the script declares is the script's: an engine utility or a builtin type of the same
+		// spelling does not take it over.
+		const bool names_own_function = p_codegen.class_node != nullptr &&
+				p_codegen.class_node->has_function(function_name);
 		const Variant::Type builtin_type = BSParser::get_builtin_type(function_name);
 		MethodInfo utility_info;
-		if (builtin_type < Variant::VARIANT_MAX) {
+		if (names_own_function) {
+			generator->write_call_self(result, function_name, arguments);
+		} else if (builtin_type < Variant::VARIANT_MAX) {
 			generator->write_construct(result, builtin_type, arguments);
 		} else if (BSCoreConstants::get_utility_function(function_name, utility_info)) {
+			if ((utility_info.flags & METHOD_FLAG_VARARG) == 0) {
+				// The engine exposes a utility only through a typed pointer call, whose arguments are
+				// the parameters' own carriers. A variadic one declares every parameter as a Variant,
+				// so its call is exact; a fixed signature needs each argument materialized in its
+				// declared carrier first, which nothing emits. Saying so here beats dying at the call.
+				set_error(vformat(R"*(The runtime cannot call the utility function "%s()" yet: only variadic utility functions are reachable from compiled code.)*",
+								  String(function_name)),
+						p_call);
+				r_error = ERR_COMPILATION_FAILED;
+				return BSCodeGenerator::Address();
+			}
 			generator->write_call_utility(result, function_name, arguments);
 		} else {
 			generator->write_call_self(result, function_name, arguments);

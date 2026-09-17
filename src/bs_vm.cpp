@@ -139,6 +139,9 @@ bool bs_runtime_error_was_reported() {
 }
 
 Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, int p_argument_count, GDExtensionCallError &r_error) {
+	// A frame that raises tells its caller so. The engine-facing boundary translates that back into a
+	// completed call, because the reason is already on the script-error channel and a call error
+	// would be reported a second time as a method that does not exist.
 	r_error.error = GDEXTENSION_CALL_OK;
 	r_error.argument = 0;
 	r_error.expected = 0;
@@ -245,6 +248,7 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 		error_text = "Bad instruction argument count.";                         \
 		goto vm_error;                                                          \
 	}                                                                           \
+	BS_CHECK_SPACE(2 + instruction_argument_count);                             \
 	for (int argument = 0; argument < instruction_argument_count; argument++) { \
 		BS_GET_VARIANT_PTR(value, argument + 1);                                \
 		instruction_argument_ptr[argument] = value;                             \

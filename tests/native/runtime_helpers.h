@@ -12,8 +12,20 @@
 #include "bs_platform.h"
 #include "runtime_error_capture.h"
 
+#include <string>
+
 namespace barista_script {
 namespace native_tests {
+
+/**
+ * A `String` in a form a failed assertion can still read.
+ *
+ * `String::utf8()` returns a temporary whose buffer dies at the end of the full expression, so
+ * handing its pointer to an assertion message prints whatever happens to be at that address.
+ */
+inline std::string readable(const String &p_value) {
+	return std::string(p_value.utf8().get_data());
+}
 
 /** Compiles `p_source` into a fresh script, or returns an invalid script carrying the diagnostic. */
 Ref<BaristaScript> compile_script(const String &p_source, const String &p_path);

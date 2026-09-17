@@ -196,6 +196,9 @@ void BSByteCodeGenerator::clear_address(const Address &p_address) {
 	// temporary keeps the carrier its pool entry was taken for.
 	if (p_address.type.kind == BSParser::DataType::BUILTIN && p_address.type.builtin_type != Variant::NIL) {
 		write_type_adjust(p_address, p_address.type.builtin_type);
+	} else if (p_address.type.kind == BSParser::DataType::NATIVE) {
+		// An object slot with nothing in it holds null, not the placeholder an untyped slot takes.
+		write_assign_null(p_address);
 	} else if (p_address.mode == Address::TEMPORARY && temporaries[p_address.address].type != Variant::NIL) {
 		write_type_adjust(p_address, temporaries[p_address.address].type);
 	} else {
@@ -257,6 +260,7 @@ BSFunction *BSByteCodeGenerator::write_end() {
 
 	for (int i = 0; i < temporaries.size(); i++) {
 		const int stack_index = i + max_locals + BSFunction::FIXED_ADDRESSES_MAX;
+		check_address_fits(stack_index, "stack slots");
 		for (const int position : temporaries[i].bytecode_indices) {
 			opcodes.write[position] = stack_index | (BSFunction::ADDR_TYPE_STACK << BSFunction::ADDR_BITS);
 		}
@@ -542,6 +546,13 @@ void BSByteCodeGenerator::write_assign(const Address &p_target, const Address &p
 		append(p_target);
 		append(p_source);
 		append((int)p_target.type.builtin_type | (p_target.type.is_nullable ? BSFunction::NULLABLE_TYPE_OPERAND_FLAG : 0));
+		return;
+	}
+	if (p_target.type.kind == BSParser::DataType::NATIVE && p_target.type.native_type != StringName()) {
+		append_opcode(BSFunction::OPCODE_ASSIGN_TYPED_NATIVE);
+		append(p_target);
+		append(p_source);
+		append(p_target.type.native_type);
 		return;
 	}
 	append_opcode(BSFunction::OPCODE_ASSIGN);

@@ -40,11 +40,13 @@ GDScript source.
 compiled function built by one translation unit has to be read the same way by every other, and a
 renumbering breaks that silently.
 
-**A new opcode is inserted immediately before `END`, never after it.** `END` is the list's
-terminator and the dispatch loop's stop condition, and its own number is never written into a
-compiled function, so moving `END` is the one renumbering that is safe. Appending after `END` would
-leave the terminator in the middle of the list and give the new opcode a number the loop never
-reaches.
+**A new opcode is inserted immediately before `END`, never after it.** Every emitted function ends
+with `END`, and `END`'s own number is the one number nothing depends on: it is written by exactly one
+line of the emitter and read by exactly one handler, so moving it costs nothing. Keeping it last is
+what keeps "the terminator is the last enumerator" true — the name table's `static_assert`, the
+committed case that asserts `OPCODE_END == OPCODE_MAX - 1`, and anyone reading the list to see where
+it ends. Dispatch itself would run an opcode numbered after `END` perfectly well; the invariant is
+about the list, not the loop.
 
 The list holds **171 opcodes** plus the `OPCODE_END` terminator, derived from Foundry's 180 at
 `c9d5e35` by removing two families:
@@ -97,8 +99,8 @@ Two operand shapes exist:
   after them. Every call, every construction and every literal uses this shape.
 
 An **address word** packs a 24-bit index beside a 2-bit space tag: the frame's stack, the function's
-constant pool, or the instance's members. The emitter refuses an index that does not fit rather than
-letting it carry into the tag. The nullable flag on a *type* operand also uses bit 24; the two never
+constant pool, or the instance's members. Every producer of an index -- locals, temporaries,
+constants and members -- refuses one that does not fit rather than letting it carry into the tag. The nullable flag on a *type* operand also uses bit 24; the two never
 meet, because a type operand is a plain integer that the address decoder never reads.
 
 **Jumps are absolute indices into the same `Vector<int>`, and they are patched in place while the
@@ -137,9 +139,16 @@ here rather than left to be discovered:
   function can own, which is the type model's to introduce.
 - **A slot the runtime cannot check is refused rather than accepted.** A tuple, a union, an enum or
   a type parameter has writers on the frozen emitter interface that refuse, and every declaration
-  site -- member, local, parameter, return and loop variable -- now routes through
+  site -- member, local, parameter, return and loop variable -- routes through
   `BSCompiler::refuse_unchecked_slot` so none of them can reach a slot that would accept anything
   while claiming to be checked.
+- **A typed container's element type is not enforced.** `Array[int]` lowers to a plain `Array`, so a
+  value that arrives through a `Variant` can carry elements of any type into it. The analyzer
+  rejects every statically visible violation, which is why this needs a dynamically typed source to
+  observe. Enforcing it needs the container-type descriptor the type model introduces.
+
+A native class slot *is* checked: a store into `var node: Node` admits null or an object of that
+class and reports anything else.
 
 ## What the slice does not do yet
 
@@ -152,3 +161,9 @@ yields nothing rather than a half-built instance.
 A base that is a GDScript class is refused permanently at this level, not deferred: an object holds
 exactly one script instance, and Godot offers no path by which a GDExtension script instance
 delegates to a GDScript one.
+
+`super.<method>()` with no base script that declares the method now reports, where reaching the
+engine's implementation of a virtual would once have been a silent no-op. It is a deliberate change:
+`Object::has_method` and `Object::call` consult the script instance before the engine's own methods,
+so forwarding to the owner re-enters the very function the call is delegating out of. `super._init()`
+stays a no-op, which is what the engine does for an unimplemented virtual.

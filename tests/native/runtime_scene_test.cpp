@@ -44,7 +44,7 @@ TEST_SUITE("runtime_scene") {
 				"\treturn self.ticks\n",
 				"res://runtime/scene_node.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_MESSAGE(script->get_compile_error().is_empty(), script->get_compile_error().utf8().get_data());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		CHECK(script->_get_instance_base_type() == StringName("Node"));
 		BS_TEST_REQUIRE(script->_can_instantiate());
 
@@ -62,7 +62,7 @@ TEST_SUITE("runtime_scene") {
 		CHECK(node->get_name() == StringName("DrivenByBarista"));
 		CHECK(node->call("tick") == Variant(1));
 		CHECK(node->call("tick") == Variant(2));
-		CHECK_MESSAGE(errors.errors().is_empty(), errors.joined().utf8().get_data());
+		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
 
 		host->remove_child(node);
 		memdelete(node);
