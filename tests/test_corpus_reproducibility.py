@@ -405,6 +405,104 @@ class TriageWorkflowContract(unittest.TestCase):
                 self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), mutate.__name__)
 
 
+class LinuxVerificationWorkflowContract(unittest.TestCase):
+    """Negative coverage for the named Linux debug verification steps.
+
+    The steps run in separate shells and consume one another's build trees, so a step that
+    lost a command, stopped propagating a failure, stopped re-deriving the Godot binary, or
+    moved relative to its neighbours would still leave every general runner audit satisfied.
+    Each mutation below must be refused by check_linux_verification_wiring.
+    """
+
+    def setUp(self):
+        import validate_ci
+        import yaml
+        self.audit = getattr(validate_ci, "check_linux_verification_wiring", None)
+        self.assertIsNotNone(self.audit, "Linux verification step audit missing")
+        self.step_count = len(validate_ci.LINUX_VERIFICATION_STEPS)
+        self.yaml = yaml
+        self.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.document = yaml.load(self.workflow, Loader=yaml.BaseLoader)
+
+    def verification_indices(self, document):
+        steps = document["jobs"]["build"]["steps"]
+        triage = [index for index, step in enumerate(steps)
+                  if "scripts/run_corpus_triage.py" in step.get("run", "")]
+        self.assertEqual(len(triage), 1, "one whole-population triage step")
+        return list(range(triage[0] - self.step_count, triage[0]))
+
+    def test_current_workflow(self):
+        """Also proves a clean round-trip, so a refusal below is the mutation, not the dump."""
+        self.assertIsNone(self.audit(self.workflow))
+        self.assertIsNone(self.audit(self.yaml.safe_dump(self.document)))
+
+    def test_every_step_has_a_distinct_name(self):
+        steps = self.document["jobs"]["build"]["steps"]
+        names = [steps[index].get("name", "") for index in self.verification_indices(self.document)]
+        self.assertTrue(all(names), names)
+        self.assertEqual(len(set(names)), len(names), names)
+
+    def test_a_weakened_step_is_refused(self):
+        indices = self.verification_indices(self.document)
+        for position, index in enumerate(indices):
+            step = self.document["jobs"]["build"]["steps"][index]
+            lines = step["run"].strip().splitlines()
+            commands = [number for number, line in enumerate(lines)
+                        if line.strip() and not line.startswith(" ")]
+            mutations = {
+                "remove": lambda steps, index=index: steps.pop(index),
+                "suppress": lambda steps, index=index: steps[index].update(
+                    {"run": steps[index]["run"].rstrip() + " || true\n"}),
+                "continue-on-error": lambda steps, index=index: steps[index].update(
+                    {"continue-on-error": "true"}),
+                "unreachable": lambda steps, index=index: steps[index].update({"if": "false"}),
+                "shell": lambda steps, index=index: steps[index].update({"shell": "bash {0}"}),
+                "missing environment": lambda steps, index=index: steps[index].pop("env"),
+                "comment out the last command": lambda steps, index=index, lines=lines, last=commands[-1]:
+                    steps[index].update({"run": "\n".join(
+                        lines[:last] + ["# " + lines[last]] + lines[last + 1:])}),
+                "drop the first command": lambda steps, index=index, lines=lines, first=commands[0]:
+                    steps[index].update({"run": "\n".join(lines[:first] + lines[first + 1:])}),
+            }
+            if position + 1 < len(indices):
+                mutations["swap with the next step"] = lambda steps, index=index: steps.insert(
+                    index + 1, steps.pop(index))
+            for name, mutate in mutations.items():
+                document = copy.deepcopy(self.document)
+                mutate(document["jobs"]["build"]["steps"])
+                self.assertNotEqual(document, self.document, name)
+                with self.subTest(step=position + 1, mutation=name):
+                    self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)))
+
+    def test_merged_moved_or_disabled_sequences_are_refused(self):
+        indices = self.verification_indices(self.document)
+
+        def merge_back_into_one_step(document):
+            steps = document["jobs"]["build"]["steps"]
+            merged = copy.deepcopy(steps[indices[0]])
+            merged["run"] = "\n".join(steps[index]["run"] for index in indices)
+            steps[indices[0]:indices[-1] + 1] = [merged]
+
+        def run_triage_before_the_download(document):
+            steps = document["jobs"]["build"]["steps"]
+            steps.insert(indices[0], steps.pop(indices[-1] + 1))
+
+        def insert_an_unpinned_step_between(document):
+            document["jobs"]["build"]["steps"].insert(
+                indices[2], {"name": "Clean", "shell": "bash", "run": "rm -rf build/native-cmake"})
+
+        def disable_the_whole_job(document):
+            document["jobs"]["build"]["if"] = "${{ false }}"
+
+        for mutate in (merge_back_into_one_step, run_triage_before_the_download,
+                       insert_an_unpinned_step_between, disable_the_whole_job):
+            document = copy.deepcopy(self.document)
+            mutate(document)
+            self.assertNotEqual(document, self.document, mutate.__name__)
+            with self.subTest(mutation=mutate.__name__):
+                self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), mutate.__name__)
+
+
 class WrapperContract(unittest.TestCase):
     setUp = RegistryContract.setUp
     check = RegistryContract.check

@@ -218,7 +218,11 @@ jobs:
         shell: bash
         run: python3 tests/test_warning_code_removal.py
 
-      - name: Verify editor recognition
+      # A GDScript parse error makes SceneTree quit 0, so no suite may be invoked directly here:
+      # the runner discovers every project/tests/*_test.gd and fails the job unless the run
+      # printed the guard sentinel that only executed code can produce. The Linux steps after
+      # this one reuse the Godot binary it downloads, so each derives the same path again.
+      - name: Verify editor recognition and GDScript suites
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash
         env:
@@ -233,11 +237,15 @@ jobs:
 
           "$godot_binary" --headless --path project --editor --quit
           grep -q 'example.barista::BaristaScript' project/.godot/editor/filesystem_cache*
-          # A GDScript parse error makes SceneTree quit 0, so no suite may be invoked directly
-          # here: the runner discovers every project/tests/*_test.gd and fails the job unless the
-          # run printed the guard sentinel that only executed code can produce.
           python3 tests/run_gdscript_suites.py --godot "$godot_binary"
 
+      - name: Verify the SCons native test on/off/on sequence
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/test_run_native_suites.py --godot "$godot_binary"
           python3 tests/test_native_storage.py --godot "$godot_binary"
@@ -251,12 +259,35 @@ jobs:
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/run_native_suites.py --godot "$godot_binary"
 
+      - name: Build and run the native suites with CMake
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
           cmake --build build/native-cmake --parallel 2
           python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake
           python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+
+      - name: Verify incremental native CMake rebuilds
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake
+
+      - name: Verify the CMake native test off/on transition
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF
           cmake --build build/native-cmake --parallel 2
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug

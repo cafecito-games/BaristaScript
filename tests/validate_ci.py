@@ -357,6 +357,134 @@ CORPUS_TRIAGE_STEP = {
 }
 
 
+LINUX_VERIFICATION_CONDITION = (
+    "${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' "
+    "&& matrix.target-type == 'template_debug' }}"
+)
+
+LINUX_GODOT_BINARY = 'godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
+
+
+def linux_verification_step(*commands: str) -> dict:
+    return {
+        "if": LINUX_VERIFICATION_CONDITION,
+        "shell": "bash",
+        "env": {"GODOT_VERSION": "${{ steps.versions.outputs.godot_runtime }}"},
+        "run": "\n".join(commands),
+    }
+
+
+# The Linux debug verification runs as separately named steps so each phase's duration is
+# visible in the Actions UI. Steps share no shell state: the first downloads Godot, and every
+# later one derives the same binary path itself. The steps build on one another's artifacts
+# (the SCons test library, then the CMake tree toggled ON, OFF and ON), so their order is part
+# of the pin as much as their commands are.
+LINUX_VERIFICATION_STEPS = [
+    linux_verification_step(
+        "curl --fail --location --retry 3 \\",
+        '  --output "$RUNNER_TEMP/godot.zip" \\',
+        '  "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"',
+        'unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"',
+        LINUX_GODOT_BINARY,
+        'chmod +x "$godot_binary"',
+        "",
+        '"$godot_binary" --headless --path project --editor --quit',
+        "grep -q 'example.barista::BaristaScript' project/.godot/editor/filesystem_cache*",
+        'python3 tests/run_gdscript_suites.py --godot "$godot_binary"',
+    ),
+    linux_verification_step(
+        LINUX_GODOT_BINARY,
+        "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes",
+        'python3 tests/test_run_native_suites.py --godot "$godot_binary"',
+        'python3 tests/test_native_storage.py --godot "$godot_binary"',
+        'python3 tests/run_native_suites.py --godot "$godot_binary"',
+        'python3 tests/test_run_corpus_triage.py --godot "$godot_binary" \\',
+        '  --library "$(python3 -c "import json; print(json.load(open(\'build/native-scons/native-artifact.json\'))[\'library\'])")"',
+        "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=no",
+        "python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug",
+        "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_release barista_tests=no",
+        "python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_release",
+        "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes",
+        'python3 tests/run_native_suites.py --godot "$godot_binary"',
+    ),
+    linux_verification_step(
+        LINUX_GODOT_BINARY,
+        "cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON",
+        "cmake --build build/native-cmake --parallel 2",
+        'python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
+        'python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake',
+        'python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
+    ),
+    linux_verification_step(
+        LINUX_GODOT_BINARY,
+        'python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake',
+    ),
+    linux_verification_step(
+        LINUX_GODOT_BINARY,
+        "cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF",
+        "cmake --build build/native-cmake --parallel 2",
+        "python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug",
+        "cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON",
+        "cmake --build build/native-cmake --parallel 2",
+        'python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
+    ),
+]
+
+
+def check_linux_verification_wiring(workflow: str) -> str | None:
+    """Require the Linux debug verification steps, exactly and in order, before corpus triage.
+
+    The general runner audits accept any one reachable invocation, so on their own they would
+    not notice a build, a surface check or a sweep being dropped from this sequence. The steps
+    are compared whole, with only the display name and surrounding whitespace ignored, and they
+    must sit directly before the corpus triage step, which runs the Godot binary the first one
+    downloads.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return "CI audit requires PyYAML: python3 -m pip install -r tests/requirements.txt"
+    try:
+        document = yaml.load(workflow, Loader=yaml.BaseLoader)
+        job = document["jobs"]["build"]
+        steps = job["steps"]
+        if not isinstance(steps, list):
+            return "build job steps must be a list"
+    except (yaml.YAMLError, KeyError, TypeError) as error:
+        return f"invalid CI YAML: {error}"
+
+    triage = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and "scripts/run_corpus_triage.py" in step["run"]
+    ]
+    if len(triage) != 1 or triage[0] < len(LINUX_VERIFICATION_STEPS):
+        return (
+            "the build job must run its Linux verification steps directly before the single "
+            "analyzer corpus triage step"
+        )
+    first = triage[0] - len(LINUX_VERIFICATION_STEPS)
+    for offset, required in enumerate(LINUX_VERIFICATION_STEPS):
+        step = steps[first + offset]
+        if not isinstance(step, dict):
+            return f"Linux verification step {offset + 1} must be a mapping"
+        actual = {
+            key: value.strip() if key == "run" and isinstance(value, str) else value
+            for key, value in step.items()
+            if key != "name"
+        }
+        if actual != required:
+            return (
+                f"Linux verification step {offset + 1} must retain its validated inputs and its "
+                "exact unsuppressed commands, in order, directly before the corpus triage step"
+            )
+    if condition_is_unreachable(job):
+        return "the Linux verification steps must be able to fail the build job"
+    return None
+
+
 def check_corpus_triage_wiring(workflow: str) -> str | None:
     """Require CI to execute the whole analyzer corpus against its residual-failure pin.
 
@@ -587,6 +715,11 @@ def main() -> int:
     native_complaint = check_native_suite_wiring(workflow)
     if native_complaint is not None:
         print(native_complaint)
+        return 1
+
+    linux_verification_complaint = check_linux_verification_wiring(workflow)
+    if linux_verification_complaint is not None:
+        print(linux_verification_complaint)
         return 1
 
     triage_complaint = check_corpus_triage_wiring(workflow)
