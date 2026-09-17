@@ -28,9 +28,6 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-
-from build_config import load_config  # noqa: E402
 
 FIXTURE = ROOT / "tests/runtime_scene_project"
 SENTINEL = "BS_RUNTIME_SCENE_OK"
@@ -96,7 +93,6 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=120)
     arguments = parser.parse_args()
 
-    load_config()
     binary_directory = arguments.binary_dir or (ROOT / "project/bin" / platform_directory())
     if not binary_directory.is_dir() or not any(binary_directory.iterdir()):
         print(f"FAIL runtime_scene: no built extension in {binary_directory}")
