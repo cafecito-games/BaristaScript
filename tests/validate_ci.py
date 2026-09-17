@@ -365,8 +365,9 @@ LINUX_VERIFICATION_CONDITION = (
 LINUX_GODOT_BINARY = 'godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
 
 
-def linux_verification_step(*commands: str) -> dict:
+def linux_verification_step(name: str, *commands: str) -> dict:
     return {
+        "name": name,
         "if": LINUX_VERIFICATION_CONDITION,
         "shell": "bash",
         "env": {"GODOT_VERSION": "${{ steps.versions.outputs.godot_runtime }}"},
@@ -375,12 +376,24 @@ def linux_verification_step(*commands: str) -> dict:
 
 
 # The Linux debug verification runs as separately named steps so each phase's duration is
-# visible in the Actions UI. Steps share no shell state: the first downloads Godot, and every
-# later one derives the same binary path itself. The steps build on one another's artifacts
-# (the SCons test library, then the CMake tree toggled ON, OFF and ON), so their order is part
-# of the pin as much as their commands are.
+# visible in the Actions UI, which is why the names are pinned along with the commands. Steps
+# share no shell state: the first downloads Godot, and every later one derives the same binary
+# path itself. The steps build on one another's artifacts (the SCons test library, then the
+# CMake tree toggled ON, OFF and ON), so their order is part of the pin as much as their
+# commands are.
+#
+# The step directly before the sequence. Pinning it bounds the sequence at its start as the
+# triage step bounds it at its end, so nothing unpinned can run between the two.
+LINUX_VERIFICATION_PREDECESSOR = {
+    "name": "Probe the removed-warning-code compile error",
+    "if": LINUX_VERIFICATION_CONDITION,
+    "shell": "bash",
+    "run": "python3 tests/test_warning_code_removal.py",
+}
+
 LINUX_VERIFICATION_STEPS = [
     linux_verification_step(
+        "Verify editor recognition and GDScript suites",
         "curl --fail --location --retry 3 \\",
         '  --output "$RUNNER_TEMP/godot.zip" \\',
         '  "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"',
@@ -393,6 +406,7 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/run_gdscript_suites.py --godot "$godot_binary"',
     ),
     linux_verification_step(
+        "Verify the SCons native test on/off/on sequence",
         LINUX_GODOT_BINARY,
         "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes",
         'python3 tests/test_run_native_suites.py --godot "$godot_binary"',
@@ -408,6 +422,7 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/run_native_suites.py --godot "$godot_binary"',
     ),
     linux_verification_step(
+        "Build and run the native suites with CMake",
         LINUX_GODOT_BINARY,
         "cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON",
         "cmake --build build/native-cmake --parallel 2",
@@ -416,10 +431,12 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
     ),
     linux_verification_step(
+        "Verify incremental native CMake rebuilds",
         LINUX_GODOT_BINARY,
         'python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake',
     ),
     linux_verification_step(
+        "Verify the CMake native test off/on transition",
         LINUX_GODOT_BINARY,
         "cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF",
         "cmake --build build/native-cmake --parallel 2",
@@ -436,9 +453,9 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
 
     The general runner audits accept any one reachable invocation, so on their own they would
     not notice a build, a surface check or a sweep being dropped from this sequence. The steps
-    are compared whole, with only the display name and surrounding whitespace ignored, and they
-    must sit directly before the corpus triage step, which runs the Godot binary the first one
-    downloads.
+    are compared whole, display names included and only surrounding whitespace ignored. They
+    must sit directly after the warning-code probe and directly before the corpus triage step,
+    which runs the Godot binary the first one downloads.
     """
     try:
         import yaml
@@ -460,12 +477,21 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
         and isinstance(step.get("run"), str)
         and "scripts/run_corpus_triage.py" in step["run"]
     ]
-    if len(triage) != 1 or triage[0] < len(LINUX_VERIFICATION_STEPS):
+    if len(triage) != 1 or triage[0] <= len(LINUX_VERIFICATION_STEPS):
         return (
             "the build job must run its Linux verification steps directly before the single "
             "analyzer corpus triage step"
         )
     first = triage[0] - len(LINUX_VERIFICATION_STEPS)
+    predecessor = steps[first - 1]
+    if not isinstance(predecessor, dict) or {
+        key: value.strip() if key == "run" and isinstance(value, str) else value
+        for key, value in predecessor.items()
+    } != LINUX_VERIFICATION_PREDECESSOR:
+        return (
+            "the Linux verification steps must follow the removed-warning-code probe directly, "
+            "with no unpinned step before them"
+        )
     for offset, required in enumerate(LINUX_VERIFICATION_STEPS):
         step = steps[first + offset]
         if not isinstance(step, dict):
@@ -473,11 +499,10 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
         actual = {
             key: value.strip() if key == "run" and isinstance(value, str) else value
             for key, value in step.items()
-            if key != "name"
         }
         if actual != required:
             return (
-                f"Linux verification step {offset + 1} must retain its validated inputs and its "
+                f"Linux verification step {offset + 1} must retain its name, validated inputs and "
                 "exact unsuppressed commands, in order, directly before the corpus triage step"
             )
     if condition_is_unreachable(job):

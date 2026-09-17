@@ -409,9 +409,9 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
     """Negative coverage for the named Linux debug verification steps.
 
     The steps run in separate shells and consume one another's build trees, so a step that
-    lost a command, stopped propagating a failure, stopped re-deriving the Godot binary, or
-    moved relative to its neighbours would still leave every general runner audit satisfied.
-    Each mutation below must be refused by check_linux_verification_wiring.
+    lost a command or its name, stopped propagating a failure, stopped re-deriving the Godot
+    binary, or moved relative to its neighbours would still leave every general runner audit
+    satisfied. Each mutation below must be refused by check_linux_verification_wiring.
     """
 
     def setUp(self):
@@ -457,6 +457,8 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
                     {"continue-on-error": "true"}),
                 "unreachable": lambda steps, index=index: steps[index].update({"if": "false"}),
                 "shell": lambda steps, index=index: steps[index].update({"shell": "bash {0}"}),
+                "rename": lambda steps, index=index: steps[index].update(
+                    {"name": steps[index]["name"] + " (renamed)"}),
                 "missing environment": lambda steps, index=index: steps[index].pop("env"),
                 "comment out the last command": lambda steps, index=index, lines=lines, last=commands[-1]:
                     steps[index].update({"run": "\n".join(
@@ -487,15 +489,23 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
             steps = document["jobs"]["build"]["steps"]
             steps.insert(indices[0], steps.pop(indices[-1] + 1))
 
+        unpinned_step = {"name": "Clean", "shell": "bash", "run": "rm -rf build/native-cmake"}
+
         def insert_an_unpinned_step_between(document):
-            document["jobs"]["build"]["steps"].insert(
-                indices[2], {"name": "Clean", "shell": "bash", "run": "rm -rf build/native-cmake"})
+            document["jobs"]["build"]["steps"].insert(indices[2], copy.deepcopy(unpinned_step))
+
+        def insert_an_unpinned_step_before_the_first(document):
+            document["jobs"]["build"]["steps"].insert(indices[0], copy.deepcopy(unpinned_step))
+
+        def replace_the_preceding_probe(document):
+            document["jobs"]["build"]["steps"][indices[0] - 1] = copy.deepcopy(unpinned_step)
 
         def disable_the_whole_job(document):
             document["jobs"]["build"]["if"] = "${{ false }}"
 
         for mutate in (merge_back_into_one_step, run_triage_before_the_download,
-                       insert_an_unpinned_step_between, disable_the_whole_job):
+                       insert_an_unpinned_step_between, insert_an_unpinned_step_before_the_first,
+                       replace_the_preceding_probe, disable_the_whole_job):
             document = copy.deepcopy(self.document)
             mutate(document)
             self.assertNotEqual(document, self.document, mutate.__name__)
