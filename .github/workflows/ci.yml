@@ -214,29 +214,6 @@ jobs:
           --binary-dir project/bin/${{ matrix.target.platform }}
           --target-type ${{ matrix.target-type }}
 
-      - name: Start memory sampler
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
-        shell: bash
-        run: |
-          cat > "$RUNNER_TEMP/sample_memory.sh" <<'SAMPLER'
-          #!/bin/bash
-          while true; do
-            now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            total=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
-            available=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
-            swap_total=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)
-            swap_free=$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)
-            compilers=$(ps -C cc1plus -o rss= | awk '{count += 1; sum += $1; if ($1 > largest) largest = $1} END {printf "%d\t%d\t%d", count, sum, largest}')
-            linkers=$(ps -C ld,collect2,ld.bfd -o rss= | awk '{sum += $1} END {printf "%d", sum}')
-            printf '%s\t%d\t%d\t%s\t%s\n' "$now" $(((total - available) / 1024)) $(((swap_total - swap_free) / 1024)) "$compilers" "$linkers"
-            sleep 1
-          done
-          SAMPLER
-          chmod +x "$RUNNER_TEMP/sample_memory.sh"
-          free -m
-          nproc
-          nohup setsid "$RUNNER_TEMP/sample_memory.sh" > "$RUNNER_TEMP/memory-samples.tsv" 2>/dev/null &
-
       - name: Probe the removed-warning-code compile error
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
         shell: bash
@@ -373,28 +350,6 @@ jobs:
       # Focused desktop debug import + SuiteGuard runners for #21 platform evidence. Linux keeps the
       # heavier cmake on/off matrix above; Windows/macOS debug get import + gdscript + native suites
       # without a second harness or SuiteGuard bypass. iOS remains compile-only via the matrix build.
-      - name: Report memory samples
-        if: ${{ always() && matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
-        shell: bash
-        run: |
-          pkill -f sample_memory.sh || true
-          samples="$RUNNER_TEMP/memory-samples.tsv"
-          wc -l "$samples"
-          echo "columns: time used_mb swap_mb compilers compiler_rss_kb largest_compiler_kb linker_rss_kb"
-          echo "peak used memory:"; sort -t$'\t' -k2,2n "$samples" | tail -3
-          echo "peak swap:"; sort -t$'\t' -k3,3n "$samples" | tail -3
-          echo "peak concurrent compiler RSS:"; sort -t$'\t' -k5,5n "$samples" | tail -3
-          echo "most concurrent compilers:"; sort -t$'\t' -k4,4n "$samples" | tail -3
-          echo "largest single compiler:"; sort -t$'\t' -k6,6n "$samples" | tail -3
-          echo "peak linker RSS:"; sort -t$'\t' -k7,7n "$samples" | tail -3
-
-      - name: Upload memory samples
-        if: ${{ always() && matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: memory-samples
-          path: ${{ runner.temp }}/memory-samples.tsv
-
       - name: Verify editor recognition (Windows/macOS debug)
         if: ${{ (matrix.target.platform == 'windows' || matrix.target.platform == 'macos') && matrix.target-type == 'template_debug' }}
         shell: bash
