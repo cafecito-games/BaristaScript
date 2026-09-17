@@ -606,6 +606,26 @@ class TransitionScopeContract(unittest.TestCase):
         self.assertIsNone(self.audit())
         self.assertIsNone(self.audit(self.load(self.source)))
 
+    def test_every_filter_entry_is_guarded_by_a_required_input(self):
+        """An entry no required input depends on could be dropped without any audit noticing."""
+        import validate_ci
+        import native_transition_scope as scope
+        from unittest.mock import patch
+        required = validate_ci.REQUIRED_TRANSITION_INPUTS
+        collections = {
+            "BUILD_INPUT_PATHS": frozenset,
+            "BUILD_INPUT_DIRECTORIES": tuple,
+            "BUILD_INPUT_NAMES": frozenset,
+            "BUILD_INPUT_SUFFIXES": tuple,
+        }
+        for attribute, kind in collections.items():
+            entries = getattr(scope, attribute)
+            for entry in entries:
+                remaining = kind(other for other in entries if other != entry)
+                with self.subTest(entry=entry), patch.object(scope, attribute, remaining):
+                    self.assertTrue(any(not scope.is_build_input(path) for path in required),
+                                    f"no required input depends on {entry!r}")
+
     def test_a_weakened_decision_is_refused(self):
         mutations = {
             "push and merge_group scoped": ('    if event_name != "pull_request":\n',
@@ -624,6 +644,10 @@ class TransitionScopeContract(unittest.TestCase):
             "the test directory dropped": ('    "tests/native/",\n', ""),
             "the doctest directory dropped": ('    "thirdparty/",\n', ""),
             "the workflow actions dropped": ('    ".github/actions/",\n', ""),
+            "the cmake directory dropped": ('    "cmake/",\n', ""),
+            "SCsub dropped": ('{"SCsub", "SConscript", "CMakeLists.txt"}', '{"SConscript", "CMakeLists.txt"}'),
+            "SConscript dropped": ('{"SCsub", "SConscript", "CMakeLists.txt"}', '{"SCsub", "CMakeLists.txt"}'),
+            "the cmake suffix dropped": ('BUILD_INPUT_SUFFIXES = (".cmake",)', "BUILD_INPUT_SUFFIXES = ()"),
             "the filter emptied": ("    return [\n        path\n        for status, path in changes\n",
                                    "    return [\n        path\n        for status, path in []\n"),
             "never skipping": ("    triggers = triggering_changes(changes)\n",
@@ -636,7 +660,8 @@ class TransitionScopeContract(unittest.TestCase):
                          "scripts/generate_global_api.py", "scripts/native_transition_scope.py",
                          "tests/verify_native_surface.py", "tests/verify_parse_cache_surface.py",
                          "tests/test_native_cmake_rebuild.py", "tests/test_cmake_api_inputs.py",
-                         "tests/run_native_suites.py"):
+                         "tests/run_native_suites.py", "tests/native_suites.json", "tests/test_native_storage.py",
+                         "tests/test_run_native_suites.py"):
             mutations[f"{required} dropped"] = (f'    "{required}",\n', "")
         for name, (old, new) in mutations.items():
             with self.subTest(mutation=name):

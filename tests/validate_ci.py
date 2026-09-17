@@ -574,6 +574,13 @@ REQUIRED_TRANSITION_INPUTS = (
     "tests/test_native_cmake_rebuild.py",
     "tests/test_cmake_api_inputs.py",
     "tests/run_native_suites.py",
+    "tests/native_suites.json",
+    "tests/test_native_storage.py",
+    "tests/test_run_native_suites.py",
+    "cmake/toolchain.txt",
+    "src/SCsub",
+    "tools/SConscript",
+    "tools/extension.cmake",
 )
 
 # Paths a pull request may change without the transitions: skipping them is the gate's purpose.
