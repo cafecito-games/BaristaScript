@@ -312,6 +312,7 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
             {"shell": "bash", "run": "\n".join((
                 "python3 -m pip install -r tests/requirements.txt",
                 "python3 tests/validate_ci.py",
+                "python3 tests/test_native_transition_scope.py",
                 "python3 tests/test_build_config.py",
                 "python3 tests/test_build_consumers.py",
                 "python3 tests/test_query_build_info.py",
@@ -365,10 +366,20 @@ LINUX_VERIFICATION_CONDITION = (
 LINUX_GODOT_BINARY = 'godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
 
 
-def linux_verification_step(name: str, *commands: str) -> dict:
+# The build-system transition steps run on a pull request only when the scope decision is not
+# an explicit 'false', and on every other event regardless of it. See
+# scripts/native_transition_scope.py for why the build inputs it names are sufficient.
+LINUX_TRANSITION_CONDITION = (
+    "${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' "
+    "&& matrix.target-type == 'template_debug' "
+    "&& (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}"
+)
+
+
+def linux_verification_step(name: str, *commands: str, condition: str = LINUX_VERIFICATION_CONDITION) -> dict:
     return {
         "name": name,
-        "if": LINUX_VERIFICATION_CONDITION,
+        "if": condition,
         "shell": "bash",
         "env": {"GODOT_VERSION": "${{ steps.versions.outputs.godot_runtime }}"},
         "run": "\n".join(commands),
@@ -391,6 +402,22 @@ LINUX_VERIFICATION_PREDECESSOR = {
     "run": "python3 tests/test_warning_code_removal.py",
 }
 
+# The decision the transition steps read. Every other event and every undecidable pull request
+# must still run them, which the step cannot express on its own: check_native_transition_scope
+# pins the decision the script actually makes.
+LINUX_TRANSITION_SCOPE_STEP = {
+    "name": "Decide whether to verify native build-system transitions",
+    "id": "transition_scope",
+    "if": LINUX_VERIFICATION_CONDITION,
+    "shell": "bash",
+    "env": {
+        "EVENT_NAME": "${{ github.event_name }}",
+        "PULL_REQUEST_HEAD": "${{ github.event.pull_request.head.sha }}",
+    },
+    "run": 'python3 scripts/native_transition_scope.py --event "$EVENT_NAME"'
+           ' --pull-request-head "$PULL_REQUEST_HEAD" --github-output "$GITHUB_OUTPUT"',
+}
+
 LINUX_VERIFICATION_STEPS = [
     linux_verification_step(
         "Verify editor recognition and GDScript suites",
@@ -406,7 +433,7 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/run_gdscript_suites.py --godot "$godot_binary"',
     ),
     linux_verification_step(
-        "Verify the SCons native test on/off/on sequence",
+        "Build and run the native suites with SCons",
         LINUX_GODOT_BINARY,
         "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes",
         'python3 tests/test_run_native_suites.py --godot "$godot_binary"',
@@ -414,12 +441,18 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/run_native_suites.py --godot "$godot_binary"',
         'python3 tests/test_run_corpus_triage.py --godot "$godot_binary" \\',
         '  --library "$(python3 -c "import json; print(json.load(open(\'build/native-scons/native-artifact.json\'))[\'library\'])")"',
+    ),
+    LINUX_TRANSITION_SCOPE_STEP,
+    linux_verification_step(
+        "Verify the SCons native test off/on transition",
+        LINUX_GODOT_BINARY,
         "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=no",
         "python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug",
         "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_release barista_tests=no",
         "python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_release",
         "scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes",
         'python3 tests/run_native_suites.py --godot "$godot_binary"',
+        condition=LINUX_TRANSITION_CONDITION,
     ),
     linux_verification_step(
         "Build and run the native suites with CMake",
@@ -429,11 +462,13 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
         'python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake',
         'python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
+        condition=LINUX_TRANSITION_CONDITION,
     ),
     linux_verification_step(
         "Verify incremental native CMake rebuilds",
         LINUX_GODOT_BINARY,
         'python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake',
+        condition=LINUX_TRANSITION_CONDITION,
     ),
     linux_verification_step(
         "Verify the CMake native test off/on transition",
@@ -444,6 +479,7 @@ LINUX_VERIFICATION_STEPS = [
         "cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON",
         "cmake --build build/native-cmake --parallel 2",
         'python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
+        condition=LINUX_TRANSITION_CONDITION,
     ),
 ]
 
@@ -507,6 +543,112 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
             )
     if condition_is_unreachable(job):
         return "the Linux verification steps must be able to fail the build job"
+    return None
+
+
+# Paths whose change must run the build-system transitions. The first group is where test code
+# and the test option live; the rest decide where each build mode leaves its state, judge the
+# transitions, or are the gate itself. A directory is represented by a file inside it, including
+# one that does not exist yet.
+REQUIRED_TRANSITION_INPUTS = (
+    "SConstruct",
+    "CMakeLists.txt",
+    "methods.py",
+    "scripts/native_test_build.py",
+    "build_profile.json",
+    "build_versions.json",
+    "tests/native/analyzer_helpers.cpp",
+    "tests/native/added_suite_test.cpp",
+    ".github/workflows/ci.yml",
+    "thirdparty/doctest/doctest.h",
+    "godot-cpp",
+    ".gitmodules",
+    "custom.py",
+    ".github/actions/setup-godot-cpp/action.yml",
+    "scripts/build_config.py",
+    "scripts/build_metadata.py",
+    "scripts/generate_global_api.py",
+    "scripts/native_transition_scope.py",
+    "tests/verify_native_surface.py",
+    "tests/verify_parse_cache_surface.py",
+    "tests/test_native_cmake_rebuild.py",
+    "tests/test_cmake_api_inputs.py",
+    "tests/run_native_suites.py",
+    "tests/native_suites.json",
+    "tests/test_native_storage.py",
+    "tests/test_run_native_suites.py",
+    "cmake/toolchain.txt",
+    "src/SCsub",
+    "tools/SConscript",
+    "tools/extension.cmake",
+)
+
+# Paths a pull request may change without the transitions: skipping them is the gate's purpose.
+ORDINARY_TRANSITION_PATHS = (
+    "src/bs_analyzer.cpp",
+    "tests/corpus/analyzer/errors/abstract_annotation_removed.barista",
+    "docs/analyzer-discovery.md",
+)
+
+
+def check_native_transition_scope(scope=None) -> str | None:
+    """Require the transition decision to scope pull requests only, by its filter, failing open.
+
+    The workflow pins the step that runs the decision, but not what the script decides. A filter
+    missing a build input, an event other than a pull request being scoped, or an undecidable pull
+    request being skipped would each leave the pinned steps byte-identical while silently dropping
+    the verification, so each is exercised here against the script itself.
+    """
+    import io
+    import tempfile
+    from contextlib import redirect_stdout
+    from unittest.mock import patch
+
+    if scope is None:
+        import native_transition_scope as scope
+    commit = "0" * 40
+    pull_request_head = "1" * 40
+    base = "2" * 40
+
+    def unreachable_git(*arguments):
+        raise RuntimeError("git is unavailable")
+
+    def merge_git(changes, parents=(commit, base, pull_request_head)):
+        def git(*arguments):
+            outputs = {"rev-parse": commit + "\n", "fetch": "", "rev-list": " ".join(parents) + "\n",
+                       "diff": "".join(f"{status}\0{path}\0" for status, path in changes)}
+            return outputs[arguments[0]]
+        return git
+
+    ordinary = [("M", path) for path in ORDINARY_TRANSITION_PATHS]
+    try:
+        for path in REQUIRED_TRANSITION_INPUTS:
+            if scope.triggering_changes([("M", path)]) != [path]:
+                return f"a pull request changing {path} must run the native build-system transitions"
+        sources = [("A", "src/bs_added.cpp"), ("D", "src/bs_removed.cpp")]
+        if scope.triggering_changes(sources) != [path for _, path in sources]:
+            return "a pull request adding or removing an extension source must run the transitions"
+        for event in ("push", "merge_group", "workflow_dispatch", "workflow_call", "schedule", ""):
+            if scope.decide(event, pull_request_head, merge_git(ordinary))[0] is not True:
+                return f"a {event or 'unnamed'} event must always run the native build-system transitions"
+        undecidable = {
+            "git is unavailable": (pull_request_head, unreachable_git),
+            "the pull request head is unknown": ("", merge_git(ordinary)),
+            "the checkout is not the pull request merge": (pull_request_head, merge_git(ordinary, (commit, base))),
+        }
+        for reason, (head, git) in undecidable.items():
+            if scope.decide("pull_request", head, git)[0] is not True:
+                return f"the transition decision must fail open when {reason}"
+        if scope.decide("pull_request", pull_request_head, merge_git(ordinary))[0] is not False:
+            return "a pull request changing only sources, corpus files or docs must skip the transitions"
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
+            output = Path(directory) / "output"
+            with patch.object(scope, "decide", side_effect=RuntimeError("decision failed")):
+                status = scope.main(["--event", "pull_request", "--github-output", str(output)])
+            if status != 0 or output.read_text() != "required=true\n":
+                return "the transition decision must write required=true when it cannot decide"
+    except Exception as error:
+        return f"the transition decision could not be exercised: {error}"
     return None
 
 
@@ -745,6 +887,11 @@ def main() -> int:
     linux_verification_complaint = check_linux_verification_wiring(workflow)
     if linux_verification_complaint is not None:
         print(linux_verification_complaint)
+        return 1
+
+    transition_scope_complaint = check_native_transition_scope()
+    if transition_scope_complaint is not None:
+        print(transition_scope_complaint)
         return 1
 
     triage_complaint = check_corpus_triage_wiring(workflow)

@@ -512,6 +512,161 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
             with self.subTest(mutation=mutate.__name__):
                 self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), mutate.__name__)
 
+    def test_a_suppressed_or_weakened_transition_gate_is_refused(self):
+        import validate_ci
+        indices = self.verification_indices(self.document)
+        steps = self.document["jobs"]["build"]["steps"]
+        gated = [index for index in indices if steps[index]["if"] == validate_ci.LINUX_TRANSITION_CONDITION]
+        unconditional = [index for index in indices if steps[index]["if"] == validate_ci.LINUX_VERIFICATION_CONDITION]
+        scope = [index for index in indices if steps[index].get("id") == "transition_scope"]
+        self.assertEqual([steps[index]["name"] for index in gated], [
+            "Verify the SCons native test off/on transition",
+            "Build and run the native suites with CMake",
+            "Verify incremental native CMake rebuilds",
+            "Verify the CMake native test off/on transition",
+        ])
+        self.assertEqual([steps[index]["name"] for index in unconditional], [
+            "Verify editor recognition and GDScript suites",
+            "Build and run the native suites with SCons",
+            "Decide whether to verify native build-system transitions",
+        ])
+        self.assertEqual(len(scope), 1)
+        self.assertLess(scope[0], gated[0])
+
+        def rewrite_gates(old, new):
+            def mutate(document):
+                for index in gated:
+                    step = document["jobs"]["build"]["steps"][index]
+                    self.assertIn(old, step["if"])
+                    step["if"] = step["if"].replace(old, new)
+            return mutate
+
+        mutations = {
+            "a gate that is always false": rewrite_gates(
+                "steps.transition_scope.outputs.required != 'false'", "steps.transition_scope.outputs.required == 'never'"),
+            "a gate that fails closed on a missing decision": rewrite_gates("!= 'false'", "== 'true'"),
+            "the gate applied to every event": rewrite_gates("github.event_name != 'pull_request' || ", ""),
+            "the event exemption narrowed so push and merge_group are gated": rewrite_gates(
+                "github.event_name != 'pull_request'", "github.event_name == 'workflow_dispatch'"),
+            "a gate reading another step": rewrite_gates("steps.transition_scope.", "steps.versions."),
+            "the gate applied to the SCons test build": lambda document: document["jobs"]["build"]["steps"][
+                unconditional[1]].update({"if": validate_ci.LINUX_TRANSITION_CONDITION}),
+            "the gate applied to the GDScript suites": lambda document: document["jobs"]["build"]["steps"][
+                unconditional[0]].update({"if": validate_ci.LINUX_TRANSITION_CONDITION}),
+            "the decision given a constant event": lambda document: document["jobs"]["build"]["steps"][
+                scope[0]]["env"].update({"EVENT_NAME": "pull_request"}),
+            "the decision renamed away from the gates": lambda document: document["jobs"]["build"]["steps"][
+                scope[0]].update({"id": "scope"}),
+            "the decision removed": lambda document: document["jobs"]["build"]["steps"].pop(scope[0]),
+            "the decision moved after the gates": lambda document: document["jobs"]["build"]["steps"].insert(
+                gated[-1], document["jobs"]["build"]["steps"].pop(scope[0])),
+        }
+        for index in gated:
+            mutations[f"gated step {index} renamed"] = lambda document, index=index: document["jobs"]["build"][
+                "steps"][index].update({"name": "Skipped"})
+            mutations[f"gated step {index} dropped"] = lambda document, index=index: document["jobs"]["build"][
+                "steps"].pop(index)
+        for name, mutate in mutations.items():
+            document = copy.deepcopy(self.document)
+            mutate(document)
+            self.assertNotEqual(document, self.document, name)
+            with self.subTest(mutation=name):
+                self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), name)
+
+
+class TransitionScopeContract(unittest.TestCase):
+    """Negative coverage for what the transition decision script decides.
+
+    The workflow pin fixes the step that runs scripts/native_transition_scope.py but not its
+    behaviour, so each mutation below rewrites the script's own source and must be refused by
+    check_native_transition_scope.
+    """
+
+    def setUp(self):
+        import validate_ci
+        self.audit = validate_ci.check_native_transition_scope
+        self.source = (ROOT / "scripts/native_transition_scope.py").read_text()
+
+    def load(self, source):
+        import types
+        module = types.ModuleType("mutated_native_transition_scope")
+        module.__file__ = str(ROOT / "scripts/native_transition_scope.py")
+        sys.modules[module.__name__] = module
+        try:
+            exec(compile(source, module.__file__, "exec"), module.__dict__)
+        finally:
+            sys.modules.pop(module.__name__, None)
+        return module
+
+    def mutate(self, old, new):
+        self.assertEqual(self.source.count(old), 1, old)
+        return self.source.replace(old, new)
+
+    def test_current_script(self):
+        self.assertIsNone(self.audit())
+        self.assertIsNone(self.audit(self.load(self.source)))
+
+    def test_every_filter_entry_is_guarded_by_a_required_input(self):
+        """An entry no required input depends on could be dropped without any audit noticing."""
+        import validate_ci
+        import native_transition_scope as scope
+        from unittest.mock import patch
+        required = validate_ci.REQUIRED_TRANSITION_INPUTS
+        collections = {
+            "BUILD_INPUT_PATHS": frozenset,
+            "BUILD_INPUT_DIRECTORIES": tuple,
+            "BUILD_INPUT_NAMES": frozenset,
+            "BUILD_INPUT_SUFFIXES": tuple,
+        }
+        for attribute, kind in collections.items():
+            entries = getattr(scope, attribute)
+            for entry in entries:
+                remaining = kind(other for other in entries if other != entry)
+                with self.subTest(entry=entry), patch.object(scope, attribute, remaining):
+                    self.assertTrue(any(not scope.is_build_input(path) for path in required),
+                                    f"no required input depends on {entry!r}")
+
+    def test_a_weakened_decision_is_refused(self):
+        mutations = {
+            "push and merge_group scoped": ('    if event_name != "pull_request":\n',
+                                            '    if event_name not in ("pull_request", "push", "merge_group"):\n'),
+            "only push unscoped": ('    if event_name != "pull_request":\n', '    if event_name == "push":\n'),
+            "an unknown head skipped": ('return True, "the pull request head commit is unknown',
+                                        'return False, "the pull request head commit is unknown'),
+            "an uncomputable diff skipped": ("return True, f\"the pull request's changes could not be computed",
+                                             "return False, f\"the pull request's changes could not be computed"),
+            "the merge check removed": ("if len(commits) != 3 or commits[2] != pull_request_head:",
+                                        "if len(commits) < 2:"),
+            "a failed decision skipped": ('required, reason = True, f"the decision failed',
+                                          'required, reason = False, f"the decision failed'),
+            "an added source skipped": ('status != "M"', 'status == "D"'),
+            "every source change skipped": (' or (path.startswith(SOURCE_DIRECTORY) and status != "M")', ""),
+            "the test directory dropped": ('    "tests/native/",\n', ""),
+            "the doctest directory dropped": ('    "thirdparty/",\n', ""),
+            "the workflow actions dropped": ('    ".github/actions/",\n', ""),
+            "the cmake directory dropped": ('    "cmake/",\n', ""),
+            "SCsub dropped": ('{"SCsub", "SConscript", "CMakeLists.txt"}', '{"SConscript", "CMakeLists.txt"}'),
+            "SConscript dropped": ('{"SCsub", "SConscript", "CMakeLists.txt"}', '{"SCsub", "CMakeLists.txt"}'),
+            "the cmake suffix dropped": ('BUILD_INPUT_SUFFIXES = (".cmake",)', "BUILD_INPUT_SUFFIXES = ()"),
+            "the filter emptied": ("    return [\n        path\n        for status, path in changes\n",
+                                   "    return [\n        path\n        for status, path in []\n"),
+            "never skipping": ("    triggers = triggering_changes(changes)\n",
+                               "    triggers = ['everything']\n"),
+        }
+        mutations["CMakeLists.txt dropped"] = ('{"SCsub", "SConscript", "CMakeLists.txt"}', '{"SCsub", "SConscript"}')
+        for required in ("SConstruct", "methods.py", "scripts/native_test_build.py",
+                         "build_profile.json", "build_versions.json", ".github/workflows/ci.yml", "godot-cpp",
+                         ".gitmodules", "custom.py", "scripts/build_config.py", "scripts/build_metadata.py",
+                         "scripts/generate_global_api.py", "scripts/native_transition_scope.py",
+                         "tests/verify_native_surface.py", "tests/verify_parse_cache_surface.py",
+                         "tests/test_native_cmake_rebuild.py", "tests/test_cmake_api_inputs.py",
+                         "tests/run_native_suites.py", "tests/native_suites.json", "tests/test_native_storage.py",
+                         "tests/test_run_native_suites.py"):
+            mutations[f"{required} dropped"] = (f'    "{required}",\n', "")
+        for name, (old, new) in mutations.items():
+            with self.subTest(mutation=name):
+                self.assertIsNotNone(self.audit(self.load(self.mutate(old, new))), name)
+
 
 class WrapperContract(unittest.TestCase):
     setUp = RegistryContract.setUp
