@@ -573,6 +573,47 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
             with self.subTest(mutation=name):
                 self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), name)
 
+    def test_unbounded_or_reduced_cmake_parallelism_is_refused(self):
+        """A bare --parallel is an unbounded make -j with the Makefiles generator, and the rebuild
+        script's own --jobs default is lower than the runner provides, so both counts are pinned."""
+        steps = self.document["jobs"]["build"]["steps"]
+        bounded = "cmake --build build/native-cmake --parallel 4"
+        rebuild = "python3 tests/test_native_cmake_rebuild.py"
+        indices = self.verification_indices(self.document)
+        builds = [(index, number) for index in indices
+                  for number, line in enumerate(steps[index]["run"].splitlines()) if line.strip() == bounded]
+        rebuilds = [(index, number, line) for index in indices
+                    for number, line in enumerate(steps[index]["run"].splitlines())
+                    if line.strip().startswith(rebuild)]
+        self.assertEqual(len(builds), 3, "every CMake native test build uses four jobs")
+        self.assertEqual(len(rebuilds), 1, "one incremental rebuild verification")
+        self.assertTrue(rebuilds[0][2].rstrip().endswith(" --jobs 4"), rebuilds[0][2])
+
+        def rewrite(index, number, old, new):
+            def mutate(document):
+                step = document["jobs"]["build"]["steps"][index]
+                lines = step["run"].splitlines()
+                self.assertIn(old, lines[number])
+                lines[number] = lines[number].replace(old, new)
+                step["run"] = "\n".join(lines) + "\n"
+            return mutate
+
+        mutations = {}
+        for index, number in builds:
+            for label, replacement in (("unbounded", "--parallel"), ("two jobs", "--parallel 2"), ("serial", "")):
+                mutations[f"step {index} line {number} build {label}"] = rewrite(
+                    index, number, " --parallel 4", (" " + replacement).rstrip())
+        rebuild_index, rebuild_number, _ = rebuilds[0]
+        for label, replacement in (("without --jobs", ""), ("with two jobs", " --jobs 2"),
+                                   ("with an unbounded job count", " --jobs 100")):
+            mutations[f"rebuild {label}"] = rewrite(rebuild_index, rebuild_number, " --jobs 4", replacement)
+        for name, mutate in mutations.items():
+            document = copy.deepcopy(self.document)
+            mutate(document)
+            self.assertNotEqual(document, self.document, name)
+            with self.subTest(mutation=name):
+                self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), name)
+
 
 class TransitionScopeContract(unittest.TestCase):
     """Negative coverage for what the transition decision script decides.
