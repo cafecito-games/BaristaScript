@@ -35,6 +35,16 @@ inline constexpr const char *CORPUS_IGNORE_MARKER = ".baristaignore";
 inline constexpr const char *CORPUS_ANALYZER_ROOT = "res://tests/corpus/analyzer";
 
 /**
+ * The corpus root whose cases are compiled and executed rather than statically evaluated.
+ *
+ * It stages no fixture sources. An analyzer case names its dependencies through a fixture list
+ * this harness publishes into a temporary declaration index; a runtime case `preload`s a
+ * `.notest.barista` helper that sits beside it on disk, so the ordinary resource path already
+ * resolves it and a staged copy would be a second, divergent one.
+ */
+inline constexpr const char *CORPUS_RUNTIME_ROOT = "res://tests/corpus/runtime";
+
+/**
  * Ordinals are serialized into `BS_CASE_RESULT` and read back by
  * `scripts/run_corpus_triage.py`, so they are pinned to the declaration order of
  * `FailureReason` in `project/tests/corpus_harness.gd`.

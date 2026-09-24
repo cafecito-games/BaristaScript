@@ -43,12 +43,14 @@ def metadata():
 
 
 BUILD_ID = 'b' * 64
-# The one triage-supervised corpus destination the registry declares.
+# The triage-supervised corpus destinations the registry declares.
 ANALYZER_ROOT = 'res://tests/corpus/analyzer'
+RUNTIME_ROOT = 'res://tests/corpus/runtime'
+ANALYZER_PROFILE = triage.corpus_profile(ANALYZER_ROOT)
 
 
 def native_completion_line(nonce, *, cases=1, assertions=3, failed_cases=0, failed_assertions=0,
-                           suite=triage.NATIVE_SUITE, build_id=BUILD_ID, case=triage.NATIVE_CORPUS_CASE):
+                           suite=ANALYZER_PROFILE['suite'], build_id=BUILD_ID, case=triage.NATIVE_CORPUS_CASE):
     return native.RESULT_PREFIX + json.dumps(dict(
         protocol=native.PROTOCOL_VERSION, suite=suite, case=case, nonce=nonce,
         build_id=build_id, build_info=metadata(), cases=cases, assertions=assertions,
@@ -91,7 +93,7 @@ class IdentityTests(unittest.TestCase):
         output = native_completion_line('n')
         for terminal in ('passed', 'mismatch', 'crash', 'timeout'):
             record = dict(terminal=terminal, passed=terminal == 'passed', output=output)
-            completion = triage.native_completion(record['output'], 'n', info, BUILD_ID)
+            completion = triage.native_completion(record['output'], 'n', info, BUILD_ID, ANALYZER_PROFILE['suite'])
             triage.attach_build_info(record, completion, None)
             self.assertEqual(record['terminal'], terminal)
             self.assertEqual(record['passed'], terminal == 'passed')
@@ -104,7 +106,7 @@ class IdentityTests(unittest.TestCase):
                      native_completion_line('n', build_id='c' * 64)):
             record = dict(terminal='passed', passed=True, output=text)
             with self.assertRaises(ValueError):
-                triage.native_completion(text, 'n', info, BUILD_ID)
+                triage.native_completion(text, 'n', info, BUILD_ID, ANALYZER_PROFILE['suite'])
             triage.attach_build_info(record, None, 'rejected')
             self.assertFalse(record['passed'])
             self.assertEqual(record['terminal'], 'build_info_error')
@@ -238,7 +240,7 @@ class ReportTests(unittest.TestCase):
             for command in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                                                         'commit', '-qm', 'fixture']):
                 subprocess.run(['git', '-C', str(root), *command], check=True, capture_output=True)
-            cases = sorted(triage.validate_imported_tree(corpus, inventory, project_root=root / 'project'))[:case_limit]
+            cases = sorted(triage.validate_imported_tree(corpus, inventory, ANALYZER_PROFILE, project_root=root / 'project'))[:case_limit]
             report = base / 'report.json'
             checkout = dict(source=dict(revision='c' * 40, state='dirty'), config_sha256='d' * 64)
             real_run = subprocess.run
@@ -277,7 +279,7 @@ class ReportTests(unittest.TestCase):
                 self.assertIn('release = "res://bin/native.dylib"', (project / 'bin/barista_script.gdextension').read_text())
                 self.assertEqual(list((project / 'bin').glob('*.dylib')), [project / 'bin/native.dylib'])
                 self.assertEqual(command[command.index('--main-loop') + 1], 'BaristaNativeTestRunner')
-                self.assertIn(f'--native-suite={triage.NATIVE_SUITE}', command)
+                self.assertIn(f'--native-suite={ANALYZER_PROFILE["suite"]}', command)
                 self.assertIn(f'--native-case={triage.NATIVE_CORPUS_CASE}', command)
                 self.assertIn(f'--corpus-root={inventory["root"]}', command)
                 self.assertNotIn('res://tests/corpus_runner.gd', command)
@@ -297,6 +299,11 @@ class ReportTests(unittest.TestCase):
                     time.sleep(0.2 * (len(cases) - cases.index(case)))
                 if mode == 'interrupt' and case == cases[1]:
                     raise KeyboardInterrupt()
+                if mode in ('crash', 'timeout') and case == cases[0]:
+                    # A host that died or was killed leaves no guarded record behind, which is
+                    # exactly why neither can be adjudicated against an expectation.
+                    return dict(output='', exit_code=-signal.SIGSEGV if mode == 'crash' else 0,
+                                timed_out=mode == 'timeout', duration_seconds=0.1)
                 expected = records[case]['expected_block']
                 payload = dict(path=inventory['root'] + '/' + case, passed=True, expected=expected, actual=expected)
                 output = 'BS_CASE_RESULT ' + json.dumps(payload) + '\nBS_CASE_RAN ' + case + '\n'
@@ -563,6 +570,23 @@ class ReportTests(unittest.TestCase):
                 self.assertEqual(triage.main(arguments), 2)
             self.assertIn('native build id', stream.getvalue())
 
+    def test_a_crashed_or_timed_out_case_fails_the_run_and_never_reaches_the_pin(self):
+        """E4, end to end: neither terminal is a corpus result, so neither is pinnable."""
+        for mode in ('crash', 'timeout'):
+            result, report = self.exercise(mode)
+            self.assertEqual(result, 1, (mode, report['summary']))
+            crashed = report['results'][0]
+            self.assertEqual(crashed['terminal'], mode)
+            self.assertFalse(crashed['passed'])
+            self.assertEqual(report['unadjudicated_failures'], [crashed['case']])
+            self.assertTrue(any(complaint.startswith(crashed['case'] + ':')
+                                and 'is not an adjudicated corpus result' in complaint
+                                for complaint in report['expected_failure_complaints']),
+                            report['expected_failure_complaints'])
+            # The remedy the complaint names is never "pin it", so the pin must not be able to
+            # silence it. Re-adjudicating the same outcomes with the case pinned still complains.
+            self.assertEqual(
+                len(triage.expected_failure_complaints(report['results'], [crashed['case']], [crashed['case']])), 1)
 
 class FastPathTests(unittest.TestCase):
     """The whole-corpus path and, above all, its refusal to report a partial run as a whole one."""
@@ -803,7 +827,7 @@ class FastPathTests(unittest.TestCase):
     def test_narrowing_parallelism_and_slicing_belong_to_their_own_paths(self):
         with self.fixture() as (root, library, report_path, inventory, cases, checkout):
             population = len(triage.validate_imported_tree(
-                root / 'project/tests/corpus/analyzer', inventory, project_root=root / 'project'))
+                root / 'project/tests/corpus/analyzer', inventory, ANALYZER_PROFILE, project_root=root / 'project'))
             base = ['--godot', 'fake-godot', '--library', str(library), '--corpus', inventory['root'],
                     '--report', str(report_path)]
             refusals = (
@@ -834,23 +858,121 @@ class RuntimeTests(unittest.TestCase):
         library, info, sha = triage.select_library(LIBRARY, [])
         from run_native_suites import staged_project
         inventory = triage.read_json(corpus_root / 'inventory.json')
-        records = triage.validate_imported_tree(corpus_root, inventory)
+        records = triage.validate_imported_tree(corpus_root, inventory, ANALYZER_PROFILE)
         case = sorted(records)[0]
         expected = records[case]['expected_block']
         with staged_project({'library': str(library)}) as project:
             triage.prepare_triage_project(project)
             nonce = 'same-process'
             command = [str(GODOT), '--headless', '--path', str(project), '--main-loop', 'BaristaNativeTestRunner',
-                       '--', f'--native-suite={triage.NATIVE_SUITE}', f'--native-case={triage.NATIVE_CORPUS_CASE}',
+                       '--', f'--native-suite={ANALYZER_PROFILE["suite"]}', f'--native-case={triage.NATIVE_CORPUS_CASE}',
                        f'--native-nonce={nonce}', f'--corpus-root={corpus}', f'--corpus-case={case}']
             process = triage.supervise(command, 120)
-            completion = triage.native_completion(process['output'], nonce, info, triage.build_identity())
+            completion = triage.native_completion(process['output'], nonce, info, triage.build_identity(),
+                                                  ANALYZER_PROFILE['suite'])
             record = triage.result_record(process, case, corpus, expected, completion)
             triage.attach_build_info(record, completion, None)
             self.assertTrue(record['passed'], record)
             self.assertEqual(record['build_info'], info)
             self.assertEqual(triage.digest(project / 'bin' / ('native' + library.suffix)), sha)
         self.assertFalse(project.parent.exists())
+
+
+class AdjudicationTests(unittest.TestCase):
+    """What a residual-failure pin may and may not absorb, and which roots may be triaged."""
+
+    @staticmethod
+    def outcome(case, terminal, *, owner='#244: no runtime yet — expressions'):
+        return dict(case=case, terminal=terminal, passed=terminal == 'passed',
+                    semantic_owner=dict(reason=owner) if owner else None)
+
+    def test_a_transcript_mismatch_is_the_only_failure_the_pin_absorbs(self):
+        case = 'errors/case.barista'
+        mismatch = [self.outcome(case, 'mismatch')]
+        self.assertEqual(triage.expected_failure_complaints(mismatch, [case], [case]), [])
+        # E4. Each of these is a failure the pin must refuse even though the case is pinned and
+        # its owner carries a reason, because none of them is an adjudicated corpus result.
+        for terminal in ('crash', 'timeout', 'missing_guard', 'malformed_result',
+                         'inconsistent_completion', 'infrastructure_error', 'artifact_changed',
+                         'build_info_error'):
+            complaints = triage.expected_failure_complaints([self.outcome(case, terminal)], [case], [case])
+            self.assertEqual(len(complaints), 1, (terminal, complaints))
+            self.assertIn('is not an adjudicated corpus result', complaints[0])
+            self.assertIn(terminal, complaints[0])
+            self.assertTrue(triage.unadjudicated_failure(self.outcome(case, terminal)))
+        self.assertFalse(triage.unadjudicated_failure(self.outcome(case, 'mismatch')))
+        self.assertFalse(triage.unadjudicated_failure(self.outcome(case, 'passed')))
+
+    def test_a_hard_failure_is_refused_whether_or_not_the_case_is_pinned(self):
+        case = 'errors/case.barista'
+        for pin in ([case], []):
+            complaints = triage.expected_failure_complaints([self.outcome(case, 'crash')], pin, [case])
+            # Exactly one complaint either way: an unpinned crash must not also be reported as
+            # undeclared breakage, which would suggest pinning it is the remedy.
+            self.assertEqual(len(complaints), 1, complaints)
+            self.assertIn('is not an adjudicated corpus result', complaints[0])
+
+    def test_a_pinned_case_that_passes_and_an_undeclared_failure_both_complain(self):
+        passing, undeclared = 'errors/fixed.barista', 'errors/new.barista'
+        complaints = triage.expected_failure_complaints(
+            [self.outcome(passing, 'passed'), self.outcome(undeclared, 'mismatch')],
+            [passing], [passing, undeclared])
+        self.assertEqual(len(complaints), 2, complaints)
+        self.assertIn('pinned expected failure now passes', complaints[0])
+        self.assertIn('not declared in expected_failures', complaints[1])
+
+    def test_a_record_with_no_terminal_complains_rather_than_raising(self):
+        # The classifier fails closed on a record that does not say how it failed, so the
+        # complaint has to be able to describe one. Reading the absent key directly would turn
+        # the refusal into a crash and lose the durable report along with it.
+        case = 'errors/case.barista'
+        record = dict(case=case, passed=False, semantic_owner=dict(reason='#244: no runtime yet'))
+        self.assertTrue(triage.unadjudicated_failure(record))
+        complaints = triage.expected_failure_complaints([record], [case], [case])
+        self.assertEqual(len(complaints), 1, complaints)
+        self.assertIn('is not an adjudicated corpus result', complaints[0])
+        self.assertIn('no terminal', complaints[0])
+
+    def test_an_unowned_mismatch_is_refused(self):
+        case = 'errors/case.barista'
+        complaints = triage.expected_failure_complaints(
+            [self.outcome(case, 'mismatch', owner=None)], [case], [case])
+        self.assertEqual(len(complaints), 1, complaints)
+        self.assertIn('no semantic owner', complaints[0])
+
+    def test_both_registered_triage_roots_are_permitted_and_profiled(self):
+        roots = triage.permitted_corpus_roots()
+        self.assertEqual(roots, {ANALYZER_ROOT, RUNTIME_ROOT})
+        self.assertEqual(triage.corpus_profile(ANALYZER_ROOT)['suite'], 'analyzer_corpus')
+        runtime = triage.corpus_profile(RUNTIME_ROOT)
+        self.assertEqual(runtime['name'], 'runtime')
+        self.assertEqual(runtime['suite'], 'runtime_corpus')
+        self.assertEqual(runtime['importer'], 'import_runtime_corpus')
+        self.assertEqual(runtime['policy'], ROOT / 'scripts/runtime_corpus_policy.json')
+        self.assertEqual(runtime['suite_source'], ROOT / 'tests/native/runtime_corpus_test.cpp')
+        # The named suite has to exist as a declared native suite, or a triage run would ask
+        # the runner for a filter that selects nothing and call the empty result a corpus.
+        declared = json.loads((ROOT / 'tests/native_suites.json').read_text())['suites']
+        for root in roots:
+            self.assertIn(triage.corpus_profile(root)['suite'], declared)
+            self.assertTrue(triage.corpus_profile(root)['policy'].is_file())
+            self.assertTrue(triage.corpus_profile(root)['suite_source'].is_file())
+
+    def test_an_unregistered_root_has_no_profile(self):
+        for planted in ('res://tests/corpus/parser', 'res://tests/corpus/runtime/errors',
+                        'user://runtime', 'res://tests/corpus/runtime/', ''):
+            self.assertNotIn(planted, triage.permitted_corpus_roots())
+            with self.assertRaises(ValueError):
+                triage.corpus_profile(planted)
+
+    def test_the_runtime_stage_is_an_admitted_case_stage(self):
+        from corpus_stages import STAGES, validate_stages
+        self.assertIn('runtime', STAGES)
+        revision = triage.load_registry(ROOT)['revision']
+        document = json.loads((ROOT / 'project/tests/corpus/runtime/case_stages.json').read_text())
+        stages = validate_stages(document, set(document['cases']), set(), revision)
+        self.assertTrue(stages)
+        self.assertEqual(set(stages.values()), {'runtime'})
 
 
 if __name__ == '__main__':

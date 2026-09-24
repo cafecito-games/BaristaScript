@@ -356,17 +356,28 @@ class TriageWorkflowContract(unittest.TestCase):
         import validate_ci
         import yaml
         self.audit = getattr(validate_ci, "check_corpus_triage_wiring", None)
-        self.assertIsNotNone(self.audit, "analyzer corpus triage audit missing")
+        self.assertIsNotNone(self.audit, "corpus triage audit missing")
         self.yaml = yaml
         self.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.document = yaml.load(self.workflow, Loader=yaml.BaseLoader)
 
-    def triage_index(self, document):
+    def triage_indices(self, document):
+        """Every whole-population triage step, one per triage-supervised corpus, in order."""
+        import validate_ci
         steps = document["jobs"]["build"]["steps"]
         found = [index for index, step in enumerate(steps)
                  if "scripts/run_corpus_triage.py" in step.get("run", "")]
-        self.assertEqual(len(found), 1, "one whole-population triage step")
-        return found[0]
+        self.assertEqual(len(found), len(validate_ci.CORPUS_TRIAGE_STEPS),
+                         "one whole-population triage step per triage-supervised corpus")
+        return found
+
+    def triage_index(self, document, corpus="analyzer"):
+        """The step that triages one named corpus."""
+        steps = document["jobs"]["build"]["steps"]
+        for index in self.triage_indices(document):
+            if f"--corpus res://tests/corpus/{corpus}" in steps[index]["run"]:
+                return index
+        self.fail(f"no triage step for the {corpus} corpus")
 
     def test_current_workflow(self):
         """Also proves a clean round-trip, so a refusal below is the mutation, not the dump."""
@@ -437,10 +448,13 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
         self.document = yaml.load(self.workflow, Loader=yaml.BaseLoader)
 
     def verification_indices(self, document):
+        import validate_ci
         steps = document["jobs"]["build"]["steps"]
         triage = [index for index, step in enumerate(steps)
                   if "scripts/run_corpus_triage.py" in step.get("run", "")]
-        self.assertEqual(len(triage), 1, "one whole-population triage step")
+        self.assertEqual(len(triage), len(validate_ci.CORPUS_TRIAGE_STEPS),
+                         "one whole-population triage step per triage-supervised corpus")
+        # The verification steps sit directly before the first of the contiguous triage steps.
         return list(range(triage[0] - self.step_count, triage[0]))
 
     def test_current_workflow(self):

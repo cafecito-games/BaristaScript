@@ -17,6 +17,7 @@ Use `--require-current` when verification requires current source/configuration.
 - `scons target=template_debug barista_tests=yes` builds isolated native C++ tests under `build/native-scons/`; run `python3 tests/run_native_suites.py --godot "$(command -v godot)"` and `python3 tests/test_run_native_suites.py --godot "$(command -v godot)"`.
 - CMake exposes `-DBARISTA_TESTS=ON`; select its isolated artifact with `python3 tests/run_native_suites.py --godot "$(command -v godot)" --build-dir build/native-cmake`. Both test options default off.
 - `python3 tests/validate_ci.py` checks that the CI matrix matches the pinned API precision and event policy.
+- `python3 scripts/run_corpus_triage.py --godot "$(command -v godot)" --corpus res://tests/corpus/<analyzer|runtime> --report <path outside the repo> --execution fast --shards 4` runs one triage-supervised corpus against its residual-failure pin. The runtime corpus compiles and executes its cases; only a transcript mismatch is a pinnable failure, so a crash, a hang or a missing guarded record fails the run whatever the pin says.
 - `godot --headless --path project --editor --quit` imports the fixture; then `python3 tests/run_gdscript_suites.py --godot $(which godot)` runs every GDScript suite in `project/tests/` and fails when one did not actually run.
 
 Invoke Python tooling as `python3`; a bare `python` is not present on every supported development

@@ -447,8 +447,9 @@ def generate(inventory: dict, source: Path, destination: Path):
         f'{len(ledger["triage"]["excluded"])} excluded + {len(ledger["triage"]["deferred"])} deferred.\n'
         f'Residual failures pinned in `tests/corpus_baseline.json`: {len(ledger["expected_failures"])}.\n'
         'A case expectation is the complete upstream transcript, relocated onto this destination and\n'
-        'otherwise byte-identical. Nothing executes it yet; every imported case is pinned as an expected\n'
-        'failure whose reason names the child that owns it.\n')
+        'otherwise byte-identical. `scripts/run_corpus_triage.py` compiles and runs each case against it;\n'
+        'every case that still fails is pinned with a reason naming the child that owns it, and the pin\n'
+        'shrinks only through this importer reading a completed execution report.\n')
 
 
 def write_tree(inventory: dict, source: Path, destination: Path):

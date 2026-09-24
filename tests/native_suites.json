@@ -52,6 +52,7 @@
     "top_level_enum_analyzer",
     "corpus_evaluation",
     "analyzer_corpus",
+    "runtime_corpus",
     "runtime",
     "runtime_scene"
   ],

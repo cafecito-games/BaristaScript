@@ -60,3 +60,7 @@ CMakeUserPresets.json
 
 # Shared CI SCons cache; tracked edits remain visible to build identity.
 /.scons-cache/
+
+# The upstream Foundry checkout the corpus importers read. It is acquired on demand and is
+# never part of this repository.
+.upstream-foundry/

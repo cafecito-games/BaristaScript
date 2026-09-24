@@ -38,6 +38,13 @@ completion record of the process that produced it, full expected/actual block ag
 successful process, and -- on the fast path -- shard completion evidence that together covers
 exactly the population the imported ledger declares. Nonzero reports are discovery evidence, never passing corpus
 baselines.
+
+A residual-failure pin may absorb exactly one kind of failure: a case that ran and whose
+transcript differs from its expectation. A case that crashed the host, hung it, emitted no
+guarded record, or produced one the classifier could not read did not produce a corpus result
+at all, and naming an owner for it does not make it one. Those are hard failures whatever the
+pin says, because a corpus that can execute code can also corrupt memory, and a pin that
+absorbed a crash would hide it behind a green run.
 """
 from __future__ import annotations
 
@@ -46,6 +53,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -71,10 +79,9 @@ from native_test_build import build_identity
 from query_build_info import checkout_info
 from run_native_suites import PROTOCOL_VERSION, RESULT_FIELDS, RESULT_PREFIX, staged_project
 
-NATIVE_SUITE = 'analyzer_corpus'
-# The one registered analyzer_corpus case that evaluates a single externally selected case.
+# The one registered driver case that evaluates a single externally selected case.
 NATIVE_CORPUS_CASE = 'selected_corpus_case_emits_guards'
-# The one registered analyzer_corpus case that evaluates the whole corpus in its own process.
+# The one registered driver case that evaluates the whole corpus in its own process.
 NATIVE_WHOLE_CORPUS_CASE = 'whole_corpus_emits_guarded_records'
 NATIVE_BUILD_DIRECTORY = 'build/native-scons'
 CASE_RESULT_PREFIX = 'BS_CASE_RESULT '
@@ -84,6 +91,26 @@ CORPUS_COMPLETE_PREFIX = 'BS_CORPUS_COMPLETE '
 # A whole-corpus process analyzes every case, so its ceiling is a run, not a case.
 ISOLATED_CASE_TIMEOUT = 30.0
 FAST_RUN_TIMEOUT = 1800.0
+
+
+def corpus_profile(corpus_root):
+    """Everything about one triage-supervised corpus that differs from the others.
+
+    A corpus is named once, in `scripts/corpus_sources.json`, and every per-corpus name here is
+    derived from that one registration rather than listed a second time: the importer module the
+    registry already records, the policy file and the native suite that carry the same name.
+    Deriving them is what stops a third corpus from being half-wired -- there is no table to
+    forget to extend -- and what keeps a report's suite field naming the corpus it triaged.
+    """
+    for name, record in load_registry(ROOT)['corpora'].items():
+        if record['execution'] != 'triage' or 'res://' + record['destination'].removeprefix('project/') != corpus_root:
+            continue
+        return {'name': name,
+                'importer': Path(record['importer']).stem,
+                'policy': ROOT / f'scripts/{name}_corpus_policy.json',
+                'suite': f'{name}_corpus',
+                'suite_source': ROOT / f'tests/native/{name}_corpus_test.cpp'}
+    raise ValueError('corpus root must be a triage-supervised registered corpus destination')
 
 
 def digest(path):
@@ -135,7 +162,7 @@ def prepare_triage_project(project):
     shutil.copy2(ROOT / 'scripts/corpus_sources.json', scripts / 'corpus_sources.json')
 
 
-def native_completion(output, nonce, expected, expected_build_id, native_case=NATIVE_CORPUS_CASE):
+def native_completion(output, nonce, expected, expected_build_id, native_suite, native_case=NATIVE_CORPUS_CASE):
     """Parse the one native completion record the process emits about its own run.
 
     The recorded build id is a content fingerprint of the native sources, so pinning it binds
@@ -148,7 +175,7 @@ def native_completion(output, nonce, expected, expected_build_id, native_case=NA
     record = parse_json(records[0])
     if type(record) is not dict or set(record) != RESULT_FIELDS:
         raise ValueError('native completion fields do not match the shared protocol')
-    for key, expectation in (('protocol', PROTOCOL_VERSION), ('suite', NATIVE_SUITE),
+    for key, expectation in (('protocol', PROTOCOL_VERSION), ('suite', native_suite),
                              ('case', native_case), ('nonce', nonce),
                              ('build_id', expected_build_id)):
         if type(record[key]) is not type(expectation) or record[key] != expectation:
@@ -410,6 +437,24 @@ def pinpoint_command(args, case):
     ])
 
 
+# The only failure a residual-failure pin may absorb. Every other terminal says the case was
+# not adjudicated at all: it crashed the host, hung it, emitted no guarded record, or produced
+# one the shared classifier could not read. A pin exists to record "this case runs and its
+# transcript is still wrong", so absorbing any of the others would hide memory corruption,
+# an infinite loop or a broken harness behind a green run that names an owner.
+PINNABLE_TERMINAL = 'mismatch'
+
+
+def unadjudicated_failure(record):
+    """Whether a failing case failed in a way the pin is not allowed to absorb.
+
+    A record with no terminal at all is refused for the same reason a crash is: it does not
+    say the case ran and produced a comparable transcript, and only a record that says so may
+    be answered with "this failure is expected".
+    """
+    return not record['passed'] and record.get('terminal') != PINNABLE_TERMINAL
+
+
 def owned_failure(record):
     """Whether a failing case names a semantic owner carrying a written reason."""
     owner = record.get('semantic_owner')
@@ -443,6 +488,15 @@ def expected_failure_complaints(results, expected_failures, selected):
             if case in pinned:
                 complaints.append(f'{case}: pinned expected failure now passes; remove it from expected_failures')
             continue
+        if unadjudicated_failure(record):
+            # Reported whether or not the case is pinned, and deliberately before the ownership
+            # and declaration checks: a crash is not a corpus result that happens to be owned,
+            # so being in the pin is no answer to it. It must be fixed, rewritten, or excluded
+            # with a reason.
+            complaints.append(f'{case}: {record.get("terminal", "a record with no terminal")} is not an '
+                              'adjudicated corpus result and cannot be absorbed by expected_failures; fix, '
+                              'rewrite, or exclude the case with a reason')
+            continue
         if not owned_failure(record):
             complaints.append(f'{case}: failing case has no semantic owner with a written reason')
         if case not in pinned:
@@ -451,8 +505,17 @@ def expected_failure_complaints(results, expected_failures, selected):
     return complaints
 
 
-def validate_imported_tree(root, inventory, *, project_root=None):
-    from import_analyzer_corpus import shared_source_path
+def validate_imported_tree(root, inventory, profile, *, project_root=None):
+    importer = importlib.import_module(profile['importer'])
+    # Only the analyzer corpus admits a source delivered from outside its own tree. A corpus
+    # whose importer declares no such route has every source corpus-local, and saying so here
+    # is what keeps `root` on a record an error rather than an unchecked redirection.
+    shared_source_path = getattr(importer, 'shared_source_path', None)
+    if shared_source_path is None:
+        def shared_source_path(record, project_root):
+            if 'root' in record:
+                raise ValueError('unregistered external source root')
+            return None
     project_root = project_root or ROOT / "project"
     if (len({r['identity'] for r in inventory['sources']}) != len(inventory['sources'])
             or len({r['imported_path'] for r in inventory['sources']}) != len(inventory['sources'])
@@ -466,7 +529,7 @@ def validate_imported_tree(root, inventory, *, project_root=None):
     helper_records = {r['imported_path'] for r in inventory['sources'] if r['role'] in ('helper', 'support_helper') and 'root' not in r}
     if len(records) != inventory['ledger']['total'] or helpers != helper_records or sources - helpers != set(records):
         raise ValueError('imported inventory/population disagreement')
-    complaint = validate_triage_ledger('analyzer', inventory['ledger'], disk_cases=set(records), disk_helpers=helpers)
+    complaint = validate_triage_ledger(profile['name'], inventory['ledger'], disk_cases=set(records), disk_helpers=helpers)
     if complaint:
         raise ValueError(f'imported population accounting: {complaint}')
     validate_stages(read_json(root / 'case_stages.json'), set(records), helpers, inventory['foundry_revision'])
@@ -528,17 +591,18 @@ def main(argv=None):
             raise ValueError('shards must be a positive integer')
         if args.corpus not in permitted_corpus_roots():
             raise ValueError('corpus root must be a triage-supervised registered corpus destination')
+        profile = corpus_profile(args.corpus)
         root = local_path(ROOT, 'project/' + args.corpus.removeprefix('res://'))
         if args.report.resolve().is_relative_to(ROOT):
             raise ValueError('execution report must be outside the repository')
         inventory = read_json(root / 'inventory.json')
         if inventory.get('checkpoint') != 'imported' or inventory.get('imported') is not True or inventory.get('root') != args.corpus:
             raise ValueError('not an imported corpus inventory')
-        from import_analyzer_corpus import default_policy, encoded, sha
-        policy = default_policy()
-        if inventory['counts'] != policy['counts'] or inventory['policy_sha256'] != sha(encoded(policy)):
+        importer = importlib.import_module(profile['importer'])
+        policy = importer.default_policy()
+        if inventory['counts'] != policy['counts'] or inventory['policy_sha256'] != importer.sha(importer.encoded(policy)):
             raise ValueError('imported inventory differs from the current pinned policy; regenerate the tree')
-        records = validate_imported_tree(root, inventory)
+        records = validate_imported_tree(root, inventory, profile)
         if len(set(args.case)) != len(args.case) or set(args.case) - set(records):
             raise ValueError('duplicate or unknown exact case selection')
         selected = args.case or sorted(records)
@@ -573,9 +637,9 @@ def main(argv=None):
                   'selected_artifact': {'path': str(library), 'sha256': artifact_sha, 'build_info': inspected_info},
                   'build_info': None, 'checkout_info': checkout_info(),
                   'execution_files': {str(path.relative_to(ROOT)): digest(path) for path in
-                                      sorted([ROOT / 'scripts/run_corpus_triage.py', ROOT / 'scripts/analyzer_corpus_policy.json',
+                                      sorted([ROOT / 'scripts/run_corpus_triage.py', profile['policy'],
                                               ROOT / 'tests/native/corpus_helpers.cpp', ROOT / 'tests/native/corpus_helpers.h',
-                                              ROOT / 'tests/native/analyzer_corpus_test.cpp',
+                                              profile['suite_source'],
                                               ROOT / 'tests/native/native_test_runner.cpp', ROOT / 'tests/native/native_test_runner.h',
                                               ROOT / 'tests/native/native_corpus_arguments.cpp', ROOT / 'tests/native/native_corpus_arguments.h',
                                               ROOT / 'src/bs_corpus_evaluation.cpp', ROOT / 'src/bs_corpus_evaluation.h',
@@ -646,7 +710,7 @@ def main(argv=None):
                     require_equal('staged library before case', artifact_sha, before)
                     nonce = uuid.uuid4().hex
                     command = [str(args.godot), '--headless', '--path', str(project), '--main-loop',
-                               'BaristaNativeTestRunner', '--', f'--native-suite={NATIVE_SUITE}',
+                               'BaristaNativeTestRunner', '--', f'--native-suite={profile["suite"]}',
                                f'--native-case={NATIVE_CORPUS_CASE}', f'--native-nonce={nonce}',
                                f'--corpus-root={args.corpus}', f'--corpus-case={case}']
                     process = supervise(command, args.timeout, started=remember_process, finished=forget_process)
@@ -655,7 +719,8 @@ def main(argv=None):
                         # that finished on its own keeps its result even if a sibling then failed.
                         return KILLED_BY_STOP
                     try:
-                        completion = native_completion(process['output'], nonce, inspected_info, expected_build_id)
+                        completion = native_completion(process['output'], nonce, inspected_info, expected_build_id,
+                                                       profile['suite'])
                         completion_error = None
                     except ValueError as error:
                         completion, completion_error = None, str(error)
@@ -672,7 +737,7 @@ def main(argv=None):
                                    'staged_source_sha256': records[case]['imported_sha256'],
                                    'expectation_sha256': records[case]['expectation_sha256'],
                                    'semantic_owner': records[case]['semantic_owner'],
-                                   'candidate_observations': records[case]['candidate_observations'], 'command': command})
+                                   'candidate_observations': records[case].get('candidate_observations'), 'command': command})
                     return record
                 except BaseException:
                     # This set must stay here rather than move into the supervising thread's handler:
@@ -689,7 +754,7 @@ def main(argv=None):
                 for _ in range(worker_count):
                     project = stack.enter_context(staged_project({'library': str(library)}))
                     prepare_triage_project(project)
-                    validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, project_root=project)
+                    validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, profile, project_root=project)
                     idle_projects.put(project)
                 # Only this thread touches the report, so every write stays a consistent snapshot.
                 finished = {}
@@ -746,7 +811,7 @@ def main(argv=None):
                 projects = [stack.enter_context(staged_project({'library': str(library)})) for _ in range(args.shards)]
                 for project in projects:
                     prepare_triage_project(project)
-                    validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory,
+                    validate_imported_tree(project / args.corpus.removeprefix('res://'), inventory, profile,
                                            project_root=project)
                 # A worker cannot see an interruption raised on the supervising thread, so a stop
                 # is published here: any shard process still alive is killed rather than left behind.
@@ -779,7 +844,7 @@ def main(argv=None):
                     require_equal(f'staged library before shard {index}', artifact_sha, before)
                     nonce = uuid.uuid4().hex
                     command = [str(args.godot), '--headless', '--path', str(project), '--main-loop',
-                               'BaristaNativeTestRunner', '--', f'--native-suite={NATIVE_SUITE}',
+                               'BaristaNativeTestRunner', '--', f'--native-suite={profile["suite"]}',
                                f'--native-case={NATIVE_WHOLE_CORPUS_CASE}', f'--native-nonce={nonce}',
                                f'--corpus-root={args.corpus}', f'--corpus-order={args.order}',
                                f'--corpus-shard={index}', f'--corpus-shards={args.shards}']
@@ -816,7 +881,8 @@ def main(argv=None):
                                        inventory['ledger']['total'])
             for record in shard_records:
                 record['native'] = native_completion(record['process']['output'], record['nonce'], inspected_info,
-                                                     expected_build_id, native_case=NATIVE_WHOLE_CORPUS_CASE)
+                                                     expected_build_id, profile['suite'],
+                                                     native_case=NATIVE_WHOLE_CORPUS_CASE)
                 if not whole_corpus_completion_agrees(record['native']):
                     raise ValueError(f'the native completion record of shard {record["index"]} does not '
                                      'describe a clean whole-corpus run')
@@ -845,7 +911,7 @@ def main(argv=None):
                                         'staged_source_sha256': records[case]['imported_sha256'],
                                         'expectation_sha256': records[case]['expectation_sha256'],
                                         'semantic_owner': records[case]['semantic_owner'],
-                                        'candidate_observations': records[case]['candidate_observations'],
+                                        'candidate_observations': records[case].get('candidate_observations'),
                                         'command': record['command']})
                     built[case] = case_record
             report['results'] = [built[case] for case in selected]
@@ -853,6 +919,7 @@ def main(argv=None):
         report['completed'] = True
         report['summary'] = dict(sorted(Counter(r['terminal'] for r in report['results']).items()))
         report['unowned_failures'] = [r['case'] for r in report['results'] if not r['passed'] and not owned_failure(r)]
+        report['unadjudicated_failures'] = [r['case'] for r in report['results'] if unadjudicated_failure(r)]
         complaints = expected_failure_complaints(report['results'], inventory['ledger']['expected_failures'], selected)
         report['expected_failure_complaints'] = complaints
         atomic_report(args.report, report)
