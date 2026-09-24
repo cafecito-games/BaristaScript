@@ -576,6 +576,57 @@ TEST_SUITE("runtime_expressions") {
 		CHECK_MESSAGE(errors.has_error_containing("can't provide a length"), readable(errors.joined()));
 	}
 
+	TEST_CASE("a language utility refuses an argument its signature does not admit") {
+		// Each body converts its argument the moment it reads it, so a value the signature does not
+		// admit would become a plausible answer -- `char("x")` reading as `char(0)` -- rather than an
+		// error. The carrier is checked before any body runs.
+		Ref<BaristaScript> script;
+		const RuntimeErrorScope errors;
+		run_test_function(
+				"func test():\n"
+				"\tvar subject = []\n"
+				"\treturn char(subject)\n",
+				"res://runtime_expressions/language_utility_bad_carrier.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		CHECK_MESSAGE(errors.has_error_containing("Invalid type in BaristaScript utility function \"char()\""),
+				readable(errors.joined()));
+	}
+
+	TEST_CASE("a failed branch's bind is gone before the next branch runs") {
+		// A pattern writes its binds as it goes, so a branch whose guard then rejects the value has
+		// already filled them. The next branch can read a reference count, so the failed attempt has
+		// to be released before that branch runs, not merely by the end of the statement.
+		//
+		// The baseline uses the same array pattern without a bind, so both readings pay the same for
+		// the subject and for the element temporary the pattern walk takes. The only difference left
+		// is the bind itself.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar shared := RefCounted.new()\n"
+				"\tvar without_bind := -1\n"
+				"\tmatch [shared]:\n"
+				"\t\t[1] when false:\n"
+				"\t\t\tpass\n"
+				"\t\t_:\n"
+				"\t\t\twithout_bind = shared.get_reference_count()\n"
+				"\tvar with_failed_bind := -1\n"
+				"\tmatch [shared]:\n"
+				"\t\t[var held] when false:\n"
+				"\t\t\tprint(held)\n"
+				"\t\t_:\n"
+				"\t\t\twith_failed_bind = shared.get_reference_count()\n"
+				"\treturn [without_bind, with_failed_bind]\n",
+				"res://runtime_expressions/match_bind_before_guard.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array counts = result;
+		BS_TEST_REQUIRE(counts.size() == 2);
+		CHECK_MESSAGE(counts[0] == counts[1],
+				readable(String::num_int64(counts[0]) + " without a bind, " + String::num_int64(counts[1]) + " with one"));
+	}
+
 	TEST_CASE("an engine utility with a fixed signature runs and converts its arguments") {
 		// `typeof` and `floor` are not variadic, so each argument has to be materialized in the
 		// carrier the signature declares before the engine's pointer call can be made at all.

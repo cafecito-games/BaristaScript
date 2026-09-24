@@ -493,11 +493,21 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 		}
 	};
 
+	// The locals of the branch evaluated just before this one, so its binds can be given up in the
+	// one place that runs exactly when it failed: the `else` the next branch opens.
+	List<BSCodeGenerator::Address> previous_branch_locals;
+
 	for (int index = 0; index < p_match->branches.size(); index++) {
 		if (index > 0) {
 			// Each branch is the `else` of the one before it, so a value that matched an earlier
 			// pattern never reaches a later one.
 			generator->write_else();
+			// This is the previous branch's failure path, and the only one it has: a pattern writes
+			// its binds as it goes, so a branch that then rejected the value has already put
+			// something in them. Clearing here, before the next branch's patterns and guard run,
+			// keeps a failed attempt from being observable -- through a reference count -- to the
+			// branch that follows it.
+			clear_block_locals(p_codegen, previous_branch_locals);
 		}
 		const BSParser::MatchBranchNode *branch = p_match->branches[index];
 
@@ -553,6 +563,7 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 		}
 		clear_block_locals(p_codegen, branch_locals);
 		p_codegen.end_block();
+		previous_branch_locals = branch_locals;
 	}
 
 	for (int index = 0; index < p_match->branches.size(); index++) {
@@ -563,11 +574,9 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 	// branch is a conditional, none of them is a default, so the statement is simply a no-op. That
 	// is the documented behaviour (docs/GRAMMAR.md), and it is why no error is raised here.
 
-	// A pattern writes its binds while it is being evaluated, before the branch is known to match: a
-	// later alternative, a later element, or a guard can still turn the result false, and then the
-	// branch body -- which is where that branch clears its own binds -- never runs. The bind slot
-	// would keep whatever the failed attempt put in it for the rest of the frame. Clearing every
-	// bound slot once, here, is the one place that is reached however the branches turned out.
+	// Every branch but the last has its failure path cleared by the `else` the next branch opens.
+	// The last branch has no `else`, and a branch whose body fell through cleared only its own
+	// slots, so this sweep is what makes the statement leave nothing behind however it turned out.
 	clear_block_locals(p_codegen, bound_slots);
 
 	// The saved subject is a local like any other, and it is the only one in the frame that holds

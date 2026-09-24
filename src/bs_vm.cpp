@@ -385,6 +385,25 @@ bool call_language_utility(const StringName &p_name, const Variant **p_arguments
 		r_error.expected = info.arguments.size();
 		return false;
 	}
+	// Then the carriers, before any body reads one. A body converts its argument the moment it
+	// touches it -- `const int64_t code = *p_arguments[0]` turns a String into zero and carries on --
+	// so a value the signature does not admit has to be refused here or it becomes a plausible
+	// answer instead of an error. The analyzer rejects most of these statically; a `Variant`-typed
+	// value reaching the call is exactly the case it cannot. Provenance: the
+	// `DEBUG_VALIDATE_ARG_TYPE` guard each upstream body opens with, fs_utility_functions.cpp:59-66
+	// @ c9d5e35, hoisted to one place because the signature already says what each body would check.
+	for (int i = 0; i < p_argument_count && i < (int)info.arguments.size(); i++) {
+		const Variant::Type declared = info.arguments[i].type;
+		const bool declared_as_variant = declared == Variant::NIL &&
+				(info.arguments[i].usage & PROPERTY_USAGE_NIL_IS_VARIANT) != 0;
+		if (declared_as_variant || Variant::can_convert_strict(p_arguments[i]->get_type(), declared)) {
+			continue;
+		}
+		r_error.error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+		r_error.argument = i;
+		r_error.expected = declared;
+		return false;
+	}
 
 	if (p_name == SNAME("len")) {
 		const Variant &value = *p_arguments[0];
