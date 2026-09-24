@@ -264,7 +264,7 @@ TEST_SUITE("runtime_corpus") {
 		}
 		const CorpusWholeRunReport run = run_whole_corpus();
 		// Per-case outcomes are deliberately not asserted: the pin is the supervisor's to
-		// enforce, so this case stays green while emitting the residual failures it declares.
+		// enforce, so this case stays green while emitting the failures the pin declares.
 		CHECK_MESSAGE(run.error.is_empty(), run.error.utf8().get_data());
 		CHECK(run.planned > 0);
 		CHECK(run.completed == run.planned);
