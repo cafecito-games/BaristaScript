@@ -125,6 +125,31 @@ private:
 	 */
 	void clear_block_locals(CodeGen &p_codegen, const List<BSCodeGenerator::Address> &p_locals);
 
+	/**
+	 * The block scopes currently open, innermost last, and where the innermost loop's body starts.
+	 *
+	 * A block clears its own locals after its last statement, which a `break` or a `continue` inside
+	 * a nested block jumps straight past. The jump therefore has to do that clearing itself, for
+	 * every scope it is leaving, and these two are what let it know which scopes those are. The
+	 * loop's own body level is excluded: a `for`/`while` already clears it before each iteration and
+	 * after the loop, which is where `continue` and `break` land.
+	 */
+	List<List<BSCodeGenerator::Address>> open_block_locals;
+	List<int> loop_body_depths;
+
+	/** Clears every scope a `break` or `continue` leaves behind on its way out of the loop body. */
+	void clear_locals_left_by_jump(CodeGen &p_codegen);
+
+	/** Keeps `open_block_locals` balanced across every return path out of a block's lowering. */
+	class BlockScope {
+		BSCompiler *compiler;
+
+	public:
+		BlockScope(BSCompiler *p_compiler, const List<BSCodeGenerator::Address> &p_locals) :
+				compiler(p_compiler) { compiler->open_block_locals.push_back(p_locals); }
+		~BlockScope() { compiler->open_block_locals.pop_back(); }
+	};
+
 	// Match and its patterns (core lane).
 	Error parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_match);
 	/**

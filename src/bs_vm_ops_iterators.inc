@@ -139,9 +139,18 @@ case OPCODE_ITERATE_RANGE: {
 	BS_GET_VARIANT_PTR(step_value, 2);
 	const int64_t to = *to_value;
 	const int64_t step = *step_value;
-	const int64_t next = (int64_t)*counter + step;
+	// Advanced in unsigned arithmetic, which wraps to the same two's-complement value a signed
+	// addition would produce but is defined when it does. The step past the last element is the one
+	// that can leave the integer range -- `for x in range(0, 9223372036854775807, 9223372036854775807)`
+	// takes it -- and it is computed before the comparison that stops the loop.
+	const int64_t current = *counter;
+	const int64_t next = (int64_t)((uint64_t)current + (uint64_t)step);
 	*counter = next;
-	if ((step < 0 && next <= to) || (step > 0 && next >= to)) {
+	// A wrapped advance moved the counter the wrong way, so the ordinary bound test would read it as
+	// still inside the range and the loop would never end. Ending here is also what the range means:
+	// there is no further integer in the direction the step points.
+	const bool wrapped = step > 0 ? next < current : next > current;
+	if (wrapped || (step < 0 && next <= to) || (step > 0 && next >= to)) {
 		const int target = code_ptr[BS_IP + 5];
 		if (unlikely(target < 0 || target > code_size)) {
 			error_text = "Bad loop exit target in compiled function.";

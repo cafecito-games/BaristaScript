@@ -22,7 +22,6 @@
 using namespace barista_script;
 using namespace barista_script::native_tests;
 
-
 namespace {
 
 /**
@@ -284,6 +283,82 @@ TEST_SUITE("runtime_expressions") {
 		BS_TEST_REQUIRE(script.is_valid());
 		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
 		CHECK(result == Variant(true));
+	}
+
+	TEST_CASE("a range whose span does not fit an integer is refused, not overflowed") {
+		// `to - from` here is larger than any `int64_t`, so computing the element count signed would
+		// be undefined behaviour on the way to the refusal the caller is owed.
+		Ref<BaristaScript> script;
+		const RuntimeErrorScope errors;
+		run_test_function(
+				"func test():\n"
+				"\tvar low: int = -9223372036854775807 - 1\n"
+				"\tvar high: int = 9223372036854775807\n"
+				"\treturn range(low, high)\n",
+				"res://runtime_expressions/range_span_overflow.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		CHECK_MESSAGE(errors.has_error_containing("Range too big."), readable(errors.joined()));
+	}
+
+	TEST_CASE("a range loop whose advance leaves the integer range still ends") {
+		// The step past the last element runs off the end of `int64_t`. A wrapped counter compares as
+		// still inside the range, so without noticing the wrap this loop would never stop.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar seen := 0\n"
+				"\tvar huge: int = 9223372036854775807\n"
+				"\tfor value in range(0, huge, huge):\n"
+				"\t\tseen += 1\n"
+				"\treturn seen\n",
+				"res://runtime_expressions/range_advance_overflow.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		CHECK(result == Variant(1));
+	}
+
+	TEST_CASE("breaking out of a nested block still releases that block's locals") {
+		// The clear a block writes after its last statement is exactly what a `break` jumps over, so
+		// the jump has to clear every scope it is leaving. Without that, the nested `if`'s local keeps
+		// the object alive for the rest of the frame.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar shared := RefCounted.new()\n"
+				"\tvar before := shared.get_reference_count()\n"
+				"\twhile true:\n"
+				"\t\tif true:\n"
+				"\t\t\t@warning_ignore(\"unused_variable\")\n"
+				"\t\t\tvar held := shared\n"
+				"\t\t\tbreak\n"
+				"\treturn [before, shared.get_reference_count()]\n",
+				"res://runtime_expressions/break_nested_locals.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array counts = result;
+		BS_TEST_REQUIRE(counts.size() == 2);
+		CHECK(counts[0] == counts[1]);
+	}
+
+	TEST_CASE("a match gives up its subject when the statement ends") {
+		// The subject is copied into a hidden local so no pattern re-evaluates it. That local is the
+		// only thing in the frame still holding the value once the statement is over.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar shared := RefCounted.new()\n"
+				"\tvar before := shared.get_reference_count()\n"
+				"\tmatch shared:\n"
+				"\t\t_:\n"
+				"\t\t\tpass\n"
+				"\treturn [before, shared.get_reference_count()]\n",
+				"res://runtime_expressions/match_releases_subject.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array counts = result;
+		BS_TEST_REQUIRE(counts.size() == 2);
+		CHECK(counts[0] == counts[1]);
 	}
 
 	TEST_CASE("a range loop with a zero step is refused rather than run forever") {

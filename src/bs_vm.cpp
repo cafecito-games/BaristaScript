@@ -292,11 +292,15 @@ bool call_engine_utility(const StringName &p_name, const Variant **p_arguments, 
 		converted.write[i] = result;
 	}
 
+	// One writable view of the storage, taken after the last write to it. Mixing `Vector`'s const
+	// and writable accessors while pointers into the buffer are being collected would, on a shared
+	// buffer, copy it out from under the pointers already taken.
+	Variant *converted_values = converted.ptrw();
 	Vector<const void *> pointers;
 	pointers.resize(p_argument_count);
 	for (int i = 0; i < p_argument_count; i++) {
 		if (declared_as_variant(i)) {
-			pointers.write[i] = &converted[i];
+			pointers.write[i] = &converted_values[i];
 			continue;
 		}
 		GDExtensionVariantGetInternalPtrFunc getter =
@@ -306,7 +310,7 @@ bool call_engine_utility(const StringName &p_name, const Variant **p_arguments, 
 					String(p_name), i + 1);
 			return false;
 		}
-		pointers.write[i] = getter(reinterpret_cast<GDExtensionVariantPtr>(&converted.write[i]));
+		pointers.write[i] = getter(reinterpret_cast<GDExtensionVariantPtr>(&converted_values[i]));
 	}
 
 	const bool returns_variant = info.return_val.type == Variant::NIL &&
@@ -521,22 +525,36 @@ bool call_language_utility(const StringName &p_name, const Variant **p_arguments
 		Array result;
 		// The count is computed before the loop so a huge or empty range costs one allocation and no
 		// repeated growth, and so the sign of the step decides emptiness once rather than per element.
-		int64_t count = 0;
+		//
+		// The span is computed in unsigned arithmetic throughout, because it is exactly the quantity
+		// that does not fit: `range(-9223372036854775808, 9223372036854775807)` is a legal pair of
+		// integers whose difference is not an `int64_t`, and computing it signed is undefined
+		// behaviour rather than the "Range too big." refusal the caller is owed. Negating the step is
+		// unsigned for the same reason -- `-INT64_MIN` has no signed value, while its magnitude is
+		// representable unsigned.
+		uint64_t span = 0;
+		uint64_t stride = 0;
 		if (step > 0 && to > from) {
-			count = (to - from + step - 1) / step;
+			span = (uint64_t)to - (uint64_t)from;
+			stride = (uint64_t)step;
 		} else if (step < 0 && to < from) {
-			count = (from - to - step - 1) / -step;
+			span = (uint64_t)from - (uint64_t)to;
+			stride = -(uint64_t)step;
 		}
-		if (count > INT32_MAX) {
+		// Rounded up without the `span + stride - 1` that would overflow a span near the unsigned
+		// maximum -- which is precisely the span this guard exists to reject.
+		const uint64_t count = stride == 0 ? 0 : span / stride + (span % stride != 0 ? 1 : 0);
+		if (count > (uint64_t)INT32_MAX) {
 			r_return = "Range too big.";
 			r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
 			return false;
 		}
-		result.resize(count);
-		int64_t value = from;
-		for (int64_t i = 0; i < count; i++) {
-			result[i] = value;
-			value += step;
+		result.resize((int64_t)count);
+		for (uint64_t index = 0; index < count; index++) {
+			// The last element is `from + (count - 1) * step`, which is within the range's own bounds
+			// and therefore representable. The arithmetic is still done unsigned so an intermediate
+			// product cannot trip signed overflow on the way to a value that does fit.
+			result[(int64_t)index] = (int64_t)((uint64_t)from + index * (uint64_t)step);
 		}
 		r_return = result;
 		return true;

@@ -78,6 +78,20 @@ void BSCompiler::clear_block_locals(CodeGen &p_codegen, const List<BSCodeGenerat
 	}
 }
 
+void BSCompiler::clear_locals_left_by_jump(CodeGen &p_codegen) {
+	if (loop_body_depths.is_empty()) {
+		// A `break` or `continue` outside a loop is an analyzer error, and no scope is being left.
+		return;
+	}
+	const int body_depth = loop_body_depths.back()->get();
+	int depth = 0;
+	for (const List<BSCodeGenerator::Address> &scope : open_block_locals) {
+		if (depth++ >= body_depth) {
+			clear_block_locals(p_codegen, scope);
+		}
+	}
+}
+
 Error BSCompiler::parse_block(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, bool p_add_locals) {
 	BSCodeGenerator *generator = p_codegen.generator;
 	p_codegen.start_block();
@@ -86,6 +100,10 @@ Error BSCompiler::parse_block(CodeGen &p_codegen, const BSParser::SuiteNode *p_b
 	if (p_add_locals && !add_block_locals(p_codegen, p_block, block_locals)) {
 		return ERR_COMPILATION_FAILED;
 	}
+	// Registered before the statements run, because a `break` or a `continue` among them has to
+	// clear this scope on its way out: the clear below sits after the last statement, which a jump
+	// never reaches.
+	const BlockScope scope(this, block_locals);
 
 	for (const BSParser::Node *statement : p_block->statements) {
 		generator->write_newline(statement->start_line);
@@ -154,7 +172,9 @@ Error BSCompiler::parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode 
 				return ERR_COMPILATION_FAILED;
 			}
 			clear_block_locals(p_codegen, loop_locals);
+			loop_body_depths.push_back(open_block_locals.size());
 			result = parse_block(p_codegen, node->loop, false);
+			loop_body_depths.pop_back();
 			if (result != OK) {
 				return result;
 			}
@@ -240,7 +260,9 @@ Error BSCompiler::parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode 
 				return ERR_COMPILATION_FAILED;
 			}
 			clear_block_locals(p_codegen, loop_locals);
+			loop_body_depths.push_back(open_block_locals.size());
 			result = parse_block(p_codegen, node->loop, false);
+			loop_body_depths.pop_back();
 			if (result != OK) {
 				return result;
 			}
@@ -253,10 +275,12 @@ Error BSCompiler::parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode 
 			return parse_match(p_codegen, static_cast<const BSParser::MatchNode *>(p_statement));
 
 		case BSParser::Node::BREAK:
+			clear_locals_left_by_jump(p_codegen);
 			generator->write_break();
 			break;
 
 		case BSParser::Node::CONTINUE:
+			clear_locals_left_by_jump(p_codegen);
 			generator->write_continue();
 			break;
 
@@ -398,6 +422,13 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 	typeof_arguments.push_back(value);
 	generator->write_call_utility(subject_type, StringName("typeof"), typeof_arguments);
 
+	// The saved subject is a scope of its own as far as a jump is concerned: a `break` inside a
+	// branch body leaves the `match` and must give the subject up on the way, exactly as the fall-out
+	// below does.
+	List<BSCodeGenerator::Address> subject_scope;
+	subject_scope.push_back(value);
+	const BlockScope match_scope(this, subject_scope);
+
 	for (int index = 0; index < p_match->branches.size(); index++) {
 		if (index > 0) {
 			// Each branch is the `else` of the one before it, so a value that matched an earlier
@@ -413,6 +444,9 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 		if (!add_block_locals(p_codegen, branch->block, branch_locals)) {
 			return ERR_COMPILATION_FAILED;
 		}
+		// A branch's binds are a scope a `break` or `continue` in its body leaves behind, like any
+		// other block's locals, so the jump has to know about them too.
+		const BlockScope branch_scope(this, branch_locals);
 		generator->write_newline(branch->start_line);
 
 		BSCodeGenerator::Address pattern_result = p_codegen.add_temporary(boolean_slot_type());
@@ -463,6 +497,14 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 	// A `match` with no arm matching and no wildcard falls straight through the last `else`: every
 	// branch is a conditional, none of them is a default, so the statement is simply a no-op. That
 	// is the documented behaviour (docs/GRAMMAR.md), and it is why no error is raised here.
+
+	// The saved subject is a local like any other, and it is the only one in the frame that holds
+	// the matched value. Leaving it set would keep a `RefCounted` subject alive for the rest of the
+	// call, visible through its reference count, so the statement gives it up on the way out. The
+	// saved `typeof` is an integer and holds nothing.
+	if (slot_can_hold_a_reference(value.type)) {
+		generator->clear_address(value);
+	}
 	p_codegen.end_block();
 	return OK;
 }
