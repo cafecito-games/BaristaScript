@@ -248,15 +248,25 @@ void BaristaScriptCorpusTranscript::_log_error(const String &p_function, const S
 void BaristaScriptCorpusTranscript::_log_message(const String &p_message, bool) {
 	// One `print()` arrives as one message with a trailing newline, and a multi-line print
 	// arrives as one message with several. The transcript is a list of lines either way, so the
-	// message is split rather than stored whole -- a stored newline would render as a blank line
-	// that no expectation has.
-	const String text = p_message.trim_suffix("\n");
-	if (text.is_empty()) {
+	// message is split rather than stored whole -- a stored newline would render as a line
+	// break inside one entry, and the comparison counts entries.
+	//
+	// A message with nothing in it at all is not a line and is dropped. A message that is just
+	// the terminator is `print()` with no arguments, and its line is empty rather than absent:
+	// `features/recursion` prints one between two results and its expectation carries the blank
+	// line, so swallowing it would shift every later line of that transcript by one.
+	if (p_message.is_empty()) {
 		return;
 	}
+	const String text = p_message.ends_with("\n") ? p_message.substr(0, p_message.length() - 1) : p_message;
 	const PackedStringArray split = text.split("\n");
 	for (int i = 0; i < split.size(); i++) {
 		lines.push_back(split[i]);
+	}
+	// `String::split` yields nothing for an empty subject, so the bare `print()` line is added
+	// here rather than lost to that edge.
+	if (split.is_empty()) {
+		lines.push_back(String());
 	}
 }
 

@@ -257,7 +257,6 @@
       "features/range_large_ints.barista",
       "features/range_optimized_in_for_has_int_iterator.barista",
       "features/range_returns_ints.barista",
-      "features/recursion.barista",
       "features/reset_local_var_on_exit_block.barista",
       "features/reset_unassigned_variables_in_loops.barista",
       "features/reset_uninit_local_vars.barista",

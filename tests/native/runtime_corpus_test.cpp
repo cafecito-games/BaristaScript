@@ -73,6 +73,39 @@ TEST_SUITE("runtime_corpus") {
 		CHECK(result.output == String("FS_TEST_OK\nalpha\nbeta"));
 	}
 
+	TEST_CASE("a bare print is a blank transcript line, not an absent one") {
+		// `features/recursion` prints one between two results and its expectation carries the
+		// blank line, so dropping it would shift every later line of that transcript by one.
+		const CorpusResult result = evaluate(
+				"func test():\n"
+				"\tprint(\"before\")\n"
+				"\tprint()\n"
+				"\tprint(\"after\")\n");
+		CHECK_MESSAGE(!result.infrastructure_error, readable(result.output));
+		CHECK(result.output == String("FS_TEST_OK\nbefore\n\nafter"));
+		const PackedStringArray body = body_of(result);
+		BS_TEST_REQUIRE(body.size() == 3);
+		CHECK(body[1] == String());
+	}
+
+	TEST_CASE("consecutive blank printed lines are all kept") {
+		const CorpusResult result = evaluate(
+				"func test():\n"
+				"\tprint()\n"
+				"\tprint()\n"
+				"\tprint(\"end\")\n");
+		CHECK(result.output == String("FS_TEST_OK\n\n\nend"));
+		CHECK(body_of(result).size() == 3);
+	}
+
+	TEST_CASE("a print whose payload contains a blank line keeps it") {
+		const CorpusResult result = evaluate(
+				"func test():\n"
+				"\tprint(\"alpha\\n\\nomega\")\n");
+		CHECK(result.output == String("FS_TEST_OK\nalpha\n\nomega"));
+		CHECK(body_of(result).size() == 3);
+	}
+
 	TEST_CASE("a runtime error renders the script error line and selects its status") {
 		const CorpusResult result = evaluate(
 				"func test():\n"
