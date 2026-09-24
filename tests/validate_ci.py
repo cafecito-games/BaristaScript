@@ -568,10 +568,13 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
     return None
 
 
-# Paths whose change must run the build-system transitions. The first group is where test code
-# and the test option live; the rest decide where each build mode leaves its state, judge the
-# transitions, or are the gate itself. A directory is represented by a file inside it, including
-# one that does not exist yet.
+# Paths whose change must run the build-system transitions. The first group is where the test
+# option and the vendored test framework live; the rest decide where each build mode leaves its
+# state, judge the transitions, or are the gate itself. A directory is represented by a file
+# inside it, including one that does not exist yet. `tests/native/CMakeLists.txt` and
+# `tests/native/SCsub` are here to pin that narrowing the directory out of the classifier left
+# the repository-wide build-description rules covering it; the case files that used to sit in
+# this list are in ORDINARY_TRANSITION_PATHS below for the matching reason.
 REQUIRED_TRANSITION_INPUTS = (
     "SConstruct",
     "CMakeLists.txt",
@@ -579,8 +582,8 @@ REQUIRED_TRANSITION_INPUTS = (
     "scripts/native_test_build.py",
     "build_profile.json",
     "build_versions.json",
-    "tests/native/analyzer_helpers.cpp",
-    "tests/native/added_suite_test.cpp",
+    "tests/native/CMakeLists.txt",
+    "tests/native/SCsub",
     ".github/workflows/ci.yml",
     "thirdparty/doctest/doctest.h",
     "godot-cpp",
@@ -606,10 +609,16 @@ REQUIRED_TRANSITION_INPUTS = (
 )
 
 # Paths a pull request may change without the transitions: skipping them is the gate's purpose.
+# The native test entries are the ones AGENTS.md obliges every behavioural change to add, and
+# both builds glob them, so neither build description has to learn about them.
 ORDINARY_TRANSITION_PATHS = (
     "src/bs_analyzer.cpp",
     "tests/corpus/analyzer/errors/abstract_annotation_removed.barista",
     "docs/analyzer-discovery.md",
+    "tests/native/analyzer_helpers.cpp",
+    "tests/native/added_suite_test.cpp",
+    "tests/native/native_test_runner.h",
+    "tests/native/README.md",
 )
 
 

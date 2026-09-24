@@ -53,13 +53,39 @@ class Classification(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(scope.triggering_changes([("M", path)]), [])
 
+    def test_a_native_test_file_does_not_require_the_transitions(self):
+        """Both builds glob tests/native/, so a case file needs no wiring in either of them."""
+        for path in ("tests/native/tokenizer_test.cpp", "tests/native/new_suite_test.cpp",
+                     "tests/native/analyzer_helpers.cpp", "tests/native/analyzer_helpers.h",
+                     "tests/native/native_test_runner.h", "tests/native/parser_fixtures.h",
+                     "tests/native/README.md", "tests/native/analyzer-parity.md"):
+            # Adding and removing a case file are the interesting statuses: unlike src/, neither
+            # build names these files, so neither can fall behind the other when the set changes.
+            for status in ("M", "A", "D"):
+                with self.subTest(path=path, status=status):
+                    self.assertEqual(scope.triggering_changes([(status, path)]), [])
+
+    def test_a_build_description_under_the_native_tests_requires_the_transitions(self):
+        """The narrowing drops the directory prefix; the repository-wide name and suffix rules stay."""
+        for path in ("tests/native/CMakeLists.txt", "tests/native/SCsub", "tests/native/SConscript",
+                     "tests/native/native_tests.cmake"):
+            for status in ("M", "A", "D"):
+                with self.subTest(path=path, status=status):
+                    self.assertEqual(scope.triggering_changes([(status, path)]), [path])
+
+    def test_a_native_test_file_alongside_a_build_input_still_requires_the_transitions(self):
+        """The narrowing excuses one path from the changed set, never the set that contains it."""
+        self.assertEqual(
+            scope.triggering_changes([("A", "tests/native/new_suite_test.cpp"), ("M", "SConstruct")]),
+            ["SConstruct"],
+        )
+
     def test_build_inputs_require_the_transitions(self):
         for path in ("SConstruct", "CMakeLists.txt", "methods.py", "custom.py", "build_profile.json",
                      "build_versions.json", ".gitmodules", "godot-cpp", ".github/workflows/ci.yml",
                      ".github/actions/setup-godot-cpp/action.yml", "scripts/native_test_build.py",
                      "scripts/build_config.py", "scripts/build_metadata.py", "scripts/generate_global_api.py",
-                     "scripts/native_transition_scope.py", "tests/native/analyzer_helpers.cpp",
-                     "tests/native/new_suite_test.cpp", "thirdparty/doctest/doctest.h",
+                     "scripts/native_transition_scope.py", "thirdparty/doctest/doctest.h",
                      "tests/verify_native_surface.py", "tests/verify_parse_cache_surface.py",
                      "tests/test_native_cmake_rebuild.py", "tests/test_cmake_api_inputs.py",
                      "tests/run_native_suites.py", "tests/native_suites.json", "tests/test_run_native_suites.py",
@@ -216,8 +242,10 @@ class ShallowMergeCheckout(unittest.TestCase):
         self.assertFalse(required, reason)
         self.assertIn("1 changed path", reason)
         required, reason = self.decide_in_checkout("tests/native/new_test.cpp")
+        self.assertFalse(required, reason)
+        required, reason = self.decide_in_checkout("tests/native/SCsub")
         self.assertTrue(required, reason)
-        self.assertIn("tests/native/new_test.cpp", reason)
+        self.assertIn("tests/native/SCsub", reason)
 
 
 if __name__ == "__main__":
