@@ -11,9 +11,15 @@
 #include "barista_script.h"
 #include "bs_core_constants.h"
 #include "bs_function.h"
+#include "bs_native_db.h"
 #include "bs_script_instance.h"
+#include "bs_utility_functions.h"
 
+#include <godot_cpp/classes/class_db_singleton.hpp>
 #include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -40,6 +46,43 @@ struct CallDepthGuard {
 	~CallDepthGuard() { call_depth--; }
 };
 
+/**
+ * True for the carriers whose subscript is an integer position rather than a key.
+ *
+ * A failed read on one of these is a range fault with a well-formed index, which reads nothing like
+ * an unknown key, so the diagnostic has to tell the two apart. godot-cpp exposes neither
+ * `Variant::get_indexed_element_type` nor the engine's `VariantGetError`, so the set is spelled out.
+ * Provenance: the indexed setters/getters registered in core/variant/variant_setget.cpp @ 4.7.
+ */
+bool variant_type_is_indexed(Variant::Type p_type) {
+	switch (p_type) {
+		case Variant::VECTOR2:
+		case Variant::VECTOR2I:
+		case Variant::VECTOR3:
+		case Variant::VECTOR3I:
+		case Variant::VECTOR4:
+		case Variant::VECTOR4I:
+		case Variant::QUATERNION:
+		case Variant::COLOR:
+		case Variant::TRANSFORM2D:
+		case Variant::BASIS:
+		case Variant::ARRAY:
+		case Variant::PACKED_BYTE_ARRAY:
+		case Variant::PACKED_INT32_ARRAY:
+		case Variant::PACKED_INT64_ARRAY:
+		case Variant::PACKED_FLOAT32_ARRAY:
+		case Variant::PACKED_FLOAT64_ARRAY:
+		case Variant::PACKED_STRING_ARRAY:
+		case Variant::PACKED_VECTOR2_ARRAY:
+		case Variant::PACKED_VECTOR3_ARRAY:
+		case Variant::PACKED_COLOR_ARRAY:
+		case Variant::PACKED_VECTOR4_ARRAY:
+			return true;
+		default:
+			return false;
+	}
+}
+
 /** True for the carriers whose value is a shared reference, so an in-place edit is already visible. */
 bool variant_type_is_shared(Variant::Type p_type) {
 	switch (p_type) {
@@ -62,6 +105,91 @@ bool variant_type_is_shared(Variant::Type p_type) {
 	}
 }
 
+/**
+ * Renders a value's type the way a runtime diagnostic names it.
+ *
+ * This is not `Variant::get_type_name`: a diagnostic has to distinguish a null reference from an
+ * object whose owner has already been freed, because the two have completely different causes, and
+ * it has to name the class of a live object rather than the word "Object". A typed container names
+ * its element types, so a store rejection reads as the mismatch it is.
+ *
+ * Provenance: fs_vm.cpp:59-101 `_get_var_type` @ c9d5e35, minus the fork-only class wrappers
+ * (`FSNativeClass`, `FSSpecializedClassHandle`) that BaristaScript does not have.
+ */
+String describe_value_type(const Variant &p_value) {
+	if (p_value.get_type() == Variant::OBJECT) {
+		Object *object = p_value.get_validated_object();
+		if (object == nullptr) {
+			// A non-null ObjectID whose object is gone is a use-after-free, which reads nothing like
+			// a plain null and must not be reported as one.
+			return ((Object *)p_value) != nullptr ? String("previously freed") : String("null instance");
+		}
+		return object->get_class();
+	}
+	if (p_value.get_type() == Variant::ARRAY) {
+		const Array array = p_value;
+		return array.is_typed() ? "Array[" + Variant::get_type_name((Variant::Type)array.get_typed_builtin()) + "]" : String("Array");
+	}
+	if (p_value.get_type() == Variant::DICTIONARY) {
+		const Dictionary dictionary = p_value;
+		return dictionary.is_typed()
+				? "Dictionary[" + Variant::get_type_name((Variant::Type)dictionary.get_typed_key_builtin()) + ", " +
+						Variant::get_type_name((Variant::Type)dictionary.get_typed_value_builtin()) + "]"
+				: String("Dictionary");
+	}
+	return Variant::get_type_name(p_value.get_type());
+}
+
+/** True when the value is a container the engine has sealed against further edits. */
+bool value_is_read_only(const Variant &p_value) {
+	// `Variant::is_read_only` is core-only; the two carriers that can be sealed answer for
+	// themselves, and no other carrier has the concept at all.
+	if (p_value.get_type() == Variant::ARRAY) {
+		return ((Array)p_value).is_read_only();
+	}
+	if (p_value.get_type() == Variant::DICTIONARY) {
+		return ((Dictionary)p_value).is_read_only();
+	}
+	return false;
+}
+
+/**
+ * Renders a failed call the way the caller wrote it.
+ *
+ * `p_where` names the callee in the caller's own words ("function 'x' in base 'Array'"), so one
+ * formatter serves every call opcode and the reader is never shown an internal spelling.
+ *
+ * Provenance: fs_vm.cpp:1836-1880 `_get_call_error` @ c9d5e35, minus the declared-parameter branch
+ * that needs a BaristaScript callee's own signature (that belongs with the typed-boundary work).
+ */
+String describe_call_error(const String &p_where, const Variant **p_arguments, int p_argument_count,
+		const GDExtensionCallError &p_error) {
+	switch (p_error.error) {
+		case GDEXTENSION_CALL_OK:
+			return String();
+		case GDEXTENSION_CALL_ERROR_INVALID_METHOD:
+			return "Invalid call. Nonexistent " + p_where + ".";
+		case GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT: {
+			if (p_error.argument < 0 || p_error.argument >= p_argument_count || p_arguments[p_error.argument] == nullptr) {
+				return "Invalid type in " + p_where + ".";
+			}
+			return "Invalid type in " + p_where + ". Cannot convert argument " + itos(p_error.argument + 1) +
+					" from " + Variant::get_type_name(p_arguments[p_error.argument]->get_type()) + " to " +
+					Variant::get_type_name((Variant::Type)p_error.expected) + ".";
+		}
+		case GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS:
+		case GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS:
+			return "Invalid call to " + p_where + ". Expected " + itos(p_error.expected) + " argument(s).";
+		case GDEXTENSION_CALL_ERROR_INSTANCE_IS_NULL:
+			return "Attempt to call " + p_where + " on a null instance.";
+		case GDEXTENSION_CALL_ERROR_METHOD_NOT_CONST:
+			return "Attempt to call " + p_where + " on a const instance.";
+		default:
+			break;
+	}
+	return "Bug: Invalid call error code " + itos((int)p_error.error) + ".";
+}
+
 /** The operator's source spelling, for a diagnostic that names what the program wrote. */
 String variant_operator_name(Variant::Operator p_operator) {
 	static const char *const names[Variant::OP_MAX] = {
@@ -77,50 +205,362 @@ String variant_operator_name(Variant::Operator p_operator) {
 }
 
 /**
- * Calls one of the engine's global utility functions by name.
+ * Calls one of the engine's global utility functions.
  *
- * The engine exposes utilities only through a typed pointer call, whose arguments are the
- * parameters' own carriers rather than Variants. A variadic utility declares every parameter as a
- * Variant, so its call is exact; a utility with a fixed, typed signature would need each argument
- * materialized in its declared carrier first, which nothing emits yet. That case is refused by name
- * instead of being guessed at.
+ * The engine exposes a utility only as a typed pointer call: the arguments are the parameters' own
+ * native carriers, not Variants, and so is the return. That is why this is not a one-liner. Each
+ * argument is converted into the carrier the signature declares and handed over by internal
+ * pointer; a parameter declared as a Variant -- which is how every variadic utility declares all of
+ * them -- travels as the Variant it already is.
+ *
+ * The conversion is the same widening the engine performs at any typed boundary, so `floor(1)`
+ * reaches a `float` parameter exactly as it would through an ordinary call. A value that cannot
+ * convert is reported as an argument error rather than silently reinterpreted.
+ *
+ * This is NOT the validated fast path (#240 decision 2): no `*_VALIDATED` opcode is emitted and no
+ * signature is cached. It is the only call shape the engine offers for a utility at all.
  */
-bool call_engine_utility(const StringName &p_name, const Variant **p_arguments, int p_argument_count, Variant &r_return, String &r_error) {
+bool call_engine_utility(const StringName &p_name, const Variant **p_arguments, int p_argument_count,
+		Variant &r_return, GDExtensionCallError &r_error, String &r_error_message) {
+	r_error.error = GDEXTENSION_CALL_OK;
+	r_error.argument = 0;
+	r_error.expected = 0;
+
 	MethodInfo info;
 	if (!BSCoreConstants::get_utility_function(p_name, info)) {
-		r_error = vformat(R"(Cannot call utility function "%s": the engine has no such function.)", String(p_name));
-		return false;
-	}
-	if ((info.flags & METHOD_FLAG_VARARG) == 0) {
-		r_error = vformat(R"(Cannot call utility function "%s": only variadic utility functions are reachable from compiled code.)", String(p_name));
+		r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
 		return false;
 	}
 	int64_t hash = 0;
 	if (!BSCoreConstants::get_utility_function_hash(p_name, hash)) {
-		r_error = vformat(R"(Cannot call utility function "%s": no pinned signature hash.)", String(p_name));
+		r_error_message = vformat(R"*(Cannot call utility function "%s()": no pinned signature hash.)*", String(p_name));
 		return false;
 	}
 	GDExtensionPtrUtilityFunction function = godot::gdextension_interface::variant_get_ptr_utility_function(&p_name, hash);
 	if (function == nullptr) {
-		r_error = vformat(R"(Cannot call utility function "%s": the engine rejected the pinned signature.)", String(p_name));
+		r_error_message = vformat(R"*(Cannot call utility function "%s()": the engine rejected the pinned signature.)*", String(p_name));
 		return false;
 	}
-	switch (info.return_val.type) {
-		case Variant::NIL: {
-			function(nullptr, reinterpret_cast<const void **>(p_arguments), p_argument_count);
-			r_return = Variant();
-		} break;
-		case Variant::STRING: {
-			String result;
-			function(&result, reinterpret_cast<const void **>(p_arguments), p_argument_count);
-			r_return = result;
-		} break;
-		default: {
-			r_error = vformat(R"(Cannot call utility function "%s": its return carrier is not reachable from compiled code.)", String(p_name));
+
+	const bool is_vararg = (info.flags & METHOD_FLAG_VARARG) != 0;
+	const int declared_count = info.arguments.size();
+	if (!is_vararg && p_argument_count != declared_count) {
+		r_error.error = p_argument_count < declared_count ? GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS
+														  : GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
+		r_error.expected = declared_count;
+		return false;
+	}
+
+	const auto declared_as_variant = [&](int p_index) {
+		return p_index >= declared_count ||
+				(info.arguments[p_index].type == Variant::NIL &&
+						(info.arguments[p_index].usage & PROPERTY_USAGE_NIL_IS_VARIANT) != 0);
+	};
+
+	// The converted values must outlive the call: the pointers handed to the engine point into
+	// them. They are filled first and the vector is never resized afterwards, so no pointer taken
+	// below can be left dangling by a reallocation.
+	Vector<Variant> converted;
+	converted.resize(p_argument_count);
+	for (int i = 0; i < p_argument_count; i++) {
+		if (declared_as_variant(i) || p_arguments[i]->get_type() == info.arguments[i].type) {
+			converted.write[i] = *p_arguments[i];
+			continue;
+		}
+		const Variant::Type declared = info.arguments[i].type;
+		if (!Variant::can_convert_strict(p_arguments[i]->get_type(), declared)) {
+			r_error.error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+			r_error.argument = i;
+			r_error.expected = declared;
 			return false;
 		}
+		// godot-cpp has no `Variant::construct`, so the engine's own one-argument constructor is
+		// invoked directly: it is the conversion the language performs at every other typed
+		// boundary, which is what keeps `floor(1)` behaving like `floor(1.0)`.
+		GDExtensionCallError construct_error;
+		construct_error.error = GDEXTENSION_CALL_OK;
+		Variant result;
+		const GDExtensionConstVariantPtr construct_argument = p_arguments[i];
+		godot::gdextension_interface::variant_construct((GDExtensionVariantType)declared,
+				reinterpret_cast<GDExtensionUninitializedVariantPtr>(&result), &construct_argument, 1, &construct_error);
+		if (construct_error.error != GDEXTENSION_CALL_OK) {
+			r_error.error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+			r_error.argument = i;
+			r_error.expected = declared;
+			return false;
+		}
+		converted.write[i] = result;
 	}
+
+	Vector<const void *> pointers;
+	pointers.resize(p_argument_count);
+	for (int i = 0; i < p_argument_count; i++) {
+		if (declared_as_variant(i)) {
+			pointers.write[i] = &converted[i];
+			continue;
+		}
+		GDExtensionVariantGetInternalPtrFunc getter =
+				godot::gdextension_interface::variant_get_ptr_internal_getter((GDExtensionVariantType)info.arguments[i].type);
+		if (getter == nullptr) {
+			r_error_message = vformat(R"*(Cannot call utility function "%s()": argument %d has no reachable carrier.)*",
+					String(p_name), i + 1);
+			return false;
+		}
+		pointers.write[i] = getter(reinterpret_cast<GDExtensionVariantPtr>(&converted.write[i]));
+	}
+
+	const bool returns_variant = info.return_val.type == Variant::NIL &&
+			(info.return_val.usage & PROPERTY_USAGE_NIL_IS_VARIANT) != 0;
+	if (info.return_val.type == Variant::NIL && !returns_variant) {
+		function(nullptr, pointers.ptr(), p_argument_count);
+		r_return = Variant();
+		return true;
+	}
+	if (returns_variant) {
+		Variant result;
+		function(&result, pointers.ptr(), p_argument_count);
+		r_return = result;
+		return true;
+	}
+	// A typed return needs storage of its own carrier for the engine to write into. A
+	// default-constructed Variant of that type owns exactly that storage, so the result lands in a
+	// Variant with no per-type switch and no second copy.
+	GDExtensionCallError construct_error;
+	construct_error.error = GDEXTENSION_CALL_OK;
+	Variant storage;
+	godot::gdextension_interface::variant_construct((GDExtensionVariantType)info.return_val.type,
+			reinterpret_cast<GDExtensionUninitializedVariantPtr>(&storage), nullptr, 0, &construct_error);
+	GDExtensionVariantGetInternalPtrFunc return_getter =
+			godot::gdextension_interface::variant_get_ptr_internal_getter((GDExtensionVariantType)info.return_val.type);
+	if (construct_error.error != GDEXTENSION_CALL_OK || return_getter == nullptr) {
+		r_error_message = vformat(R"*(Cannot call utility function "%s()": its return carrier is not reachable from compiled code.)*",
+				String(p_name));
+		return false;
+	}
+	function(return_getter(reinterpret_cast<GDExtensionVariantPtr>(&storage)), pointers.ptr(), p_argument_count);
+	r_return = storage;
 	return true;
+}
+
+/**
+ * Runs one of the language's own utility functions.
+ *
+ * These are not engine utilities: the engine has never heard of them, they are reached by name from
+ * compiled code alone, and their bodies live here rather than behind a pointer call. Provenance:
+ * fs_utility_functions.cpp `FSUtilityFunctionsDefinitions` @ c9d5e35, restricted to the entries
+ * `bs_utility_functions.cpp` registers.
+ *
+ * A failure is reported the way the engine reports a failed call, through `r_error`, with `r_return`
+ * carrying an explanatory string when the utility has one. The caller renders both.
+ */
+bool call_language_utility(const StringName &p_name, const Variant **p_arguments, int p_argument_count,
+		Variant &r_return, GDExtensionCallError &r_error) {
+	MethodInfo info;
+	if (!BSUtilityFunctions::get_function_info(p_name, info)) {
+		r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
+		return false;
+	}
+	r_error.error = GDEXTENSION_CALL_OK;
+	r_error.argument = 0;
+	r_error.expected = 0;
+	r_return = Variant();
+
+	const auto fail_argument = [&](int p_index, Variant::Type p_expected, const Variant &p_message) {
+		r_return = p_message;
+		r_error.error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+		r_error.argument = p_index;
+		r_error.expected = p_expected;
+		return false;
+	};
+	// A variadic utility declares no fixed arity; every other one is exact, and the arity is checked
+	// before any argument is read so a short call cannot index past the array.
+	if ((info.flags & METHOD_FLAG_VARARG) == 0 && p_argument_count != (int)info.arguments.size()) {
+		r_error.error = p_argument_count < (int)info.arguments.size()
+				? GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS
+				: GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
+		r_error.expected = info.arguments.size();
+		return false;
+	}
+
+	if (p_name == SNAME("len")) {
+		const Variant &value = *p_arguments[0];
+		switch (value.get_type()) {
+			case Variant::STRING:
+			case Variant::STRING_NAME:
+				r_return = ((String)value).length();
+				break;
+			case Variant::DICTIONARY:
+				r_return = ((Dictionary)value).size();
+				break;
+			case Variant::ARRAY:
+				r_return = ((Array)value).size();
+				break;
+			case Variant::PACKED_BYTE_ARRAY:
+				r_return = ((PackedByteArray)value).size();
+				break;
+			case Variant::PACKED_INT32_ARRAY:
+				r_return = ((PackedInt32Array)value).size();
+				break;
+			case Variant::PACKED_INT64_ARRAY:
+				r_return = ((PackedInt64Array)value).size();
+				break;
+			case Variant::PACKED_FLOAT32_ARRAY:
+				r_return = ((PackedFloat32Array)value).size();
+				break;
+			case Variant::PACKED_FLOAT64_ARRAY:
+				r_return = ((PackedFloat64Array)value).size();
+				break;
+			case Variant::PACKED_STRING_ARRAY:
+				r_return = ((PackedStringArray)value).size();
+				break;
+			case Variant::PACKED_VECTOR2_ARRAY:
+				r_return = ((PackedVector2Array)value).size();
+				break;
+			case Variant::PACKED_VECTOR3_ARRAY:
+				r_return = ((PackedVector3Array)value).size();
+				break;
+			case Variant::PACKED_COLOR_ARRAY:
+				r_return = ((PackedColorArray)value).size();
+				break;
+			case Variant::PACKED_VECTOR4_ARRAY:
+				r_return = ((PackedVector4Array)value).size();
+				break;
+			default:
+				return fail_argument(0, Variant::NIL,
+						vformat("Value of type '%s' can't provide a length.", Variant::get_type_name(value.get_type())));
+		}
+		return true;
+	}
+	if (p_name == SNAME("char")) {
+		const int64_t code = *p_arguments[0];
+		if (code < 0 || code > UINT32_MAX) {
+			return fail_argument(0, Variant::INT, "Expected an integer between 0 and 2^32 - 1.");
+		}
+		r_return = String::chr(code);
+		return true;
+	}
+	if (p_name == SNAME("ord")) {
+		const String text = *p_arguments[0];
+		if (text.length() != 1) {
+			return fail_argument(0, Variant::STRING, "Expected a string of length 1 (a character).");
+		}
+		r_return = text.unicode_at(0);
+		return true;
+	}
+	if (p_name == SNAME("type_exists")) {
+		r_return = ClassDB::class_exists(*p_arguments[0]);
+		return true;
+	}
+	if (p_name == SNAME("is_instance_of")) {
+		const Variant &value = *p_arguments[0];
+		const Variant &type = *p_arguments[1];
+		if (type.get_type() == Variant::INT) {
+			const int64_t builtin = type;
+			if (builtin < 0 || builtin >= Variant::VARIANT_MAX) {
+				return fail_argument(1, Variant::INT, "Invalid type argument for \"is_instance_of()\", use the \"TYPE_*\" constants.");
+			}
+			r_return = value.get_type() == (Variant::Type)builtin;
+			return true;
+		}
+		if (type.get_type() != Variant::OBJECT) {
+			return fail_argument(1, Variant::NIL, "Invalid type argument for \"is_instance_of()\", should be a \"TYPE_*\" constant, a class or a script.");
+		}
+		Object *type_object = type.get_validated_object();
+		Object *value_object = value.get_type() == Variant::OBJECT ? value.get_validated_object() : nullptr;
+		if (type_object == nullptr) {
+			return fail_argument(1, Variant::OBJECT, "Type argument is a previously freed instance.");
+		}
+		if (value_object == nullptr) {
+			r_return = false;
+			return true;
+		}
+		Script *type_script = Object::cast_to<Script>(type_object);
+		if (type_script == nullptr) {
+			r_return = false;
+			return true;
+		}
+		// A script's instances are recognized by walking the receiver's own script chain: an
+		// inherited script satisfies a base script's test, exactly as a subclass satisfies its base.
+		Ref<Script> candidate = value_object->get_script();
+		while (candidate.is_valid()) {
+			if (candidate.ptr() == type_script) {
+				r_return = true;
+				return true;
+			}
+			candidate = candidate->get_base_script();
+		}
+		r_return = false;
+		return true;
+	}
+	if (p_name == SNAME("range")) {
+		int64_t from = 0;
+		int64_t to = 0;
+		int64_t step = 1;
+		switch (p_argument_count) {
+			case 1:
+				to = *p_arguments[0];
+				break;
+			case 2:
+				from = *p_arguments[0];
+				to = *p_arguments[1];
+				break;
+			case 3:
+				from = *p_arguments[0];
+				to = *p_arguments[1];
+				step = *p_arguments[2];
+				if (step == 0) {
+					return fail_argument(2, Variant::INT, "Step argument is zero!");
+				}
+				break;
+			default:
+				r_error.error = p_argument_count < 1 ? GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS
+													 : GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
+				r_error.expected = p_argument_count < 1 ? 1 : 3;
+				return false;
+		}
+		Array result;
+		// The count is computed before the loop so a huge or empty range costs one allocation and no
+		// repeated growth, and so the sign of the step decides emptiness once rather than per element.
+		int64_t count = 0;
+		if (step > 0 && to > from) {
+			count = (to - from + step - 1) / step;
+		} else if (step < 0 && to < from) {
+			count = (from - to - step - 1) / -step;
+		}
+		if (count > INT32_MAX) {
+			r_return = "Range too big.";
+			r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
+			return false;
+		}
+		result.resize(count);
+		int64_t value = from;
+		for (int64_t i = 0; i < count; i++) {
+			result[i] = value;
+			value += step;
+		}
+		r_return = result;
+		return true;
+	}
+	if (p_name == SNAME("load")) {
+		r_return = ResourceLoader::get_singleton()->load(*p_arguments[0]);
+		return true;
+	}
+	if (p_name == SNAME("print_debug")) {
+		// The stack frame upstream appends belongs with the debugger surface (#252); the values
+		// themselves are printed here so a script that uses it is not stopped by the gap.
+		String line;
+		for (int i = 0; i < p_argument_count; i++) {
+			line += p_arguments[i]->stringify();
+		}
+		UtilityFunctions::print(line);
+		return true;
+	}
+	// `print_stack`, `get_stack` and `create_proxy_dynamic` need surfaces this milestone does not
+	// have -- the debugger stack (#252) and the proxy runtime -- and inventing an answer for them
+	// would be worse than saying so.
+	r_return = vformat(R"*(the runtime does not implement "%s()" yet.)*", String(p_name));
+	r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
+	return false;
 }
 
 /** Reports only the frame that found the fault, not every frame the fault unwinds through. */

@@ -202,11 +202,18 @@ void BSByteCodeGenerator::clear_address(const Address &p_address) {
 	} else if (p_address.mode == Address::TEMPORARY && temporaries[p_address.address].type != Variant::NIL) {
 		write_type_adjust(p_address, temporaries[p_address.address].type);
 	} else {
-		// An untyped or object slot is about to be overwritten, so false is as good as null and cheaper.
-		write_assign_false(p_address);
+		// An untyped slot's empty value is null, not false. The two are not interchangeable: a
+		// declaration with no initializer is observable (`print(a)` before any assignment), and the
+		// language says such a slot reads back as null. Writing `false` would make an unassigned
+		// `var a` print `false`, which is what `features/reset_unassigned_variables_in_loops`
+		// catches. Provenance: fs_byte_codegen.cpp:3016-3026 `clear_address` @ c9d5e35.
+		write_assign_null(p_address);
 	}
 	if (p_address.mode == Address::LOCAL_VARIABLE) {
-		dirty_locals.insert(p_address.address);
+		// The slot now holds its own empty value, so it is no longer carrying a previous block's
+		// leftovers. Marking it dirty here would be backwards: `is_local_dirty` asks whether the
+		// slot still needs clearing, and this is the write that clears it.
+		dirty_locals.erase(p_address.address);
 	}
 }
 
@@ -233,7 +240,17 @@ void BSByteCodeGenerator::end_block() {
 	ERR_FAIL_COND(block_local_counts.is_empty());
 	// The slots a block declared are reusable by its siblings; `max_locals` keeps the frame's
 	// high-water mark, so the stack is still sized for the deepest block.
-	locals.resize(block_local_counts.back()->get());
+	const int surviving = block_local_counts.back()->get();
+	// A slot this block is giving back still holds whatever the block last wrote into it. The next
+	// declaration to take the slot must therefore clear it before its first read, or an
+	// uninitialized `var a` in a later sibling block reads the previous block's value -- which is
+	// exactly what `features/reset_uninit_local_vars` observes. Recording the release here is what
+	// lets `is_local_dirty` answer that question; the compiler asks it for every declaration with
+	// no initializer. Provenance: fs_byte_codegen.h:230-233 `pop_stack_identifiers` @ c9d5e35.
+	for (int slot = surviving; slot < locals.size(); slot++) {
+		dirty_locals.insert(slot + BSFunction::FIXED_ADDRESSES_MAX);
+	}
+	locals.resize(surviving);
 	block_local_counts.pop_back();
 }
 
@@ -863,14 +880,26 @@ void BSByteCodeGenerator::write_end_jump_if_shared() {
 }
 
 void BSByteCodeGenerator::start_for(const BSParser::DataType &p_iterator_type, const BSParser::DataType &, bool p_is_range) {
-	const Address counter(Address::LOCAL_VARIABLE, add_local("@counter_position", BSParser::DataType()), BSParser::DataType());
-	const Address container(Address::LOCAL_VARIABLE, add_local(p_is_range ? "@range_from" : "@container_position", BSParser::DataType()), BSParser::DataType());
+	// An integer range's three bounds are integers by definition of the loop form, so their slots
+	// declare that carrier. Declaring it is what performs the conversion: a typed slot is stored
+	// into through the converting assign, so `range(5.2)` and `range(n)` for a float `n` reach the
+	// loop as the integers the form takes, instead of failing at the first instruction that reads
+	// them. Provenance: fs_byte_codegen.cpp `start_for` @ c9d5e35, which types the same three slots.
+	BSParser::DataType range_bound;
+	range_bound.kind = BSParser::DataType::BUILTIN;
+	range_bound.builtin_type = Variant::INT;
+	range_bound.type_source = BSParser::DataType::ANNOTATED_EXPLICIT;
+	const BSParser::DataType bound_type = p_is_range ? range_bound : BSParser::DataType();
+
+	const Address counter(Address::LOCAL_VARIABLE, add_local("@counter_position", bound_type), bound_type);
+	const Address container(Address::LOCAL_VARIABLE,
+			add_local(p_is_range ? "@range_from" : "@container_position", bound_type), bound_type);
 	for_counter_variables.push_back(counter);
 	for_container_variables.push_back(container);
 	if (p_is_range) {
 		for_range_from_variables.push_back(container);
-		for_range_to_variables.push_back(Address(Address::LOCAL_VARIABLE, add_local("@range_to", BSParser::DataType()), BSParser::DataType()));
-		for_range_step_variables.push_back(Address(Address::LOCAL_VARIABLE, add_local("@range_step", BSParser::DataType()), BSParser::DataType()));
+		for_range_to_variables.push_back(Address(Address::LOCAL_VARIABLE, add_local("@range_to", range_bound), range_bound));
+		for_range_step_variables.push_back(Address(Address::LOCAL_VARIABLE, add_local("@range_step", range_bound), range_bound));
 	}
 	breaks_to_patch.push_back(List<int>());
 	(void)p_iterator_type;

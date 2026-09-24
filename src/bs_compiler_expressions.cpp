@@ -15,6 +15,7 @@
 #include "barista_script.h"
 #include "bs_compiler.h"
 #include "bs_core_constants.h"
+#include "bs_utility_functions.h"
 
 namespace barista_script {
 
@@ -60,7 +61,34 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 
 	// A value the analyzer already reduced needs no instruction at all. Object-valued constants are
 	// excluded: a live object is identity, not a value the constant pool can own.
-	if (p_expression->is_constant && p_expression->reduced_value.get_type() != Variant::OBJECT &&
+	//
+	// A container the program itself produces is excluded for the same reason, one step removed. The
+	// analyzer folds `[]`, `{}` and `Array()` so a `const` declaration can hold them, and it makes
+	// every folded container read-only so a constant cannot be edited through a reference. Pooling
+	// that folded value at a *literal* or *constructor* site would hand every evaluation the same
+	// read-only instance: `var x := []` would alias `var y := []`, and `x.push_back(...)` would fail
+	// on a read-only array rather than grow a fresh one. Upstream never reaches the constant path
+	// for these nodes at all, because its analyzer leaves an array literal non-constant
+	// (fs_analyzer.cpp:6824 `reduce_array` @ c9d5e35); BaristaScript folds them for the constant
+	// evaluator's sake, so the compiler is where the two uses are told apart. A read of a declared
+	// `const` is an IDENTIFIER or an attribute access and still pools, which is what keeps
+	// `features/constants_are_read_only` true.
+	const Variant::Type reduced_type = p_expression->reduced_value.get_type();
+	const bool writes_a_container_site = p_expression->type == BSParser::Node::ARRAY ||
+			p_expression->type == BSParser::Node::DICTIONARY || p_expression->type == BSParser::Node::CALL;
+	// A folded container that already carries element typing is not a value the runtime can rebuild:
+	// the typed-container writers are #246's, so reconstructing it from its elements would silently
+	// hand the program an untyped container where the analyzer converted one. Such a value keeps the
+	// constant pool until those writers exist; only a container the emitters can reproduce exactly is
+	// rebuilt at each evaluation.
+	bool rebuildable_container = false;
+	if (reduced_type == Variant::ARRAY) {
+		rebuildable_container = !((Array)p_expression->reduced_value).is_typed();
+	} else if (reduced_type == Variant::DICTIONARY) {
+		rebuildable_container = !((Dictionary)p_expression->reduced_value).is_typed();
+	}
+	const bool produces_fresh_container = rebuildable_container && writes_a_container_site;
+	if (p_expression->is_constant && reduced_type != Variant::OBJECT && !produces_fresh_container &&
 			!p_expression->get_datatype().is_meta_type) {
 		return p_codegen.add_constant(p_expression->reduced_value);
 	}
@@ -339,6 +367,14 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 	BSCodeGenerator::Address receiver;
 	bool has_receiver_temporary = false;
 	bool receiver_is_self = false;
+	// A call written against a type rather than a value dispatches on the type itself. The two
+	// spellings are distinguished here, before the receiver is evaluated, because neither has a
+	// receiver expression to evaluate: `Node.new()` names a class, not an object, and `Vector2.ONE`
+	// is not a value the frame holds. Upstream materializes an `FSNativeClass` object for the class
+	// and dispatches an ordinary call on it; BaristaScript has no such wrapper, so the class is
+	// carried in the instruction instead and the dedicated static-call opcodes do the dispatch.
+	StringName native_static_class;
+	Variant::Type builtin_static_type = Variant::VARIANT_MAX;
 	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
 		const BSParser::SubscriptNode *callee = static_cast<const BSParser::SubscriptNode *>(p_call->callee);
 		if (!callee->is_attribute || callee->base == nullptr) {
@@ -346,11 +382,27 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 			r_error = ERR_COMPILATION_FAILED;
 			return BSCodeGenerator::Address();
 		}
-		receiver = parse_expression(p_codegen, r_error, callee->base);
-		if (r_error != OK) {
-			return BSCodeGenerator::Address();
+		if (callee->base->type == BSParser::Node::IDENTIFIER) {
+			const BSParser::IdentifierNode *base_name = static_cast<const BSParser::IdentifierNode *>(callee->base);
+			if (base_name->source == BSParser::IdentifierNode::NATIVE_CLASS) {
+				native_static_class = base_name->name;
+			} else if (base_name->source == BSParser::IdentifierNode::UNDEFINED_SOURCE &&
+					!p_codegen.locals.has(base_name->name) && !p_codegen.parameters.has(base_name->name)) {
+				const Variant::Type named_builtin = BSParser::get_builtin_type(base_name->name);
+				// Only a meta-typed reading is the builtin *type*; a local that happens to be spelled
+				// like one is an ordinary receiver, which the scope checks above have already excluded.
+				if (named_builtin < Variant::VARIANT_MAX && base_name->get_datatype().is_meta_type) {
+					builtin_static_type = named_builtin;
+				}
+			}
 		}
-		has_receiver_temporary = receiver.mode == BSCodeGenerator::Address::TEMPORARY;
+		if (native_static_class == StringName() && builtin_static_type == Variant::VARIANT_MAX) {
+			receiver = parse_expression(p_codegen, r_error, callee->base);
+			if (r_error != OK) {
+				return BSCodeGenerator::Address();
+			}
+			has_receiver_temporary = receiver.mode == BSCodeGenerator::Address::TEMPORARY;
+		}
 	} else {
 		receiver_is_self = true;
 	}
@@ -373,6 +425,10 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 
 	if (p_call->is_super) {
 		generator->write_super_call(result, p_call->function_name, arguments);
+	} else if (native_static_class != StringName()) {
+		generator->write_call_native_static(result, native_static_class, p_call->function_name, arguments);
+	} else if (builtin_static_type != Variant::VARIANT_MAX) {
+		generator->write_call_builtin_type_static(result, builtin_static_type, p_call->function_name, arguments);
 	} else if (receiver_is_self) {
 		const StringName &function_name = p_call->function_name;
 		// A name the script declares is the script's: an engine utility or a builtin type of the same
@@ -385,18 +441,11 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 			generator->write_call_self(result, function_name, arguments);
 		} else if (builtin_type < Variant::VARIANT_MAX) {
 			generator->write_construct(result, builtin_type, arguments);
+		} else if (BSUtilityFunctions::get_function_info(function_name, utility_info)) {
+			// A language utility is not an engine utility: it is BaristaScript's own, it shadows no
+			// engine name, and the runtime implements it directly rather than through a pointer call.
+			generator->write_call_barista_script_utility(result, function_name, arguments);
 		} else if (BSCoreConstants::get_utility_function(function_name, utility_info)) {
-			if ((utility_info.flags & METHOD_FLAG_VARARG) == 0) {
-				// The engine exposes a utility only through a typed pointer call, whose arguments are
-				// the parameters' own carriers. A variadic one declares every parameter as a Variant,
-				// so its call is exact; a fixed signature needs each argument materialized in its
-				// declared carrier first, which nothing emits. Saying so here beats dying at the call.
-				set_error(vformat(R"*(The runtime cannot call the utility function "%s()" yet: only variadic utility functions are reachable from compiled code.)*",
-								  String(function_name)),
-						p_call);
-				r_error = ERR_COMPILATION_FAILED;
-				return BSCodeGenerator::Address();
-			}
 			generator->write_call_utility(result, function_name, arguments);
 		} else {
 			generator->write_call_self(result, function_name, arguments);

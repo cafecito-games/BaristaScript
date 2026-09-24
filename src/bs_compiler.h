@@ -107,6 +107,38 @@ private:
 	// Statements (core lane).
 	Error parse_block(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, bool p_add_locals = true);
 	Error parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, const BSParser::Node *p_statement);
+	/**
+	 * Allocates a slot for every local a block declares, before any of its statements run.
+	 *
+	 * A block's locals exist for the whole block: a later statement can name one a jump skipped
+	 * over, so the slots cannot be allocated at each declaration. Returns the allocated addresses so
+	 * the caller can clear them again at the points a jump can leave the block through.
+	 */
+	bool add_block_locals(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, List<BSCodeGenerator::Address> &r_locals);
+	/**
+	 * Writes the empty value into every block local that can hold a reference.
+	 *
+	 * Without this, a slot keeps the last object it held for as long as the frame lives, which keeps
+	 * a `RefCounted` alive past the block that created it -- observable through
+	 * `get_reference_count()` and, for a loop body, growing once per iteration. Only reference-
+	 * bearing carriers are cleared; clearing an `int` slot would cost an instruction for nothing.
+	 */
+	void clear_block_locals(CodeGen &p_codegen, const List<BSCodeGenerator::Address> &p_locals);
+
+	// Match and its patterns (core lane).
+	Error parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_match);
+	/**
+	 * Lowers one pattern into a boolean test accumulated in `p_previous_test`.
+	 *
+	 * `p_value_addr` and `p_type_addr` hold the subject and its `typeof`, both evaluated once by the
+	 * caller so a pattern never re-runs the subject expression. Alternatives of one branch are
+	 * OR-ed (`p_is_first` marks the one that seeds the accumulator); a sub-pattern of a container
+	 * pattern is AND-ed (`p_is_nested`), which is also what keeps a failed element test from
+	 * indexing past the end of the value.
+	 */
+	BSCodeGenerator::Address parse_match_pattern(CodeGen &p_codegen, Error &r_error, const BSParser::PatternNode *p_pattern,
+			const BSCodeGenerator::Address &p_value_addr, const BSCodeGenerator::Address &p_type_addr,
+			const BSCodeGenerator::Address &p_previous_test, bool p_is_first, bool p_is_nested);
 
 	// Expressions (core lane).
 	BSCodeGenerator::Address parse_expression(CodeGen &p_codegen, Error &r_error, const BSParser::ExpressionNode *p_expression, bool p_discard_result = false);

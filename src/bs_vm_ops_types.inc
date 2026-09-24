@@ -40,13 +40,21 @@ case OPCODE_ASSIGN_TYPED_NATIVE: {
 	if (source->get_type() == Variant::NIL) {
 		// An object slot holds a reference or nothing; nothing is a value it admits.
 		*destination = Variant();
+	} else if (unlikely(source->get_type() != Variant::OBJECT)) {
+		error_text = "Trying to assign value of type '" + Variant::get_type_name(source->get_type()) +
+				"' to a variable of type '" + String(native_class) + "'.";
+		goto vm_error;
 	} else {
 		Object *object = source->get_validated_object();
-		if (unlikely(object == nullptr || !ClassDB::is_parent_class(object->get_class(), native_class))) {
-			error_text = vformat(R"(Cannot assign a value of type "%s" to a slot of type "%s".)",
-					source->get_type() == Variant::OBJECT ? String("a freed or unrelated object")
-														  : Variant::get_type_name(source->get_type()),
-					String(native_class));
+		if (unlikely(object == nullptr)) {
+			// A live reference and a dangling one fail for entirely different reasons, and only one
+			// of them has a class left to name, so they are reported apart.
+			error_text = "Trying to assign invalid previously freed instance.";
+			goto vm_error;
+		}
+		if (unlikely(!ClassDB::is_parent_class(object->get_class(), native_class))) {
+			error_text = "Trying to assign value of type '" + object->get_class() +
+					"' to a variable of type '" + String(native_class) + "'.";
 			goto vm_error;
 		}
 		*destination = *source;
