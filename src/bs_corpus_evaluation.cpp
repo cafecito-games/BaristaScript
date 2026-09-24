@@ -26,6 +26,7 @@
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/memory.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
 
@@ -303,6 +304,7 @@ public:
 class CaseOwnerScope {
 	Variant held;
 	Object *owner = nullptr;
+	uint64_t owner_id = 0;
 	bool refcounted = false;
 
 public:
@@ -318,17 +320,29 @@ public:
 		}
 		owner = Object::cast_to<Object>(held);
 		refcounted = Object::cast_to<RefCounted>(owner) != nullptr;
+		// The identity outlives the pointer. A case is arbitrary script, and `Object.free()` is
+		// in its vocabulary, so by the time this scope unwinds the object it was handed may
+		// already be gone -- and a `Node` base is a raw pointer this scope would otherwise free
+		// a second time. The id is the only thing that can still be asked about safely.
+		owner_id = owner->get_instance_id();
 	}
 	~CaseOwnerScope() {
 		if (owner == nullptr) {
 			return;
 		}
+		held = Variant();
 		if (refcounted) {
-			held = Variant();
+			// The reference the `Variant` held was the last one, and dropping it freed the
+			// object. A `RefCounted` cannot be reached by `free()` -- the engine refuses that --
+			// so there is no second owner to arbitrate with.
 			return;
 		}
-		held = Variant();
-		memdelete(owner);
+		// A case that freed its own owner leaves this scope nothing to do. Freeing it again
+		// would corrupt the host, and a host crash is the one failure the pin may never absorb,
+		// so it is checked rather than assumed.
+		if (UtilityFunctions::is_instance_id_valid(int64_t(owner_id))) {
+			memdelete(owner);
+		}
 	}
 	CaseOwnerScope(const CaseOwnerScope &) = delete;
 	CaseOwnerScope &operator=(const CaseOwnerScope &) = delete;

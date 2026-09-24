@@ -168,6 +168,45 @@ TEST_SUITE("runtime_corpus") {
 		CHECK_FALSE(String(RUNTIME_COMPILE_ERROR_PREFIX).begins_with(">> SCRIPT ERROR"));
 	}
 
+	TEST_CASE("a case that tries to free its own owner is refused, not obeyed") {
+		// `Object.free()` is in the corpus's vocabulary and a `Node` base is a raw pointer this
+		// harness owns, so a case that freed itself would leave the teardown holding a dangling
+		// one. The engine locks an object while a method of it is on the stack and refuses the
+		// free outright, which is recorded here because that refusal is what makes the raw
+		// pointer safe for the duration of the call -- not an assumption this harness gets to
+		// make on its own. `CaseOwnerScope` still checks the identity before freeing, because a
+		// host crash is the one failure the pin may never absorb.
+		const CorpusResult result = evaluate(
+				"extends Node\n"
+				"\n"
+				"func test():\n"
+				"\tprint(\"before\")\n"
+				"\tself.free()\n",
+				"res://tests/corpus/runtime/self_free.barista");
+		CHECK(corpus_result_error(result, "runtime").is_empty());
+		CHECK(status_of(result) == String("FS_TEST_RUNTIME_ERROR"));
+		CHECK_MESSAGE(result.output.contains("Object is locked and can't be freed."), readable(result.output));
+		// A second case in the same process proves the first left the host usable rather than
+		// merely surviving its own teardown.
+		const CorpusResult after = evaluate("func test():\n\tprint(\"still here\")\n");
+		CHECK(after.output == String("FS_TEST_OK\nstill here"));
+	}
+
+	TEST_CASE("a node-based case is torn down without leaking its owner") {
+		// The ordinary non-RefCounted path, run repeatedly: a leak here would be one live Node
+		// per case across a shard of hundreds.
+		for (int i = 0; i < 3; i++) {
+			const CorpusResult result = evaluate(
+					"extends Node\n"
+					"\n"
+					"func test():\n"
+					"\tprint(self.get_name() != \"\")\n",
+					"res://tests/corpus/runtime/node_case.barista");
+			CHECK_MESSAGE(!result.infrastructure_error, readable(result.output));
+			CHECK(corpus_result_error(result, "runtime").is_empty());
+		}
+	}
+
 	TEST_CASE("the transcript reader is released after every case, including a failing one") {
 		const int before = BaristaScriptCorpusTranscript::live_instances();
 		evaluate("func test():\n\tprint(\"ok\")\n");
