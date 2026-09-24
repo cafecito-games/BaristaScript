@@ -137,6 +137,19 @@ private:
 	List<List<BSCodeGenerator::Address>> open_block_locals;
 	List<int> loop_body_depths;
 
+	/**
+	 * Local slots a *conditional* jump emitted a clear for.
+	 *
+	 * The back end's own "this slot still needs clearing" bookkeeping is a compile-time set with no
+	 * notion of paths: writing a clear erases the mark, whether or not the instruction is on every
+	 * path to the next reader. A `break` inside an `if` clears the loop body's slots, but only when
+	 * the branch is taken -- so a later declaration with no initializer must not be allowed to
+	 * conclude from the erased mark that its slot is already empty. Slots recorded here are treated
+	 * as still needing their clear. Over-clearing costs an instruction; under-clearing would let a
+	 * declaration read the previous iteration's value.
+	 */
+	HashSet<int> conditionally_cleared_locals;
+
 	/** Clears every scope a `break` or `continue` leaves behind on its way out of the loop body. */
 	void clear_locals_left_by_jump(CodeGen &p_codegen);
 

@@ -360,6 +360,33 @@ TEST_SUITE("runtime_expressions") {
 		CHECK(counts[0] == counts[1]);
 	}
 
+	TEST_CASE("a declaration after a conditional break still starts empty") {
+		// The `break` clears the loop body's slots, but only on the iteration that takes it. A later
+		// declaration with no initializer must not conclude from that emitted clear that its slot is
+		// already empty, or the second iteration would read what the first one left there.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar seen := []\n"
+				"\tvar rounds := 0\n"
+				"\twhile rounds < 3:\n"
+				"\t\trounds += 1\n"
+				"\t\tif rounds == 3:\n"
+				"\t\t\tbreak\n"
+				"\t\tvar carried\n"
+				"\t\t@warning_ignore(\"unassigned_variable\")\n"
+				"\t\tseen.append(carried == null)\n"
+				"\t\tcarried = rounds\n"
+				"\treturn seen\n",
+				"res://runtime_expressions/declaration_after_break.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array seen = result;
+		BS_TEST_REQUIRE(seen.size() == 2);
+		CHECK(seen[0] == Variant(true));
+		CHECK(seen[1] == Variant(true));
+	}
+
 	TEST_CASE("a range whose span does not fit an integer is refused, not overflowed") {
 		// `to - from` here is larger than any `int64_t`, so computing the element count signed would
 		// be undefined behaviour on the way to the refusal the caller is owed.

@@ -89,8 +89,14 @@ void BSCompiler::clear_locals_left_by_jump(CodeGen &p_codegen) {
 	const int body_depth = loop_body_depths.back()->get();
 	int depth = 0;
 	for (const List<BSCodeGenerator::Address> &scope : open_block_locals) {
-		if (depth++ >= body_depth) {
-			clear_block_locals(p_codegen, scope);
+		if (depth++ < body_depth) {
+			continue;
+		}
+		clear_block_locals(p_codegen, scope);
+		for (const BSCodeGenerator::Address &local : scope) {
+			if (local.mode == BSCodeGenerator::Address::LOCAL_VARIABLE) {
+				conditionally_cleared_locals.insert(local.address);
+			}
 		}
 	}
 }
@@ -98,6 +104,12 @@ void BSCompiler::clear_locals_left_by_jump(CodeGen &p_codegen) {
 Error BSCompiler::parse_block(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, bool p_add_locals) {
 	BSCodeGenerator *generator = p_codegen.generator;
 	p_codegen.start_block();
+
+	if (open_block_locals.is_empty()) {
+		// The outermost block of a function: nothing a previous function's jumps did applies here,
+		// and slot numbers are per-function anyway.
+		conditionally_cleared_locals.clear();
+	}
 
 	List<BSCodeGenerator::Address> block_locals;
 	if (p_add_locals && !add_block_locals(p_codegen, p_block, block_locals)) {
@@ -371,9 +383,18 @@ Error BSCompiler::parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode 
 				if (value.mode == BSCodeGenerator::Address::TEMPORARY) {
 					generator->pop_temporary();
 				}
-			} else if (local.type.kind == BSParser::DataType::BUILTIN || generator->is_local_dirty(local) || p_block->is_in_loop) {
+			} else if (local.type.kind == BSParser::DataType::BUILTIN || generator->is_local_dirty(local) ||
+					p_block->is_in_loop ||
+					(local.mode == BSCodeGenerator::Address::LOCAL_VARIABLE &&
+							conditionally_cleared_locals.has(local.address))) {
 				// A slot with no initializer must still hold a value of its own carrier: a builtin
 				// cannot be null, and a reused slot would otherwise keep the previous iteration's value.
+				//
+				// The last condition is not redundant with `is_in_loop`, even though every slot a jump
+				// clears is inside a loop today and therefore already covered by it. The back end's
+				// dirty mark was erased by a clear that only runs when the jump is taken, so the mark
+				// is no longer evidence about this path; saying so explicitly keeps the guarantee from
+				// resting on `is_in_loop` happening to hold.
 				generator->clear_address(local);
 			}
 		} break;
