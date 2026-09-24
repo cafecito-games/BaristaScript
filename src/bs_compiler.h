@@ -107,6 +107,76 @@ private:
 	// Statements (core lane).
 	Error parse_block(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, bool p_add_locals = true);
 	Error parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, const BSParser::Node *p_statement);
+	/**
+	 * Allocates a slot for every local a block declares, before any of its statements run.
+	 *
+	 * A block's locals exist for the whole block: a later statement can name one a jump skipped
+	 * over, so the slots cannot be allocated at each declaration. Returns the allocated addresses so
+	 * the caller can clear them again at the points a jump can leave the block through.
+	 */
+	bool add_block_locals(CodeGen &p_codegen, const BSParser::SuiteNode *p_block, List<BSCodeGenerator::Address> &r_locals);
+	/**
+	 * Writes the empty value into every block local that can hold a reference.
+	 *
+	 * Without this, a slot keeps the last object it held for as long as the frame lives, which keeps
+	 * a `RefCounted` alive past the block that created it -- observable through
+	 * `get_reference_count()` and, for a loop body, growing once per iteration. Only reference-
+	 * bearing carriers are cleared; clearing an `int` slot would cost an instruction for nothing.
+	 */
+	void clear_block_locals(CodeGen &p_codegen, const List<BSCodeGenerator::Address> &p_locals);
+
+	/**
+	 * The block scopes currently open, innermost last, and where the innermost loop's body starts.
+	 *
+	 * A block clears its own locals after its last statement, which a `break` or a `continue` inside
+	 * a nested block jumps straight past. The jump therefore has to do that clearing itself, for
+	 * every scope it is leaving, and these two are what let it know which scopes those are. The
+	 * loop's own body level is excluded: a `for`/`while` already clears it before each iteration and
+	 * after the loop, which is where `continue` and `break` land.
+	 */
+	List<List<BSCodeGenerator::Address>> open_block_locals;
+	List<int> loop_body_depths;
+
+	/**
+	 * Local slots a *conditional* jump emitted a clear for.
+	 *
+	 * The back end's own "this slot still needs clearing" bookkeeping is a compile-time set with no
+	 * notion of paths: writing a clear erases the mark, whether or not the instruction is on every
+	 * path to the next reader. A `break` inside an `if` clears the loop body's slots, but only when
+	 * the branch is taken -- so a later declaration with no initializer must not be allowed to
+	 * conclude from the erased mark that its slot is already empty. Slots recorded here are treated
+	 * as still needing their clear. Over-clearing costs an instruction; under-clearing would let a
+	 * declaration read the previous iteration's value.
+	 */
+	HashSet<int> conditionally_cleared_locals;
+
+	/** Clears every scope a `break` or `continue` leaves behind on its way out of the loop body. */
+	void clear_locals_left_by_jump(CodeGen &p_codegen);
+
+	/** Keeps `open_block_locals` balanced across every return path out of a block's lowering. */
+	class BlockScope {
+		BSCompiler *compiler;
+
+	public:
+		BlockScope(BSCompiler *p_compiler, const List<BSCodeGenerator::Address> &p_locals) :
+				compiler(p_compiler) { compiler->open_block_locals.push_back(p_locals); }
+		~BlockScope() { compiler->open_block_locals.pop_back(); }
+	};
+
+	// Match and its patterns (core lane).
+	Error parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_match);
+	/**
+	 * Lowers one pattern into a boolean test accumulated in `p_previous_test`.
+	 *
+	 * `p_value_addr` and `p_type_addr` hold the subject and its `typeof`, both evaluated once by the
+	 * caller so a pattern never re-runs the subject expression. Alternatives of one branch are
+	 * OR-ed (`p_is_first` marks the one that seeds the accumulator); a sub-pattern of a container
+	 * pattern is AND-ed (`p_is_nested`), which is also what keeps a failed element test from
+	 * indexing past the end of the value.
+	 */
+	BSCodeGenerator::Address parse_match_pattern(CodeGen &p_codegen, Error &r_error, const BSParser::PatternNode *p_pattern,
+			const BSCodeGenerator::Address &p_value_addr, const BSCodeGenerator::Address &p_type_addr,
+			const BSCodeGenerator::Address &p_previous_test, bool p_is_first, bool p_is_nested);
 
 	// Expressions (core lane).
 	BSCodeGenerator::Address parse_expression(CodeGen &p_codegen, Error &r_error, const BSParser::ExpressionNode *p_expression, bool p_discard_result = false);

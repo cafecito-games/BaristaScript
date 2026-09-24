@@ -54,6 +54,7 @@
     "analyzer_corpus",
     "runtime_corpus",
     "runtime",
+    "runtime_expressions",
     "runtime_scene"
   ],
   "editor_import": [

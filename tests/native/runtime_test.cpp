@@ -9,6 +9,8 @@
 #include "runtime_helpers.h"
 #include "test_require.h"
 
+#include "runtime_function_access.h"
+
 #include "bs_function.h"
 #include "bs_script_instance.h"
 
@@ -19,46 +21,6 @@
 
 using namespace barista_script;
 using namespace barista_script::native_tests;
-
-namespace barista_script {
-
-/**
- * Assembles a function the emitter refuses to write.
- *
- * Every reserved opcode is unreachable from source by construction, so the only way to prove the
- * runtime refuses one by name is to hand it a function that contains one.
- */
-struct BSFunctionTestAccess {
-	static BSFunction *make_single_opcode_function(BSFunction::Opcode p_opcode) {
-		BSFunction *function = memnew(BSFunction);
-		function->name = SNAME("probe");
-		function->source = "res://runtime_probe.barista";
-		function->stack_size = BSFunction::FIXED_ADDRESSES_MAX;
-		function->instruction_arguments_size = 1;
-		function->code.push_back(p_opcode);
-		function->code.push_back(BSFunction::OPCODE_END);
-		return function;
-	}
-
-	/** A single `super.<name>()` whose result is discarded, for the handler's own resolution path. */
-	static BSFunction *make_super_call_function(const StringName &p_name) {
-		BSFunction *function = memnew(BSFunction);
-		function->name = SNAME("probe_super");
-		function->source = "res://runtime_probe.barista";
-		function->stack_size = BSFunction::FIXED_ADDRESSES_MAX;
-		function->instruction_arguments_size = 1;
-		function->global_names.push_back(p_name);
-		function->code.push_back(BSFunction::OPCODE_CALL_SELF_BASE);
-		function->code.push_back(1);
-		function->code.push_back(BSFunction::ADDR_NIL);
-		function->code.push_back(0);
-		function->code.push_back(0);
-		function->code.push_back(BSFunction::OPCODE_END);
-		return function;
-	}
-};
-
-} // namespace barista_script
 
 namespace {
 
@@ -369,7 +331,7 @@ TEST_SUITE("runtime") {
 		CHECK(owner->call("run") == Variant(7));
 		CHECK(owner->get("after") == Variant(7));
 		CHECK(errors.errors().size() == 1);
-		CHECK_MESSAGE(errors.has_error_containing("Invalid index"), readable(errors.joined()));
+		CHECK_MESSAGE(errors.has_error_containing("Out of bounds get index"), readable(errors.joined()));
 	}
 
 	TEST_CASE("subscripting reads and writes a sequence and a map") {
@@ -458,15 +420,21 @@ TEST_SUITE("runtime") {
 		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
 	}
 
-	TEST_CASE("a utility this runtime cannot reach is refused where it is written") {
+	TEST_CASE("a utility with a fixed signature is reachable from compiled code") {
+		// This case used to assert the opposite. The refusal it recorded was not a language rule but
+		// a missing marshaller: the engine offers utilities only as a typed pointer call, and until
+		// the arguments could be materialized in their declared carriers, a non-variadic utility had
+		// no call shape at all. They now do, so the case pins the behaviour that replaced it.
 		const Ref<BaristaScript> script = compile_script(
 				"func run() -> int:\n"
 				"\treturn abs(-5)\n",
 				"res://runtime/unreachable_utility.barista");
 		BS_TEST_REQUIRE(script.is_valid());
-		CHECK_FALSE(script->_can_instantiate());
-		const String diagnostic = script->get_compile_error();
-		CHECK_MESSAGE(diagnostic.contains("abs"), readable(diagnostic));
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		BS_TEST_REQUIRE(script->_can_instantiate());
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		CHECK(owner->call("run") == Variant(5));
 	}
 
 	TEST_CASE("an initializer can call through a local that holds the receiver") {
