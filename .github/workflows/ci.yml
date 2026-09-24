@@ -357,6 +357,24 @@ jobs:
           --shards 4
           --timeout 900
 
+      # The runtime corpus is the same gate over a corpus that compiles and executes its cases,
+      # so it adds two refusals the analyzer corpus cannot produce: a case that crashes or hangs
+      # the host is a hard failure that may not be pinned, and a shard that dies mid-run is
+      # refused rather than absorbed as a shorter population.
+      - name: Triage the complete runtime corpus against its residual-failure pin
+        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: >-
+          python3 scripts/run_corpus_triage.py
+          --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          --corpus res://tests/corpus/runtime
+          --report "$RUNNER_TEMP/runtime-corpus-triage.json"
+          --execution fast
+          --shards 4
+          --timeout 900
+
       # Focused desktop debug import + SuiteGuard runners for #21 platform evidence. Linux keeps the
       # heavier cmake on/off matrix above; Windows/macOS debug get import + gdscript + native suites
       # without a second harness or SuiteGuard bypass. iOS remains compile-only via the matrix build.

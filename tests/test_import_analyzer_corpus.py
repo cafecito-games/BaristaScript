@@ -23,6 +23,10 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 
 EXECUTION_REPORT = None
 
+# The per-corpus names the triage supervisor derives from the registry. The analyzer
+# corpus is the only one this file imports, so its profile is resolved once here.
+ANALYZER_PROFILE = __import__('run_corpus_triage').corpus_profile('res://tests/corpus/analyzer')
+
 
 class AnalyzerImport(unittest.TestCase):
     def setUp(self):
@@ -111,18 +115,18 @@ class AnalyzerImport(unittest.TestCase):
         projected = self.m.patch(original, record['transformations'], record['identity'])
         support.write_bytes(projected)
         self.m.write_tree(inv, self.source, stage, project_root=project)
-        run_corpus_triage.validate_imported_tree(stage, inv, project_root=project)
+        run_corpus_triage.validate_imported_tree(stage, inv, ANALYZER_PROFILE, project_root=project)
         support.write_bytes(projected + b'drift')
         with self.assertRaisesRegex(ValueError, 'shared support'):
             self.m.check_tree(inv, self.source, stage, project_root=project)
         with self.assertRaisesRegex(ValueError, 'shared support'):
-            run_corpus_triage.validate_imported_tree(stage, inv, project_root=project)
+            run_corpus_triage.validate_imported_tree(stage, inv, ANALYZER_PROFILE, project_root=project)
         support.write_bytes(projected)
         for root in ('res://outside', 'res://tests/corpus_support/parser/../parser'):
             changed = copy.deepcopy(inv)
             next(r for r in changed['sources'] if r['upstream_path'] == 'utils.notest.fs')['root'] = root
             with self.assertRaisesRegex(ValueError, 'identity/root/path'):
-                run_corpus_triage.validate_imported_tree(stage, changed, project_root=project)
+                run_corpus_triage.validate_imported_tree(stage, changed, ANALYZER_PROFILE, project_root=project)
         support.unlink()
         support.symlink_to(ROOT / 'project/tests/corpus_support/parser/utils.notest.barista')
         with self.assertRaisesRegex(ValueError, 'symlink'):
@@ -464,13 +468,13 @@ class AnalyzerImport(unittest.TestCase):
         inv = self.inventory()
         destination = self.root / 'stage'
         self.m.write_tree(inv, self.source, destination)
-        triage.validate_imported_tree(destination, inv)
+        triage.validate_imported_tree(destination, inv, ANALYZER_PROFILE)
         for extra in ['.baristaignore', '_support/.baristaignore', 'orphan.out']:
             path = destination / extra
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'')
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'population'):
-                triage.validate_imported_tree(destination, inv)
+                triage.validate_imported_tree(destination, inv, ANALYZER_PROFILE)
             path.unlink()
 
     def test_removed_case_cannot_shrink_its_declared_population(self):
@@ -488,7 +492,7 @@ class AnalyzerImport(unittest.TestCase):
         stages['cases'].pop(record['imported_path'])
         (destination / 'case_stages.json').write_bytes(self.m.encoded(stages))
         with self.assertRaisesRegex(ValueError, 'population|accounting'):
-            triage.validate_imported_tree(destination, inv)
+            triage.validate_imported_tree(destination, inv, ANALYZER_PROFILE)
 
     def test_tree_replacement_is_deterministic_and_detects_byte_drift(self):
         inv = self.inventory()

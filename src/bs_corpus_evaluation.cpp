@@ -10,6 +10,7 @@
 
 #ifdef DEBUG_ENABLED
 
+#include "barista_script.h"
 #include "barista_script_language.h"
 #include "bs_analyzer.h"
 #include "bs_cache.h"
@@ -19,8 +20,12 @@
 #include "bs_global_class.h"
 #include "bs_parser.h"
 #include "bs_tokenizer.h"
+#include <godot_cpp/classes/class_db_singleton.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/core/memory.hpp>
 
 using namespace godot;
 
@@ -222,6 +227,211 @@ CorpusResult evaluate_corpus_case(const PackedByteArray &p_bytes, const String &
 	BSAnalyzer analyzer(&parser);
 	error = analyzer.analyze();
 	return with_fixture_index(format_corpus_result(parser, error, true));
+}
+
+int BaristaScriptCorpusTranscript::live_count = 0;
+
+void BaristaScriptCorpusTranscript::_log_error(const String &p_function, const String &p_file, int32_t p_line,
+		const String &p_code, const String &p_rationale, bool, int32_t p_error_type,
+		const TypedArray<Ref<ScriptBacktrace>> &) {
+	// `rationale` carries the message whenever the reporter supplied one; `code` is the raw
+	// condition text the engine fell back to. The producer's handler made the same choice.
+	const String message = p_rationale.is_empty() ? p_code : p_rationale;
+	saw_error = true;
+	if (p_error_type == Logger::ERROR_TYPE_SCRIPT) {
+		lines.push_back(vformat(">> SCRIPT ERROR at %s:%d on %s(): %s", p_file, p_line, p_function, message));
+		return;
+	}
+	lines.push_back(">> ERROR: " + message);
+}
+
+void BaristaScriptCorpusTranscript::_log_message(const String &p_message, bool) {
+	// One `print()` arrives as one message with a trailing newline, and a multi-line print
+	// arrives as one message with several. The transcript is a list of lines either way, so the
+	// message is split rather than stored whole -- a stored newline would render as a blank line
+	// that no expectation has.
+	const String text = p_message.trim_suffix("\n");
+	if (text.is_empty()) {
+		return;
+	}
+	const PackedStringArray split = text.split("\n");
+	for (int i = 0; i < split.size(); i++) {
+		lines.push_back(split[i]);
+	}
+}
+
+namespace {
+
+/** Installs the transcript reader for as long as it is alive, on every exit path. */
+class TranscriptScope {
+	Ref<BaristaScriptCorpusTranscript> transcript;
+
+public:
+	TranscriptScope() {
+		transcript.instantiate();
+		OS::get_singleton()->add_logger(transcript);
+	}
+	~TranscriptScope() {
+		// A leaked logger is a corpus-wide false result, not a single failing case: every later
+		// case in the same process would inherit this one's lines. Removal is therefore in a
+		// destructor rather than at the returns, so an early return cannot skip it.
+		OS::get_singleton()->remove_logger(transcript);
+	}
+	TranscriptScope(const TranscriptScope &) = delete;
+	TranscriptScope &operator=(const TranscriptScope &) = delete;
+
+	BaristaScriptCorpusTranscript &operator*() const { return *transcript.ptr(); }
+};
+
+/**
+ * Holds the object a case's script is attached to, and frees it however its class requires.
+ *
+ * A `RefCounted` base is freed by the reference the `Variant` still holds; every other base is a
+ * raw `Object` this scope owns outright. Getting that wrong either leaks one object per case or
+ * double-frees one, and the corpus runs hundreds of cases in a single process.
+ */
+class CaseOwnerScope {
+	Variant held;
+	Object *owner = nullptr;
+	bool refcounted = false;
+
+public:
+	explicit CaseOwnerScope(const StringName &p_base_type) {
+		ClassDBSingleton *class_db = ClassDBSingleton::get_singleton();
+		if (class_db == nullptr || !class_db->can_instantiate(p_base_type)) {
+			return;
+		}
+		held = class_db->instantiate(p_base_type);
+		if (held.get_type() != Variant::OBJECT) {
+			held = Variant();
+			return;
+		}
+		owner = Object::cast_to<Object>(held);
+		refcounted = Object::cast_to<RefCounted>(owner) != nullptr;
+	}
+	~CaseOwnerScope() {
+		if (owner == nullptr) {
+			return;
+		}
+		if (refcounted) {
+			held = Variant();
+			return;
+		}
+		held = Variant();
+		memdelete(owner);
+	}
+	CaseOwnerScope(const CaseOwnerScope &) = delete;
+	CaseOwnerScope &operator=(const CaseOwnerScope &) = delete;
+
+	Object *get() const { return owner; }
+};
+
+/** Assemble the status token line and the body into the transcript block. */
+String runtime_transcript(const char *p_status, const PackedStringArray &p_lines) {
+	String block = p_status;
+	for (int i = 0; i < p_lines.size(); i++) {
+		block += "\n" + p_lines[i];
+	}
+	return block;
+}
+
+} // namespace
+
+CorpusResult evaluate_runtime_case(const PackedByteArray &p_bytes, const String &p_path, const String &p_stage,
+		const PackedStringArray &p_fixture_paths) {
+	if (p_stage != "runtime" || !p_path.begins_with("res://") || p_path != p_path.simplify_path() || !p_path.ends_with(".barista")) {
+		return corpus_result("Invalid runtime stage or res:// case path: " + p_path, false, false, true);
+	}
+	String source;
+	String diagnostic;
+	if (!BSTokenizer::decode_source(p_bytes, &source, &diagnostic)) {
+		return corpus_result(diagnostic, false, false, true);
+	}
+	BaristaScriptLanguage *language = BaristaScriptLanguage::get_singleton();
+	if (language == nullptr || ProjectSettings::get_singleton() == nullptr || OS::get_singleton() == nullptr) {
+		return corpus_result("Missing frontend language/settings.", false, false, true);
+	}
+	for (int i = 0; i < p_fixture_paths.size(); i++) {
+		const String path = p_fixture_paths[i];
+		if (!path.begins_with("res://") || path != path.simplify_path() || !path.ends_with(".barista") || (i > 0 && path <= p_fixture_paths[i - 1])) {
+			return corpus_result("Invalid/unsorted corpus fixture path: " + path, false, false, true);
+		}
+	}
+
+	CorpusWarningProfile profile;
+	BSDeclarationIndex::ScopedCorpusState declarations(language->get_declaration_index());
+	BSConformanceRegistry::ScopedCorpusState conformances;
+	BSCache::ScopedCorpusState cache;
+
+	// The static half first, and in this order, because that is the order the producer wrote it:
+	// an analyzer error replaces the whole transcript, and warnings precede everything the run
+	// prints. The case is parsed here rather than read back out of `BaristaScript::compile()`
+	// because that entry point owns compilation, not diagnostics, and keeps its parser private.
+	HashMap<String, String> overrides;
+	overrides[p_path] = source;
+	BSCacheSourceOverrideGuard override_guard(overrides);
+
+	PackedStringArray body;
+	{
+		BSParser parser;
+		Error error = parser.parse(source, p_path, false);
+		bool analysis_ran = false;
+		if (error == OK && parser.get_errors().is_empty()) {
+			BSAnalyzer analyzer(&parser);
+			error = analyzer.analyze();
+			analysis_ran = true;
+		}
+		const CorpusResult front_end = format_corpus_result(parser, error, analysis_ran);
+		if (front_end.infrastructure_error) {
+			return front_end;
+		}
+		if (!front_end.ok) {
+			// A front-end diagnostic is the whole transcript: the producer never reaches the
+			// virtual machine for one, so there is no output and no error line to interleave.
+			return corpus_result(runtime_transcript(RUNTIME_STATUS_ANALYZER_ERROR, front_end.output.split("\n")),
+					false, true);
+		}
+		if (front_end.output != String(BaristaScriptCorpusSentinels::SUCCESS_SENTINEL)) {
+			body = front_end.output.split("\n");
+		}
+	}
+
+	Ref<BaristaScript> script;
+	script.instantiate();
+	// `take_over_path`, so a case re-evaluated in the same process reclaims its own resource
+	// identity instead of colliding with the copy the previous evaluation left in the cache.
+	script->take_over_path(p_path);
+	script->set_source_code(source);
+	if (script->compile() != OK || !script->_can_instantiate()) {
+		// Not an upstream line shape, and deliberately so: a refusal that happened to match a
+		// real expectation would read as a pass for a family that is not implemented yet.
+		body.push_back(String(RUNTIME_COMPILE_ERROR_PREFIX) +
+				(script->get_compile_error().is_empty() ? String("The script is not instantiable.") : script->get_compile_error()));
+		return corpus_result(runtime_transcript(RUNTIME_STATUS_RUNTIME_ERROR, body), false, true);
+	}
+
+	const StringName base_type = script->_get_instance_base_type();
+	CaseOwnerScope owner(base_type);
+	if (owner.get() == nullptr) {
+		return corpus_result(vformat("Runtime case base type is not instantiable: %s (%s)", String(base_type), p_path), false, true, true);
+	}
+
+	{
+		// Installed as late as possible and removed as early as possible: everything above this
+		// point is harness work, and a line it published would be indistinguishable from one the
+		// case published.
+		TranscriptScope transcript;
+		owner.get()->set_script(script);
+		if (owner.get()->has_method("test")) {
+			owner.get()->call("test");
+		} else {
+			(*transcript).lines.push_back(String(RUNTIME_COMPILE_ERROR_PREFIX) + "The case declares no test() entry point.");
+			(*transcript).saw_error = true;
+		}
+		body.append_array((*transcript).lines);
+		return corpus_result(runtime_transcript((*transcript).saw_error ? RUNTIME_STATUS_RUNTIME_ERROR : RUNTIME_STATUS_OK, body),
+				!(*transcript).saw_error, true);
+	}
 }
 
 } // namespace barista_script

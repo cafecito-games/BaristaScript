@@ -341,21 +341,35 @@ def check_corpus_reproducibility_wiring(workflow: str) -> str | None:
     return None
 
 
-CORPUS_TRIAGE_STEP = {
-    "if": "${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}",
-    "shell": "bash",
-    "env": {"GODOT_VERSION": "${{ steps.versions.outputs.godot_runtime }}"},
-    "run": 'python3 scripts/run_corpus_triage.py'
-           ' --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
-           ' --corpus res://tests/corpus/analyzer'
-           ' --report "$RUNNER_TEMP/analyzer-corpus-triage.json"'
-           ' --execution fast'
-           # One shard per vCPU on the GitHub-hosted x86_64 Linux runner. Each shard is a
-           # single-threaded, CPU-bound Godot process, so more shards than cores would only
-           # oversubscribe and fewer would leave the runner idle.
-           ' --shards 4'
-           ' --timeout 900',
-}
+def corpus_triage_step(corpus: str) -> dict:
+    """The pinned triage invocation for one corpus.
+
+    Both corpora are gated by the same command with one argument changed, so they are derived
+    from one shape rather than written twice: a change to the execution mode, the shard count
+    or the timeout has to be made once and then holds for every corpus, and a corpus quietly
+    gated more weakly than its sibling is not expressible.
+    """
+    return {
+        "if": "${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}",
+        "shell": "bash",
+        "env": {"GODOT_VERSION": "${{ steps.versions.outputs.godot_runtime }}"},
+        "run": 'python3 scripts/run_corpus_triage.py'
+               ' --godot "$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
+               f' --corpus res://tests/corpus/{corpus}'
+               f' --report "$RUNNER_TEMP/{corpus}-corpus-triage.json"'
+               ' --execution fast'
+               # One shard per vCPU on the GitHub-hosted x86_64 Linux runner. Each shard is a
+               # single-threaded, CPU-bound Godot process, so more shards than cores would only
+               # oversubscribe and fewer would leave the runner idle.
+               ' --shards 4'
+               ' --timeout 900',
+    }
+
+
+# The triage-supervised corpora, in the order CI runs them. The analyzer corpus runs first
+# because it is the cheaper gate and a front-end regression explains most runtime failures.
+TRIAGE_CORPORA = ("analyzer", "runtime")
+CORPUS_TRIAGE_STEPS = [corpus_triage_step(corpus) for corpus in TRIAGE_CORPORA]
 
 
 LINUX_VERIFICATION_CONDITION = (
@@ -495,8 +509,8 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
     The general runner audits accept any one reachable invocation, so on their own they would
     not notice a build, a surface check or a sweep being dropped from this sequence. The steps
     are compared whole, display names included and only surrounding whitespace ignored. They
-    must sit directly after the warning-code probe and directly before the corpus triage step,
-    which runs the Godot binary the first one downloads.
+    must sit directly after the warning-code probe and directly before the corpus triage steps,
+    which run the Godot binary the first one downloads.
     """
     try:
         import yaml
@@ -518,10 +532,13 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
         and isinstance(step.get("run"), str)
         and "scripts/run_corpus_triage.py" in step["run"]
     ]
-    if len(triage) != 1 or triage[0] <= len(LINUX_VERIFICATION_STEPS):
+    # The triage steps are required to be contiguous and to come last, so "directly before"
+    # stays a statement about one boundary rather than about each corpus separately.
+    contiguous = triage == list(range(triage[0], triage[0] + len(CORPUS_TRIAGE_STEPS))) if triage else False
+    if not contiguous or triage[0] <= len(LINUX_VERIFICATION_STEPS):
         return (
-            "the build job must run its Linux verification steps directly before the single "
-            "analyzer corpus triage step"
+            "the build job must run its Linux verification steps directly before the "
+            "contiguous corpus triage steps"
         )
     first = triage[0] - len(LINUX_VERIFICATION_STEPS)
     predecessor = steps[first - 1]
@@ -658,13 +675,14 @@ def check_native_transition_scope(scope=None) -> str | None:
 
 
 def check_corpus_triage_wiring(workflow: str) -> str | None:
-    """Require CI to execute the whole analyzer corpus against its residual-failure pin.
+    """Require CI to execute every triage-supervised corpus against its residual-failure pin.
 
     Two committed guards already refuse a tampered pin, but both compare the pin against
     other committed bytes and neither evaluates a case. Only scripts/run_corpus_triage.py
-    binds the pin to what the analyzer actually does, and it reports through its exit
-    status, so the pinned command must select the complete population -- an exact --case
-    selection judges only the cases it names -- and must stay free to fail its job.
+    binds a pin to what the implementation actually does, and it reports through its exit
+    status, so each pinned command must select the complete population -- an exact --case
+    selection judges only the cases it names -- and must stay free to fail its job. One step
+    per corpus is required, so adding a corpus without gating it is not expressible.
 
     The pinned command runs the whole corpus in four concurrent processes, each taking a
     contiguous slice. That is safe only because the supervisor refuses a run whose shards do
@@ -685,35 +703,35 @@ def check_corpus_triage_wiring(workflow: str) -> str | None:
         if isinstance(step.get("run"), str)
         and any("scripts/run_corpus_triage.py" in line for line in executable_lines(step["run"]))
     ]
-    if len(matches) != 1:
+    if len(matches) != len(CORPUS_TRIAGE_STEPS):
         return (
-            "CI must run the analyzer corpus triage from exactly one step; "
-            "scripts/run_corpus_triage.py is the only check that executes the cases the "
-            "committed residual-failure pin describes"
+            f"CI must run corpus triage from exactly {len(CORPUS_TRIAGE_STEPS)} steps, one per "
+            "triage-supervised corpus; scripts/run_corpus_triage.py is the only check that "
+            "executes the cases the committed residual-failure pins describe"
         )
-    job, step = matches[0]
-    actual = {
-        key: value.strip() if key == "run" and isinstance(value, str) else value
-        for key, value in step.items()
-        if key != "name"
-    }
-    if actual != CORPUS_TRIAGE_STEP:
-        return (
-            "the analyzer corpus triage step must retain its validated inputs and its exact "
-            "whole-population command"
-        )
-    # The step arms are redundant with the exact comparison above -- a `continue-on-error`
-    # or `if` the pin does not carry already breaks equality. The operative arm is the job
-    # one: disabling the whole build job leaves the step's own bytes untouched.
-    if (
-        condition_is_unreachable(job)
-        or step_continues_on_error(step)
-        or condition_is_unreachable(step)
-    ):
-        return (
-            "the analyzer corpus triage must be able to fail its job: its exit status is the "
-            "only check that every residual failure is still declared and owned"
-        )
+    for (job, step), required, corpus in zip(matches, CORPUS_TRIAGE_STEPS, TRIAGE_CORPORA):
+        actual = {
+            key: value.strip() if key == "run" and isinstance(value, str) else value
+            for key, value in step.items()
+            if key != "name"
+        }
+        if actual != required:
+            return (
+                f"the {corpus} corpus triage step must retain its validated inputs and its "
+                "exact whole-population command"
+            )
+        # The step arms are redundant with the exact comparison above -- a `continue-on-error`
+        # or `if` the pin does not carry already breaks equality. The operative arm is the job
+        # one: disabling the whole build job leaves the step's own bytes untouched.
+        if (
+            condition_is_unreachable(job)
+            or step_continues_on_error(step)
+            or condition_is_unreachable(step)
+        ):
+            return (
+                f"the {corpus} corpus triage must be able to fail its job: its exit status is "
+                "the only check that every residual failure is still declared and owned"
+            )
     return None
 
 

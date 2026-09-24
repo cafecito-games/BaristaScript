@@ -13,6 +13,7 @@
 #include "barista_script_resource_loader.h"
 #include "bs_analyzer_probe.h"
 #include "bs_cache.h"
+#include "bs_corpus_evaluation.h"
 #include "bs_corpus_sentinels.h"
 #include "bs_declaration_index_probe.h"
 #include "bs_parser_probe.h"
@@ -79,6 +80,9 @@ void initialize_barista_script(godot::ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(barista_script::BaristaScriptParserProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptDeclarationIndexProbe);
 	GDREGISTER_CLASS(barista_script::BaristaScriptAnalyzerProbe);
+	// The runtime corpus transcript reader. The engine instantiates a `Logger` through ClassDB,
+	// so registering it is what lets `evaluate_runtime_case()` install one at all.
+	GDREGISTER_CLASS(barista_script::BaristaScriptCorpusTranscript);
 #endif // DEBUG_ENABLED
 
 	language = memnew(barista_script::BaristaScriptLanguage);

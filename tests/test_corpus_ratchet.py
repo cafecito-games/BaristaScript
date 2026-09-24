@@ -363,10 +363,17 @@ class RuntimeRatchet(unittest.TestCase):
         self.assertEqual(growth(document({'runtime': (['a.barista', 'b.barista'], True)}),
                                 document({'runtime': (['a.barista'], True)})), [])
 
-    def test_the_committed_runtime_pin_is_the_established_population(self):
+    def test_the_committed_runtime_pin_is_a_sorted_subset_of_the_population(self):
+        # At import the pin was the whole population, because nothing could execute a case.
+        # Now that the corpus runs, the pin is whatever is left: a sorted, duplicate-free
+        # subset of the imported cases that shrinks as families land. It may reach zero, and
+        # the monotone direction is what the growth cases above enforce.
         baseline = working_baseline(ROOT)['corpora']['runtime']
-        self.assertEqual(len(baseline['expected_failures']), baseline['total'])
-        self.assertEqual(baseline['expected_failures'], sorted(set(baseline['expected_failures'])))
+        pin = baseline['expected_failures']
+        self.assertEqual(pin, sorted(set(pin)))
+        self.assertLessEqual(len(pin), baseline['total'])
+        stages = json.loads((ROOT / 'project/tests/corpus/runtime/case_stages.json').read_text())
+        self.assertLessEqual(set(pin), set(stages['cases']))
 
     def test_a_runtime_pin_entry_without_an_owner_or_a_reason_is_refused(self):
         self.assertEqual(self.importer.established_expected_failures(
@@ -391,7 +398,10 @@ class PinEnforcement(unittest.TestCase):
 
     def results(self, outcomes, *, owned=()):
         owned = set(owned) or {case for case in outcomes if not outcomes[case]}
-        return [{'case': case, 'passed': passed,
+        # A failing record carries the terminal that produced it. Only 'mismatch' -- the case
+        # ran and its transcript diverged -- is a failure a pin may absorb, so these fixtures
+        # have to say which failure they are rather than leaving it to a default.
+        return [{'case': case, 'passed': passed, 'terminal': 'passed' if passed else 'mismatch',
                  'semantic_owner': {'reason': 'Contextual unions are unimplemented.'} if case in owned else None}
                 for case, passed in outcomes.items()]
 
@@ -420,7 +430,8 @@ class PinEnforcement(unittest.TestCase):
         self.assertIn('no semantic owner', complaints[0])
 
     def test_an_owner_with_a_blank_reason_does_not_count_as_ownership(self):
-        results = [{'case': 'b.barista', 'passed': False, 'semantic_owner': {'reason': '  '}}]
+        results = [{'case': 'b.barista', 'passed': False, 'terminal': 'mismatch',
+                    'semantic_owner': {'reason': '  '}}]
         complaints = triage.expected_failure_complaints(results, ['b.barista'], ['b.barista'])
         self.assertEqual(len(complaints), 1)
         self.assertIn('no semantic owner', complaints[0])

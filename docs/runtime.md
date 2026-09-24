@@ -85,6 +85,37 @@ script-error channel with the function, file and line of the frame that raised i
 channel a runtime transcript is made of, and it is the channel the native cases read back through a
 `Logger`.
 
+## The runtime corpus oracle
+
+`evaluate_runtime_case()` in `src/bs_corpus_evaluation.*` is the single definition of a runtime
+transcript. It parses and analyzes the case, compiles it, attaches it to a fresh instance of its
+declared base type, calls `test()`, and renders everything the engine published while it ran:
+
+```
+FS_TEST_OK | FS_TEST_RUNTIME_ERROR | FS_TEST_ANALYZER_ERROR   the status token, always line one
+~~ WARNING at line N: (CODE) ...                              analyzer warnings, before the run
+<printed lines>                                               print output and error lines,
+>> SCRIPT ERROR at <path>:<line> on <func>(): ...             interleaved in emission order
+>> ERROR: ...
+```
+
+A front-end diagnostic is the whole transcript: the case never reaches the virtual machine, so
+`FS_TEST_ANALYZER_ERROR` is followed by the error block and nothing else. Both channels are read
+back through one `BaristaScriptCorpusTranscript` logger registered with `OS::add_logger` for the
+duration of one case, because emission order is part of the expectation and two separate readers
+could not preserve it. The logger is removed in a destructor and its live count is asserted by the
+`runtime_corpus` suite: one left registered would append every later case's lines to a dead array
+and turn a whole shard's results false while the run still exited zero.
+
+A case the compiler refuses emits `>> COMPILE ERROR: <message>`, a line shape that appears in no
+imported `.out` file. That is deliberate. The corpus is pinned as a burndown board, and a family
+that is not implemented yet must not be able to coincide with a real expectation and read as a pass.
+
+`scripts/run_corpus_triage.py` supervises the run and owns the exit contract. A residual-failure pin
+may absorb exactly one failure: a case that ran and whose transcript diverged. A case that crashed
+the host, hung it, or emitted no guarded record did not produce a corpus result, so naming an owner
+for it is no answer; those are hard failures whatever the pin says.
+
 ## The instruction encoding
 
 A compiled function is a flat `Vector<int>`. Every instruction is its opcode followed by that

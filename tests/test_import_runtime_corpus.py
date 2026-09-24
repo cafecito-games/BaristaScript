@@ -443,7 +443,11 @@ class CommittedCorpus(unittest.TestCase):
                   for path in (ROOT / 'project/tests/corpus/runtime').rglob('*') if path.is_file()}
         completed = self.run_importer('--check')
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn('394 pinned residual failures', completed.stdout)
+        # The pin is the population minus whatever already passes, so it is asserted against
+        # the committed baseline rather than against the import-time number, which was only
+        # the whole population while nothing could execute a case.
+        pinned = len(json.loads((ROOT / 'tests/corpus_baseline.json').read_text())['corpora']['runtime']['expected_failures'])
+        self.assertIn(f'{pinned} pinned residual failures', completed.stdout)
         self.assertEqual({str(path.relative_to(ROOT)): path.stat().st_mtime_ns
                           for path in (ROOT / 'project/tests/corpus/runtime').rglob('*') if path.is_file()},
                          before)
@@ -478,7 +482,11 @@ class CommittedCorpus(unittest.TestCase):
                          baseline['total'] + len(baseline['triage']['excluded'])
                          + len(baseline['triage']['deferred']))
         self.assertEqual(baseline['expected_failures'], sorted(set(baseline['expected_failures'])))
-        self.assertEqual(len(baseline['expected_failures']), baseline['total'])
+        # A subset of the population, not the whole of it: the corpus executes now, and the pin
+        # shrinks as families land. Every entry still has to be an imported case.
+        self.assertLessEqual(len(baseline['expected_failures']), baseline['total'])
+        stages = json.loads((ROOT / 'project/tests/corpus/runtime/case_stages.json').read_text())['cases']
+        self.assertLessEqual(set(baseline['expected_failures']), set(stages))
         inventory = json.loads((ROOT / 'project/tests/corpus/runtime/inventory.json').read_text())
         self.assertEqual(inventory['counts']['statuses'],
                          {'FS_TEST_ANALYZER_ERROR': 10, 'FS_TEST_OK': 482, 'FS_TEST_RUNTIME_ERROR': 265})

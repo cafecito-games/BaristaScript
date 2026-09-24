@@ -412,9 +412,42 @@ String escape_mismatch_value(const String &p_value) {
 	return escaped;
 }
 
+/**
+ * The consistency complaint about a runtime transcript, or the empty string when it is sound.
+ *
+ * A transcript's first line is its status token, and the token has to agree with the outcome the
+ * evaluator reported: a mismatch means the two halves of the result were assembled from different
+ * runs, which would silently adjudicate one case against another's status.
+ */
+static String runtime_result_error(const CorpusResult &p_result) {
+	if (p_result.infrastructure_error) {
+		// An infrastructure error carries a complaint rather than a transcript, and the caller
+		// reports it without comparing anything, so no status line is required of it.
+		return p_result.ok ? "malformed runtime result: inconsistent stage/outcome" : String();
+	}
+	if (!p_result.analysis_ran) {
+		return "malformed runtime result: inconsistent stage/outcome";
+	}
+	const String status = p_result.output.get_slice("\n", 0);
+	if (status != String(RUNTIME_STATUS_OK) && status != String(RUNTIME_STATUS_RUNTIME_ERROR) &&
+			status != String(RUNTIME_STATUS_ANALYZER_ERROR)) {
+		return "malformed runtime result: unrecognized status token";
+	}
+	if (p_result.ok != (status == String(RUNTIME_STATUS_OK))) {
+		return "malformed runtime result: contradictory success block";
+	}
+	if (p_result.output.contains("\r") || p_result.output.ends_with("\n")) {
+		return "malformed runtime result: invalid block terminator";
+	}
+	return String();
+}
+
 String corpus_result_error(const CorpusResult &p_result, const String &p_stage) {
 	if (p_result.output.is_empty()) {
 		return "malformed frontend result: nonempty output required";
+	}
+	if (p_stage == "runtime") {
+		return runtime_result_error(p_result);
 	}
 	if ((p_stage == "parser" && p_result.analysis_ran) || (p_result.infrastructure_error && p_result.ok) ||
 			(p_stage == "analyzer" && p_result.ok && !p_result.analysis_ran)) {
@@ -482,8 +515,12 @@ CorpusOutcome run_corpus_case(const CorpusCase &p_case, const PackedStringArray 
 		return failure_outcome(p_case, CORPUS_UNREADABLE_SOURCE,
 				vformat("source %s is unreadable (error %d)", p_case.path, int(FileAccess::get_open_error())));
 	}
-	const CorpusResult result = evaluate_corpus_case(source_file->get_buffer(source_file->get_length()),
-			p_case.path, p_case.stage, p_fixture_paths);
+	const PackedByteArray source_bytes = source_file->get_buffer(source_file->get_length());
+	// The stage the manifest declares is what chooses the evaluator, so a case cannot be
+	// adjudicated at a stage it was not imported for.
+	const CorpusResult result = p_case.stage == "runtime"
+			? evaluate_runtime_case(source_bytes, p_case.path, p_case.stage, p_fixture_paths)
+			: evaluate_corpus_case(source_bytes, p_case.path, p_case.stage, p_fixture_paths);
 	return compare_corpus_result(p_case, gate.expected, result);
 }
 
@@ -595,7 +632,7 @@ CorpusStageManifest validate_stage_manifest(const Dictionary &p_stages, const St
 		const Variant key = relative_paths[i];
 		const Variant stage = remaining[key];
 		if (key.get_type() != Variant::STRING || !valid_case_relative(String(key)) ||
-				(stage != Variant("parser") && stage != Variant("analyzer"))) {
+				(stage != Variant("parser") && stage != Variant("analyzer") && stage != Variant("runtime"))) {
 			manifest.error = vformat("invalid case stage entry: %s/%s", p_root, String(key));
 			return manifest;
 		}
@@ -752,6 +789,8 @@ CorpusEnvironment prepare_corpus_environment(const String &p_root_argument) {
 		return environment;
 	}
 	environment.stages = manifest.stages;
+	// Only the analyzer root stages fixtures; see CORPUS_RUNTIME_ROOT for why the runtime root
+	// deliberately stages none.
 	if (corpus_path_under(environment.root, CORPUS_ANALYZER_ROOT) ||
 			corpus_path_under(CORPUS_ANALYZER_ROOT, environment.root)) {
 		environment.fixture_paths = analyzer_fixture_paths();
