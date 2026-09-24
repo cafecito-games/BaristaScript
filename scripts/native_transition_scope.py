@@ -15,7 +15,20 @@ other. Whether that can happen is decided by the build descriptions, not by the 
 sources they compile:
 
 - Test code lives in `tests/native/` and `thirdparty/doctest/`, and only `SConstruct` and
-  `CMakeLists.txt` add it to a build, keyed on their test option.
+  `CMakeLists.txt` add it to a build, keyed on their test option. `thirdparty/` stays an input
+  whole, because vendored code is wired in by hand and carries build descriptions of its own.
+  An ordinary source, header or document under `tests/native/` is not an input: both builds
+  glob that directory -- `SConstruct` takes `Glob("tests/native/*.cpp")` and `CMakeLists.txt` a
+  `CONFIGURE_DEPENDS` `file(GLOB ...)` over the same pattern -- so a case file that appears or
+  disappears needs wiring in neither, and the `src/` asymmetry below has no counterpart here.
+  That each build system did find it is proved unconditionally by the two steps that build and
+  run the native suites with SCons and with CMake on every pull request. A build description
+  placed in that directory still is an input: `SCsub`, `SConscript`, `CMakeLists.txt` and
+  `*.cmake` are matched by name and suffix everywhere in the tree, so the directory itself does
+  not have to be listed to catch one.
+- A case file does feed the build identity `scripts/native_test_build.py` computes, but it feeds
+  it identically in both modes, so it cannot be the stale state a toggle carries: that identity
+  separates commits, not the tests-on and tests-off builds of a single commit.
 - Where each mode puts its objects, profile and generated headers is decided by those two
   files, `methods.py`, an optional `custom.py`, godot-cpp's own SCons and CMake scripts (the
   `godot-cpp` submodule pointer and `.gitmodules`), the Python helpers the builds execute,
@@ -72,7 +85,6 @@ BUILD_INPUT_PATHS = frozenset({
 BUILD_INPUT_DIRECTORIES = (
     ".github/actions/",
     "cmake/",
-    "tests/native/",
     "thirdparty/",
 )
 

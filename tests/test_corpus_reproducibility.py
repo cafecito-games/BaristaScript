@@ -711,7 +711,10 @@ class TransitionScopeContract(unittest.TestCase):
                                           'required, reason = False, f"the decision failed'),
             "an added source skipped": ('status != "M"', 'status == "D"'),
             "every source change skipped": (' or (path.startswith(SOURCE_DIRECTORY) and status != "M")', ""),
-            "the test directory dropped": ('    "tests/native/",\n', ""),
+            # The native test directory is deliberately not a build input; widening the filter
+            # back over it is as much a change to what the gate decides as dropping an entry is,
+            # and ORDINARY_TRANSITION_PATHS is what refuses it.
+            "the test directory restored": ('    "cmake/",\n', '    "cmake/",\n    "tests/native/",\n'),
             "the doctest directory dropped": ('    "thirdparty/",\n', ""),
             "the workflow actions dropped": ('    ".github/actions/",\n', ""),
             "the cmake directory dropped": ('    "cmake/",\n', ""),
