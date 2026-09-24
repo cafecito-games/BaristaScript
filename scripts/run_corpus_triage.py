@@ -493,8 +493,9 @@ def expected_failure_complaints(results, expected_failures, selected):
             # and declaration checks: a crash is not a corpus result that happens to be owned,
             # so being in the pin is no answer to it. It must be fixed, rewritten, or excluded
             # with a reason.
-            complaints.append(f'{case}: {record["terminal"]} is not an adjudicated corpus result and cannot be '
-                              'absorbed by expected_failures; fix, rewrite, or exclude the case with a reason')
+            complaints.append(f'{case}: {record.get("terminal", "a record with no terminal")} is not an '
+                              'adjudicated corpus result and cannot be absorbed by expected_failures; fix, '
+                              'rewrite, or exclude the case with a reason')
             continue
         if not owned_failure(record):
             complaints.append(f'{case}: failing case has no semantic owner with a written reason')

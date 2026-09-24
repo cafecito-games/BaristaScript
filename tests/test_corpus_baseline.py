@@ -400,13 +400,17 @@ class RuntimeImportedTree(ImportedTreeShape):
         self.assertEqual(self.baseline["skipped"], 82)
         self.assertEqual(self.baseline["total"] + len(triage["excluded"]) + len(triage["deferred"]), 757)
 
-    def test_every_included_case_is_pinned_with_an_owning_child(self):
+    def test_every_pinned_case_is_an_imported_case_with_an_owning_child(self):
+        # At import the pin was the whole population, because nothing could execute a case. The
+        # corpus runs now, so the pin is the subset that still fails and shrinks as families
+        # land. What has to stay true is the other direction: every entry is an imported case,
+        # and every entry names the child that owns it.
         runtime_importer = load_module("import_runtime_corpus", ROOT / "scripts" / "import_runtime_corpus.py")
         owners = runtime_importer.default_policy()["owners"]
         pin = self.baseline["expected_failures"]
         self.assertEqual(pin, sorted(set(pin)))
         present = {path.relative_to(self.root).as_posix() for path in self.cases()}
-        self.assertEqual(sorted(present - set(pin)), [])
+        self.assertEqual(sorted(set(pin) - present), [])
         for case in pin:
             with self.subTest(case=case):
                 owner = owners[case]

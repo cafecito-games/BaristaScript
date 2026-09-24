@@ -921,6 +921,18 @@ class AdjudicationTests(unittest.TestCase):
         self.assertIn('pinned expected failure now passes', complaints[0])
         self.assertIn('not declared in expected_failures', complaints[1])
 
+    def test_a_record_with_no_terminal_complains_rather_than_raising(self):
+        # The classifier fails closed on a record that does not say how it failed, so the
+        # complaint has to be able to describe one. Reading the absent key directly would turn
+        # the refusal into a crash and lose the durable report along with it.
+        case = 'errors/case.barista'
+        record = dict(case=case, passed=False, semantic_owner=dict(reason='#244: no runtime yet'))
+        self.assertTrue(triage.unadjudicated_failure(record))
+        complaints = triage.expected_failure_complaints([record], [case], [case])
+        self.assertEqual(len(complaints), 1, complaints)
+        self.assertIn('is not an adjudicated corpus result', complaints[0])
+        self.assertIn('no terminal', complaints[0])
+
     def test_an_unowned_mismatch_is_refused(self):
         case = 'errors/case.barista'
         complaints = triage.expected_failure_complaints(
