@@ -627,6 +627,22 @@ TEST_SUITE("runtime_expressions") {
 				readable(String::num_int64(counts[0]) + " without a bind, " + String::num_int64(counts[1]) + " with one"));
 	}
 
+	TEST_CASE("range refuses a bound that is not an integer") {
+		// `range` has no fixed parameter list, so the signature check every other utility gets does
+		// not reach it: its bounds are checked where its arity is known.
+		Ref<BaristaScript> script;
+		const RuntimeErrorScope errors;
+		run_test_function(
+				"func test():\n"
+				"\tvar bound = []\n"
+				"\treturn range(bound)\n",
+				"res://runtime_expressions/range_bad_bound.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		CHECK_MESSAGE(errors.has_error_containing("Invalid type in BaristaScript utility function \"range()\""),
+				readable(errors.joined()));
+	}
+
 	TEST_CASE("an engine utility with a fixed signature runs and converts its arguments") {
 		// `typeof` and `floor` are not variadic, so each argument has to be materialized in the
 		// carrier the signature declares before the engine's pointer call can be made at all.

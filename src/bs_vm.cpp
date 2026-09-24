@@ -456,6 +456,11 @@ bool call_language_utility(const StringName &p_name, const Variant **p_arguments
 	}
 	if (p_name == SNAME("char")) {
 		const int64_t code = *p_arguments[0];
+		// The admissible range is the whole unsigned 32-bit one, not the assigned Unicode range. That
+		// is upstream's bound (fs_utility_functions.cpp:110-114 @ c9d5e35) and, more importantly, it
+		// is the bound `BSUtilityFunctions::evaluate_constant` folds a constant `char()` against.
+		// Refusing surrogates or values above U+10FFFF only here would make the same expression a
+		// folded constant in one path and a runtime error in the other.
 		if (code < 0 || code > UINT32_MAX) {
 			return fail_argument(0, Variant::INT, "Expected an integer between 0 and 2^32 - 1.");
 		}
@@ -516,6 +521,16 @@ bool call_language_utility(const StringName &p_name, const Variant **p_arguments
 		return true;
 	}
 	if (p_name == SNAME("range")) {
+		// `range` declares no fixed parameters -- its arity is one, two or three -- so the signature
+		// loop above has nothing to check it against, and each bound is converted the moment it is
+		// read. The carriers are therefore checked here, which is where the arity is known.
+		// Provenance: the per-arity `DEBUG_VALIDATE_ARG_TYPE(n, Variant::INT)` guards in upstream's
+		// own `range`, fs_utility_functions.cpp:126-... @ c9d5e35.
+		for (int i = 0; i < p_argument_count; i++) {
+			if (!Variant::can_convert_strict(p_arguments[i]->get_type(), Variant::INT)) {
+				return fail_argument(i, Variant::INT, Variant());
+			}
+		}
 		int64_t from = 0;
 		int64_t to = 0;
 		int64_t step = 1;
