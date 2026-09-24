@@ -443,11 +443,22 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 	subject_scope.push_back(value);
 	const BlockScope match_scope(this, subject_scope);
 
-	// Every slot any branch binds, deduplicated. Sibling branches reuse the same stack slots, so the
-	// same address can come from several branches and must be cleared once.
+	// Every slot any branch declares that can hold a reference, deduplicated by slot.
+	//
+	// Two properties of this list are load-bearing. It is filtered *before* deduplication, because
+	// sibling branches reuse the same stack slots with different declared types: if branch A's body
+	// declares an `int` in slot 7 and branch B binds an object into the same slot 7, keeping only
+	// the first address seen would leave the clear looking at the `int` and deciding the slot holds
+	// nothing. Any branch that can put a reference there is enough to make the slot worth clearing.
+	// And it holds plain stack indices, which stay meaningful after a branch's scope ends: a slot
+	// index is not looked up in any table, and the frame is sized by the high-water mark, so writing
+	// into a released slot before any later block takes it is well defined.
 	List<BSCodeGenerator::Address> bound_slots;
 	const auto record_bound_slots = [&bound_slots](const List<BSCodeGenerator::Address> &p_locals) {
 		for (const BSCodeGenerator::Address &local : p_locals) {
+			if (!slot_can_hold_a_reference(local.type)) {
+				continue;
+			}
 			bool already_recorded = false;
 			for (const BSCodeGenerator::Address &known : bound_slots) {
 				if (known.mode == local.mode && known.address == local.address) {

@@ -334,6 +334,32 @@ TEST_SUITE("runtime_expressions") {
 		CHECK(counts[0] == counts[1]);
 	}
 
+	TEST_CASE("a bind sharing a slot with a typed local in a sibling branch is still released") {
+		// Sibling branches reuse stack slots. The first branch's body declares an `int` where the
+		// second branch binds an object, so a cleanup that judged the slot by the first declaration
+		// it saw would decide the slot holds nothing and leave the object retained.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar shared := RefCounted.new()\n"
+				"\tvar before := shared.get_reference_count()\n"
+				"\tmatch [shared, 1]:\n"
+				"\t\t\"never\":\n"
+				"\t\t\t@warning_ignore(\"unused_variable\")\n"
+				"\t\t\tvar count: int = 0\n"
+				"\t\t[var first, 99]:\n"
+				"\t\t\tprint(first)\n"
+				"\t\t_:\n"
+				"\t\t\tpass\n"
+				"\treturn [before, shared.get_reference_count()]\n",
+				"res://runtime_expressions/match_shared_bind_slot.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array counts = result;
+		BS_TEST_REQUIRE(counts.size() == 2);
+		CHECK(counts[0] == counts[1]);
+	}
+
 	TEST_CASE("a range whose span does not fit an integer is refused, not overflowed") {
 		// `to - from` here is larger than any `int64_t`, so computing the element count signed would
 		// be undefined behaviour on the way to the refusal the caller is owed.
