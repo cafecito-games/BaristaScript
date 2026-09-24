@@ -285,6 +285,55 @@ TEST_SUITE("runtime_expressions") {
 		CHECK(result == Variant(true));
 	}
 
+	TEST_CASE("a while condition does not see the previous iteration's body locals") {
+		// The body's locals are cleared at the end of the body, not at its start, so an object an
+		// iteration held is already released by the time the next condition runs.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar shared := RefCounted.new()\n"
+				"\tvar seen := []\n"
+				"\tvar rounds := 0\n"
+				"\twhile rounds < 3:\n"
+				"\t\tseen.append(shared.get_reference_count())\n"
+				"\t\t@warning_ignore(\"unused_variable\")\n"
+				"\t\tvar held := shared\n"
+				"\t\trounds += 1\n"
+				"\treturn [seen, shared.get_reference_count()]\n",
+				"res://runtime_expressions/while_condition_locals.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array parts = result;
+		BS_TEST_REQUIRE(parts.size() == 2);
+		const Array seen = parts[0];
+		BS_TEST_REQUIRE(seen.size() == 3);
+		CHECK(seen[0] == seen[1]);
+		CHECK(seen[1] == seen[2]);
+		CHECK(seen[0] == parts[1]);
+	}
+
+	TEST_CASE("a bind written by a branch that then failed does not keep its value") {
+		// `[var first, 99]` binds `first` before it tests the second element, so a branch that ends
+		// up not matching has still written into the bind slot.
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func test():\n"
+				"\tvar shared := RefCounted.new()\n"
+				"\tvar before := shared.get_reference_count()\n"
+				"\tmatch [shared, 1]:\n"
+				"\t\t[var first, 99]:\n"
+				"\t\t\tprint(first)\n"
+				"\t\t_:\n"
+				"\t\t\tpass\n"
+				"\treturn [before, shared.get_reference_count()]\n",
+				"res://runtime_expressions/match_failed_bind.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array counts = result;
+		BS_TEST_REQUIRE(counts.size() == 2);
+		CHECK(counts[0] == counts[1]);
+	}
+
 	TEST_CASE("a range whose span does not fit an integer is refused, not overflowed") {
 		// `to - from` here is larger than any `int64_t`, so computing the element count signed would
 		// be undefined behaviour on the way to the refusal the caller is owed.

@@ -83,6 +83,9 @@ void BSCompiler::clear_locals_left_by_jump(CodeGen &p_codegen) {
 		// A `break` or `continue` outside a loop is an analyzer error, and no scope is being left.
 		return;
 	}
+	// Includes the loop body's own level. `continue` in a `while` lands on the condition, which is
+	// evaluated before anything else clears the body, so an object the iteration held would still be
+	// referenced while the next condition runs.
 	const int body_depth = loop_body_depths.back()->get();
 	int depth = 0;
 	for (const List<BSCodeGenerator::Address> &scope : open_block_locals) {
@@ -171,12 +174,20 @@ Error BSCompiler::parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode 
 			if (!add_block_locals(p_codegen, node->loop, loop_locals)) {
 				return ERR_COMPILATION_FAILED;
 			}
-			clear_block_locals(p_codegen, loop_locals);
-			loop_body_depths.push_back(open_block_locals.size());
-			result = parse_block(p_codegen, node->loop, false);
-			loop_body_depths.pop_back();
-			if (result != OK) {
-				return result;
+			{
+				// The body's locals are a scope every exit from the body has to clear: falling off the
+				// end (below), `continue` and `break` (through the jump cleanup, which is why the
+				// marker names this scope), and the loop's own end (after `write_endwhile`). Clearing
+				// at the *end* of the body rather than at its start is what keeps the next condition
+				// evaluation from observing the previous iteration's values.
+				const BlockScope body_scope(this, loop_locals);
+				loop_body_depths.push_back(open_block_locals.size() - 1);
+				result = parse_block(p_codegen, node->loop, false);
+				loop_body_depths.pop_back();
+				if (result != OK) {
+					return result;
+				}
+				clear_block_locals(p_codegen, loop_locals);
 			}
 			generator->write_endwhile();
 			clear_block_locals(p_codegen, loop_locals);
@@ -259,12 +270,15 @@ Error BSCompiler::parse_statement(CodeGen &p_codegen, const BSParser::SuiteNode 
 			if (!add_block_locals(p_codegen, node->loop, loop_locals)) {
 				return ERR_COMPILATION_FAILED;
 			}
-			clear_block_locals(p_codegen, loop_locals);
-			loop_body_depths.push_back(open_block_locals.size());
-			result = parse_block(p_codegen, node->loop, false);
-			loop_body_depths.pop_back();
-			if (result != OK) {
-				return result;
+			{
+				const BlockScope body_scope(this, loop_locals);
+				loop_body_depths.push_back(open_block_locals.size() - 1);
+				result = parse_block(p_codegen, node->loop, false);
+				loop_body_depths.pop_back();
+				if (result != OK) {
+					return result;
+				}
+				clear_block_locals(p_codegen, loop_locals);
 			}
 			generator->write_endfor(range_call != nullptr);
 			clear_block_locals(p_codegen, loop_locals);
@@ -429,6 +443,24 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 	subject_scope.push_back(value);
 	const BlockScope match_scope(this, subject_scope);
 
+	// Every slot any branch binds, deduplicated. Sibling branches reuse the same stack slots, so the
+	// same address can come from several branches and must be cleared once.
+	List<BSCodeGenerator::Address> bound_slots;
+	const auto record_bound_slots = [&bound_slots](const List<BSCodeGenerator::Address> &p_locals) {
+		for (const BSCodeGenerator::Address &local : p_locals) {
+			bool already_recorded = false;
+			for (const BSCodeGenerator::Address &known : bound_slots) {
+				if (known.mode == local.mode && known.address == local.address) {
+					already_recorded = true;
+					break;
+				}
+			}
+			if (!already_recorded) {
+				bound_slots.push_back(local);
+			}
+		}
+	};
+
 	for (int index = 0; index < p_match->branches.size(); index++) {
 		if (index > 0) {
 			// Each branch is the `else` of the one before it, so a value that matched an earlier
@@ -447,6 +479,7 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 		// A branch's binds are a scope a `break` or `continue` in its body leaves behind, like any
 		// other block's locals, so the jump has to know about them too.
 		const BlockScope branch_scope(this, branch_locals);
+		record_bound_slots(branch_locals);
 		generator->write_newline(branch->start_line);
 
 		BSCodeGenerator::Address pattern_result = p_codegen.add_temporary(boolean_slot_type());
@@ -497,6 +530,13 @@ Error BSCompiler::parse_match(CodeGen &p_codegen, const BSParser::MatchNode *p_m
 	// A `match` with no arm matching and no wildcard falls straight through the last `else`: every
 	// branch is a conditional, none of them is a default, so the statement is simply a no-op. That
 	// is the documented behaviour (docs/GRAMMAR.md), and it is why no error is raised here.
+
+	// A pattern writes its binds while it is being evaluated, before the branch is known to match: a
+	// later alternative, a later element, or a guard can still turn the result false, and then the
+	// branch body -- which is where that branch clears its own binds -- never runs. The bind slot
+	// would keep whatever the failed attempt put in it for the rest of the frame. Clearing every
+	// bound slot once, here, is the one place that is reached however the branches turned out.
+	clear_block_locals(p_codegen, bound_slots);
 
 	// The saved subject is a local like any other, and it is the only one in the frame that holds
 	// the matched value. Leaving it set would keep a `RefCounted` subject alive for the rest of the
