@@ -244,6 +244,13 @@ bool call_engine_utility(const StringName &p_name, const Variant **p_arguments, 
 
 	const bool is_vararg = (info.flags & METHOD_FLAG_VARARG) != 0;
 	const int declared_count = info.arguments.size();
+	// A non-variadic utility's arity is exact. No engine utility declares a default argument: the
+	// pinned `extension_api-4-7.json` carries a `default_value` on none of the 114 utility
+	// functions' parameters, which is why the overloads that look defaulted are separate names
+	// (`var_to_bytes` and `var_to_bytes_with_objects`, not one function with a flag). A pointer call
+	// has no way to omit an argument anyway, so if a future API pin ever introduces one, this is the
+	// check that has to learn about it -- and it will say so by refusing the call rather than by
+	// passing whatever happens to be in the argument array.
 	if (!is_vararg && p_argument_count != declared_count) {
 		r_error.error = p_argument_count < declared_count ? GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS
 														  : GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
