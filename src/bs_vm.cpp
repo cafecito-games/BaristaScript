@@ -706,7 +706,9 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 		}
 		Variant converted_rest;
 		String conversion_error;
-		if (!argument_types[argument_count].convert(rest, converted_rest, conversion_error)) {
+		// The VM creates the rest tail as an erased Array. Its declared element type is
+		// enforced while materializing the parameter, including the empty-tail case.
+		if (!argument_types[argument_count].convert(rest, converted_rest, conversion_error, true)) {
 			report_runtime_error_once("Invalid rest arguments for " + String(name) + "(): " + conversion_error,
 					name, source, initial_line);
 			return Variant();

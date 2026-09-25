@@ -9123,7 +9123,8 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 					if (has_materialized_constant_value(assignment->assigned_value)) {
 						options.constant_source_value = &assignment->assigned_value->reduced_value;
 					}
-					if (!BSTypeCompatibility::check(assignee_type, op_type, options).compatible) {
+					const BSTypeCompatibility::Result compatibility = BSTypeCompatibility::check(assignee_type, op_type, options);
+					if (!compatibility.compatible) {
 						StringName target_name;
 						if (assignment->assignee->type == BSParser::Node::IDENTIFIER)
 							target_name = static_cast<BSParser::IdentifierNode *>(assignment->assignee)->name;
@@ -9149,7 +9150,7 @@ void BSAnalyzer::reduce_expression(BSParser::ExpressionNode *p_expression, bool 
 							}
 						}
 						push_error(error, assignment->assigned_value);
-					} else if (op_type.is_variant() || !op_type.is_hard_type()) {
+					} else if (op_type.is_variant() || !op_type.is_hard_type() || compatibility.requires_runtime_check) {
 						mark_node_unsafe(assignment);
 						assignment->use_conversion_assign = true;
 					}
@@ -9360,8 +9361,8 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 					if (has_materialized_constant_value(variable->initializer)) {
 						options.constant_source_value = &variable->initializer->reduced_value;
 					}
-					bool compatible = BSTypeCompatibility::check(declared, initializer_type, options).compatible;
-					if (!compatible) {
+					const BSTypeCompatibility::Result compatibility = BSTypeCompatibility::check(declared, initializer_type, options);
+					if (!compatibility.compatible) {
 						if (initializer_type.is_tagged_union_type() && declared.kind == BSParser::DataType::BUILTIN && declared.builtin_type == Variant::INT) {
 							push_error(vformat(R"(Cannot assign a value of type %s to variable "%s" with specified type %s.)",
 											   initializer_type.to_string(),
@@ -9378,6 +9379,9 @@ void BSAnalyzer::analyze_statement(BSParser::Node *p_node) {
 						} else {
 							push_error(make_declaration_type_error(declared, initializer_type, "variable", variable->identifier != nullptr ? variable->identifier->name : StringName("<unknown>")), variable->initializer);
 						}
+					} else if (compatibility.requires_runtime_check) {
+						mark_node_unsafe(variable->initializer);
+						variable->use_conversion_assign = true;
 					}
 				}
 			}

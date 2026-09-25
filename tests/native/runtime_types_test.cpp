@@ -342,6 +342,55 @@ TEST_SUITE("runtime_types") {
 		CHECK(lookup["two"] == Variant(2));
 	}
 
+	TEST_CASE("typed rest tails and hard erased containers convert at runtime") {
+		const Ref<BaristaScript> script = compile_script(
+				"func collect(...values: Array[int]) -> Array[int]:\n"
+				"\treturn values\n"
+				"\n"
+				"func erased_good() -> Array:\n"
+				"\treturn [4]\n"
+				"\n"
+				"func erased_bad() -> Array:\n"
+				"\treturn [\"wrong\"]\n"
+				"\n"
+				"func initialize_from_erased() -> Array[int]:\n"
+				"\tvar values: Array[int] = erased_good()\n"
+				"\treturn values\n"
+				"\n"
+				"func assign_from_erased() -> Array[int]:\n"
+				"\tvar values: Array[int] = []\n"
+				"\tvalues = erased_good()\n"
+				"\treturn values\n"
+				"\n"
+				"func reject_erased() -> Array[int]:\n"
+				"\tvar values: Array[int] = erased_bad()\n"
+				"\treturn values\n",
+				"res://runtime_types/erased_boundaries.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+
+		const Array empty_rest = owner->call("collect");
+		CHECK(empty_rest.is_typed());
+		CHECK(empty_rest.get_typed_builtin() == Variant::INT);
+		CHECK(empty_rest.is_empty());
+		const Array populated_rest = owner->call("collect", 1, 2);
+		CHECK(populated_rest.is_typed());
+		CHECK(populated_rest == Array::make(1, 2));
+		const Array initialized = owner->call("initialize_from_erased");
+		CHECK(initialized.is_typed());
+		CHECK(initialized == Array::make(4));
+		const Array assigned = owner->call("assign_from_erased");
+		CHECK(assigned.is_typed());
+		CHECK(assigned == Array::make(4));
+
+		RuntimeErrorScope errors;
+		CHECK(owner->call("collect", "wrong") == Variant());
+		CHECK(owner->call("reject_erased") == Variant());
+		CHECK_MESSAGE(errors.errors().size() == 2, readable(errors.joined()));
+	}
+
 	TEST_CASE("reserved D1 numeric spellings never reach a runtime descriptor") {
 		for (const String &spelling : { String("uint"), String("long"), String("ulong") }) {
 			const String source = "func rejected(value: " + spelling + "):\n\tpass\n";

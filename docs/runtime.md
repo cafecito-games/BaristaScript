@@ -159,32 +159,27 @@ file to `src/` changes what one build system compiles and not the other. The lan
 exist already, with their guards and includes in place, so a family adds handlers rather than
 restructuring a translation unit.
 
-## What is declared but not enforced
+## Runtime type enforcement
 
-Two declarations are accepted and lowered to something weaker than they say, and both are recorded
-here rather than left to be discovered:
+Declared builtin, native and script slots carry a `BSRuntimeType` into compiled functions. Script
+identity is a weak `ObjectID`, so the check survives the parser generation without creating a
+script/function ownership cycle. A store into `var node: Node` admits null or an object of that
+class; a script slot likewise admits only instances of its declaring script or a derived script.
 
-- **A script-typed slot loses its identity.** `member_slot_type` erases `CLASS` and `SCRIPT` to
-  `Variant`, because the identity is a pointer into a parse tree that does not outlive the
-  compilation. Such a slot accepts any value. Restoring the check needs an identity a compiled
-  function can own, which is the type model's to introduce.
-- **A slot the runtime cannot check is refused rather than accepted.** A tuple, a union, an enum or
-  a type parameter has writers on the frozen emitter interface that refuse, and every declaration
-  site -- member, local, parameter, return and loop variable -- routes through
-  `BSCompiler::refuse_unchecked_slot` so none of them can reach a slot that would accept anything
-  while claiming to be checked.
-- **A typed container's element type is not enforced.** `Array[int]` lowers to a plain `Array`, so a
-  value that arrives through a `Variant` can carry elements of any type into it. The analyzer
-  rejects every statically visible violation, which is why this needs a dynamically typed source to
-  observe. Enforcing it needs the container-type descriptor the type model introduces.
+Typed arrays and dictionaries validate and convert their elements at runtime when a value arrives
+through `Variant` or an erased container. Conversion is atomic: an invalid element or a converted
+dictionary-key collision leaves the destination unchanged. Typed rest parameters use the same
+conversion when the VM materializes their erased argument tail.
 
-A native class slot *is* checked: a store into `var node: Node` admits null or an object of that
-class and reports anything else.
+A slot whose runtime descriptor is owned by later milestone work is refused rather than weakened.
+Tuple and union behavior remains reserved for #247, trait receivers for #249, and a type parameter
+that needs M5 specialization still fails closed. Every declaration site -- member, local, parameter,
+return and loop variable -- routes through `BSCompiler::refuse_unchecked_slot`.
 
 ## What the slice does not do yet
 
 Suspension (`await`, coroutines, function state), lambdas and callables, tuples and tagged unions,
-typed opcodes and typed containers, statics and inner classes, cross-file bases and preload,
+statics and inner classes, cross-file bases and preload,
 conformance dispatch, and generics. Each is refused by name: the emitter reports the construct it
 cannot lower and the script stays invalid, so `_can_instantiate()` is false and `_instance_create()`
 yields nothing rather than a half-built instance.
