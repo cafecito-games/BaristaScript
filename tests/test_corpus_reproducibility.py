@@ -609,6 +609,14 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
                     step["if"] = step["if"].replace(old, new)
             return mutate
 
+        def rewrite_cmake_gates(old, new):
+            def mutate(document):
+                for index in cmake_gated:
+                    step = document["jobs"]["native-cmake-verification"]["steps"][index]
+                    self.assertIn(old, step["if"])
+                    step["if"] = step["if"].replace(old, new)
+            return mutate
+
         mutations = {
             "a gate that is always false": rewrite_gates(
                 "steps.transition_scope.outputs.required != 'false'", "steps.transition_scope.outputs.required == 'never'"),
@@ -617,6 +625,17 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
             "the event exemption narrowed so push and merge_group are gated": rewrite_gates(
                 "github.event_name != 'pull_request'", "github.event_name == 'workflow_dispatch'"),
             "a gate reading another step": rewrite_gates("steps.transition_scope.", "steps.versions."),
+            "a CMake gate that is always false": rewrite_cmake_gates(
+                "steps.transition_scope.outputs.required != 'false'",
+                "steps.transition_scope.outputs.required == 'never'"),
+            "a CMake gate that fails closed on a missing decision": rewrite_cmake_gates(
+                "!= 'false'", "== 'true'"),
+            "the CMake gate applied to every event": rewrite_cmake_gates(
+                "github.event_name != 'pull_request' || ", ""),
+            "the CMake event exemption narrowed so push and merge_group are gated": rewrite_cmake_gates(
+                "github.event_name != 'pull_request'", "github.event_name == 'workflow_dispatch'"),
+            "a CMake gate reading another step": rewrite_cmake_gates(
+                "steps.transition_scope.", "steps.versions."),
             "the gate applied to the SCons test build": lambda document: document["jobs"]["build"]["steps"][
                 unconditional[2]].update({"if": validate_ci.LINUX_TRANSITION_CONDITION}),
             "the gate applied to the runtime fixture": lambda document: document["jobs"]["build"]["steps"][
