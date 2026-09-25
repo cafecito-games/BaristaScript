@@ -85,6 +85,21 @@ TEST_SUITE("runtime_types") {
 		CHECK_MESSAGE(errors.errors().size() == 2, readable(errors.joined()));
 	}
 
+	TEST_CASE("plain enum type tests use the declared value set") {
+		const Ref<BaristaScript> script = compile_script(
+				"func test(value: Variant) -> bool:\n"
+				"\treturn value is Node.ProcessMode\n",
+				"res://runtime_types/plain_enum.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		CHECK(owner->call("test", 0) == Variant(true));
+		CHECK(owner->call("test", 1) == Variant(true));
+		CHECK(owner->call("test", 99) == Variant(false));
+		CHECK(owner->call("test", "1") == Variant(false));
+	}
+
 	TEST_CASE("native assignment casts tests and nullable values execute") {
 		const Ref<BaristaScript> script = compile_script(
 				"func store(value: Variant) -> RefCounted:\n"
@@ -144,6 +159,8 @@ TEST_SUITE("runtime_types") {
 
 	TEST_CASE("native and script type handles preserve represented identity") {
 		const Ref<BaristaScript> script = compile_script(
+				"class_name RuntimeTypeHandleOwner\n"
+				"\n"
 				"func store_native(value: Type[Node]) -> Type[Node]:\n"
 				"\treturn value\n"
 				"\n"
@@ -164,7 +181,10 @@ TEST_SUITE("runtime_types") {
 				"\treturn value as Type[Self]?\n"
 				"\n"
 				"func test_script(value: Variant) -> bool:\n"
-				"\treturn value is Type[Self]\n",
+				"\treturn value is Type[Self]\n"
+				"\n"
+				"func own_script() -> Type[RuntimeTypeHandleOwner]:\n"
+				"\treturn RuntimeTypeHandleOwner\n",
 				"res://runtime_types/type_handles.barista");
 		BS_TEST_REQUIRE(script.is_valid());
 		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
@@ -184,9 +204,13 @@ TEST_SUITE("runtime_types") {
 		BS_TEST_REQUIRE(handles.size() == 2);
 		CHECK(handles[0] == node);
 		CHECK(handles[1] == Variant(StringName("Button")));
-		CHECK(owner->call("store_script", script) == Variant(script));
-		CHECK(owner->call("cast_script", script) == Variant(script));
+		const Variant script_handle = (int64_t)script->get_instance_id();
+		CHECK(owner->call("store_script", script) == script_handle);
+		CHECK(owner->call("store_script", script_handle) == script_handle);
+		CHECK(owner->call("cast_script", script) == script_handle);
 		CHECK(owner->call("test_script", script) == Variant(true));
+		CHECK(owner->call("test_script", script_handle) == Variant(true));
+		CHECK(owner->call("own_script") == script_handle);
 
 		const Ref<BaristaScript> other_script = compile_script(
 				"func marker() -> void:\n"
@@ -223,6 +247,15 @@ TEST_SUITE("runtime_types") {
 		CHECK(retyped_dictionary.is_typed());
 		CHECK(retyped_dictionary.get_typed_key_builtin() == Variant::STRING);
 		CHECK(retyped_dictionary.get_typed_value_builtin() == Variant::INT);
+		BSRuntimeType integer_dictionary_type = BSRuntimeType::builtin(Variant::DICTIONARY);
+		integer_dictionary_type.container_element_types.push_back(BSRuntimeType::builtin(Variant::INT));
+		integer_dictionary_type.container_element_types.push_back(BSRuntimeType::builtin(Variant::INT));
+		Dictionary colliding_keys;
+		colliding_keys[1] = 10;
+		colliding_keys[1.8] = 20;
+		Variant collision_result = "unchanged";
+		CHECK_FALSE(integer_dictionary_type.convert(colliding_keys, collision_result, conversion_error, true));
+		CHECK(collision_result == Variant("unchanged"));
 
 		const Ref<BaristaScript> script = compile_script(
 				"var numbers: Array[int] = [1]\n"
@@ -282,6 +315,10 @@ TEST_SUITE("runtime_types") {
 		CHECK(nullable[0] == Variant());
 		CHECK(nullable[1] == Variant(1));
 		CHECK(nullable[2] == Variant());
+		owner->call("replace_numbers", erased_good);
+		owner->call("replace_lookup", erased_good_dictionary);
+		CHECK(Array(owner->get("numbers"))[0] == Variant(3));
+		CHECK(Dictionary(owner->get("lookup"))["two"] == Variant(2));
 		Array erased_bad;
 		erased_bad.push_back("wrong");
 		Dictionary erased_bad_dictionary;
@@ -299,10 +336,10 @@ TEST_SUITE("runtime_types") {
 		CHECK_MESSAGE(errors.errors().size() == 2, readable(errors.joined()));
 		const Array numbers = owner->get("numbers");
 		CHECK(numbers.size() == 1);
-		CHECK(numbers[0] == Variant(1));
+		CHECK(numbers[0] == Variant(3));
 		const Dictionary lookup = owner->get("lookup");
 		CHECK(lookup.size() == 1);
-		CHECK(lookup["one"] == Variant(1));
+		CHECK(lookup["two"] == Variant(2));
 	}
 
 	TEST_CASE("reserved D1 numeric spellings never reach a runtime descriptor") {

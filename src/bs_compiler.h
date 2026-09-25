@@ -187,6 +187,8 @@ private:
 	// Type lowering (core lane).
 	static bool is_local_or_parameter(const CodeGen &p_codegen, const StringName &p_name);
 	static BSParser::DataType member_slot_type(const BSParser::DataType &p_type);
+	/** Declared carrier values for a plain-enum membership test, sorted for deterministic bytecode. */
+	static PackedInt64Array enum_declared_values(const BSParser::DataType &p_type);
 	/** Whether a lowered slot type is one the runtime can check a stored value against. */
 	static bool slot_is_checkable(const BSParser::DataType &p_slot);
 	/** Whether stock Variant metadata loses part of this slot's declaration. */

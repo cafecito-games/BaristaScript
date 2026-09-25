@@ -54,6 +54,17 @@ Ref<Script> resolve_script_type(const BSParser::DataType &p_type, BaristaScript 
 	return Ref<Script>();
 }
 
+Ref<Script> script_from_handle(const Variant &p_value) {
+	if (p_value.get_type() == Variant::OBJECT) {
+		return Ref<Script>(Object::cast_to<Script>(p_value.get_validated_object()));
+	}
+	if (p_value.get_type() == Variant::INT) {
+		const ObjectID id((uint64_t)(int64_t)p_value);
+		return Ref<Script>(Object::cast_to<Script>(ObjectDB::get_instance(id)));
+	}
+	return Ref<Script>();
+}
+
 } // namespace
 
 BSRuntimeType BSRuntimeType::builtin(Variant::Type p_type, bool p_nullable) {
@@ -228,11 +239,13 @@ bool BSRuntimeType::container_metadata(Variant::Type &r_builtin, StringName &r_c
 			r_class = native_type;
 			return true;
 		case SCRIPT:
-			r_builtin = Variant::OBJECT;
 			if (is_type_handle) {
-				r_class = SNAME("Script");
+				// A weak ObjectID is the private class-handle carrier. Pooling a Script Ref in an owning
+				// function's constants would recreate the cycle this descriptor deliberately avoids.
+				r_builtin = Variant::INT;
 				return true;
 			}
+			r_builtin = Variant::OBJECT;
 			r_class = native_type;
 			r_script = get_script();
 			return r_script.get_type() == Variant::OBJECT && r_script.get_validated_object() != nullptr;
@@ -280,13 +293,8 @@ bool BSRuntimeType::accepts(const Variant &p_value, bool p_allow_implicit_conver
 			return p_value.get_type() == Variant::STRING_NAME &&
 					ClassDB::is_parent_class(StringName(p_value), native_type);
 		}
-		if (p_value.get_type() != Variant::OBJECT) {
-			return false;
-		}
-		Object *object = p_value.get_validated_object();
 		if (kind == SCRIPT) {
-			Script *candidate_ptr = object != nullptr ? Object::cast_to<Script>(object) : nullptr;
-			Ref<Script> candidate(candidate_ptr);
+			Ref<Script> candidate = script_from_handle(p_value);
 			while (candidate.is_valid()) {
 				if (candidate->get_instance_id() == uint64_t(script_id)) {
 					return true;
@@ -426,6 +434,11 @@ bool BSRuntimeType::convert(const Variant &p_source, Variant &r_value, String &r
 		r_value = p_source;
 		return true;
 	}
+	if (is_type_handle && kind == SCRIPT && accepts(p_source)) {
+		const Ref<Script> candidate = script_from_handle(p_source);
+		r_value = (int64_t)candidate->get_instance_id();
+		return true;
+	}
 	if (is_typed_array()) {
 		Variant array_value = p_source;
 		bool carrier_converted = false;
@@ -519,6 +532,11 @@ bool BSRuntimeType::convert(const Variant &p_source, Variant &r_value, String &r
 			result.set_typed(key_builtin, key_class, key_script, value_builtin, value_class, value_script);
 		}
 		for (int i = 0; i < converted_keys.size(); i++) {
+			if (result.has(converted_keys[i])) {
+				r_error = vformat(R"(Converting dictionary key %d to "%s" would duplicate an earlier key.)",
+						i, container_element_types[0].get_name());
+				return false;
+			}
 			result[converted_keys[i]] = converted_values[i];
 		}
 		r_value = result;
@@ -554,7 +572,12 @@ bool BSRuntimeType::convert(const Variant &p_source, Variant &r_value, String &r
 
 bool BSRuntimeType::cast(const Variant &p_source, Variant &r_value, String &r_error) const {
 	if (accepts(p_source, false, true)) {
-		r_value = p_source;
+		if (is_type_handle && kind == SCRIPT) {
+			const Ref<Script> candidate = script_from_handle(p_source);
+			r_value = (int64_t)candidate->get_instance_id();
+		} else {
+			r_value = p_source;
+		}
 		return true;
 	}
 	if (kind == BUILTIN && p_source.get_type() != Variant::NIL &&

@@ -23,6 +23,24 @@ case OPCODE_TYPE_TEST_TUPLE: {
 	BS_IP += 4;
 } break;
 
+case OPCODE_TYPE_TEST_ENUM: {
+	BS_CHECK_SPACE(4);
+	BS_GET_VARIANT_PTR(destination, 0);
+	BS_GET_VARIANT_PTR(value, 1);
+	BS_GET_VARIANT_PTR(declared_values_variant, 2);
+	if (unlikely(declared_values_variant->get_type() != Variant::PACKED_INT64_ARRAY)) {
+		error_text = "Bad enum type-test operand in compiled function.";
+		goto vm_error;
+	}
+	bool contains = false;
+	if (value->get_type() == Variant::INT) {
+		const PackedInt64Array declared_values = *declared_values_variant;
+		contains = declared_values.has((int64_t)*value);
+	}
+	*destination = contains;
+	BS_IP += 4;
+} break;
+
 case OPCODE_ASSIGN_TYPED_BUILTIN:
 case OPCODE_ASSIGN_TYPED_ARRAY:
 case OPCODE_ASSIGN_TYPED_DICTIONARY:
@@ -92,7 +110,8 @@ case OPCODE_CONSTRUCT_TYPED_DICTIONARY: {
 	BS_IP += instruction_argument_count;
 	BS_CHECK_SPACE(4);
 	const int pair_count = code_ptr[BS_IP + 1];
-	if (unlikely(pair_count < 0 || pair_count * 2 >= instruction_argument_count)) {
+	if (unlikely(pair_count < 0 || instruction_argument_count == 0 ||
+			pair_count > (instruction_argument_count - 1) / 2)) {
 		error_text = "Bad typed-dictionary literal operands in compiled function.";
 		goto vm_error;
 	}

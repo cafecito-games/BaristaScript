@@ -57,12 +57,12 @@ BSCodeGenerator::Address BSCompiler::parse_identifier(CodeGen &p_codegen, Error 
 	if (p_identifier->get_datatype().is_meta_type &&
 			p_identifier->get_datatype().kind == BSParser::DataType::CLASS &&
 			p_identifier->get_datatype().class_type == p_codegen.class_node && p_codegen.script != nullptr) {
-		return p_codegen.add_constant(Ref<Script>(p_codegen.script));
+		return p_codegen.add_constant((int64_t)p_codegen.script->get_instance_id());
 	}
 	if (p_identifier->get_datatype().is_meta_type &&
 			p_identifier->get_datatype().kind == BSParser::DataType::SCRIPT &&
 			p_identifier->get_datatype().script_type.is_valid()) {
-		return p_codegen.add_constant(p_identifier->get_datatype().script_type);
+		return p_codegen.add_constant((int64_t)p_identifier->get_datatype().script_type->get_instance_id());
 	}
 	// The only remaining reading that has a lowering is a property the native base declares, which
 	// the owner object answers. Every other classification -- a signal, an inner class, a method
@@ -301,7 +301,12 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 			if (r_error != OK) {
 				return BSCodeGenerator::Address();
 			}
-			generator->write_type_test(result, operand, member_slot_type(node->test_datatype));
+			const BSParser::DataType test_type = member_slot_type(node->test_datatype);
+			if (test_type.kind == BSParser::DataType::ENUM) {
+				generator->write_type_test_enum(result, operand, enum_declared_values(test_type), test_type.is_tagged_union);
+			} else {
+				generator->write_type_test(result, operand, test_type);
+			}
 			if (operand.mode == BSCodeGenerator::Address::TEMPORARY) {
 				generator->pop_temporary();
 			}

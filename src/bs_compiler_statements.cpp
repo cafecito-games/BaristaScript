@@ -667,7 +667,13 @@ BSCodeGenerator::Address BSCompiler::parse_match_pattern(CodeGen &p_codegen, Err
 					return BSCodeGenerator::Address();
 				}
 				const BSCodeGenerator::Address test_result = p_codegen.add_temporary(boolean_slot_type());
-				generator->write_type_test(test_result, p_value_addr, member_slot_type(test->test_datatype));
+				const BSParser::DataType test_type = member_slot_type(test->test_datatype);
+				if (test_type.kind == BSParser::DataType::ENUM) {
+					generator->write_type_test_enum(test_result, p_value_addr,
+							enum_declared_values(test_type), test_type.is_tagged_union);
+				} else {
+					generator->write_type_test(test_result, p_value_addr, test_type);
+				}
 				if (generator->has_error()) {
 					set_error(vformat("The runtime cannot compile %s.", generator->get_error()), p_pattern);
 					r_error = ERR_COMPILATION_FAILED;

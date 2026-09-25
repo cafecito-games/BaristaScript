@@ -21,6 +21,15 @@ BSParser::DataType BSCompiler::member_slot_type(const BSParser::DataType &p_type
 	return p_type;
 }
 
+PackedInt64Array BSCompiler::enum_declared_values(const BSParser::DataType &p_type) {
+	PackedInt64Array values;
+	for (const KeyValue<StringName, int64_t> &entry : p_type.enum_values) {
+		values.push_back(entry.value);
+	}
+	values.sort();
+	return values;
+}
+
 bool BSCompiler::slot_is_checkable(const BSParser::DataType &p_slot) {
 	return p_slot.is_variant() || p_slot.kind == BSParser::DataType::BUILTIN ||
 			p_slot.kind == BSParser::DataType::NATIVE || p_slot.kind == BSParser::DataType::CLASS ||

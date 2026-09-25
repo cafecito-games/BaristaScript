@@ -438,8 +438,16 @@ void BSByteCodeGenerator::write_type_test(const Address &p_target, const Address
 	append(descriptor);
 }
 
-void BSByteCodeGenerator::write_type_test_enum(const Address &, const Address &, const PackedInt64Array &, bool) {
-	refuse("an enum membership test");
+void BSByteCodeGenerator::write_type_test_enum(const Address &p_target, const Address &p_source,
+		const PackedInt64Array &p_declared_values, bool p_is_tagged_union) {
+	if (p_is_tagged_union) {
+		refuse("a tagged-union membership test");
+		return;
+	}
+	append_opcode(BSFunction::OPCODE_TYPE_TEST_ENUM);
+	append(p_target);
+	append(p_source);
+	append(Address(Address::CONSTANT, get_constant_position(p_declared_values)));
 }
 
 void BSByteCodeGenerator::write_type_test_enum_case(const Address &, const Address &, int, const Vector<Address> &) {
@@ -621,6 +629,16 @@ void BSByteCodeGenerator::write_assign(const Address &p_target, const Address &p
 }
 
 void BSByteCodeGenerator::write_assign_with_conversion(const Address &p_target, const Address &p_source) {
+	if (p_target.type.kind == BSParser::DataType::BUILTIN &&
+			p_target.type.builtin_type == Variant::ARRAY && p_target.type.has_container_element_type(0)) {
+		write_assign_typed_array_convert(p_target, p_source);
+		return;
+	}
+	if (p_target.type.kind == BSParser::DataType::BUILTIN &&
+			p_target.type.builtin_type == Variant::DICTIONARY && p_target.type.has_container_element_types()) {
+		write_assign_typed_dictionary_convert(p_target, p_source);
+		return;
+	}
 	write_assign(p_target, p_source);
 }
 
