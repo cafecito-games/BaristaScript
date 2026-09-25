@@ -536,6 +536,11 @@ CMAKE_VERIFICATION_PREFIX = [
         "uses": "actions/setup-python@v5",
         "with": {"python-version": "3.x"},
     },
+    {
+        "name": "Install native CMake test dependencies",
+        "shell": "bash",
+        "run": "python3 -m pip install -r tests/requirements.txt",
+    },
     CMAKE_TRANSITION_SCOPE_STEP,
     {
         "name": "Resolve shared build versions",

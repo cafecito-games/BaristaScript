@@ -108,6 +108,10 @@ jobs:
         with:
           python-version: 3.x
 
+      - name: Install native CMake test dependencies
+        shell: bash
+        run: python3 -m pip install -r tests/requirements.txt
+
       - name: Decide whether to verify native build-system transitions
         id: transition_scope
         shell: bash
