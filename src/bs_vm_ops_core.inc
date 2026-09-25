@@ -9,6 +9,18 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+case OPCODE_LOAD_STATIC_SELF_CLASS: {
+	BS_CHECK_SPACE(2);
+	BS_GET_VARIANT_PTR(destination, 0);
+	if (unlikely(script == nullptr)) {
+		error_text = "Cannot load Self without a declaring script.";
+		goto vm_error;
+	}
+	// Script class handles use the same weak ObjectID carrier as pooled named classes.
+	*destination = (int64_t)script->get_instance_id();
+	BS_IP += 2;
+} break;
+
 case OPCODE_OPERATOR: {
 	BS_CHECK_SPACE(5);
 	BS_GET_VARIANT_PTR(left, 0);
@@ -167,38 +179,6 @@ case OPCODE_ASSIGN_FALSE: {
 	BS_GET_VARIANT_PTR(destination, 0);
 	*destination = false;
 	BS_IP += 2;
-} break;
-
-case OPCODE_ASSIGN_TYPED_BUILTIN: {
-	BS_CHECK_SPACE(4);
-	BS_GET_VARIANT_PTR(destination, 0);
-	BS_GET_VARIANT_PTR(source, 1);
-	const int operand = code_ptr[BS_IP + 3];
-	const bool nullable = (operand & NULLABLE_TYPE_OPERAND_FLAG) != 0;
-	const Variant::Type target_type = (Variant::Type)(operand & ~NULLABLE_TYPE_OPERAND_FLAG);
-	if (nullable && source->get_type() == Variant::NIL) {
-		*destination = Variant();
-	} else if (source->get_type() == target_type) {
-		*destination = *source;
-	} else if (Variant::can_convert_strict(source->get_type(), target_type)) {
-		GDExtensionCallError construct_error;
-		construct_error.error = GDEXTENSION_CALL_OK;
-		const Variant *construct_arguments[1] = { source };
-		Variant converted;
-		godot::gdextension_interface::variant_construct((GDExtensionVariantType)target_type, &converted,
-				reinterpret_cast<const GDExtensionConstVariantPtr *>(construct_arguments), 1, &construct_error);
-		if (unlikely(construct_error.error != GDEXTENSION_CALL_OK)) {
-			error_text = vformat(R"(Cannot convert a value of type "%s" to "%s".)",
-					Variant::get_type_name(source->get_type()), Variant::get_type_name(target_type));
-			goto vm_error;
-		}
-		*destination = converted;
-	} else {
-		error_text = vformat(R"(Cannot assign a value of type "%s" to a slot of type "%s".)",
-				Variant::get_type_name(source->get_type()), Variant::get_type_name(target_type));
-		goto vm_error;
-	}
-	BS_IP += 4;
 } break;
 
 case OPCODE_CONSTRUCT: {

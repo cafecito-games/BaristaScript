@@ -688,7 +688,16 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	}
 	stack.write[ADDR_STACK_CLASS] = script;
 	for (int i = 0; i < p_argument_count && i < argument_count; i++) {
-		stack.write[i + FIXED_ADDRESSES_MAX] = *p_arguments[i];
+		Variant converted;
+		String conversion_error;
+		// Engine calls carry no static container metadata. Validate and materialize an erased
+		// Array/Dictionary at this declared boundary just as assignment and rest tails do.
+		if (!argument_types[i].convert(*p_arguments[i], converted, conversion_error, true)) {
+			report_runtime_error_once(vformat("Invalid argument %d for %s(): %s", i + 1, String(name), conversion_error),
+					name, source, initial_line);
+			return Variant();
+		}
+		stack.write[i + FIXED_ADDRESSES_MAX] = converted;
 	}
 	if (is_vararg) {
 		const int rest_count = MAX(p_argument_count - argument_count, 0);
@@ -697,7 +706,16 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 		for (int i = 0; i < rest_count; i++) {
 			rest[i] = *p_arguments[argument_count + i];
 		}
-		stack.write[argument_count + FIXED_ADDRESSES_MAX] = rest;
+		Variant converted_rest;
+		String conversion_error;
+		// The VM creates the rest tail as an erased Array. Its declared element type is
+		// enforced while materializing the parameter, including the empty-tail case.
+		if (!argument_types[argument_count].convert(rest, converted_rest, conversion_error, true)) {
+			report_runtime_error_once("Invalid rest arguments for " + String(name) + "(): " + conversion_error,
+					name, source, initial_line);
+			return Variant();
+		}
+		stack.write[argument_count + FIXED_ADDRESSES_MAX] = converted_rest;
 	}
 
 	Variant *address_spaces[ADDR_TYPE_MAX] = {
@@ -753,6 +771,13 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	}                                                                  \
 	const StringName &m_name = global_names[m_index]
 
+#define BS_GET_RUNTIME_TYPE(m_name, m_index)                            \
+	if (unlikely((m_index) < 0 || (m_index) >= runtime_types.size())) { \
+		error_text = "Bad runtime-type index in compiled function.";    \
+		goto vm_error;                                                  \
+	}                                                                   \
+	const BSRuntimeType &m_name = runtime_types[m_index]
+
 #define BS_LOAD_INSTRUCTION_ARGUMENTS                                           \
 	BS_CHECK_SPACE(2);                                                          \
 	const int instruction_argument_count = code_ptr[BS_IP + 1];                 \
@@ -796,6 +821,7 @@ vm_exit:
 
 #undef BS_LOAD_INSTRUCTION_ARGUMENTS
 #undef BS_GET_NAME
+#undef BS_GET_RUNTIME_TYPE
 #undef BS_GET_VARIANT_PTR
 #undef BS_CHECK_SPACE
 #undef BS_IP

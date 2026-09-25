@@ -54,6 +54,7 @@
     "analyzer_corpus",
     "runtime_corpus",
     "runtime",
+    "runtime_types",
     "runtime_expressions",
     "runtime_scene"
   ],

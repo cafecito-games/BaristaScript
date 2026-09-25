@@ -15389,9 +15389,9 @@
         "R27"
       ],
       "disposition": "downstream",
-      "owner": "#60/#42",
-      "boundary": "Runtime Script/container descriptors and user/native execution remain M4; M3 pure collectors do not evaluate them.",
-      "rationale": "Runtime Script/container descriptors and user/native execution remain M4; M3 pure collectors do not evaluate them.",
+      "owner": "#246/#245",
+      "boundary": "#246 owns the runtime Script/container descriptor and typed VM boundaries; #245 shares class/member exposure and construction.",
+      "rationale": "The M4 runtime descriptor is implemented by #246 and consumed jointly with #245 where class/member exposure constructs or stores typed values.",
       "upstream": [
         "fs_analyzer.cpp:make_expression_reduced_value:12",
         "fs_analyzer.cpp:make_call_reduced_value:13",

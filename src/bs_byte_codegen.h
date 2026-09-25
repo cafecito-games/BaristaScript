@@ -87,6 +87,7 @@ class BSByteCodeGenerator final : public BSCodeGenerator {
 	int get_name_position(const StringName &p_name);
 	int get_method_bind_position(const BSMethodBindHandle &p_method);
 	int get_lambda_position(BSFunction *p_lambda);
+	int get_runtime_type_position(const BSParser::DataType &p_type);
 
 	void append_opcode(BSFunction::Opcode p_code) { opcodes.push_back(p_code); }
 	void append_opcode_and_argument_count(BSFunction::Opcode p_code, int p_argument_count);

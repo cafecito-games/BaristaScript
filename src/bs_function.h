@@ -12,8 +12,8 @@
 
 #pragma once
 
-#include "bs_parser.h"
 #include "bs_platform.h"
+#include "bs_runtime_type.h"
 
 namespace barista_script {
 
@@ -240,16 +240,6 @@ class BSFunction {
 #endif
 
 public:
-	// Set on the builtin-type operand of OPCODE_ASSIGN_TYPED_BUILTIN / OPCODE_RETURN_TYPED_BUILTIN to
-	// mark the target as nullable, so a null source is stored as-is instead of being rejected or
-	// converted. The flag sits well above Variant::VARIANT_MAX, so the real type is recovered by
-	// masking it off.
-	//
-	// Bit 24 is also where an *address* word's space tag begins, and the two never meet: this flag
-	// is only ever set on a type operand, which is a plain integer the address decoder never reads.
-	// A flag added here must stay on type operands for the same reason.
-	static constexpr int NULLABLE_TYPE_OPERAND_FLAG = 1 << 24;
-
 	enum Opcode {
 #define BS_DECLARE_OPCODE(m_name) OPCODE_##m_name,
 		BS_OPCODE_LIST(BS_DECLARE_OPCODE)
@@ -302,8 +292,8 @@ public:
 	int get_default_argument_count() const { return default_arguments.size(); }
 	int get_max_stack_size() const { return stack_size; }
 	int get_initial_line() const { return initial_line; }
-	const BSParser::DataType &get_return_type() const { return return_type; }
-	const Vector<BSParser::DataType> &get_argument_types() const { return argument_types; }
+	const BSRuntimeType &get_return_type() const { return return_type; }
+	const Vector<BSRuntimeType> &get_argument_types() const { return argument_types; }
 	const Variant &get_rpc_config() const { return rpc_config; }
 
 private:
@@ -314,8 +304,8 @@ private:
 	bool is_static_function = false;
 	Variant rpc_config;
 
-	BSParser::DataType return_type;
-	Vector<BSParser::DataType> argument_types;
+	BSRuntimeType return_type;
+	Vector<BSRuntimeType> argument_types;
 	int argument_count = 0;
 	int stack_size = 0;
 	int instruction_arguments_size = 0;
@@ -323,6 +313,9 @@ private:
 
 	Vector<int> code;
 	Vector<Variant> constants;
+	// Value-owned descriptors interned by the emitter. Opcode operands index this table directly;
+	// unlike an address word, a descriptor index never carries an address-space tag.
+	Vector<BSRuntimeType> runtime_types;
 	Vector<StringName> global_names;
 	Vector<BSMethodBindHandle> methods;
 	Vector<BSFunction *> lambdas;
