@@ -126,6 +126,11 @@ case OPCODE_SET_NAMED: {
 	String script_error;
 	if (BaristaScript *class_script = script_from_handle(*destination)) {
 		valid = class_script->set_static_property(property, *value, script_error);
+		if (!valid && script_error.is_empty()) {
+			// A Script resource is both a class handle and a Resource object. An unknown static
+			// name still gets the ordinary Object property path (`resource_name`, for example).
+			destination->set_named(property, *value, valid);
+		}
 	} else {
 		destination->set_named(property, *value, valid);
 	}
@@ -154,6 +159,10 @@ case OPCODE_GET_NAMED: {
 	Variant result;
 	if (BaristaScript *class_script = script_from_handle(*source)) {
 		valid = class_script->get_static_property(property, result);
+		if (!valid) {
+			// Preserve the Resource surface when the Script has no static declaration by this name.
+			result = source->get_named(property, valid);
+		}
 	} else {
 		result = source->get_named(property, valid);
 	}
@@ -284,7 +293,8 @@ case OPCODE_CALL_RETURN: {
 			base->get_validated_object() == p_instance->owner) {
 		own_function = p_instance->script->find_function(method);
 	}
-	if (BaristaScript *class_script = script_from_handle(*base)) {
+	BaristaScript *class_script = script_from_handle(*base);
+	if (class_script != nullptr && (method == SNAME("new") || class_script->_has_static_method(method))) {
 		if (method == SNAME("new")) {
 			result = class_script->instantiate(const_cast<const Variant **>(instruction_argument_ptr), argument_count, call_error);
 		} else {

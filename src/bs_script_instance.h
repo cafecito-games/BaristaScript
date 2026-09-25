@@ -36,6 +36,9 @@ class BSInstance {
 public:
 	Object *owner = nullptr;
 	Ref<BaristaScript> script;
+	// A live derived instance keeps its compiled base chain alive even when the outer script that
+	// originally owned those inner-class resources is released.
+	Vector<Ref<BaristaScript>> retained_bases;
 	Vector<Variant> members;
 
 	/** Set while the implicit initializer and `_init` run, so a member read cannot see a half-built frame. */

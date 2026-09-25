@@ -332,6 +332,9 @@ void *BaristaScript::create_instance_handle(godot::Object *p_owner, const godot:
 	BSInstance *instance = memnew(BSInstance);
 	instance->owner = p_owner;
 	instance->script = godot::Ref<BaristaScript>(self);
+	for (BaristaScript *base = get_base_barista_script(); base != nullptr; base = base->get_base_barista_script()) {
+		instance->retained_bases.push_back(godot::Ref<BaristaScript>(base));
+	}
 	instance->members.resize(member_names.size());
 	self->instances.insert(instance);
 
@@ -404,6 +407,7 @@ godot::Variant BaristaScript::instantiate(const godot::Variant **p_arguments, in
 		return godot::Variant();
 	}
 	godot::gdextension_interface::object_set_script_instance(raw, handle);
+	owner->notification(godot::Object::NOTIFICATION_POSTINITIALIZE);
 	if (godot::RefCounted *ref_counted = godot::Object::cast_to<godot::RefCounted>(owner)) {
 		// `classdb_construct_object3` hands the extension the engine's initial reference. Capture it
 		// without incrementing once more; the returned Variant takes the reference it needs.

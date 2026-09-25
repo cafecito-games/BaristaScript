@@ -304,6 +304,25 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 			function->allows_freed_object_return = member.type == BSParser::ClassNode::Member::VARIABLE &&
 					member.variable->property == BSParser::VariableNode::PROP_INLINE &&
 					member.variable->getter == function_node;
+			if (member.type == BSParser::ClassNode::Member::VARIABLE) {
+				MethodInfo accessor;
+				accessor.name = function_node->identifier->name;
+				if (function_node->is_static) {
+					accessor.flags |= METHOD_FLAG_STATIC;
+				}
+				const StringName property_name = member.variable->identifier->name;
+				PropertyInfo property = member_slot_type(member.variable->get_datatype()).to_property_info(property_name);
+				if (member.variable->getter == function_node) {
+					property.name = StringName();
+					accessor.return_val = property;
+				} else if (member.variable->setter == function_node) {
+					property.name = member.variable->setter_parameter != nullptr
+							? member.variable->setter_parameter->name
+							: SNAME("value");
+					accessor.arguments.push_back(property);
+				}
+				function->method_info = accessor;
+			}
 			p_script->member_functions[function_node->identifier->name] = function;
 			p_script->member_function_order.push_back(function_node->identifier->name);
 		}

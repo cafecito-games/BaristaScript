@@ -6,12 +6,12 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
-#include "runtime_helpers.h"
 #include "bs_script_instance.h"
+#include "runtime_helpers.h"
 #include "test_require.h"
 
-#include <godot_cpp/core/object.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/core/object.hpp>
 
 using namespace barista_script;
 using namespace barista_script::native_tests;
@@ -156,6 +156,36 @@ TEST_SUITE("runtime_class") {
 		CHECK(int(value.get("hint", -1)) == PROPERTY_HINT_RANGE);
 		CHECK(String(value.get("hint_string", "")) == "0,20,1");
 		CHECK(String(Variant(owner).operator String()) == "accessor-instance");
+
+		const Dictionary getter = script->_get_method_info("@value_getter");
+		BS_TEST_REQUIRE(!getter.is_empty());
+		CHECK(StringName(getter.get("name", StringName())) == SNAME("@value_getter"));
+		CHECK(int(Dictionary(getter.get("return", Dictionary())).get("type", -1)) == Variant::INT);
+		const Dictionary setter = script->_get_method_info("@value_setter");
+		BS_TEST_REQUIRE(!setter.is_empty());
+		const Array setter_arguments = setter.get("args", Array());
+		BS_TEST_REQUIRE(setter_arguments.size() == 1);
+		CHECK(StringName(Dictionary(setter_arguments[0]).get("name", StringName())) == SNAME("next"));
+		CHECK(int(Dictionary(setter_arguments[0]).get("type", -1)) == Variant::INT);
+	}
+
+	TEST_CASE("script resources retain their ordinary Resource surface") {
+		const Ref<BaristaScript> script = compile_script(
+				"func path_property() -> String:\n"
+				"\treturn get_script().resource_path\n"
+				"func path_method() -> String:\n"
+				"\treturn get_script().get_path()\n"
+				"func rename_script() -> String:\n"
+				"\tget_script().resource_name = \"runtime-class-resource\"\n"
+				"\treturn get_script().resource_name\n",
+				"res://runtime_class/resource_surface.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->_can_instantiate(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		CHECK(owner->call("path_property") == Variant("res://runtime_class/resource_surface.barista"));
+		CHECK(owner->call("path_method") == Variant("res://runtime_class/resource_surface.barista"));
+		CHECK(owner->call("rename_script") == Variant("runtime-class-resource"));
 	}
 
 	TEST_CASE("an accessor can retain and release an object through its backing slot") {
@@ -276,6 +306,37 @@ TEST_SUITE("runtime_class") {
 		CHECK(child->get("middle_value") == Variant(2));
 		CHECK(child->get("child_value") == Variant(3));
 		CHECK(child->call("describe") == Variant("base-middle-child"));
+	}
+
+	TEST_CASE("constructed inner classes receive postinitialize and retain their base chain") {
+		Ref<RefCounted> child;
+		{
+			const Ref<BaristaScript> outer = compile_script(
+					"class Base extends RefCounted:\n"
+					"\tfunc describe() -> String:\n"
+					"\t\treturn \"base\"\n"
+					"class Child extends Base:\n"
+					"\tvar saw_postinitialize: bool = false\n"
+					"\tfunc _notification(what: int) -> void:\n"
+					"\t\tif what == NOTIFICATION_POSTINITIALIZE:\n"
+					"\t\t\tsaw_postinitialize = true\n"
+					"\tfunc describe() -> String:\n"
+					"\t\treturn super.describe() + \"-child\"\n"
+					"func make() -> Child:\n"
+					"\treturn Child.new()\n",
+					"res://runtime_class/retained_base.barista");
+			BS_TEST_REQUIRE(outer.is_valid() && outer->_can_instantiate());
+			const Ref<RefCounted> owner = attach(outer);
+			BS_TEST_REQUIRE(owner.is_valid());
+			const Variant result = owner->call("make");
+			Object *object = result;
+			child = Ref<RefCounted>(Object::cast_to<RefCounted>(object));
+			BS_TEST_REQUIRE(child.is_valid());
+			CHECK(child->get("saw_postinitialize") == Variant(true));
+		}
+
+		BS_TEST_REQUIRE(child.is_valid());
+		CHECK(child->call("describe") == Variant("base-child"));
 	}
 
 	TEST_CASE("an extracted inner class refuses a stale base with a named diagnostic") {

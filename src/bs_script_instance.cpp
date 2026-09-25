@@ -484,7 +484,8 @@ void BSInstance::notification(int p_what, bool p_reversed) {
 		return;
 	}
 	const Variant what = p_what;
-	const Variant *arguments[1] = { &what };
+	const Variant reversed = p_reversed;
+	const Variant *arguments[2] = { &what, &reversed };
 	Vector<BaristaScript *> chain;
 	for (BaristaScript *current = script.ptr(); current != nullptr; current = current->get_base_barista_script()) {
 		chain.push_back(current);
@@ -496,7 +497,8 @@ void BSInstance::notification(int p_what, bool p_reversed) {
 		BSFunction *const *function_ptr = chain[index]->member_functions.getptr(SNAME("_notification"));
 		if (function_ptr != nullptr && *function_ptr != nullptr) {
 			GDExtensionCallError error;
-			(*function_ptr)->call(this, arguments, 1, error);
+			BSFunction *function = *function_ptr;
+			function->call(this, arguments, function->get_argument_count() >= 2 ? 2 : 1, error);
 		}
 	}
 }
