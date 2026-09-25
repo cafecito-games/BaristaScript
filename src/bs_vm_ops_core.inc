@@ -12,12 +12,12 @@
 case OPCODE_LOAD_STATIC_SELF_CLASS: {
 	BS_CHECK_SPACE(2);
 	BS_GET_VARIANT_PTR(destination, 0);
-	if (unlikely(script == nullptr)) {
+	if (unlikely(static_receiver == nullptr)) {
 		error_text = "Cannot load Self without a declaring script.";
 		goto vm_error;
 	}
 	// Script class handles use the same weak ObjectID carrier as pooled named classes.
-	*destination = (int64_t)script->get_instance_id();
+	*destination = stack[ADDR_STACK_CLASS];
 	BS_IP += 2;
 } break;
 
@@ -123,8 +123,17 @@ case OPCODE_SET_NAMED: {
 	BS_GET_VARIANT_PTR(value, 1);
 	BS_GET_NAME(property, code_ptr[BS_IP + 3]);
 	bool valid = false;
-	destination->set_named(property, *value, valid);
+	String script_error;
+	if (BaristaScript *class_script = script_from_handle(*destination)) {
+		valid = class_script->set_static_property(property, *value, script_error);
+	} else {
+		destination->set_named(property, *value, valid);
+	}
 	if (unlikely(!valid)) {
+		if (!script_error.is_empty()) {
+			error_text = script_error;
+			goto vm_error;
+		}
 		if (value_is_read_only(*destination)) {
 			error_text = "Invalid assignment on read-only value (on base: '" + describe_value_type(*destination) + "').";
 		} else {
@@ -142,7 +151,12 @@ case OPCODE_GET_NAMED: {
 	BS_GET_VARIANT_PTR(destination, 1);
 	BS_GET_NAME(property, code_ptr[BS_IP + 3]);
 	bool valid = false;
-	const Variant result = source->get_named(property, valid);
+	Variant result;
+	if (BaristaScript *class_script = script_from_handle(*source)) {
+		valid = class_script->get_static_property(property, result);
+	} else {
+		result = source->get_named(property, valid);
+	}
 	if (unlikely(!valid)) {
 		error_text = "Invalid access to property or key '" + String(property) + "' on a base object of type '" +
 				describe_value_type(*source) + "'.";
@@ -270,8 +284,17 @@ case OPCODE_CALL_RETURN: {
 			base->get_validated_object() == p_instance->owner) {
 		own_function = p_instance->script->find_function(method);
 	}
-	if (own_function != nullptr) {
-		result = own_function->call(p_instance, const_cast<const Variant **>(instruction_argument_ptr), argument_count, call_error);
+	if (BaristaScript *class_script = script_from_handle(*base)) {
+		if (method == SNAME("new")) {
+			result = class_script->instantiate(const_cast<const Variant **>(instruction_argument_ptr), argument_count, call_error);
+		} else {
+			result = class_script->call_static(method, const_cast<const Variant **>(instruction_argument_ptr), argument_count,
+					call_error, class_script);
+		}
+	} else if (own_function != nullptr) {
+		result = own_function->call(own_function->is_static() ? nullptr : p_instance,
+				const_cast<const Variant **>(instruction_argument_ptr), argument_count, call_error,
+				own_function->is_static() ? p_instance->script.ptr() : nullptr);
 	} else {
 		base->callp(method, const_cast<const Variant **>(instruction_argument_ptr), argument_count, result, call_error);
 	}

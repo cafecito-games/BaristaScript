@@ -95,13 +95,21 @@ public:
 private:
 	String error;
 	int error_line = -1;
+	HashMap<const BSParser::ClassNode *, Ref<BaristaScript>> class_scripts;
+	HashSet<const BSParser::ClassNode *> compiled_classes;
+	HashSet<const BSParser::ClassNode *> compiling_classes;
 
 	void set_error(const String &p_message, const BSParser::Node *p_origin);
+	BaristaScript *find_static_owner(const BSParser::VariableNode *p_variable, int &r_index) const;
 
 	// Class members (glue lane).
 	Error compile_class(BaristaScript *p_script, const BSParser::ClassNode *p_class);
+	Error compile_class_tree(BaristaScript *p_root_script, const BSParser::ClassNode *p_root);
+	Error compile_registered_class(const BSParser::ClassNode *p_class);
+	void register_class_tree(const BSParser::ClassNode *p_class, const Ref<BaristaScript> &p_script);
 	Error resolve_base(BaristaScript *p_script, const BSParser::ClassNode *p_class);
 	Error compile_implicit_initializer(BaristaScript *p_script, const BSParser::ClassNode *p_class);
+	Error compile_static_initializer(BaristaScript *p_script, const BSParser::ClassNode *p_class);
 	Error compile_function(BaristaScript *p_script, const BSParser::ClassNode *p_class, const BSParser::FunctionNode *p_function, BSFunction **r_function);
 
 	// Statements (core lane).

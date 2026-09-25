@@ -631,13 +631,24 @@ void report_runtime_error_once(const String &p_description, const StringName &p_
 	bs_report_runtime_error(p_description, p_function, p_file, p_line);
 }
 
+BaristaScript *script_from_handle(const Variant &p_value) {
+	Object *object = nullptr;
+	if (p_value.get_type() == Variant::OBJECT) {
+		object = p_value.get_validated_object();
+	} else if (p_value.get_type() == Variant::INT) {
+		object = ObjectDB::get_instance((uint64_t)(int64_t)p_value);
+	}
+	return Object::cast_to<BaristaScript>(object);
+}
+
 } // namespace
 
 bool bs_runtime_error_was_reported() {
 	return runtime_error_reported;
 }
 
-Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, int p_argument_count, GDExtensionCallError &r_error) {
+Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, int p_argument_count,
+		GDExtensionCallError &r_error, BaristaScript *p_static_receiver) {
 	// A frame that raises tells its caller so. The engine-facing boundary translates that back into a
 	// completed call, because the reason is already on the script-error channel and a call error
 	// would be reported a second time as a method that does not exist.
@@ -686,7 +697,8 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	if (p_instance != nullptr && p_instance->owner != nullptr) {
 		stack.write[ADDR_STACK_SELF] = p_instance->owner;
 	}
-	stack.write[ADDR_STACK_CLASS] = script;
+	BaristaScript *static_receiver = p_static_receiver != nullptr ? p_static_receiver : script;
+	stack.write[ADDR_STACK_CLASS] = static_receiver != nullptr ? Variant((int64_t)static_receiver->get_instance_id()) : Variant();
 	for (int i = 0; i < p_argument_count && i < argument_count; i++) {
 		Variant converted;
 		String conversion_error;

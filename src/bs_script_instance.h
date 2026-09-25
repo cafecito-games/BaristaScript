@@ -60,6 +60,9 @@ public:
 	void notification(int p_what, bool p_reversed);
 	bool set_property(const StringName &p_name, const Variant &p_value);
 	bool get_property(const StringName &p_name, Variant &r_value) const;
+	bool validate_property(PropertyInfo &r_property);
+	bool property_can_revert(const StringName &p_name);
+	bool property_get_revert(const StringName &p_name, Variant &r_value);
 	bool has_method(const StringName &p_name) const;
 };
 

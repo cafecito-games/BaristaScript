@@ -49,13 +49,11 @@ const GDExtensionPropertyInfo *instance_get_property_list(GDExtensionScriptInsta
 	// has to outlive the call rather than live on this frame.
 	List<PropertyInfo> *properties = memnew(List<PropertyInfo>);
 	if (instance != nullptr && instance->script.is_valid()) {
-		const Vector<StringName> &names = instance->script->get_member_names();
-		for (int index = 0; index < names.size(); index++) {
-			const Variant::Type carrier = instance->script->get_member_carrier(index);
-			properties->push_back(PropertyInfo(carrier, names[index], PROPERTY_HINT_NONE, "",
-					carrier == Variant::NIL
-							? uint32_t(PROPERTY_USAGE_SCRIPT_VARIABLE | PROPERTY_USAGE_NIL_IS_VARIANT)
-							: uint32_t(PROPERTY_USAGE_SCRIPT_VARIABLE)));
+		const TypedArray<Dictionary> declared = instance->script->_get_script_property_list();
+		for (const Dictionary &entry : declared) {
+			PropertyInfo property = PropertyInfo::from_dict(entry);
+			instance->validate_property(property);
+			properties->push_back(property);
 		}
 	}
 	return godot::internal::create_c_property_list(properties, r_count);
@@ -72,26 +70,52 @@ GDExtensionBool instance_get_class_category(GDExtensionScriptInstanceDataPtr, GD
 
 GDExtensionVariantType instance_get_property_type(GDExtensionScriptInstanceDataPtr p_instance, GDExtensionConstStringNamePtr p_name, GDExtensionBool *r_is_valid) {
 	BSInstance *instance = instance_of(p_instance);
-	Variant value;
-	if (instance != nullptr && instance->get_property(*reinterpret_cast<const StringName *>(p_name), value)) {
+	if (instance != nullptr && instance->script.is_valid()) {
+		const int index = instance->script->get_member_index(*reinterpret_cast<const StringName *>(p_name));
+		const PropertyInfo *property = instance->script->get_member_property(index);
+		if (property == nullptr) {
+			*r_is_valid = false;
+			return GDEXTENSION_VARIANT_TYPE_NIL;
+		}
 		*r_is_valid = true;
-		return (GDExtensionVariantType)value.get_type();
+		return (GDExtensionVariantType)property->type;
 	}
 	*r_is_valid = false;
 	return GDEXTENSION_VARIANT_TYPE_NIL;
 }
 
-GDExtensionBool instance_validate_property(GDExtensionScriptInstanceDataPtr, GDExtensionPropertyInfo *) {
-	// No property is rewritten on its way to the inspector.
-	return false;
+GDExtensionBool instance_validate_property(GDExtensionScriptInstanceDataPtr p_instance, GDExtensionPropertyInfo *p_property) {
+	BSInstance *instance = instance_of(p_instance);
+	if (instance == nullptr || p_property == nullptr || !instance->has_method(SNAME("_validate_property")) ||
+			p_property->name == nullptr || p_property->class_name == nullptr || p_property->hint_string == nullptr) {
+		return false;
+	}
+	PropertyInfo property(p_property);
+	if (!instance->validate_property(property)) {
+		return false;
+	}
+	p_property->type = (GDExtensionVariantType)property.type;
+	*reinterpret_cast<StringName *>(p_property->name) = property.name;
+	*reinterpret_cast<StringName *>(p_property->class_name) = property.class_name;
+	p_property->hint = property.hint;
+	*reinterpret_cast<String *>(p_property->hint_string) = property.hint_string;
+	p_property->usage = property.usage;
+	return true;
 }
 
-GDExtensionBool instance_property_can_revert(GDExtensionScriptInstanceDataPtr, GDExtensionConstStringNamePtr) {
-	return false;
+GDExtensionBool instance_property_can_revert(GDExtensionScriptInstanceDataPtr p_instance, GDExtensionConstStringNamePtr p_name) {
+	BSInstance *instance = instance_of(p_instance);
+	return instance != nullptr && instance->property_can_revert(*reinterpret_cast<const StringName *>(p_name));
 }
 
-GDExtensionBool instance_property_get_revert(GDExtensionScriptInstanceDataPtr, GDExtensionConstStringNamePtr, GDExtensionVariantPtr) {
-	return false;
+GDExtensionBool instance_property_get_revert(GDExtensionScriptInstanceDataPtr p_instance, GDExtensionConstStringNamePtr p_name, GDExtensionVariantPtr r_value) {
+	BSInstance *instance = instance_of(p_instance);
+	Variant value;
+	if (instance == nullptr || !instance->property_get_revert(*reinterpret_cast<const StringName *>(p_name), value)) {
+		return false;
+	}
+	*reinterpret_cast<Variant *>(r_value) = value;
+	return true;
 }
 
 GDExtensionObjectPtr instance_get_owner(GDExtensionScriptInstanceDataPtr p_instance) {
@@ -112,36 +136,42 @@ void instance_get_property_state(GDExtensionScriptInstanceDataPtr p_instance, GD
 
 const GDExtensionMethodInfo *instance_get_method_list(GDExtensionScriptInstanceDataPtr p_instance, uint32_t *r_count) {
 	BSInstance *instance = instance_of(p_instance);
-	Vector<StringName> names;
-	Vector<int> argument_counts;
-	if (instance != nullptr && instance->script.is_valid()) {
-		instance->script->collect_method_signatures(names, argument_counts);
-	}
-	*r_count = (uint32_t)names.size();
-	if (names.is_empty()) {
+	const TypedArray<Dictionary> methods = instance != nullptr && instance->script.is_valid()
+			? instance->script->_get_script_method_list()
+			: TypedArray<Dictionary>();
+	*r_count = (uint32_t)methods.size();
+	if (methods.is_empty()) {
 		return nullptr;
 	}
-	GDExtensionMethodInfo *list = memnew_arr(GDExtensionMethodInfo, names.size());
-	for (int i = 0; i < names.size(); i++) {
+	GDExtensionMethodInfo *list = memnew_arr(GDExtensionMethodInfo, methods.size());
+	auto assign_property = [](GDExtensionPropertyInfo &r_target, const PropertyInfo &p_source) {
+		r_target = {};
+		r_target.type = (GDExtensionVariantType)p_source.type;
+		r_target.name = memnew(StringName(p_source.name));
+		r_target.class_name = memnew(StringName(p_source.class_name));
+		r_target.hint = p_source.hint;
+		r_target.hint_string = memnew(String(p_source.hint_string));
+		r_target.usage = p_source.usage;
+	};
+	for (int i = 0; i < methods.size(); i++) {
+		const MethodInfo method = MethodInfo::from_dict(methods[i]);
 		GDExtensionMethodInfo &entry = list[i];
 		entry = {};
-		entry.name = memnew(StringName(names[i]));
-		entry.return_value.type = GDEXTENSION_VARIANT_TYPE_NIL;
-		entry.return_value.name = memnew(StringName);
-		entry.return_value.class_name = memnew(StringName);
-		entry.return_value.hint_string = memnew(String);
-		entry.return_value.usage = PROPERTY_USAGE_NIL_IS_VARIANT;
-		entry.flags = METHOD_FLAG_NORMAL;
-		entry.argument_count = (uint32_t)argument_counts[i];
-		entry.arguments = argument_counts[i] > 0 ? memnew_arr(GDExtensionPropertyInfo, argument_counts[i]) : nullptr;
-		for (int argument = 0; argument < argument_counts[i]; argument++) {
-			GDExtensionPropertyInfo &info = entry.arguments[argument];
-			info = {};
-			info.type = GDEXTENSION_VARIANT_TYPE_NIL;
-			info.name = memnew(StringName(vformat("argument%d", argument)));
-			info.class_name = memnew(StringName);
-			info.hint_string = memnew(String);
-			info.usage = PROPERTY_USAGE_NIL_IS_VARIANT;
+		entry.name = memnew(StringName(method.name));
+		assign_property(entry.return_value, method.return_val);
+		entry.flags = method.flags;
+		entry.id = method.id;
+		entry.argument_count = (uint32_t)method.arguments.size();
+		entry.arguments = method.arguments.is_empty() ? nullptr : memnew_arr(GDExtensionPropertyInfo, method.arguments.size());
+		for (uint32_t argument = 0; argument < entry.argument_count; argument++) {
+			assign_property(entry.arguments[argument], method.arguments[argument]);
+		}
+		entry.default_argument_count = (uint32_t)method.default_arguments.size();
+		entry.default_arguments = method.default_arguments.is_empty()
+				? nullptr
+				: memnew_arr(GDExtensionVariantPtr, method.default_arguments.size());
+		for (uint32_t argument = 0; argument < entry.default_argument_count; argument++) {
+			entry.default_arguments[argument] = memnew(Variant(method.default_arguments[argument]));
 		}
 	}
 	return list;
@@ -164,6 +194,12 @@ void instance_free_method_list(GDExtensionScriptInstanceDataPtr, const GDExtensi
 		}
 		if (list[i].arguments != nullptr) {
 			memdelete_arr(list[i].arguments);
+		}
+		for (uint32_t argument = 0; argument < list[i].default_argument_count; argument++) {
+			memdelete(reinterpret_cast<Variant *>(list[i].default_arguments[argument]));
+		}
+		if (list[i].default_arguments != nullptr) {
+			memdelete_arr(list[i].default_arguments);
 		}
 	}
 	memdelete_arr(list);
@@ -212,8 +248,14 @@ void instance_to_string(GDExtensionScriptInstanceDataPtr p_instance, GDExtension
 		*r_is_valid = false;
 		return;
 	}
-	*reinterpret_cast<String *>(r_out) = vformat("[BaristaScript:%s]", instance->script->get_path());
-	*r_is_valid = true;
+	GDExtensionCallError error;
+	const Variant value = instance->call(SNAME("_to_string"), nullptr, 0, error);
+	if (error.error == GDEXTENSION_CALL_OK && value.get_type() == Variant::STRING) {
+		*reinterpret_cast<String *>(r_out) = value;
+		*r_is_valid = true;
+	} else {
+		*r_is_valid = false;
+	}
 }
 
 void instance_refcount_incremented(GDExtensionScriptInstanceDataPtr) {}
@@ -330,7 +372,8 @@ bool BSInstance::set_property(const StringName &p_name, const Variant &p_value) 
 	}
 	const int index = script->get_member_index(p_name);
 	if (index < 0 || index >= members.size()) {
-		return false;
+		String error;
+		return script->set_static_property(p_name, p_value, error);
 	}
 	// A store from outside a compiled function meets the same declaration a compiled store does: a
 	// declared carrier takes the value converted, or refuses it. Storing whatever arrived would let
@@ -340,6 +383,13 @@ bool BSInstance::set_property(const StringName &p_name, const Variant &p_value) 
 	const BSRuntimeType *type = script->get_member_type(index);
 	if (type == nullptr || !type->convert(p_value, converted, conversion_error, true)) {
 		return false;
+	}
+	const StringName &setter = script->get_member_setter(index);
+	if (setter != StringName()) {
+		const Variant *arguments[1] = { &converted };
+		GDExtensionCallError error;
+		call(setter, arguments, 1, error);
+		return error.error == GDEXTENSION_CALL_OK;
 	}
 	members.write[index] = converted;
 	return true;
@@ -351,10 +401,63 @@ bool BSInstance::get_property(const StringName &p_name, Variant &r_value) const 
 	}
 	const int index = script->get_member_index(p_name);
 	if (index < 0 || index >= members.size()) {
-		return false;
+		return script->get_static_property(p_name, r_value);
+	}
+	const StringName &getter = script->get_member_getter(index);
+	if (getter != StringName()) {
+		GDExtensionCallError error;
+		r_value = const_cast<BSInstance *>(this)->call(getter, nullptr, 0, error);
+		return error.error == GDEXTENSION_CALL_OK;
 	}
 	r_value = members[index];
 	return true;
+}
+
+bool BSInstance::validate_property(PropertyInfo &r_property) {
+	if (!has_method(SNAME("_validate_property"))) {
+		return false;
+	}
+	Dictionary dictionary = r_property;
+	const Variant argument = dictionary;
+	const Variant *arguments[1] = { &argument };
+	GDExtensionCallError error;
+	call(SNAME("_validate_property"), arguments, 1, error);
+	if (error.error == GDEXTENSION_CALL_OK) {
+		r_property = PropertyInfo::from_dict(dictionary);
+		return true;
+	}
+	return false;
+}
+
+bool BSInstance::property_can_revert(const StringName &p_name) {
+	if (has_method(SNAME("_property_can_revert"))) {
+		const Variant argument = p_name;
+		const Variant *arguments[1] = { &argument };
+		GDExtensionCallError error;
+		const Variant result = call(SNAME("_property_can_revert"), arguments, 1, error);
+		if (error.error == GDEXTENSION_CALL_OK && result.get_type() == Variant::BOOL && bool(result)) {
+			return true;
+		}
+	}
+	return script.is_valid() && script->_has_property_default_value(p_name);
+}
+
+bool BSInstance::property_get_revert(const StringName &p_name, Variant &r_value) {
+	if (has_method(SNAME("_property_get_revert"))) {
+		const Variant argument = p_name;
+		const Variant *arguments[1] = { &argument };
+		GDExtensionCallError error;
+		const Variant result = call(SNAME("_property_get_revert"), arguments, 1, error);
+		if (error.error == GDEXTENSION_CALL_OK && result.get_type() != Variant::NIL) {
+			r_value = result;
+			return true;
+		}
+	}
+	if (script.is_valid() && script->_has_property_default_value(p_name)) {
+		r_value = script->_get_property_default_value(p_name);
+		return true;
+	}
+	return false;
 }
 
 bool BSInstance::has_method(const StringName &p_name) const {
@@ -372,24 +475,30 @@ Variant BSInstance::call(const StringName &p_method, const Variant **p_arguments
 		r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
 		return Variant();
 	}
-	return function->call(this, p_arguments, p_argument_count, r_error);
+	return function->call(function->is_static() ? nullptr : this, p_arguments, p_argument_count, r_error,
+			function->is_static() ? script.ptr() : nullptr);
 }
 
 void BSInstance::notification(int p_what, bool p_reversed) {
 	if (script.is_null()) {
 		return;
 	}
-	// Godot delivers a notification to the whole script chain; `p_reversed` names the direction the
-	// engine walked it in, and is passed on unchanged so a script can tell the two apart.
-	BSFunction *function = script->find_function(SNAME("_notification"));
-	if (function == nullptr) {
-		return;
-	}
 	const Variant what = p_what;
-	const Variant reversed = p_reversed;
-	const Variant *arguments[2] = { &what, &reversed };
-	GDExtensionCallError error;
-	function->call(this, arguments, function->get_argument_count() >= 2 ? 2 : 1, error);
+	const Variant *arguments[1] = { &what };
+	Vector<BaristaScript *> chain;
+	for (BaristaScript *current = script.ptr(); current != nullptr; current = current->get_base_barista_script()) {
+		chain.push_back(current);
+	}
+	const int start = p_reversed ? 0 : chain.size() - 1;
+	const int end = p_reversed ? chain.size() : -1;
+	const int step = p_reversed ? 1 : -1;
+	for (int index = start; index != end; index += step) {
+		BSFunction *const *function_ptr = chain[index]->member_functions.getptr(SNAME("_notification"));
+		if (function_ptr != nullptr && *function_ptr != nullptr) {
+			GDExtensionCallError error;
+			(*function_ptr)->call(this, arguments, 1, error);
+		}
+	}
 }
 
 } // namespace barista_script
