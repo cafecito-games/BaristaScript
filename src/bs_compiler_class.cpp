@@ -234,13 +234,6 @@ Error BSCompiler::compile_function(BaristaScript *p_script, const BSParser::Clas
 				p_function);
 		return ERR_COMPILATION_FAILED;
 	}
-	if (p_function->is_vararg()) {
-		set_error(vformat(R"*(Cannot run "%s()": a rest parameter is not implemented.)*",
-						  String(p_function->identifier->name)),
-				p_function);
-		return ERR_COMPILATION_FAILED;
-	}
-
 	BSByteCodeGenerator generator;
 	CodeGen codegen;
 	codegen.generator = &generator;
@@ -265,6 +258,16 @@ Error BSCompiler::compile_function(BaristaScript *p_script, const BSParser::Clas
 		}
 		codegen.add_parameter(parameter->identifier->name, parameter->initializer != nullptr,
 				member_slot_type(parameter->get_datatype()));
+	}
+	if (p_function->rest_parameter != nullptr) {
+		const BSParser::ParameterNode *rest = p_function->rest_parameter;
+		const BSParser::DataType rest_type = member_slot_type(rest->get_datatype());
+		if (refuse_unchecked_slot(rest_type, vformat(R"(the rest parameter "%s")", String(rest->identifier->name)), rest)) {
+			return ERR_COMPILATION_FAILED;
+		}
+		const uint32_t address = generator.add_rest_parameter(rest->identifier->name, rest_type, rest_type);
+		codegen.parameters[rest->identifier->name] =
+				BSCodeGenerator::Address(BSCodeGenerator::Address::FUNCTION_PARAMETER, address, rest_type);
 	}
 
 	generator.start_parameters();

@@ -220,7 +220,6 @@
       "features/member_info_inheritance.barista",
       "features/named_call_argument_class_metatype_middle_gap.barista",
       "features/named_call_argument_middle_gap_static_default.barista",
-      "features/named_call_argument_rest_parameter.barista",
       "features/object_iterators.barista",
       "features/onready_base_before_subclass.barista",
       "features/parameter_shadowing.barista",

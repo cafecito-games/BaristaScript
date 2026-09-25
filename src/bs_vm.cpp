@@ -659,9 +659,14 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 		return Variant();
 	}
 
+	if (unlikely(argument_types.size() < argument_count || argument_types.size() > argument_count + 1)) {
+		report_runtime_error_once("Bad argument signature in compiled function.", name, source, initial_line);
+		return Variant();
+	}
+	const bool is_vararg = argument_types.size() == argument_count + 1;
 	const int optional_count = MAX(default_arguments.size() - 1, 0);
 	int default_argument_index = 0;
-	if (p_argument_count > argument_count) {
+	if (p_argument_count > argument_count && !is_vararg) {
 		r_error.error = GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
 		r_error.expected = argument_count;
 		return Variant();
@@ -671,7 +676,7 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 		r_error.expected = argument_count - optional_count;
 		return Variant();
 	}
-	default_argument_index = argument_count - p_argument_count;
+	default_argument_index = MAX(argument_count - p_argument_count, 0);
 
 	Vector<Variant> stack;
 	stack.resize(MAX(stack_size, (int)FIXED_ADDRESSES_MAX));
@@ -684,6 +689,15 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	stack.write[ADDR_STACK_CLASS] = script;
 	for (int i = 0; i < p_argument_count && i < argument_count; i++) {
 		stack.write[i + FIXED_ADDRESSES_MAX] = *p_arguments[i];
+	}
+	if (is_vararg) {
+		const int rest_count = MAX(p_argument_count - argument_count, 0);
+		Array rest;
+		rest.resize(rest_count);
+		for (int i = 0; i < rest_count; i++) {
+			rest[i] = *p_arguments[argument_count + i];
+		}
+		stack.write[argument_count + FIXED_ADDRESSES_MAX] = rest;
 	}
 
 	Variant *address_spaces[ADDR_TYPE_MAX] = {

@@ -103,6 +103,8 @@ public:
 	~BSByteCodeGenerator() override;
 
 	uint32_t add_parameter(const StringName &p_name, bool p_is_optional, const BSParser::DataType &p_slot_type, const BSParser::DataType &p_validation_type) override;
+	/** Adds the array slot that collects arguments beyond the fixed parameter list. */
+	uint32_t add_rest_parameter(const StringName &p_name, const BSParser::DataType &p_slot_type, const BSParser::DataType &p_validation_type);
 	uint32_t add_local(const StringName &p_name, const BSParser::DataType &p_type) override;
 	uint32_t add_local_constant(const StringName &p_name, const Variant &p_constant) override;
 	uint32_t add_or_get_constant(const Variant &p_constant) override;
