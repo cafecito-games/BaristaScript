@@ -264,6 +264,7 @@ TEST_SUITE("runtime_types") {
 		const Ref<BaristaScript> script = compile_script(
 				"var numbers: Array[int] = [1]\n"
 				"var lookup: Dictionary[String, int] = {\"one\": 1}\n"
+				"var nullable_lookup: Dictionary[int?, int] = {}\n"
 				"\n"
 				"func build(value: Variant) -> Array:\n"
 				"\tvar made: Array[int] = [value]\n"
@@ -292,7 +293,13 @@ TEST_SUITE("runtime_types") {
 				"\tself.numbers = value\n"
 				"\n"
 				"func replace_lookup(value: Variant) -> void:\n"
-				"\tself.lookup = value\n",
+				"\tself.lookup = value\n"
+				"\n"
+				"func write_nullable_lookup(key: Variant, value: Variant) -> void:\n"
+				"\tself.nullable_lookup[key] = value\n"
+				"\n"
+				"func set_nullable_lookup(key: Variant, value: Variant) -> void:\n"
+				"\tself.nullable_lookup.set(key, value)\n",
 				"res://runtime_types/containers.barista");
 		BS_TEST_REQUIRE(script.is_valid());
 		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
@@ -324,6 +331,20 @@ TEST_SUITE("runtime_types") {
 		owner->set("numbers", erased_property);
 		CHECK(Array(owner->get("numbers")).is_typed());
 		CHECK(Array(owner->get("numbers"))[0] == Variant(6));
+		owner->call("write_nullable_lookup", 1, 2);
+		owner->call("set_nullable_lookup", Variant(), 3);
+		CHECK(Dictionary(owner->get("nullable_lookup")).size() == 2);
+		CHECK(Dictionary(owner->get("nullable_lookup"))[1] == Variant(2));
+		CHECK(Dictionary(owner->get("nullable_lookup"))[Variant()] == Variant(3));
+		{
+			RuntimeErrorScope keyed_errors;
+			owner->call("write_nullable_lookup", "wrong", 4);
+			owner->call("write_nullable_lookup", 2, "wrong");
+			owner->call("set_nullable_lookup", "wrong", 4);
+			owner->call("set_nullable_lookup", 2, "wrong");
+			CHECK_MESSAGE(keyed_errors.errors().size() == 4, readable(keyed_errors.joined()));
+			CHECK(Dictionary(owner->get("nullable_lookup")).size() == 2);
+		}
 		owner->call("replace_numbers", erased_good);
 		owner->call("replace_lookup", erased_good_dictionary);
 		CHECK(Array(owner->get("numbers"))[0] == Variant(3));

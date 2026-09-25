@@ -476,7 +476,10 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 			const int checked_count = MIN(arguments.size(), p_call->resolved_parameter_types.size());
 			for (int i = 0; i < checked_count; i++) {
 				const BSParser::DataType parameter_type = member_slot_type(p_call->resolved_parameter_types[i]);
-				if (!slot_needs_runtime_descriptor_check(parameter_type)) {
+				// A nullable or otherwise unrepresentable element erases the whole container's
+				// engine metadata. Validate every specialized mutation parameter, including plain
+				// builtin siblings whose carrier would otherwise have provided the check.
+				if (parameter_type.is_variant()) {
 					continue;
 				}
 				const BSCodeGenerator::Address checked = p_codegen.add_temporary(parameter_type);
@@ -607,10 +610,22 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 				return BSCodeGenerator::Address();
 			}
 			BSCodeGenerator::Address index;
+			BSCodeGenerator::Address unchecked_index;
 			if (!subscript->is_attribute) {
 				index = parse_expression(p_codegen, r_error, subscript->index);
 				if (r_error != OK) {
 					return BSCodeGenerator::Address();
+				}
+				const BSParser::DataType base_type = member_slot_type(subscript->base->get_datatype());
+				if (base_type.kind == BSParser::DataType::BUILTIN &&
+						base_type.builtin_type == Variant::DICTIONARY && base_type.has_container_element_types()) {
+					// Stock Dictionary metadata is all-or-nothing. If either declared side is not
+					// representable (for example `int?`), the carrier is erased, so validate the key
+					// explicitly before both compound reads and the final write.
+					unchecked_index = index;
+					const BSParser::DataType key_type = member_slot_type(base_type.get_container_element_type_or_variant(0));
+					index = p_codegen.add_temporary(key_type);
+					generator->write_assign_with_conversion(index, unchecked_index);
 				}
 			}
 			const BSCodeGenerator::Address value = parse_expression(p_codegen, r_error, p_assignment->assigned_value);
@@ -632,7 +647,10 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 			}
 			BSCodeGenerator::Address unchecked_stored;
 			const BSParser::DataType element_type = member_slot_type(assignee->get_datatype());
-			if (!subscript->is_attribute && slot_needs_runtime_descriptor_check(element_type)) {
+			const BSParser::DataType base_type = member_slot_type(subscript->base->get_datatype());
+			const bool typed_dictionary = base_type.kind == BSParser::DataType::BUILTIN &&
+					base_type.builtin_type == Variant::DICTIONARY && base_type.has_container_element_types();
+			if (!subscript->is_attribute && (typed_dictionary || slot_needs_runtime_descriptor_check(element_type))) {
 				unchecked_stored = stored;
 				stored = p_codegen.add_temporary(element_type);
 				if (element_type.kind == BSParser::DataType::BUILTIN &&
@@ -660,6 +678,9 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 				generator->pop_temporary();
 			}
 			if (index.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			if (unchecked_index.mode == BSCodeGenerator::Address::TEMPORARY) {
 				generator->pop_temporary();
 			}
 			if (base.mode == BSCodeGenerator::Address::TEMPORARY) {
