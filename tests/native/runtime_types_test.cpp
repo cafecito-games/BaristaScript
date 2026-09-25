@@ -307,9 +307,8 @@ TEST_SUITE("runtime_types") {
 
 	TEST_CASE("reserved D1 numeric spellings never reach a runtime descriptor") {
 		for (const String &spelling : { String("uint"), String("long"), String("ulong") }) {
-			const Ref<BaristaScript> script = compile_script(
-					"func rejected(value: " + spelling + "):\n"
-					"\tpass\n",
+			const String source = "func rejected(value: " + spelling + "):\n\tpass\n";
+			const Ref<BaristaScript> script = compile_script(source,
 					"res://runtime_types/reserved_" + spelling + ".barista");
 			BS_TEST_REQUIRE(script.is_valid());
 			CHECK_FALSE(script->_can_instantiate());
