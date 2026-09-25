@@ -115,6 +115,14 @@ uint32_t BSByteCodeGenerator::add_parameter(const StringName &p_name, bool p_is_
 	return add_local(p_name, p_slot_type);
 }
 
+uint32_t BSByteCodeGenerator::add_rest_parameter(const StringName &p_name, const BSParser::DataType &p_slot_type, const BSParser::DataType &p_validation_type) {
+	// `argument_count` is the number of fixed arguments accepted before a tail is collected. One
+	// additional type entry records that this function has a rest slot without adding a field to the
+	// frozen BSFunction layout or changing the abstract code-generator interface.
+	function->argument_types.push_back(p_validation_type);
+	return add_local(p_name, p_slot_type);
+}
+
 uint32_t BSByteCodeGenerator::add_local(const StringName &p_name, const BSParser::DataType &p_type) {
 	const int stack_position = locals.size() + BSFunction::FIXED_ADDRESSES_MAX;
 	check_address_fits(stack_position, "stack slots");

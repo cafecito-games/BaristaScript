@@ -794,6 +794,72 @@ TEST_SUITE("runtime_expressions") {
 		CHECK_FALSE(errors.errors().is_empty());
 	}
 
+	TEST_CASE("default arguments evaluate only for omitted parameters") {
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"var evaluations := 0\n"
+				"\n"
+				"func next_default():\n"
+				"\tevaluations += 1\n"
+				"\treturn evaluations\n"
+				"\n"
+				"func collect(first = next_default(), second = first + 10):\n"
+				"\treturn [first, second]\n"
+				"\n"
+				"func test():\n"
+				"\tvar explicit = collect(7, 8)\n"
+				"\tvar after_explicit := evaluations\n"
+				"\tvar one_default = collect(4)\n"
+				"\tvar after_one_default := evaluations\n"
+				"\tvar all_defaults = collect()\n"
+				"\treturn [explicit, after_explicit, one_default, after_one_default, all_defaults, evaluations]\n",
+				"res://runtime_expressions/default_arguments.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array values = result;
+		BS_TEST_REQUIRE(values.size() == 6);
+		CHECK(values[0] == Variant(Array::make(7, 8)));
+		CHECK(values[1] == Variant(0));
+		CHECK(values[2] == Variant(Array::make(4, 14)));
+		CHECK(values[3] == Variant(0));
+		CHECK(values[4] == Variant(Array::make(1, 11)));
+		CHECK(values[5] == Variant(1));
+	}
+
+	TEST_CASE("a rest parameter collects only the arguments beyond the fixed parameters") {
+		Ref<BaristaScript> script;
+		const Variant result = run_test_function(
+				"func collect(first = 1, ...rest: Array):\n"
+				"\treturn [first, rest]\n"
+				"\n"
+				"func test():\n"
+				"\treturn [collect(), collect(2), collect(2, 3), collect(2, 3, 4)]\n",
+				"res://runtime_expressions/rest_arguments.barista", script);
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		const Array calls = result;
+		BS_TEST_REQUIRE(calls.size() == 4);
+		CHECK(calls[0] == Variant(Array::make(1, Array())));
+		CHECK(calls[1] == Variant(Array::make(2, Array())));
+		CHECK(calls[2] == Variant(Array::make(2, Array::make(3))));
+		CHECK(calls[3] == Variant(Array::make(2, Array::make(3, 4))));
+	}
+
+	TEST_CASE("a rest function refuses a call that cannot satisfy its fixed parameters") {
+		const Ref<BaristaScript> script = compile_script(
+				"func collect(required, ...rest: Array):\n"
+				"\treturn [required, rest]\n",
+				"res://runtime_expressions/rest_too_few.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
+		BSFunction *function = script->find_function(SNAME("collect"));
+		BS_TEST_REQUIRE(function != nullptr);
+		GDExtensionCallError error;
+		function->call(nullptr, nullptr, 0, error);
+		CHECK(error.error == GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS);
+		CHECK(error.expected == 1);
+	}
+
 	TEST_CASE("compiling the same source twice produces the same code") {
 		// Idempotency is what makes a compiled function comparable at all: a pooled temporary or a
 		// constant index that depended on iteration order would make two compilations of one source
