@@ -30,6 +30,7 @@ void BaristaScript::release_compiled_state() {
 	base_script = godot::Ref<BaristaScript>();
 	member_names.clear();
 	member_carriers.clear();
+	member_types.clear();
 	member_indices.clear();
 	for (const godot::KeyValue<godot::StringName, BSFunction *> &entry : member_functions) {
 		memdelete(entry.value);

@@ -14,37 +14,32 @@
 namespace barista_script {
 
 BSParser::DataType BSCompiler::member_slot_type(const BSParser::DataType &p_type) {
-	// The runtime reads a slot type's carrier and its native class name only. A class pointer is
-	// owned by the parse tree, which does not outlive the compilation, so it is never carried into a
-	// compiled function.
-	BSParser::DataType slot;
-	slot.kind = p_type.kind;
-	slot.type_source = p_type.type_source;
-	slot.builtin_type = p_type.builtin_type;
-	slot.native_type = p_type.native_type;
-	slot.is_nullable = p_type.is_nullable;
-	if (p_type.kind == BSParser::DataType::CLASS || p_type.kind == BSParser::DataType::SCRIPT) {
-		// A script-typed slot loses its identity here, because the identity is a pointer into a parse
-		// tree that does not outlive the compilation. The slot therefore accepts any value: the
-		// script-identity check the declaration asks for is NOT enforced at run time. The type model
-		// is what restores it, by carrying an identity the compiled function can own.
-		slot.kind = BSParser::DataType::VARIANT;
-	}
-	return slot;
+	// Addresses exist only while this parser generation is being compiled. Keeping the analyzed
+	// shape here lets the emitter lower it into a BSRuntimeType -- which records a stable weak script
+	// identity and owns all nested container descriptors -- before the parser can be released. No
+	// DataType is retained by BSFunction after write_end().
+	return p_type;
 }
 
 bool BSCompiler::slot_is_checkable(const BSParser::DataType &p_slot) {
-	// A value stored into a slot is checked against the slot's carrier, against its native class, or
-	// not at all when the slot is untyped. A tuple, a union, an enum or a type parameter is none of
-	// those: the writers that would check them exist and refuse, and nothing may reach a slot that
-	// would accept anything while claiming to be checked.
-	//
-	// A builtin carrier is checked exactly; a native class is checked by class identity. What a
-	// container slot says about its *elements* is not checked -- `Array[int]` is an `Array` here --
-	// and neither is the script identity of a `CLASS`/`SCRIPT` slot, which `member_slot_type` erases
-	// above. Both are recorded in docs/runtime.md rather than implied by this list.
 	return p_slot.is_variant() || p_slot.kind == BSParser::DataType::BUILTIN ||
-			p_slot.kind == BSParser::DataType::NATIVE;
+			p_slot.kind == BSParser::DataType::NATIVE || p_slot.kind == BSParser::DataType::CLASS ||
+			p_slot.kind == BSParser::DataType::SCRIPT ||
+			(p_slot.kind == BSParser::DataType::TYPE_PARAMETER &&
+					p_slot.type_parameter_name == SNAME("@Self") && p_slot.type_parameter_bound.size() == 1) ||
+			(p_slot.kind == BSParser::DataType::ENUM && !p_slot.is_tagged_union);
+}
+
+bool BSCompiler::slot_needs_runtime_descriptor_check(const BSParser::DataType &p_slot) {
+	if (p_slot.is_type_handle_annotation || p_slot.is_meta_type) {
+		return true;
+	}
+	if (p_slot.kind == BSParser::DataType::BUILTIN && p_slot.is_nullable) {
+		return true;
+	}
+	return p_slot.kind == BSParser::DataType::BUILTIN &&
+			(p_slot.builtin_type == Variant::ARRAY || p_slot.builtin_type == Variant::DICTIONARY) &&
+			p_slot.has_container_element_types();
 }
 
 bool BSCompiler::refuse_unchecked_slot(const BSParser::DataType &p_slot, const String &p_subject, const BSParser::Node *p_origin) {

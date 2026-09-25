@@ -189,6 +189,8 @@ private:
 	static BSParser::DataType member_slot_type(const BSParser::DataType &p_type);
 	/** Whether a lowered slot type is one the runtime can check a stored value against. */
 	static bool slot_is_checkable(const BSParser::DataType &p_slot);
+	/** Whether stock Variant metadata loses part of this slot's declaration. */
+	static bool slot_needs_runtime_descriptor_check(const BSParser::DataType &p_slot);
 	/** Refuses a slot the runtime cannot check, naming what declared it. */
 	bool refuse_unchecked_slot(const BSParser::DataType &p_slot, const String &p_subject, const BSParser::Node *p_origin);
 };

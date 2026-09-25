@@ -169,38 +169,6 @@ case OPCODE_ASSIGN_FALSE: {
 	BS_IP += 2;
 } break;
 
-case OPCODE_ASSIGN_TYPED_BUILTIN: {
-	BS_CHECK_SPACE(4);
-	BS_GET_VARIANT_PTR(destination, 0);
-	BS_GET_VARIANT_PTR(source, 1);
-	const int operand = code_ptr[BS_IP + 3];
-	const bool nullable = (operand & NULLABLE_TYPE_OPERAND_FLAG) != 0;
-	const Variant::Type target_type = (Variant::Type)(operand & ~NULLABLE_TYPE_OPERAND_FLAG);
-	if (nullable && source->get_type() == Variant::NIL) {
-		*destination = Variant();
-	} else if (source->get_type() == target_type) {
-		*destination = *source;
-	} else if (Variant::can_convert_strict(source->get_type(), target_type)) {
-		GDExtensionCallError construct_error;
-		construct_error.error = GDEXTENSION_CALL_OK;
-		const Variant *construct_arguments[1] = { source };
-		Variant converted;
-		godot::gdextension_interface::variant_construct((GDExtensionVariantType)target_type, &converted,
-				reinterpret_cast<const GDExtensionConstVariantPtr *>(construct_arguments), 1, &construct_error);
-		if (unlikely(construct_error.error != GDEXTENSION_CALL_OK)) {
-			error_text = vformat(R"(Cannot convert a value of type "%s" to "%s".)",
-					Variant::get_type_name(source->get_type()), Variant::get_type_name(target_type));
-			goto vm_error;
-		}
-		*destination = converted;
-	} else {
-		error_text = vformat(R"(Cannot assign a value of type "%s" to a slot of type "%s".)",
-				Variant::get_type_name(source->get_type()), Variant::get_type_name(target_type));
-		goto vm_error;
-	}
-	BS_IP += 4;
-} break;
-
 case OPCODE_CONSTRUCT: {
 	BS_LOAD_INSTRUCTION_ARGUMENTS
 	BS_IP += instruction_argument_count;

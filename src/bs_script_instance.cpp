@@ -335,21 +335,10 @@ bool BSInstance::set_property(const StringName &p_name, const Variant &p_value) 
 	// A store from outside a compiled function meets the same declaration a compiled store does: a
 	// declared carrier takes the value converted, or refuses it. Storing whatever arrived would let
 	// the inspector or a scene put a value in a slot the script's own code cannot produce.
-	const Variant::Type carrier = script->get_member_carrier(index);
-	if (carrier == Variant::NIL || p_value.get_type() == carrier) {
-		members.write[index] = p_value;
-		return true;
-	}
-	if (!Variant::can_convert_strict(p_value.get_type(), carrier)) {
-		return false;
-	}
-	GDExtensionCallError conversion_error;
-	conversion_error.error = GDEXTENSION_CALL_OK;
-	const Variant *arguments[1] = { &p_value };
 	Variant converted;
-	godot::gdextension_interface::variant_construct((GDExtensionVariantType)carrier, &converted,
-			reinterpret_cast<const GDExtensionConstVariantPtr *>(arguments), 1, &conversion_error);
-	if (conversion_error.error != GDEXTENSION_CALL_OK) {
+	String conversion_error;
+	const BSRuntimeType *type = script->get_member_type(index);
+	if (type == nullptr || !type->convert(p_value, converted, conversion_error)) {
 		return false;
 	}
 	members.write[index] = converted;

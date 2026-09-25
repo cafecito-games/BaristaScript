@@ -42,6 +42,28 @@ BSCodeGenerator::Address BSCompiler::parse_identifier(CodeGen &p_codegen, Error 
 		p_codegen.generator->write_store_global(target, BSCoreConstants::get_global_constant_index(name), name);
 		return target;
 	}
+	if (p_identifier->source == BSParser::IdentifierNode::NATIVE_CLASS &&
+			p_identifier->get_datatype().is_meta_type) {
+		// Stock Godot exposes no native-class handle object through GDExtension. The language keeps
+		// the class name as its private handle value; construction/static dispatch already carry the
+		// same name directly in their opcodes, and Type[T] descriptors recognize this representation.
+		return p_codegen.add_constant(StringName(name));
+	}
+	if (p_identifier->source == BSParser::IdentifierNode::STATIC_SELF_CLASS) {
+		const BSCodeGenerator::Address target = p_codegen.add_temporary(member_slot_type(p_identifier->get_datatype()));
+		p_codegen.generator->write_load_static_self_class(target);
+		return target;
+	}
+	if (p_identifier->get_datatype().is_meta_type &&
+			p_identifier->get_datatype().kind == BSParser::DataType::CLASS &&
+			p_identifier->get_datatype().class_type == p_codegen.class_node && p_codegen.script != nullptr) {
+		return p_codegen.add_constant(Ref<Script>(p_codegen.script));
+	}
+	if (p_identifier->get_datatype().is_meta_type &&
+			p_identifier->get_datatype().kind == BSParser::DataType::SCRIPT &&
+			p_identifier->get_datatype().script_type.is_valid()) {
+		return p_codegen.add_constant(p_identifier->get_datatype().script_type);
+	}
 	// The only remaining reading that has a lowering is a property the native base declares, which
 	// the owner object answers. Every other classification -- a signal, an inner class, a method
 	// used as a value, a static variable -- would silently become a property read that returns null,
@@ -76,16 +98,17 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 	const Variant::Type reduced_type = p_expression->reduced_value.get_type();
 	const bool writes_a_container_site = p_expression->type == BSParser::Node::ARRAY ||
 			p_expression->type == BSParser::Node::DICTIONARY || p_expression->type == BSParser::Node::CALL;
-	// A folded container that already carries element typing is not a value the runtime can rebuild:
-	// the typed-container writers are #246's, so reconstructing it from its elements would silently
-	// hand the program an untyped container where the analyzer converted one. Such a value keeps the
-	// constant pool until those writers exist; only a container the emitters can reproduce exactly is
-	// rebuilt at each evaluation.
+	// Array and dictionary literals are always rebuildable now that the typed-container writers carry
+	// their complete element descriptors. A folded call result is rebuildable only when it is untyped:
+	// replaying the call is what preserves any richer runtime metadata that the literal writers cannot
+	// infer from the call node itself.
 	bool rebuildable_container = false;
 	if (reduced_type == Variant::ARRAY) {
-		rebuildable_container = !((Array)p_expression->reduced_value).is_typed();
+		rebuildable_container = p_expression->type == BSParser::Node::ARRAY ||
+				!((Array)p_expression->reduced_value).is_typed();
 	} else if (reduced_type == Variant::DICTIONARY) {
-		rebuildable_container = !((Dictionary)p_expression->reduced_value).is_typed();
+		rebuildable_container = p_expression->type == BSParser::Node::DICTIONARY ||
+				!((Dictionary)p_expression->reduced_value).is_typed();
 	}
 	const bool produces_fresh_container = rebuildable_container && writes_a_container_site;
 	if (p_expression->is_constant && reduced_type != Variant::OBJECT && !produces_fresh_container &&
@@ -111,7 +134,8 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 
 		case BSParser::Node::ARRAY: {
 			const BSParser::ArrayNode *node = static_cast<const BSParser::ArrayNode *>(p_expression);
-			const BSCodeGenerator::Address result = p_codegen.add_temporary(member_slot_type(node->get_datatype()));
+			const BSParser::DataType result_type = member_slot_type(node->get_datatype());
+			const BSCodeGenerator::Address result = p_codegen.add_temporary(result_type);
 			Vector<BSCodeGenerator::Address> elements;
 			elements.resize(node->elements.size());
 			for (int i = 0; i < elements.size(); i++) {
@@ -120,7 +144,12 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 					return BSCodeGenerator::Address();
 				}
 			}
-			generator->write_construct_array(result, elements);
+			if (result_type.kind == BSParser::DataType::BUILTIN && result_type.builtin_type == Variant::ARRAY &&
+					result_type.has_container_element_type(0)) {
+				generator->write_construct_typed_array(result, result_type.get_container_element_type(0), elements);
+			} else {
+				generator->write_construct_array(result, elements);
+			}
 			for (int i = elements.size() - 1; i >= 0; i--) {
 				if (elements[i].mode == BSCodeGenerator::Address::TEMPORARY) {
 					generator->pop_temporary();
@@ -131,7 +160,8 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 
 		case BSParser::Node::DICTIONARY: {
 			const BSParser::DictionaryNode *node = static_cast<const BSParser::DictionaryNode *>(p_expression);
-			const BSCodeGenerator::Address result = p_codegen.add_temporary(member_slot_type(node->get_datatype()));
+			const BSParser::DataType result_type = member_slot_type(node->get_datatype());
+			const BSCodeGenerator::Address result = p_codegen.add_temporary(result_type);
 			Vector<BSCodeGenerator::Address> entries;
 			for (const BSParser::DictionaryNode::Pair &pair : node->elements) {
 				const BSCodeGenerator::Address key = parse_expression(p_codegen, r_error, pair.key);
@@ -145,7 +175,14 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 				entries.push_back(key);
 				entries.push_back(value);
 			}
-			generator->write_construct_dictionary(result, entries);
+			if (result_type.kind == BSParser::DataType::BUILTIN && result_type.builtin_type == Variant::DICTIONARY &&
+					result_type.has_container_element_types()) {
+				generator->write_construct_typed_dictionary(result,
+						result_type.get_container_element_type_or_variant(0),
+						result_type.get_container_element_type_or_variant(1), entries);
+			} else {
+				generator->write_construct_dictionary(result, entries);
+			}
 			for (int i = entries.size() - 1; i >= 0; i--) {
 				if (entries[i].mode == BSCodeGenerator::Address::TEMPORARY) {
 					generator->pop_temporary();
@@ -422,6 +459,36 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 		}
 		arguments.write[index] = argument;
 	}
+	if (p_call->get_callee_type() == BSParser::Node::SUBSCRIPT) {
+		const BSParser::SubscriptNode *callee = static_cast<const BSParser::SubscriptNode *>(p_call->callee);
+		const BSParser::DataType receiver_type = callee->base != nullptr
+				? member_slot_type(callee->base->get_datatype())
+				: BSParser::DataType();
+		const bool typed_container_receiver = receiver_type.kind == BSParser::DataType::BUILTIN &&
+				(receiver_type.builtin_type == Variant::ARRAY || receiver_type.builtin_type == Variant::DICTIONARY) &&
+				receiver_type.has_container_element_types();
+		if (typed_container_receiver) {
+			const int checked_count = MIN(arguments.size(), p_call->resolved_parameter_types.size());
+			for (int i = 0; i < checked_count; i++) {
+				const BSParser::DataType parameter_type = member_slot_type(p_call->resolved_parameter_types[i]);
+				if (!slot_needs_runtime_descriptor_check(parameter_type)) {
+					continue;
+				}
+				const BSCodeGenerator::Address checked = p_codegen.add_temporary(parameter_type);
+				if (parameter_type.kind == BSParser::DataType::BUILTIN &&
+						parameter_type.builtin_type == Variant::ARRAY) {
+					generator->write_assign_typed_array_convert(checked, arguments[i]);
+				} else if (parameter_type.kind == BSParser::DataType::BUILTIN &&
+						parameter_type.builtin_type == Variant::DICTIONARY) {
+					generator->write_assign_typed_dictionary_convert(checked, arguments[i]);
+				} else {
+					generator->write_assign_with_conversion(checked, arguments[i]);
+				}
+				arguments.write[i] = checked;
+				argument_temporaries++;
+			}
+		}
+	}
 
 	if (p_call->is_super) {
 		generator->write_super_call(result, p_call->function_name, arguments);
@@ -558,12 +625,30 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 				generator->pop_temporary();
 				stored = combined;
 			}
+			BSCodeGenerator::Address unchecked_stored;
+			const BSParser::DataType element_type = member_slot_type(assignee->get_datatype());
+			if (!subscript->is_attribute && slot_needs_runtime_descriptor_check(element_type)) {
+				unchecked_stored = stored;
+				stored = p_codegen.add_temporary(element_type);
+				if (element_type.kind == BSParser::DataType::BUILTIN &&
+						element_type.builtin_type == Variant::ARRAY) {
+					generator->write_assign_typed_array_convert(stored, unchecked_stored);
+				} else if (element_type.kind == BSParser::DataType::BUILTIN &&
+						element_type.builtin_type == Variant::DICTIONARY) {
+					generator->write_assign_typed_dictionary_convert(stored, unchecked_stored);
+				} else {
+					generator->write_assign_with_conversion(stored, unchecked_stored);
+				}
+			}
 			if (subscript->is_attribute) {
 				generator->write_set_named(base, subscript->attribute->name, stored);
 			} else {
 				generator->write_set(base, index, stored);
 			}
 			if (stored.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			if (unchecked_stored.mode == BSCodeGenerator::Address::TEMPORARY) {
 				generator->pop_temporary();
 			}
 			if (has_operation && value.mode == BSCodeGenerator::Address::TEMPORARY) {

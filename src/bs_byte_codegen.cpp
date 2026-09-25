@@ -100,6 +100,23 @@ int BSByteCodeGenerator::get_lambda_position(BSFunction *p_lambda) {
 	return lambda_table.size() - 1;
 }
 
+int BSByteCodeGenerator::get_runtime_type_position(const BSParser::DataType &p_type) {
+	BSRuntimeType runtime_type;
+	String lowering_error;
+	if (!BSRuntimeType::from_data_type(p_type, function != nullptr ? function->script : nullptr,
+				runtime_type, lowering_error)) {
+		refuse(lowering_error);
+		runtime_type = BSRuntimeType();
+	}
+	for (int i = 0; i < function->runtime_types.size(); i++) {
+		if (function->runtime_types[i] == runtime_type) {
+			return i;
+		}
+	}
+	function->runtime_types.push_back(runtime_type);
+	return function->runtime_types.size() - 1;
+}
+
 void BSByteCodeGenerator::append_opcode_and_argument_count(BSFunction::Opcode p_code, int p_argument_count) {
 	opcodes.push_back(p_code);
 	opcodes.push_back(p_argument_count);
@@ -108,7 +125,8 @@ void BSByteCodeGenerator::append_opcode_and_argument_count(BSFunction::Opcode p_
 
 uint32_t BSByteCodeGenerator::add_parameter(const StringName &p_name, bool p_is_optional, const BSParser::DataType &p_slot_type, const BSParser::DataType &p_validation_type) {
 	function->argument_count++;
-	function->argument_types.push_back(p_validation_type);
+	const int type_index = get_runtime_type_position(p_validation_type);
+	function->argument_types.push_back(function->runtime_types[type_index]);
 	if (p_is_optional) {
 		optional_parameter_count++;
 	}
@@ -119,7 +137,8 @@ uint32_t BSByteCodeGenerator::add_rest_parameter(const StringName &p_name, const
 	// `argument_count` is the number of fixed arguments accepted before a tail is collected. One
 	// additional type entry records that this function has a rest slot without adding a field to the
 	// frozen BSFunction layout or changing the abstract code-generator interface.
-	function->argument_types.push_back(p_validation_type);
+	const int type_index = get_runtime_type_position(p_validation_type);
+	function->argument_types.push_back(function->runtime_types[type_index]);
 	return add_local(p_name, p_slot_type);
 }
 
@@ -202,7 +221,15 @@ void BSByteCodeGenerator::clear_address(const Address &p_address) {
 	// Clearing gives the slot a value of its own carrier: a declared `int` that was never assigned
 	// has to read back as 0, not as the cheap placeholder an untyped slot can take. A pooled
 	// temporary keeps the carrier its pool entry was taken for.
-	if (p_address.type.kind == BSParser::DataType::BUILTIN && p_address.type.builtin_type != Variant::NIL) {
+	if (p_address.type.kind == BSParser::DataType::BUILTIN &&
+			p_address.type.builtin_type == Variant::ARRAY && p_address.type.has_container_element_type(0)) {
+		write_construct_typed_array(p_address, p_address.type.get_container_element_type(0), {});
+	} else if (p_address.type.kind == BSParser::DataType::BUILTIN &&
+			p_address.type.builtin_type == Variant::DICTIONARY && p_address.type.has_container_element_types()) {
+		write_construct_typed_dictionary(p_address,
+				p_address.type.get_container_element_type_or_variant(0),
+				p_address.type.get_container_element_type_or_variant(1), {});
+	} else if (p_address.type.kind == BSParser::DataType::BUILTIN && p_address.type.builtin_type != Variant::NIL) {
 		write_type_adjust(p_address, p_address.type.builtin_type);
 	} else if (p_address.type.kind == BSParser::DataType::NATIVE) {
 		// An object slot with nothing in it holds null, not the placeholder an untyped slot takes.
@@ -268,7 +295,8 @@ void BSByteCodeGenerator::write_start(BaristaScript *p_script, const StringName 
 	function->script = p_script;
 	function->source = p_script != nullptr ? p_script->get_path() : String();
 	function->is_static_function = p_static;
-	function->return_type = p_return_type;
+	const int return_type_index = get_runtime_type_position(p_return_type);
+	function->return_type = function->runtime_types[return_type_index];
 	function->rpc_config = p_rpc_config;
 	function->argument_count = 0;
 }
@@ -389,23 +417,25 @@ void BSByteCodeGenerator::write_binary_operator(const Address &p_target, Variant
 }
 
 void BSByteCodeGenerator::write_type_test(const Address &p_target, const Address &p_source, const BSParser::DataType &p_type) {
-	switch (p_type.kind) {
-		case BSParser::DataType::BUILTIN: {
-			append_opcode(BSFunction::OPCODE_TYPE_TEST_BUILTIN);
-			append(p_target);
-			append(p_source);
-			append((int)p_type.builtin_type);
-		} break;
-		case BSParser::DataType::NATIVE: {
-			append_opcode(BSFunction::OPCODE_TYPE_TEST_NATIVE);
-			append(p_target);
-			append(p_source);
-			append(p_type.native_type);
-		} break;
-		default:
-			refuse(vformat(R"(a type test against "%s")", p_type.to_string()));
-			break;
+	const int descriptor = get_runtime_type_position(p_type);
+	BSFunction::Opcode opcode = BSFunction::OPCODE_TYPE_TEST_BUILTIN;
+	const BSRuntimeType &runtime_type = function->runtime_types[descriptor];
+	if (runtime_type.is_typed_array()) {
+		opcode = BSFunction::OPCODE_TYPE_TEST_ARRAY;
+	} else if (runtime_type.is_typed_dictionary()) {
+		opcode = BSFunction::OPCODE_TYPE_TEST_DICTIONARY;
+	} else if (runtime_type.kind == BSRuntimeType::NATIVE) {
+		opcode = BSFunction::OPCODE_TYPE_TEST_NATIVE;
+	} else if (runtime_type.kind == BSRuntimeType::SCRIPT) {
+		opcode = BSFunction::OPCODE_TYPE_TEST_SCRIPT;
+	} else if (runtime_type.kind != BSRuntimeType::BUILTIN && runtime_type.kind != BSRuntimeType::VARIANT) {
+		refuse(vformat(R"(a type test against "%s")", p_type.to_string()));
+		return;
 	}
+	append_opcode(opcode);
+	append(p_target);
+	append(p_source);
+	append(descriptor);
 }
 
 void BSByteCodeGenerator::write_type_test_enum(const Address &, const Address &, const PackedInt64Array &, bool) {
@@ -566,18 +596,23 @@ void BSByteCodeGenerator::write_assign(const Address &p_target, const Address &p
 	// it is not the only place one is needed, because a value's run-time carrier can differ from
 	// the slot's without the declaration saying so -- an `int` member read into a `float` slot is
 	// the plain case. An untyped slot takes the value exactly as it is.
-	if (p_target.type.kind == BSParser::DataType::BUILTIN && p_target.type.builtin_type != Variant::NIL) {
-		append_opcode(BSFunction::OPCODE_ASSIGN_TYPED_BUILTIN);
+	if (!p_target.type.is_variant()) {
+		const int descriptor = get_runtime_type_position(p_target.type);
+		const BSRuntimeType &runtime_type = function->runtime_types[descriptor];
+		BSFunction::Opcode opcode = BSFunction::OPCODE_ASSIGN_TYPED_BUILTIN;
+		if (runtime_type.is_typed_array()) {
+			opcode = BSFunction::OPCODE_ASSIGN_TYPED_ARRAY;
+		} else if (runtime_type.is_typed_dictionary()) {
+			opcode = BSFunction::OPCODE_ASSIGN_TYPED_DICTIONARY;
+		} else if (runtime_type.kind == BSRuntimeType::NATIVE) {
+			opcode = BSFunction::OPCODE_ASSIGN_TYPED_NATIVE;
+		} else if (runtime_type.kind == BSRuntimeType::SCRIPT) {
+			opcode = BSFunction::OPCODE_ASSIGN_TYPED_SCRIPT;
+		}
+		append_opcode(opcode);
 		append(p_target);
 		append(p_source);
-		append((int)p_target.type.builtin_type | (p_target.type.is_nullable ? BSFunction::NULLABLE_TYPE_OPERAND_FLAG : 0));
-		return;
-	}
-	if (p_target.type.kind == BSParser::DataType::NATIVE && p_target.type.native_type != StringName()) {
-		append_opcode(BSFunction::OPCODE_ASSIGN_TYPED_NATIVE);
-		append(p_target);
-		append(p_source);
-		append(p_target.type.native_type);
+		append(descriptor);
 		return;
 	}
 	append_opcode(BSFunction::OPCODE_ASSIGN);
@@ -609,12 +644,18 @@ void BSByteCodeGenerator::write_assign_typed_union(const Address &, const Addres
 	refuse("a store into a union slot");
 }
 
-void BSByteCodeGenerator::write_assign_typed_array_convert(const Address &, const Address &) {
-	refuse("a typed-array conversion");
+void BSByteCodeGenerator::write_assign_typed_array_convert(const Address &p_target, const Address &p_source) {
+	append_opcode(BSFunction::OPCODE_ASSIGN_TYPED_ARRAY_CONVERT);
+	append(p_target);
+	append(p_source);
+	append(get_runtime_type_position(p_target.type));
 }
 
-void BSByteCodeGenerator::write_assign_typed_dictionary_convert(const Address &, const Address &) {
-	refuse("a typed-dictionary conversion");
+void BSByteCodeGenerator::write_assign_typed_dictionary_convert(const Address &p_target, const Address &p_source) {
+	append_opcode(BSFunction::OPCODE_ASSIGN_TYPED_DICTIONARY_CONVERT);
+	append(p_target);
+	append(p_source);
+	append(get_runtime_type_position(p_target.type));
 }
 
 void BSByteCodeGenerator::write_assign_null(const Address &p_target) {
@@ -654,23 +695,26 @@ void BSByteCodeGenerator::write_store_named_global(const Address &p_destination,
 }
 
 void BSByteCodeGenerator::write_cast(const Address &p_target, const Address &p_source, const BSParser::DataType &p_type) {
-	switch (p_type.kind) {
-		case BSParser::DataType::BUILTIN: {
-			append_opcode(BSFunction::OPCODE_CAST_TO_BUILTIN);
-			append(p_source);
-			append(p_target);
-			append((int)p_type.builtin_type);
-		} break;
-		case BSParser::DataType::NATIVE: {
-			append_opcode(BSFunction::OPCODE_CAST_TO_NATIVE);
-			append(p_source);
-			append(p_target);
-			append(p_type.native_type);
-		} break;
-		default:
-			refuse(vformat(R"(a cast to "%s")", p_type.to_string()));
-			break;
+	const int descriptor = get_runtime_type_position(p_type);
+	const BSRuntimeType &runtime_type = function->runtime_types[descriptor];
+	BSFunction::Opcode opcode;
+	if (runtime_type.kind == BSRuntimeType::BUILTIN) {
+		opcode = BSFunction::OPCODE_CAST_TO_BUILTIN;
+	} else if (runtime_type.kind == BSRuntimeType::NATIVE) {
+		opcode = BSFunction::OPCODE_CAST_TO_NATIVE;
+	} else if (runtime_type.kind == BSRuntimeType::SCRIPT) {
+		opcode = BSFunction::OPCODE_CAST_TO_SCRIPT;
+	} else if (runtime_type.kind == BSRuntimeType::VARIANT) {
+		write_assign(p_target, p_source);
+		return;
+	} else {
+		refuse(vformat(R"(a cast to "%s")", p_type.to_string()));
+		return;
 	}
+	append_opcode(opcode);
+	append(p_source);
+	append(p_target);
+	append(descriptor);
 }
 
 void BSByteCodeGenerator::write_call(const Address &p_target, const Address &p_base, const StringName &p_function_name, const Vector<Address> &p_arguments) {
@@ -824,8 +868,14 @@ void BSByteCodeGenerator::write_construct_array(const Address &p_target, const V
 	append(p_arguments.size());
 }
 
-void BSByteCodeGenerator::write_construct_typed_array(const Address &, const BSParser::DataType &, const Vector<Address> &) {
-	refuse("a typed array literal");
+void BSByteCodeGenerator::write_construct_typed_array(const Address &p_target, const BSParser::DataType &p_element_type, const Vector<Address> &p_arguments) {
+	append_opcode_and_argument_count(BSFunction::OPCODE_CONSTRUCT_TYPED_ARRAY, p_arguments.size() + 1);
+	for (const Address &argument : p_arguments) {
+		append(argument);
+	}
+	append(p_target);
+	append(p_arguments.size());
+	append(get_runtime_type_position(p_element_type));
 }
 
 void BSByteCodeGenerator::write_construct_tuple(const Address &, const Vector<Address> &) {
@@ -841,8 +891,15 @@ void BSByteCodeGenerator::write_construct_dictionary(const Address &p_target, co
 	append(p_arguments.size() / 2);
 }
 
-void BSByteCodeGenerator::write_construct_typed_dictionary(const Address &, const BSParser::DataType &, const BSParser::DataType &, const Vector<Address> &) {
-	refuse("a typed dictionary literal");
+void BSByteCodeGenerator::write_construct_typed_dictionary(const Address &p_target, const BSParser::DataType &p_key_type, const BSParser::DataType &p_value_type, const Vector<Address> &p_arguments) {
+	append_opcode_and_argument_count(BSFunction::OPCODE_CONSTRUCT_TYPED_DICTIONARY, p_arguments.size() + 1);
+	for (const Address &argument : p_arguments) {
+		append(argument);
+	}
+	append(p_target);
+	append(p_arguments.size() / 2);
+	append(get_runtime_type_position(p_key_type));
+	append(get_runtime_type_position(p_value_type));
 }
 
 void BSByteCodeGenerator::write_load_static_self_class(const Address &p_target) {
@@ -1047,8 +1104,35 @@ void BSByteCodeGenerator::write_newline(int p_line) {
 }
 
 void BSByteCodeGenerator::write_return(const Address &p_return_value) {
-	append_opcode(BSFunction::OPCODE_RETURN);
+	if (!function->return_type.has_type()) {
+		append_opcode(BSFunction::OPCODE_RETURN);
+		append(p_return_value);
+		return;
+	}
+	int descriptor = -1;
+	for (int i = 0; i < function->runtime_types.size(); i++) {
+		if (function->runtime_types[i] == function->return_type) {
+			descriptor = i;
+			break;
+		}
+	}
+	if (descriptor < 0) {
+		refuse("a return type missing from the runtime descriptor table");
+		return;
+	}
+	BSFunction::Opcode opcode = BSFunction::OPCODE_RETURN_TYPED_BUILTIN;
+	if (function->return_type.is_typed_array()) {
+		opcode = BSFunction::OPCODE_RETURN_TYPED_ARRAY;
+	} else if (function->return_type.is_typed_dictionary()) {
+		opcode = BSFunction::OPCODE_RETURN_TYPED_DICTIONARY;
+	} else if (function->return_type.kind == BSRuntimeType::NATIVE) {
+		opcode = BSFunction::OPCODE_RETURN_TYPED_NATIVE;
+	} else if (function->return_type.kind == BSRuntimeType::SCRIPT) {
+		opcode = BSFunction::OPCODE_RETURN_TYPED_SCRIPT;
+	}
+	append_opcode(opcode);
 	append(p_return_value);
+	append(descriptor);
 }
 
 void BSByteCodeGenerator::write_assert(const Address &p_test, const Address &p_message) {

@@ -133,10 +133,18 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 			return ERR_COMPILATION_FAILED;
 		}
 		const BSParser::DataType slot = member_slot_type(member.variable->get_datatype());
+		BSRuntimeType runtime_type;
+		String runtime_type_error;
+		if (!BSRuntimeType::from_data_type(slot, p_script, runtime_type, runtime_type_error)) {
+			set_error(runtime_type_error, member.variable);
+			p_script->release_compiled_state();
+			return ERR_COMPILATION_FAILED;
+		}
 		p_script->member_indices[name] = p_script->member_names.size();
 		p_script->member_names.push_back(name);
 		p_script->member_carriers.push_back(
 				slot.kind == BSParser::DataType::BUILTIN ? slot.builtin_type : Variant::NIL);
+		p_script->member_types.push_back(runtime_type);
 	}
 
 	if (compile_implicit_initializer(p_script, p_class) != OK) {

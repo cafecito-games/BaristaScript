@@ -42,6 +42,9 @@ class BaristaScript final : public godot::ScriptExtension {
 	// function -- the inspector, a scene, GDScript -- has to meet the declaration the same way a
 	// compiled store does, and this is what it is checked against.
 	godot::Vector<godot::Variant::Type> member_carriers;
+	// Full declaration descriptors for stores arriving through the engine-facing property API.
+	// Compiled stores carry the same BSRuntimeType through their function table.
+	godot::Vector<BSRuntimeType> member_types;
 	godot::HashMap<godot::StringName, int> member_indices;
 	godot::HashMap<godot::StringName, BSFunction *> member_functions;
 	BSFunction *implicit_initializer = nullptr;
@@ -129,6 +132,9 @@ public:
 	/** The declared carrier of the member at `p_index`, or NIL when it is untyped. */
 	godot::Variant::Type get_member_carrier(int p_index) const {
 		return p_index >= 0 && p_index < member_carriers.size() ? member_carriers[p_index] : godot::Variant::NIL;
+	}
+	const BSRuntimeType *get_member_type(int p_index) const {
+		return p_index >= 0 && p_index < member_types.size() ? &member_types[p_index] : nullptr;
 	}
 	int get_member_index(const godot::StringName &p_name) const;
 	/** Appends this script's methods, and its bases', with each one's declared argument count. */
