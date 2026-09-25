@@ -89,6 +89,95 @@ jobs:
           python3 tests/validate_analyzer_port_inventory.py --foundry-dir .upstream-foundry --require-m3-complete
           python3 tests/test_analyzer_port_inventory.py --foundry-dir .upstream-foundry
 
+  # CMake's native build, incremental rebuild probes and off/on transition are inherently
+  # serial with one another, but independent of the SCons suites and corpus triage in the
+  # Linux matrix entry. Keep them in their own job so those two chains overlap.
+  native-cmake-verification:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout BaristaScript
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: true
+
+      - name: Setup Python for native CMake verification
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Decide whether to verify native build-system transitions
+        id: transition_scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 scripts/native_transition_scope.py
+          --event "$EVENT_NAME"
+          --pull-request-head "$PULL_REQUEST_HEAD"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Resolve shared build versions
+        id: versions
+        if: ${{ github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false' }}
+        shell: bash
+        run: python3 scripts/build_config.py --platform linux --format github >> "$GITHUB_OUTPUT"
+
+      - name: Download stock Godot
+        if: ${{ github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/godot.zip" \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          chmod +x "$godot_binary"
+
+      # Four jobs match the public ubuntu-22.04 runner (4 vCPU, 16 GB). GCC 11 peaks near
+      # 0.94 GB for the largest analyzer translation unit. Keep the count explicit: with the
+      # Makefiles generator a bare --parallel is an unbounded `make -j`.
+      - name: Build and run the native suites with CMake
+        if: ${{ github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
+          cmake --build build/native-cmake --parallel 4
+          python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+          python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake
+          python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+
+      - name: Verify incremental native CMake rebuilds
+        if: ${{ github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake --jobs 4
+
+      - name: Verify the CMake native test off/on transition
+        if: ${{ github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false' }}
+        shell: bash
+        env:
+          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
+        run: |
+          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF
+          cmake --build build/native-cmake --parallel 4
+          python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
+          cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON
+          cmake --build build/native-cmake --parallel 4
+          python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
+
   build:
     strategy:
       fail-fast: false
@@ -264,13 +353,11 @@ jobs:
           python3 tests/test_run_corpus_triage.py --godot "$godot_binary" \
             --library "$(python3 -c "import json; print(json.load(open('build/native-scons/native-artifact.json'))['library'])")"
 
-      # The steps from here to the corpus triage re-prove that toggling native tests on and off
-      # under SCons and CMake never leaves test code in an ordinary artifact. That is decided by
-      # the build descriptions, not by the sources they compile: every matrix entry already
-      # checks its freshly built ordinary artifact above. A pull request that changes none of
-      # the build inputs listed, with the reasoning, in scripts/native_transition_scope.py
-      # skips them. Every other event runs them, and so does any pull request whose changes
-      # cannot be computed, because the steps run unless the decision is an explicit 'false'.
+      # This matrix job re-proves the SCons transition. The independent native CMake job uses
+      # the same decision and re-proves its build, incremental rebuilds and transition in
+      # parallel with the remaining Linux steps. A pull request that changes none of the build
+      # inputs listed, with the reasoning, in scripts/native_transition_scope.py skips both
+      # transitions. Every other event runs them, as does an undecidable pull request.
       - name: Decide whether to verify native build-system transitions
         id: transition_scope
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' }}
@@ -297,47 +384,6 @@ jobs:
           python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_release
           scons api_version=${{ steps.versions.outputs.godot_api }} target=template_debug barista_tests=yes
           python3 tests/run_native_suites.py --godot "$godot_binary"
-
-      # Every CMake build in this step and the two after it, including the rebuild script's --jobs,
-      # uses four jobs to match the public-repository ubuntu-22.04 runner (4 vCPU, 16 GB). GCC 11
-      # peaks near 0.94 GB for the largest analyzer translation unit, so four concurrent compiles
-      # stay near 3.5 GB. Keep an explicit count: with the Makefiles generator a bare --parallel is
-      # an unbounded `make -j` that would start about a hundred compilers at once.
-      - name: Build and run the native suites with CMake
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
-        shell: bash
-        env:
-          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
-        run: |
-          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
-          cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON
-          cmake --build build/native-cmake --parallel 4
-          python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
-          python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake
-          python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
-
-      - name: Verify incremental native CMake rebuilds
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
-        shell: bash
-        env:
-          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
-        run: |
-          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
-          python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake --jobs 4
-
-      - name: Verify the CMake native test off/on transition
-        if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' && matrix.target-type == 'template_debug' && (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}
-        shell: bash
-        env:
-          GODOT_VERSION: ${{ steps.versions.outputs.godot_runtime }}
-        run: |
-          godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
-          cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF
-          cmake --build build/native-cmake --parallel 4
-          python3 tests/verify_native_surface.py --binary-dir project/bin/linux --target-type template_debug
-          cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON
-          cmake --build build/native-cmake --parallel 4
-          python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake
 
       # Two committed guards already refuse a tampered residual-failure pin, but both compare the
       # pin against other committed bytes. This step is the only place that executes the cases the

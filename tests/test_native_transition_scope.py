@@ -105,9 +105,12 @@ class Classification(unittest.TestCase):
         """Follow SConstruct, CMakeLists.txt and the gated commands into every repository module."""
         import validate_ci
         pending = ["SConstruct", "CMakeLists.txt"]
-        for step in validate_ci.LINUX_VERIFICATION_STEPS:
-            if step["if"] == validate_ci.LINUX_TRANSITION_CONDITION:
-                pending += re.findall(r"(?:scripts|tests)/\w+\.py", step["run"])
+        transition_steps = [
+            step for step in validate_ci.LINUX_VERIFICATION_STEPS
+            if step["if"] == validate_ci.LINUX_TRANSITION_CONDITION
+        ] + validate_ci.CMAKE_VERIFICATION_STEPS
+        for step in transition_steps:
+            pending += re.findall(r"(?:scripts|tests)/\w+\.py", step["run"])
         self.assertIn("tests/test_native_cmake_rebuild.py", pending)
         seen = set()
         while pending:

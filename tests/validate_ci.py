@@ -380,13 +380,21 @@ LINUX_VERIFICATION_CONDITION = (
 LINUX_GODOT_BINARY = 'godot_binary="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"'
 
 
-# The build-system transition steps run on a pull request only when the scope decision is not
-# an explicit 'false', and on every other event regardless of it. See
+# The SCons build-system transition step runs on a pull request only when the scope decision is
+# not an explicit 'false', and on every other event regardless of it. See
 # scripts/native_transition_scope.py for why the build inputs it names are sufficient.
 LINUX_TRANSITION_CONDITION = (
     "${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_64' "
     "&& matrix.target-type == 'template_debug' "
     "&& (github.event_name != 'pull_request' || steps.transition_scope.outputs.required != 'false') }}"
+)
+
+# The CMake verification has its own checkout and scope decision so it can run in parallel with
+# the matrix Linux job. It has no matrix selectors, but otherwise fails open in exactly the same
+# way as the SCons transition step.
+CMAKE_TRANSITION_CONDITION = (
+    "${{ github.event_name != 'pull_request' "
+    "|| steps.transition_scope.outputs.required != 'false' }}"
 )
 
 
@@ -403,9 +411,9 @@ def linux_verification_step(name: str, *commands: str, condition: str = LINUX_VE
 # The Linux debug verification runs as separately named steps so each phase's duration is
 # visible in the Actions UI, which is why the names are pinned along with the commands. Steps
 # share no shell state: the first downloads Godot, and every later one derives the same binary
-# path itself. The steps build on one another's artifacts (the SCons test library, then the
-# CMake tree toggled ON, OFF and ON), so their order is part of the pin as much as their
-# commands are.
+# path itself. The matrix sequence builds on the SCons test library while the independent CMake
+# job owns its ON, OFF and ON build tree, so order within each job is part of the pin as much as
+# the commands are.
 #
 # The step directly before the sequence. Pinning it bounds the sequence at its start as the
 # triage step bounds it at its end, so nothing unpinned can run between the two.
@@ -430,6 +438,10 @@ LINUX_TRANSITION_SCOPE_STEP = {
     },
     "run": 'python3 scripts/native_transition_scope.py --event "$EVENT_NAME"'
            ' --pull-request-head "$PULL_REQUEST_HEAD" --github-output "$GITHUB_OUTPUT"',
+}
+
+CMAKE_TRANSITION_SCOPE_STEP = {
+    key: value for key, value in LINUX_TRANSITION_SCOPE_STEP.items() if key != "if"
 }
 
 LINUX_VERIFICATION_STEPS = [
@@ -473,7 +485,21 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/run_native_suites.py --godot "$godot_binary"',
         condition=LINUX_TRANSITION_CONDITION,
     ),
-    linux_verification_step(
+]
+
+
+def cmake_verification_step(name: str, *commands: str) -> dict:
+    return {
+        "name": name,
+        "if": CMAKE_TRANSITION_CONDITION,
+        "shell": "bash",
+        "env": {"GODOT_VERSION": "${{ steps.versions.outputs.godot_runtime }}"},
+        "run": "\n".join(commands),
+    }
+
+
+CMAKE_VERIFICATION_STEPS = [
+    cmake_verification_step(
         "Build and run the native suites with CMake",
         LINUX_GODOT_BINARY,
         "cmake -S . -B build/native-cmake -DCMAKE_BUILD_TYPE=Debug -DBARISTA_TESTS=ON",
@@ -481,15 +507,13 @@ LINUX_VERIFICATION_STEPS = [
         'python3 tests/test_run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
         'python3 tests/test_native_storage.py --godot "$godot_binary" --build-dir build/native-cmake',
         'python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
-        condition=LINUX_TRANSITION_CONDITION,
     ),
-    linux_verification_step(
+    cmake_verification_step(
         "Verify incremental native CMake rebuilds",
         LINUX_GODOT_BINARY,
         'python3 tests/test_native_cmake_rebuild.py --godot "$godot_binary" --build-dir build/native-cmake --jobs 4',
-        condition=LINUX_TRANSITION_CONDITION,
     ),
-    linux_verification_step(
+    cmake_verification_step(
         "Verify the CMake native test off/on transition",
         LINUX_GODOT_BINARY,
         "cmake -S . -B build/native-cmake -DBARISTA_TESTS=OFF",
@@ -498,19 +522,49 @@ LINUX_VERIFICATION_STEPS = [
         "cmake -S . -B build/native-cmake -DBARISTA_TESTS=ON",
         "cmake --build build/native-cmake --parallel 4",
         'python3 tests/run_native_suites.py --godot "$godot_binary" --build-dir build/native-cmake',
-        condition=LINUX_TRANSITION_CONDITION,
+    ),
+]
+
+CMAKE_VERIFICATION_PREFIX = [
+    {
+        "name": "Checkout BaristaScript",
+        "uses": "actions/checkout@v4",
+        "with": {"persist-credentials": "false", "submodules": "true"},
+    },
+    {
+        "name": "Setup Python for native CMake verification",
+        "uses": "actions/setup-python@v5",
+        "with": {"python-version": "3.x"},
+    },
+    CMAKE_TRANSITION_SCOPE_STEP,
+    {
+        "name": "Resolve shared build versions",
+        "id": "versions",
+        "if": CMAKE_TRANSITION_CONDITION,
+        "shell": "bash",
+        "run": 'python3 scripts/build_config.py --platform linux --format github >> "$GITHUB_OUTPUT"',
+    },
+    cmake_verification_step(
+        "Download stock Godot",
+        "curl --fail --location --retry 3 \\",
+        '  --output "$RUNNER_TEMP/godot.zip" \\',
+        '  "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"',
+        'unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"',
+        LINUX_GODOT_BINARY,
+        'chmod +x "$godot_binary"',
     ),
 ]
 
 
 def check_linux_verification_wiring(workflow: str) -> str | None:
-    """Require the Linux debug verification steps, exactly and in order, before corpus triage.
+    """Require the parallel Linux verification jobs, with every claim exactly pinned.
 
     The general runner audits accept any one reachable invocation, so on their own they would
     not notice a build, a surface check or a sweep being dropped from this sequence. The steps
     are compared whole, display names included and only surrounding whitespace ignored. They
-    must sit directly after the warning-code probe and directly before the corpus triage steps,
-    which run the Godot binary the first one downloads.
+    must sit directly after the warning-code probe and directly before the corpus triage steps.
+    The serial CMake chain must live in an independent, dependency-free job so it overlaps the
+    matrix job instead of extending its critical path.
     """
     try:
         import yaml
@@ -518,10 +572,15 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
         return "CI audit requires PyYAML: python3 -m pip install -r tests/requirements.txt"
     try:
         document = yaml.load(workflow, Loader=yaml.BaseLoader)
-        job = document["jobs"]["build"]
+        jobs = document["jobs"]
+        job = jobs["build"]
         steps = job["steps"]
         if not isinstance(steps, list):
             return "build job steps must be a list"
+        cmake_job = jobs["native-cmake-verification"]
+        cmake_steps = cmake_job["steps"]
+        if not isinstance(cmake_steps, list):
+            return "native-cmake-verification job steps must be a list"
     except (yaml.YAMLError, KeyError, TypeError) as error:
         return f"invalid CI YAML: {error}"
 
@@ -565,6 +624,32 @@ def check_linux_verification_wiring(workflow: str) -> str | None:
             )
     if condition_is_unreachable(job):
         return "the Linux verification steps must be able to fail the build job"
+    if (
+        set(cmake_job) != {"runs-on", "permissions", "steps"}
+        or cmake_job.get("runs-on") != "ubuntu-22.04"
+        or cmake_job.get("permissions") != {"contents": "read"}
+        or condition_is_unreachable(cmake_job)
+    ):
+        return (
+            "native-cmake-verification must be an independent, unsuppressed Ubuntu job with "
+            "read-only repository access"
+        )
+    required_cmake_steps = CMAKE_VERIFICATION_PREFIX + CMAKE_VERIFICATION_STEPS
+    if len(cmake_steps) != len(required_cmake_steps):
+        return "native-cmake-verification must retain its complete pinned setup and verification"
+    for offset, required in enumerate(required_cmake_steps):
+        step = cmake_steps[offset]
+        if not isinstance(step, dict):
+            return f"native CMake verification step {offset + 1} must be a mapping"
+        actual = {
+            key: value.strip() if key == "run" and isinstance(value, str) else value
+            for key, value in step.items()
+        }
+        if actual != required:
+            return (
+                f"native CMake verification step {offset + 1} must retain its name, validated "
+                "inputs and exact unsuppressed command"
+            )
     return None
 
 
