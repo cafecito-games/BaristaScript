@@ -456,7 +456,16 @@ bool BSRuntimeType::convert(const Variant &p_source, Variant &r_value, String &r
 			r_value = array_value;
 			return true;
 		}
-		if (source.is_typed() || (!p_allow_erased_container && !carrier_converted)) {
+		Variant::Type target_element_builtin;
+		StringName target_element_class;
+		Variant target_element_script;
+		const bool target_has_metadata = container_element_types[0].container_metadata(
+				target_element_builtin, target_element_class, target_element_script);
+		// A descriptor such as `int?` cannot be represented in Godot's Array metadata. Retype a
+		// statically compatible typed source into an erased-but-validated result so the wider slot
+		// still permits values (notably null) that the source metadata would reject.
+		if ((source.is_typed() && target_has_metadata) ||
+				(!source.is_typed() && !p_allow_erased_container && !carrier_converted)) {
 			r_error = vformat(R"(Cannot assign an array of type "%s" to a slot of type "%s".)",
 					source.is_typed() ? String("typed Array") : String("Array"), get_name());
 			return false;
@@ -472,11 +481,8 @@ bool BSRuntimeType::convert(const Variant &p_source, Variant &r_value, String &r
 			}
 		}
 		Array result;
-		Variant::Type element_builtin;
-		StringName element_class;
-		Variant element_script;
-		if (container_element_types[0].container_metadata(element_builtin, element_class, element_script)) {
-			result.set_typed(element_builtin, element_class, element_script);
+		if (target_has_metadata) {
+			result.set_typed(target_element_builtin, target_element_class, target_element_script);
 		}
 		for (const Variant &element : converted) {
 			result.push_back(element);
@@ -495,7 +501,16 @@ bool BSRuntimeType::convert(const Variant &p_source, Variant &r_value, String &r
 			r_value = p_source;
 			return true;
 		}
-		if (source.is_typed() || !p_allow_erased_container) {
+		Variant::Type key_builtin;
+		StringName key_class;
+		Variant key_script;
+		Variant::Type value_builtin;
+		StringName value_class;
+		Variant value_script;
+		const bool typed_key = container_element_types[0].container_metadata(key_builtin, key_class, key_script);
+		const bool typed_value = container_element_types[1].container_metadata(value_builtin, value_class, value_script);
+		const bool target_has_metadata = typed_key && typed_value;
+		if ((source.is_typed() && target_has_metadata) || (!source.is_typed() && !p_allow_erased_container)) {
 			r_error = vformat(R"(Cannot assign a dictionary of type "%s" to a slot of type "%s".)",
 					source.is_typed() ? String("typed Dictionary") : String("Dictionary"), get_name());
 			return false;
@@ -520,15 +535,7 @@ bool BSRuntimeType::convert(const Variant &p_source, Variant &r_value, String &r
 			}
 		}
 		Dictionary result;
-		Variant::Type key_builtin;
-		StringName key_class;
-		Variant key_script;
-		Variant::Type value_builtin;
-		StringName value_class;
-		Variant value_script;
-		const bool typed_key = container_element_types[0].container_metadata(key_builtin, key_class, key_script);
-		const bool typed_value = container_element_types[1].container_metadata(value_builtin, value_class, value_script);
-		if (typed_key && typed_value) {
+		if (target_has_metadata) {
 			result.set_typed(key_builtin, key_class, key_script, value_builtin, value_class, value_script);
 		}
 		for (int i = 0; i < converted_keys.size(); i++) {

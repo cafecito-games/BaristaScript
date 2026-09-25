@@ -9,6 +9,18 @@
 /*  SPDX-License-Identifier: MIT                                          */
 /**************************************************************************/
 
+case OPCODE_LOAD_STATIC_SELF_CLASS: {
+	BS_CHECK_SPACE(2);
+	BS_GET_VARIANT_PTR(destination, 0);
+	if (unlikely(script == nullptr)) {
+		error_text = "Cannot load Self without a declaring script.";
+		goto vm_error;
+	}
+	// Script class handles use the same weak ObjectID carrier as pooled named classes.
+	*destination = (int64_t)script->get_instance_id();
+	BS_IP += 2;
+} break;
+
 case OPCODE_OPERATOR: {
 	BS_CHECK_SPACE(5);
 	BS_GET_VARIANT_PTR(left, 0);

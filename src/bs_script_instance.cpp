@@ -338,7 +338,7 @@ bool BSInstance::set_property(const StringName &p_name, const Variant &p_value) 
 	Variant converted;
 	String conversion_error;
 	const BSRuntimeType *type = script->get_member_type(index);
-	if (type == nullptr || !type->convert(p_value, converted, conversion_error)) {
+	if (type == nullptr || !type->convert(p_value, converted, conversion_error, true)) {
 		return false;
 	}
 	members.write[index] = converted;

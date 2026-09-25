@@ -184,7 +184,10 @@ TEST_SUITE("runtime_types") {
 				"\treturn value is Type[Self]\n"
 				"\n"
 				"func own_script() -> Type[RuntimeTypeHandleOwner]:\n"
-				"\treturn RuntimeTypeHandleOwner\n",
+				"\treturn RuntimeTypeHandleOwner\n"
+				"\n"
+				"func own_self() -> Type[Self]:\n"
+				"\treturn Self\n",
 				"res://runtime_types/type_handles.barista");
 		BS_TEST_REQUIRE(script.is_valid());
 		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
@@ -211,6 +214,7 @@ TEST_SUITE("runtime_types") {
 		CHECK(owner->call("test_script", script) == Variant(true));
 		CHECK(owner->call("test_script", script_handle) == Variant(true));
 		CHECK(owner->call("own_script") == script_handle);
+		CHECK(owner->call("own_self") == script_handle);
 
 		const Ref<BaristaScript> other_script = compile_script(
 				"func marker() -> void:\n"
@@ -315,6 +319,11 @@ TEST_SUITE("runtime_types") {
 		CHECK(nullable[0] == Variant());
 		CHECK(nullable[1] == Variant(1));
 		CHECK(nullable[2] == Variant());
+		Array erased_property;
+		erased_property.push_back(6);
+		owner->set("numbers", erased_property);
+		CHECK(Array(owner->get("numbers")).is_typed());
+		CHECK(Array(owner->get("numbers"))[0] == Variant(6));
 		owner->call("replace_numbers", erased_good);
 		owner->call("replace_lookup", erased_good_dictionary);
 		CHECK(Array(owner->get("numbers"))[0] == Variant(3));
@@ -364,7 +373,25 @@ TEST_SUITE("runtime_types") {
 				"\n"
 				"func reject_erased() -> Array[int]:\n"
 				"\tvar values: Array[int] = erased_bad()\n"
-				"\treturn values\n",
+				"\treturn values\n"
+				"\n"
+				"func accept_fixed(values: Array[int]) -> Array[int]:\n"
+				"\treturn values\n"
+				"\n"
+				"func accept_fixed_dictionary(values: Dictionary[String, int]) -> Dictionary[String, int]:\n"
+				"\treturn values\n"
+				"\n"
+				"func widen_nullable() -> Array[int?]:\n"
+				"\tvar source: Array[int] = [1]\n"
+				"\tvar widened: Array[int?] = source\n"
+				"\twidened.append(null)\n"
+				"\treturn widened\n"
+				"\n"
+				"func widen_nullable_dictionary() -> Dictionary[String, int?]:\n"
+				"\tvar source: Dictionary[String, int] = {\"one\": 1}\n"
+				"\tvar widened: Dictionary[String, int?] = source\n"
+				"\twidened[\"none\"] = null\n"
+				"\treturn widened\n",
 				"res://runtime_types/erased_boundaries.barista");
 		BS_TEST_REQUIRE(script.is_valid());
 		CHECK_MESSAGE(script->get_compile_error().is_empty(), readable(script->get_compile_error()));
@@ -384,11 +411,37 @@ TEST_SUITE("runtime_types") {
 		const Array assigned = owner->call("assign_from_erased");
 		CHECK(assigned.is_typed());
 		CHECK(assigned == Array::make(4));
+		Array erased_fixed;
+		erased_fixed.push_back(5);
+		const Array fixed = owner->call("accept_fixed", erased_fixed);
+		CHECK(fixed.is_typed());
+		CHECK(fixed.get_typed_builtin() == Variant::INT);
+		CHECK(fixed == Array::make(5));
+		Dictionary erased_fixed_dictionary;
+		erased_fixed_dictionary["six"] = 6;
+		const Dictionary fixed_dictionary = owner->call("accept_fixed_dictionary", erased_fixed_dictionary);
+		CHECK(fixed_dictionary.is_typed());
+		CHECK(fixed_dictionary.get_typed_key_builtin() == Variant::STRING);
+		CHECK(fixed_dictionary.get_typed_value_builtin() == Variant::INT);
+		CHECK(fixed_dictionary["six"] == Variant(6));
+		const Array widened = owner->call("widen_nullable");
+		CHECK_FALSE(widened.is_typed());
+		CHECK(widened == Array::make(1, Variant()));
+		const Dictionary widened_dictionary = owner->call("widen_nullable_dictionary");
+		CHECK_FALSE(widened_dictionary.is_typed());
+		CHECK(widened_dictionary["one"] == Variant(1));
+		CHECK(widened_dictionary["none"] == Variant());
 
 		RuntimeErrorScope errors;
 		CHECK(owner->call("collect", "wrong") == Variant());
 		CHECK(owner->call("reject_erased") == Variant());
-		CHECK_MESSAGE(errors.errors().size() == 2, readable(errors.joined()));
+		Array erased_fixed_bad;
+		erased_fixed_bad.push_back("wrong");
+		CHECK(owner->call("accept_fixed", erased_fixed_bad) == Variant());
+		Dictionary erased_fixed_dictionary_bad;
+		erased_fixed_dictionary_bad["wrong"] = "wrong";
+		CHECK(owner->call("accept_fixed_dictionary", erased_fixed_dictionary_bad) == Variant());
+		CHECK_MESSAGE(errors.errors().size() == 4, readable(errors.joined()));
 	}
 
 	TEST_CASE("reserved D1 numeric spellings never reach a runtime descriptor") {

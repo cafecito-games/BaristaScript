@@ -690,7 +690,9 @@ Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, in
 	for (int i = 0; i < p_argument_count && i < argument_count; i++) {
 		Variant converted;
 		String conversion_error;
-		if (!argument_types[i].convert(*p_arguments[i], converted, conversion_error)) {
+		// Engine calls carry no static container metadata. Validate and materialize an erased
+		// Array/Dictionary at this declared boundary just as assignment and rest tails do.
+		if (!argument_types[i].convert(*p_arguments[i], converted, conversion_error, true)) {
 			report_runtime_error_once(vformat("Invalid argument %d for %s(): %s", i + 1, String(name), conversion_error),
 					name, source, initial_line);
 			return Variant();
