@@ -317,9 +317,10 @@ bool BaristaScript::run_initializers(BSInstance *p_instance) const {
 		if (chain[index]->implicit_initializer == nullptr) {
 			continue;
 		}
+		const uint64_t error_serial = bs_runtime_error_serial();
 		GDExtensionCallError initializer_error;
 		chain[index]->implicit_initializer->call(p_instance, nullptr, 0, initializer_error);
-		if (initializer_error.error != GDEXTENSION_CALL_OK || bs_runtime_error_was_reported()) {
+		if (initializer_error.error != GDEXTENSION_CALL_OK || bs_runtime_error_serial() != error_serial) {
 			return false;
 		}
 	}
@@ -347,10 +348,12 @@ void *BaristaScript::create_instance_handle(godot::Object *p_owner, const godot:
 	bool initialized = run_initializers(instance);
 	if (initialized) {
 		if (BSFunction *initializer = find_function(SNAME("_init"))) {
+			const uint64_t error_serial = bs_runtime_error_serial();
 			GDExtensionCallError initializer_error;
 			initializer_error.error = GDEXTENSION_CALL_OK;
 			initializer->call(instance, p_arguments, p_argument_count, initializer_error);
-			initialized = initializer_error.error == GDEXTENSION_CALL_OK && !bs_runtime_error_was_reported();
+			initialized = initializer_error.error == GDEXTENSION_CALL_OK &&
+					bs_runtime_error_serial() == error_serial;
 		}
 	}
 	instance->initializing = false;
@@ -624,8 +627,12 @@ godot::TypedArray<godot::Dictionary> BaristaScript::_get_script_method_list() co
 
 godot::TypedArray<godot::Dictionary> BaristaScript::_get_script_property_list() const {
 	godot::TypedArray<godot::Dictionary> result;
+	godot::Vector<const BaristaScript *> chain;
 	for (const BaristaScript *script = this; script != nullptr; script = script->get_base_barista_script()) {
-		for (const godot::PropertyInfo &property : script->script_properties) {
+		chain.push_back(script);
+	}
+	for (int index = chain.size() - 1; index >= 0; index--) {
+		for (const godot::PropertyInfo &property : chain[index]->script_properties) {
 			result.push_back(godot::Dictionary(property));
 		}
 	}

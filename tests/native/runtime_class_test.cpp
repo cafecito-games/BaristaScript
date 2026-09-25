@@ -27,6 +27,15 @@ Dictionary find_named(const TypedArray<Dictionary> &p_entries, const StringName 
 	return Dictionary();
 }
 
+int find_named_index(const TypedArray<Dictionary> &p_entries, const StringName &p_name) {
+	for (int index = 0; index < p_entries.size(); index++) {
+		if (StringName(Dictionary(p_entries[index]).get("name", StringName())) == p_name) {
+			return index;
+		}
+	}
+	return -1;
+}
+
 Ref<RefCounted> attach(const Ref<BaristaScript> &p_script) {
 	Ref<RefCounted> owner;
 	owner.instantiate();
@@ -169,6 +178,65 @@ TEST_SUITE("runtime_class") {
 		CHECK(int(Dictionary(setter_arguments[0]).get("type", -1)) == Variant::INT);
 	}
 
+	TEST_CASE("assignments prefer shadowing parameters over member accessors") {
+		const Ref<BaristaScript> script = compile_script(
+				"var writes: int = 0\n"
+				"var value: int = 1:\n"
+				"\tset(next):\n"
+				"\t\twrites += 1\n"
+				"\t\tvalue = next\n"
+				"func replace(value: Variant, next: Variant) -> Array:\n"
+				"\tvalue = next\n"
+				"\treturn [value, self.value, writes]\n"
+				"func replace_local(next: Variant) -> Array:\n"
+				"\tvar value: Variant = 8\n"
+				"\tvalue = next\n"
+				"\treturn [value, self.value, writes]\n",
+				"res://runtime_class/shadowed_assignment.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->_can_instantiate(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		const Array result = owner->call("replace", 7, "parameter");
+		BS_TEST_REQUIRE(result.size() == 3);
+		CHECK(result[0] == Variant("parameter"));
+		CHECK(result[1] == Variant(1));
+		CHECK(result[2] == Variant(0));
+		const Array local_result = owner->call("replace_local", "local");
+		BS_TEST_REQUIRE(local_result.size() == 3);
+		CHECK(local_result[0] == Variant("local"));
+		CHECK(local_result[1] == Variant(1));
+		CHECK(local_result[2] == Variant(0));
+	}
+
+	TEST_CASE("property groups and inherited properties retain engine source order") {
+		const Ref<BaristaScript> script = compile_script(
+				"class Base:\n"
+				"\t@export_group(\"Base options\")\n"
+				"\t@export var base_value: int = 1\n"
+				"class Child extends Base:\n"
+				"\t@export_group(\"Child options\")\n"
+				"\t@export var child_value: int = 2\n",
+				"res://runtime_class/property_order.barista");
+		BS_TEST_REQUIRE(script.is_valid() && script->_can_instantiate());
+		Object *child_object = script->_get_constants().get("Child", Variant());
+		const Ref<BaristaScript> child = Ref<BaristaScript>(Object::cast_to<BaristaScript>(child_object));
+		BS_TEST_REQUIRE(child.is_valid());
+		const TypedArray<Dictionary> properties = child->_get_script_property_list();
+		const int base_group = find_named_index(properties, "Base options");
+		const int base_value = find_named_index(properties, "base_value");
+		const int child_group = find_named_index(properties, "Child options");
+		const int child_value = find_named_index(properties, "child_value");
+		const std::string property_dump = readable(Variant(properties).stringify());
+		CHECK_MESSAGE(base_group >= 0, property_dump);
+		CHECK(base_value == base_group + 1);
+		CHECK(child_group == base_value + 1);
+		CHECK(child_value == child_group + 1);
+		BS_TEST_REQUIRE(base_group >= 0 && child_group >= 0);
+		CHECK((int(Dictionary(properties[base_group]).get("usage", 0)) & PROPERTY_USAGE_GROUP) != 0);
+		CHECK((int(Dictionary(properties[child_group]).get("usage", 0)) & PROPERTY_USAGE_GROUP) != 0);
+	}
+
 	TEST_CASE("script resources retain their ordinary Resource surface") {
 		const Ref<BaristaScript> script = compile_script(
 				"func path_property() -> String:\n"
@@ -216,6 +284,27 @@ TEST_SUITE("runtime_class") {
 		CHECK_MESSAGE(errors.errors().is_empty(), readable(errors.joined()));
 	}
 
+	TEST_CASE("freed-object getter exception stays limited to object carriers") {
+		const Ref<BaristaScript> script = compile_script(
+				"var held: Variant\n"
+				"var probe: int:\n"
+				"\tget:\n"
+				"\t\treturn held\n"
+				"func release() -> void:\n"
+				"\theld = Node.new()\n"
+				"\theld.free()\n",
+				"res://runtime_class/non_object_getter.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->_can_instantiate(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		owner->call("release");
+		RuntimeErrorScope errors;
+		const Variant result = owner->get("probe");
+		CHECK(result.get_type() != Variant::OBJECT);
+		CHECK_MESSAGE(!errors.errors().is_empty(), readable(errors.joined()));
+	}
+
 	TEST_CASE("static initialization runs once and survives instance destruction") {
 		const Ref<BaristaScript> script = compile_script(
 				"static var count: int = 2\n"
@@ -241,6 +330,18 @@ TEST_SUITE("runtime_class") {
 		const Ref<RefCounted> replacement = attach(script);
 		BS_TEST_REQUIRE(replacement.is_valid());
 		CHECK(replacement->call("next") == Variant(8));
+	}
+
+	TEST_CASE("a non-static method named static_init is rejected before execution") {
+		const Ref<BaristaScript> script = compile_script(
+				"var count: int = 0\n"
+				"func _static_init() -> void:\n"
+				"\tcount += 1\n",
+				"res://runtime_class/non_static_initializer.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_FALSE(script->_can_instantiate());
+		CHECK_MESSAGE(script->get_compile_error().contains("Static constructor must be declared static"),
+				readable(script->get_compile_error()));
 	}
 
 	TEST_CASE("static initialization follows inheritance and fails closed") {
@@ -306,6 +407,30 @@ TEST_SUITE("runtime_class") {
 		CHECK(child->get("middle_value") == Variant(2));
 		CHECK(child->get("child_value") == Variant(3));
 		CHECK(child->call("describe") == Variant("base-middle-child"));
+	}
+
+	TEST_CASE("construction ignores an earlier unrelated fault in the outer call") {
+		const Ref<BaristaScript> script = compile_script(
+				"class Thing:\n"
+				"\tvar value: int = 1\n"
+				"func fail_first() -> void:\n"
+				"\tvar empty: Array[int] = []\n"
+				"\tempty[0] = 1\n"
+				"func make_after_failure() -> Variant:\n"
+				"\tfail_first()\n"
+				"\treturn Thing.new()\n",
+				"res://runtime_class/stale_error.barista");
+		BS_TEST_REQUIRE(script.is_valid());
+		CHECK_MESSAGE(script->_can_instantiate(), readable(script->get_compile_error()));
+		const Ref<RefCounted> owner = attach(script);
+		BS_TEST_REQUIRE(owner.is_valid());
+		RuntimeErrorScope errors;
+		const Variant result = owner->call("make_after_failure");
+		CHECK_MESSAGE(errors.has_error_containing("Invalid assignment of property or key '0'"), readable(errors.joined()));
+		BS_TEST_REQUIRE(result.get_type() == Variant::OBJECT);
+		Object *thing = result;
+		BS_TEST_REQUIRE(thing != nullptr);
+		CHECK(thing->get("value") == Variant(1));
 	}
 
 	TEST_CASE("constructed inner classes receive postinitialize and retain their base chain") {

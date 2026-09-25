@@ -37,6 +37,7 @@ constexpr int MAX_CALL_DEPTH = 1024;
 
 thread_local int call_depth = 0;
 thread_local bool runtime_error_reported = false;
+thread_local uint64_t runtime_error_serial = 0;
 
 struct CallDepthGuard {
 	bool entered = false;
@@ -624,6 +625,7 @@ bool call_language_utility(const StringName &p_name, const Variant **p_arguments
 
 /** Reports only the frame that found the fault, not every frame the fault unwinds through. */
 void report_runtime_error_once(const String &p_description, const StringName &p_function, const String &p_file, int p_line) {
+	runtime_error_serial++;
 	if (runtime_error_reported) {
 		return;
 	}
@@ -645,6 +647,10 @@ BaristaScript *script_from_handle(const Variant &p_value) {
 
 bool bs_runtime_error_was_reported() {
 	return runtime_error_reported;
+}
+
+uint64_t bs_runtime_error_serial() {
+	return runtime_error_serial;
 }
 
 Variant BSFunction::call(BSInstance *p_instance, const Variant **p_arguments, int p_argument_count,

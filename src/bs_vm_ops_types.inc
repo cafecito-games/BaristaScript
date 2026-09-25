@@ -140,7 +140,8 @@ case OPCODE_RETURN_TYPED_SCRIPT: {
 	BS_CHECK_SPACE(3);
 	BS_GET_VARIANT_PTR(value, 0);
 	BS_GET_RUNTIME_TYPE(type, code_ptr[BS_IP + 2]);
-	if (allows_freed_object_return && value->get_type() == Variant::OBJECT &&
+	if (allows_freed_object_return && (type.kind == BSRuntimeType::NATIVE || type.kind == BSRuntimeType::SCRIPT) &&
+			value->get_type() == Variant::OBJECT &&
 			value->get_validated_object() == nullptr && (Object *)(*value) != nullptr) {
 		// A freed object is still a meaningful value to `is_instance_valid`. This exception belongs
 		// only to the synthesized getter boundary; a typed local/member assignment must continue to

@@ -636,8 +636,10 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 	}
 	int accessor_member_index = -1;
 	if (assignee->type == BSParser::Node::IDENTIFIER && p_codegen.script != nullptr) {
-		accessor_member_index = p_codegen.script->get_member_index(
-				static_cast<const BSParser::IdentifierNode *>(assignee)->name);
+		const StringName &name = static_cast<const BSParser::IdentifierNode *>(assignee)->name;
+		if (!is_local_or_parameter(p_codegen, name)) {
+			accessor_member_index = p_codegen.script->get_member_index(name);
+		}
 	} else if (assignee->type == BSParser::Node::SUBSCRIPT && p_codegen.script != nullptr) {
 		const BSParser::SubscriptNode *subscript = static_cast<const BSParser::SubscriptNode *>(assignee);
 		if (subscript->is_attribute && subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF) {

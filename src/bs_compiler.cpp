@@ -203,7 +203,8 @@ Error BSCompiler::compile_class_tree(BaristaScript *p_root_script, const BSParse
 				}
 			}
 			BSFunction *const *user_initializer_ptr = script->member_functions.getptr(SNAME("_static_init"));
-			if (user_initializer_ptr != nullptr && *user_initializer_ptr != nullptr) {
+			if (user_initializer_ptr != nullptr && *user_initializer_ptr != nullptr &&
+					(*user_initializer_ptr)->is_static()) {
 				BSFunction *user_initializer = *user_initializer_ptr;
 				GDExtensionCallError call_error;
 				user_initializer->call(nullptr, nullptr, 0, call_error, script);

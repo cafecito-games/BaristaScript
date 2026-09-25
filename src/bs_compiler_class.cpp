@@ -147,6 +147,17 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 	}
 
 	for (const BSParser::ClassNode::Member &member : p_class->members) {
+		if (member.type == BSParser::ClassNode::Member::GROUP) {
+			if (member.annotation != nullptr) {
+				PropertyInfo group;
+				group.name = member.annotation->export_info.name;
+				group.hint = member.annotation->export_info.hint;
+				group.hint_string = member.annotation->export_info.hint_string;
+				group.usage = member.annotation->export_info.usage;
+				p_script->script_properties.push_back(group);
+			}
+			continue;
+		}
 		if (member.type != BSParser::ClassNode::Member::VARIABLE) {
 			continue;
 		}
@@ -257,16 +268,6 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 				if (member.enum_value.identifier != nullptr &&
 						(member.enum_value.parent_enum == nullptr || !member.enum_value.parent_enum->is_tagged_union)) {
 					p_script->constants[member.enum_value.identifier->name] = member.enum_value.value;
-				}
-				break;
-			case BSParser::ClassNode::Member::GROUP:
-				if (member.annotation != nullptr) {
-					PropertyInfo group;
-					group.name = member.annotation->export_info.name;
-					group.hint = member.annotation->export_info.hint;
-					group.hint_string = member.annotation->export_info.hint_string;
-					group.usage = member.annotation->export_info.usage;
-					p_script->script_properties.push_back(group);
 				}
 				break;
 			default:

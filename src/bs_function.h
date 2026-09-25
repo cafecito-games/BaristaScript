@@ -347,4 +347,7 @@ void bs_report_runtime_error(const String &p_description, const String &p_functi
  */
 bool bs_runtime_error_was_reported();
 
+/** Monotonic count of faults raised by VM frames, including faults suppressed after the first. */
+uint64_t bs_runtime_error_serial();
+
 } // namespace barista_script
