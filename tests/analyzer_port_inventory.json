@@ -13261,9 +13261,9 @@
         "R14"
       ],
       "disposition": "downstream",
-      "owner": "#60/#42",
-      "boundary": "Runtime inner-class Script wrappers and compiled Script membership remain M4; SCRIPT native/registry fallback does not substitute for source CLASS.",
-      "rationale": "Runtime inner-class Script wrappers and compiled Script membership remain M4; SCRIPT native/registry fallback does not substitute for source CLASS.",
+      "owner": "#245",
+      "boundary": "#245 owns runtime inner-class Script wrappers, compiled Script membership, construction, and weak base links; cross-file class loading remains #250.",
+      "rationale": "The M4 class model now supplies executable inner-class Script resources and exact compiled-class lookup without treating native/registry SCRIPT fallback as a source CLASS.",
       "upstream": [
         "fs_analyzer.cpp:property_type_from_script:31",
         "fs_type.cpp:check:1",
@@ -13283,8 +13283,18 @@
         "fs_analyzer.h:native_property_metadata:197",
         "fs_analyzer.h:type_from_property:198"
       ],
-      "symbols": [],
-      "tests": [],
+      "symbols": [
+        {
+          "path": "src/barista_script.cpp",
+          "symbol": "BaristaScript::get_compiled_class"
+        }
+      ],
+      "tests": [
+        {
+          "path": "tests/native/runtime_class_test.cpp",
+          "symbol": "TEST_CASE(\"inner classes instantiate and super dispatches across three levels\")"
+        }
+      ],
       "milestone": "M4",
       "branch_keys": [
         "compiled Script/inner class object path and runtime trait carrier"
@@ -15389,9 +15399,9 @@
         "R27"
       ],
       "disposition": "downstream",
-      "owner": "#246/#245",
-      "boundary": "#246 owns the runtime Script/container descriptor and typed VM boundaries; #245 shares class/member exposure and construction.",
-      "rationale": "The M4 runtime descriptor is implemented by #246 and consumed jointly with #245 where class/member exposure constructs or stores typed values.",
+      "owner": "#245",
+      "boundary": "#245 owns Script runtime descriptors at class/member exposure and construction boundaries; generic container specialization remains outside this class-model slice.",
+      "rationale": "The M4 class model consumes the runtime descriptor from #246 for exact inner-class resolution, typed property stores, and constructed return values.",
       "upstream": [
         "fs_analyzer.cpp:make_expression_reduced_value:12",
         "fs_analyzer.cpp:make_call_reduced_value:13",
@@ -15405,8 +15415,18 @@
         "fs_analyzer.h:make_dictionary_from_element_datatype:192",
         "fs_analyzer.h:make_variable_default_value:193"
       ],
-      "symbols": [],
-      "tests": [],
+      "symbols": [
+        {
+          "path": "src/bs_runtime_type.cpp",
+          "symbol": "resolve_script_type(const BSParser::DataType"
+        }
+      ],
+      "tests": [
+        {
+          "path": "tests/native/runtime_class_test.cpp",
+          "symbol": "TEST_CASE(\"inner classes instantiate and super dispatches across three levels\")"
+        }
+      ],
       "milestone": "M4",
       "branch_keys": [
         "runtime Script/ContainerType descriptors and instance construction"

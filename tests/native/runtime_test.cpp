@@ -580,9 +580,10 @@ TEST_SUITE("runtime") {
 
 		GDExtensionPropertyInfo validated = {};
 		CHECK_FALSE(vtable->validate_property_func(instance, &validated));
-		CHECK_FALSE(vtable->property_can_revert_func(instance, &slot_name));
+		CHECK(vtable->property_can_revert_func(instance, &slot_name));
 		Variant revert;
-		CHECK_FALSE(vtable->property_get_revert_func(instance, &slot_name, &revert));
+		CHECK(vtable->property_get_revert_func(instance, &slot_name, &revert));
+		CHECK(revert == Variant(3));
 
 		CHECK(vtable->get_owner_func(instance) == owner->_owner);
 
@@ -622,8 +623,7 @@ TEST_SUITE("runtime") {
 		GDExtensionBool to_string_is_valid = false;
 		String text;
 		vtable->to_string_func(instance, &to_string_is_valid, &text);
-		CHECK(to_string_is_valid);
-		CHECK(text.contains("BaristaScript"));
+		CHECK_FALSE(to_string_is_valid);
 
 		vtable->refcount_incremented_func(instance);
 		CHECK(vtable->refcount_decremented_func(instance));
@@ -711,30 +711,6 @@ TEST_SUITE("runtime") {
 		// Integer elements left in a float loop variable would halve to 0 and 1 rather than 0.5 and 1.5.
 		CHECK(owner->call("halve_each", values) == Variant(2.0));
 		CHECK(owner->call("halve_range", 4) == Variant(3.0));
-	}
-
-	TEST_CASE("a member kind the runtime cannot compile is refused by name") {
-		struct Row {
-			const char *source;
-			const char *path;
-			const char *named;
-		};
-		const Row rows[] = {
-			{ "signal done(value: int)\n\nfunc run() -> int:\n\treturn 1\n",
-					"res://runtime/member_signal.barista", "done" },
-			{ "enum Kind:\n\tA = 0\n\tB = 1\n\nfunc run() -> int:\n\treturn 1\n",
-					"res://runtime/member_enum.barista", "Kind" },
-			{ "class Inner:\n\tvar value: int = 1\n\nfunc run() -> int:\n\treturn 1\n",
-					"res://runtime/member_class.barista", "Inner" },
-		};
-		for (const Row &row : rows) {
-			const Ref<BaristaScript> script = compile_script(row.source, row.path);
-			BS_TEST_REQUIRE(script.is_valid());
-			CHECK_FALSE(script->_can_instantiate());
-			const String diagnostic = script->get_compile_error();
-			CHECK_MESSAGE(diagnostic.contains(row.named), readable(diagnostic));
-			CHECK(script->_instance_create(nullptr) == nullptr);
-		}
 	}
 
 	TEST_CASE("an abstract class cannot be instantiated through the engine's own entry point") {

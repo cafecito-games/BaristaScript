@@ -590,12 +590,18 @@ void BSByteCodeGenerator::write_get_member(const Address &p_target, const String
 	append(p_name);
 }
 
-void BSByteCodeGenerator::write_set_static_variable(const Address &, const Address &, int) {
-	refuse("a store into a static variable");
+void BSByteCodeGenerator::write_set_static_variable(const Address &p_value, const Address &p_class, int p_index) {
+	append_opcode(BSFunction::OPCODE_SET_STATIC_VARIABLE);
+	append(p_value);
+	append(p_class);
+	append(p_index);
 }
 
-void BSByteCodeGenerator::write_get_static_variable(const Address &, const Address &, int) {
-	refuse("a read of a static variable");
+void BSByteCodeGenerator::write_get_static_variable(const Address &p_target, const Address &p_class, int p_index) {
+	append_opcode(BSFunction::OPCODE_GET_STATIC_VARIABLE);
+	append(p_target);
+	append(p_class);
+	append(p_index);
 }
 
 void BSByteCodeGenerator::write_assign(const Address &p_target, const Address &p_source) {

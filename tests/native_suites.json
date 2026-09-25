@@ -54,11 +54,13 @@
     "analyzer_corpus",
     "runtime_corpus",
     "runtime",
+    "runtime_class",
     "runtime_types",
     "runtime_expressions",
     "runtime_scene"
   ],
   "editor_import": [
-    "global_class"
+    "global_class",
+    "runtime_class"
   ]
 }

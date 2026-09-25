@@ -44,6 +44,11 @@ Ref<Script> resolve_script_type(const BSParser::DataType &p_type, BaristaScript 
 	if (p_type.script_type.is_valid()) {
 		return p_type.script_type;
 	}
+	if (p_type.kind == BSParser::DataType::CLASS && p_type.class_type != nullptr && p_owner != nullptr) {
+		if (BaristaScript *compiled = p_owner->get_compiled_class(p_type.class_type->fqcn)) {
+			return Ref<Script>(compiled);
+		}
+	}
 	const String path = p_type.declaring_script_path();
 	if (p_owner != nullptr && (path.is_empty() || BaristaScript::is_canonically_equal_paths(path, p_owner->get_path()))) {
 		return Ref<Script>(p_owner);

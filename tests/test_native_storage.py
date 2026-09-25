@@ -22,10 +22,10 @@ BUILD_DIR = runner.DEFAULT_BUILD_DIR
 
 
 class PreparationTests(unittest.TestCase):
-    def test_global_class_requires_editor_import(self):
+    def test_editor_dependent_suites_require_editor_import(self):
         imports = getattr(runner, "editor_import_suites", None)
         self.assertTrue(callable(imports), "manifest must own native editor preparation")
-        self.assertEqual(imports(), ["global_class"])
+        self.assertEqual(imports(), ["global_class", "runtime_class"])
 
     def test_invalid_editor_import_manifest_fails(self):
         imports = getattr(runner, "editor_import_suites", None)

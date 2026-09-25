@@ -50,7 +50,22 @@ Error BSCompiler::resolve_base(BaristaScript *p_script, const BSParser::ClassNod
 		case BSParser::DataType::NATIVE:
 			p_script->instance_base_type = base.native_type;
 			break;
-		case BSParser::DataType::CLASS:
+		case BSParser::DataType::CLASS: {
+			if (base.class_type == nullptr || !class_scripts.has(base.class_type)) {
+				set_error(vformat(R"(Cannot run a script that extends "%s": cross-file bases are not compiled by this lane.)",
+								  base.to_string()),
+						p_class);
+				return ERR_COMPILATION_FAILED;
+			}
+			const Ref<BaristaScript> *base_script_ptr = class_scripts.getptr(base.class_type);
+			if (base_script_ptr == nullptr) {
+				set_error("The runtime lost the registered base class while compiling it.", p_class);
+				return ERR_COMPILATION_FAILED;
+			}
+			const Ref<BaristaScript> base_script = *base_script_ptr;
+			p_script->base_script_id = base_script->get_instance_id();
+			p_script->instance_base_type = base_script->instance_base_type;
+		} break;
 		case BSParser::DataType::SCRIPT:
 			set_error(vformat(R"(Cannot run a script that extends "%s": a script base is resolved by the cross-file compilation path.)",
 							  base.to_string()),
@@ -69,7 +84,7 @@ Error BSCompiler::resolve_base(BaristaScript *p_script, const BSParser::ClassNod
 }
 
 Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNode *p_class) {
-	p_script->release_compiled_state();
+	p_script->release_compiled_state(true);
 
 	// A file that declares a trait, an enum or a tuple declares a type, not a runnable class, and a
 	// generic class has no runtime form until its type arguments are reified. None of them has an
@@ -78,8 +93,12 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 		set_error("A trait declares a contract, not a runnable class.", p_class);
 		return ERR_COMPILATION_FAILED;
 	}
-	if (p_class->is_enum_file || p_class->is_tuple_file) {
-		set_error("A type declaration file has no runnable class.", p_class);
+	if (p_class->is_enum_file) {
+		set_error("An enum declaration file declares a value type, not a runnable class.", p_class);
+		return ERR_COMPILATION_FAILED;
+	}
+	if (p_class->is_tuple_file) {
+		set_error("A tuple declaration file declares a value type, not a runnable class.", p_class);
 		return ERR_COMPILATION_FAILED;
 	}
 	if (!p_class->type_parameters.is_empty()) {
@@ -90,15 +109,32 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 	if (resolve_base(p_script, p_class) != OK) {
 		return ERR_COMPILATION_FAILED;
 	}
+	if (BaristaScript *base = p_script->get_base_barista_script()) {
+		p_script->member_names = base->member_names;
+		p_script->member_carriers = base->member_carriers;
+		p_script->member_types = base->member_types;
+		p_script->member_properties = base->member_properties;
+		p_script->member_setters = base->member_setters;
+		p_script->member_getters = base->member_getters;
+		p_script->member_indices = base->member_indices;
+	}
 
 	// Every member is accounted for before any of them is lowered. A kind that is skipped instead of
 	// refused produces a script that compiles, runs, and is missing whatever the skipped member
 	// declared -- a signal that cannot be emitted, an enum whose qualified form resolves to nothing.
 	for (const BSParser::ClassNode::Member &member : p_class->members) {
+		if (member.get_source_node() != nullptr && member.type != BSParser::ClassNode::Member::GROUP) {
+			p_script->member_lines[member.get_name()] = member.get_line();
+		}
 		switch (member.type) {
 			case BSParser::ClassNode::Member::VARIABLE:
 			case BSParser::ClassNode::Member::FUNCTION:
 			case BSParser::ClassNode::Member::CONSTANT:
+			case BSParser::ClassNode::Member::SIGNAL:
+			case BSParser::ClassNode::Member::ENUM:
+			case BSParser::ClassNode::Member::ENUM_VALUE:
+			case BSParser::ClassNode::Member::GROUP:
+			case BSParser::ClassNode::Member::CLASS:
 				// A constant is folded into the expressions that read it, so it needs no member slot.
 				break;
 			default:
@@ -111,13 +147,19 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 	}
 
 	for (const BSParser::ClassNode::Member &member : p_class->members) {
-		if (member.type != BSParser::ClassNode::Member::VARIABLE) {
+		if (member.type == BSParser::ClassNode::Member::GROUP) {
+			if (member.annotation != nullptr) {
+				PropertyInfo group;
+				group.name = member.annotation->export_info.name;
+				group.hint = member.annotation->export_info.hint;
+				group.hint_string = member.annotation->export_info.hint_string;
+				group.usage = member.annotation->export_info.usage;
+				p_script->script_properties.push_back(group);
+			}
 			continue;
 		}
-		if (member.variable->is_static) {
-			set_error(vformat(R"(Cannot run a script with the static variable "%s".)", member.get_name()), member.variable);
-			p_script->release_compiled_state();
-			return ERR_COMPILATION_FAILED;
+		if (member.type != BSParser::ClassNode::Member::VARIABLE) {
+			continue;
 		}
 		const StringName name = member.variable->identifier->name;
 		if (refuse_unchecked_slot(member_slot_type(member.variable->get_datatype()),
@@ -140,11 +182,97 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 			p_script->release_compiled_state();
 			return ERR_COMPILATION_FAILED;
 		}
+		StringName setter;
+		StringName getter;
+		switch (member.variable->property) {
+			case BSParser::VariableNode::PROP_INLINE:
+				if (member.variable->setter != nullptr) {
+					setter = member.variable->setter->identifier->name;
+				}
+				if (member.variable->getter != nullptr) {
+					getter = member.variable->getter->identifier->name;
+				}
+				break;
+			case BSParser::VariableNode::PROP_SETGET:
+				if (member.variable->setter_pointer != nullptr) {
+					setter = member.variable->setter_pointer->name;
+				}
+				if (member.variable->getter_pointer != nullptr) {
+					getter = member.variable->getter_pointer->name;
+				}
+				break;
+			case BSParser::VariableNode::PROP_NONE:
+				break;
+		}
+		PropertyInfo property = slot.to_property_info(name);
+		if (member.variable->exported) {
+			const PropertyInfo &exported = member.variable->export_info;
+			if (slot.is_variant()) {
+				property.type = exported.type;
+				property.class_name = exported.class_name;
+			}
+			property.hint = exported.hint;
+			property.hint_string = exported.hint_string;
+			property.usage = exported.usage;
+		}
+		property.usage |= PROPERTY_USAGE_SCRIPT_VARIABLE;
+		if (member.variable->is_static) {
+			p_script->static_indices[name] = p_script->static_names.size();
+			p_script->static_names.push_back(name);
+			p_script->static_values.push_back(Variant());
+			p_script->static_types.push_back(runtime_type);
+			p_script->static_setters.push_back(setter);
+			p_script->static_getters.push_back(getter);
+			continue;
+		}
+
 		p_script->member_indices[name] = p_script->member_names.size();
 		p_script->member_names.push_back(name);
 		p_script->member_carriers.push_back(
 				slot.kind == BSParser::DataType::BUILTIN ? slot.builtin_type : Variant::NIL);
 		p_script->member_types.push_back(runtime_type);
+		p_script->member_setters.push_back(setter);
+		p_script->member_getters.push_back(getter);
+		p_script->member_properties.push_back(property);
+		p_script->script_properties.push_back(property);
+
+		if (member.variable->initializer != nullptr && member.variable->initializer->is_constant) {
+			Variant converted;
+			String conversion_error;
+			if (runtime_type.convert(member.variable->initializer->reduced_value, converted, conversion_error, true)) {
+				p_script->member_default_values[name] = converted;
+			}
+		}
+	}
+
+	for (const BSParser::ClassNode::Member &member : p_class->members) {
+		switch (member.type) {
+			case BSParser::ClassNode::Member::CONSTANT:
+				if (member.constant != nullptr && member.constant->initializer != nullptr) {
+					p_script->constants[member.constant->identifier->name] = member.constant->initializer->reduced_value;
+				}
+				break;
+			case BSParser::ClassNode::Member::SIGNAL:
+				if (member.signal != nullptr && member.signal->identifier != nullptr) {
+					const StringName name = member.signal->identifier->name;
+					p_script->signals[name] = member.signal->method_info;
+					p_script->signal_order.push_back(name);
+				}
+				break;
+			case BSParser::ClassNode::Member::ENUM:
+				if (member.m_enum != nullptr && member.m_enum->identifier != nullptr) {
+					p_script->constants[member.m_enum->identifier->name] = member.m_enum->dictionary;
+				}
+				break;
+			case BSParser::ClassNode::Member::ENUM_VALUE:
+				if (member.enum_value.identifier != nullptr &&
+						(member.enum_value.parent_enum == nullptr || !member.enum_value.parent_enum->is_tagged_union)) {
+					p_script->constants[member.enum_value.identifier->name] = member.enum_value.value;
+				}
+				break;
+			default:
+				break;
+		}
 	}
 
 	if (compile_implicit_initializer(p_script, p_class) != OK) {
@@ -153,19 +281,56 @@ Error BSCompiler::compile_class(BaristaScript *p_script, const BSParser::ClassNo
 	}
 
 	for (const BSParser::ClassNode::Member &member : p_class->members) {
-		if (member.type != BSParser::ClassNode::Member::FUNCTION) {
-			continue;
+		Vector<const BSParser::FunctionNode *> functions;
+		if (member.type == BSParser::ClassNode::Member::FUNCTION) {
+			functions.push_back(member.function);
+		} else if (member.type == BSParser::ClassNode::Member::VARIABLE &&
+				member.variable->property == BSParser::VariableNode::PROP_INLINE) {
+			if (member.variable->setter != nullptr) {
+				functions.push_back(member.variable->setter);
+			}
+			if (member.variable->getter != nullptr) {
+				functions.push_back(member.variable->getter);
+			}
 		}
-		const BSParser::FunctionNode *function_node = member.function;
-		if (!function_node->has_body || function_node->body == nullptr) {
-			continue;
+		for (const BSParser::FunctionNode *function_node : functions) {
+			if (function_node == nullptr || !function_node->has_body || function_node->body == nullptr) {
+				continue;
+			}
+			BSFunction *function = nullptr;
+			if (compile_function(p_script, p_class, function_node, &function) != OK) {
+				p_script->release_compiled_state();
+				return ERR_COMPILATION_FAILED;
+			}
+			function->allows_freed_object_return = member.type == BSParser::ClassNode::Member::VARIABLE &&
+					member.variable->property == BSParser::VariableNode::PROP_INLINE &&
+					member.variable->getter == function_node;
+			if (member.type == BSParser::ClassNode::Member::VARIABLE) {
+				MethodInfo accessor;
+				accessor.name = function_node->identifier->name;
+				if (function_node->is_static) {
+					accessor.flags |= METHOD_FLAG_STATIC;
+				}
+				const StringName property_name = member.variable->identifier->name;
+				PropertyInfo property = member_slot_type(member.variable->get_datatype()).to_property_info(property_name);
+				if (member.variable->getter == function_node) {
+					property.name = StringName();
+					accessor.return_val = property;
+				} else if (member.variable->setter == function_node) {
+					property.name = member.variable->setter_parameter != nullptr
+							? member.variable->setter_parameter->name
+							: SNAME("value");
+					accessor.arguments.push_back(property);
+				}
+				function->method_info = accessor;
+			}
+			p_script->member_functions[function_node->identifier->name] = function;
+			p_script->member_function_order.push_back(function_node->identifier->name);
 		}
-		BSFunction *function = nullptr;
-		if (compile_function(p_script, p_class, function_node, &function) != OK) {
-			p_script->release_compiled_state();
-			return ERR_COMPILATION_FAILED;
-		}
-		p_script->member_functions[function_node->identifier->name] = function;
+	}
+	if (compile_static_initializer(p_script, p_class) != OK) {
+		p_script->release_compiled_state(true);
+		return ERR_COMPILATION_FAILED;
 	}
 
 	p_script->valid = true;
@@ -232,6 +397,69 @@ Error BSCompiler::compile_implicit_initializer(BaristaScript *p_script, const BS
 		return ERR_COMPILATION_FAILED;
 	}
 	p_script->implicit_initializer = function;
+	return OK;
+}
+
+Error BSCompiler::compile_static_initializer(BaristaScript *p_script, const BSParser::ClassNode *p_class) {
+	bool has_static_work = false;
+	for (const BSParser::ClassNode::Member &member : p_class->members) {
+		if ((member.type == BSParser::ClassNode::Member::VARIABLE && member.variable->is_static) ||
+				(member.type == BSParser::ClassNode::Member::FUNCTION && member.function->is_static &&
+						member.function->identifier->name == SNAME("_static_init"))) {
+			has_static_work = true;
+			break;
+		}
+	}
+	if (!has_static_work) {
+		return OK;
+	}
+
+	BSByteCodeGenerator generator;
+	CodeGen codegen;
+	codegen.generator = &generator;
+	codegen.script = p_script;
+	codegen.class_node = p_class;
+	codegen.function_name = SNAME("@static_initializer");
+	generator.write_start(p_script, codegen.function_name, true, Variant(), BSParser::DataType());
+	generator.set_initial_line(p_class->start_line);
+	generator.start_parameters();
+	generator.end_parameters();
+	const BSCodeGenerator::Address class_address(BSCodeGenerator::Address::CLASS);
+	Error result = OK;
+	for (const BSParser::ClassNode::Member &member : p_class->members) {
+		if (member.type != BSParser::ClassNode::Member::VARIABLE || !member.variable->is_static) {
+			continue;
+		}
+		const StringName name = member.variable->identifier->name;
+		const int index = p_script->get_static_index(name);
+		const BSParser::DataType slot = member_slot_type(member.variable->get_datatype());
+		generator.write_newline(member.variable->start_line);
+		if (member.variable->initializer == nullptr) {
+			if (slot.kind == BSParser::DataType::BUILTIN && slot.builtin_type != Variant::NIL) {
+				const BSCodeGenerator::Address empty = codegen.add_temporary(slot);
+				generator.clear_address(empty);
+				generator.write_set_static_variable(empty, class_address, index);
+				generator.pop_temporary();
+			}
+			continue;
+		}
+		const BSCodeGenerator::Address value = parse_expression(codegen, result, member.variable->initializer);
+		if (result != OK) {
+			return result;
+		}
+		generator.write_set_static_variable(value, class_address, index);
+		if (value.mode == BSCodeGenerator::Address::TEMPORARY) {
+			generator.pop_temporary();
+		}
+		generator.clear_temporaries();
+	}
+	generator.write_return(codegen.add_constant(Variant()));
+	BSFunction *function = generator.write_end();
+	if (function == nullptr) {
+		set_error(vformat("The runtime cannot compile %s in the static initializer.", generator.get_error()), p_class);
+		return ERR_COMPILATION_FAILED;
+	}
+	p_script->static_initializer = function;
 	return OK;
 }
 
@@ -309,6 +537,7 @@ Error BSCompiler::compile_function(BaristaScript *p_script, const BSParser::Clas
 				p_function);
 		return ERR_COMPILATION_FAILED;
 	}
+	function->method_info = p_function->info;
 	*r_function = function;
 	return OK;
 }

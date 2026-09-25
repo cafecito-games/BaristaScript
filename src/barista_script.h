@@ -35,8 +35,13 @@ class BaristaScript final : public godot::ScriptExtension {
 	 */
 	bool valid = false;
 	godot::String compile_error;
+	bool declaration_kind_known = false;
+	BSDeclarationKind declaration_kind = BSDeclarationKind::NONE;
+	bool compiled_abstract = false;
 	godot::StringName instance_base_type;
-	godot::Ref<BaristaScript> base_script;
+	uint64_t base_script_id = 0;
+	godot::HashMap<godot::StringName, godot::Ref<BaristaScript>> inner_classes;
+	godot::HashMap<godot::String, uint64_t> compiled_class_ids;
 	godot::Vector<godot::StringName> member_names;
 	// The declared carrier of each member, by the same index. A value stored from outside a compiled
 	// function -- the inspector, a scene, GDScript -- has to meet the declaration the same way a
@@ -45,12 +50,35 @@ class BaristaScript final : public godot::ScriptExtension {
 	// Full declaration descriptors for stores arriving through the engine-facing property API.
 	// Compiled stores carry the same BSRuntimeType through their function table.
 	godot::Vector<BSRuntimeType> member_types;
+	// Engine-facing property metadata, parallel to the member slot vectors above. Groups and other
+	// source-order-only entries live in `script_properties` instead because they own no value slot.
+	godot::Vector<godot::PropertyInfo> member_properties;
+	godot::Vector<godot::StringName> member_setters;
+	godot::Vector<godot::StringName> member_getters;
 	godot::HashMap<godot::StringName, int> member_indices;
+	godot::Vector<godot::PropertyInfo> script_properties;
+	godot::HashMap<godot::StringName, godot::Variant> member_default_values;
+	godot::HashMap<godot::StringName, int> member_lines;
+	godot::HashMap<godot::StringName, godot::Variant> constants;
+	godot::HashMap<godot::StringName, godot::MethodInfo> signals;
+	godot::Vector<godot::StringName> signal_order;
 	godot::HashMap<godot::StringName, BSFunction *> member_functions;
+	godot::Vector<godot::StringName> member_function_order;
 	BSFunction *implicit_initializer = nullptr;
+	godot::Vector<godot::StringName> static_names;
+	godot::Vector<godot::Variant> static_values;
+	godot::Vector<BSRuntimeType> static_types;
+	godot::Vector<godot::StringName> static_setters;
+	godot::Vector<godot::StringName> static_getters;
+	godot::HashMap<godot::StringName, int> static_indices;
+	BSFunction *static_initializer = nullptr;
 	godot::HashSet<BSInstance *> instances;
+	mutable godot::HashSet<void *> placeholders;
 
-	void release_compiled_state();
+	void release_compiled_state(bool p_preserve_declaration = false);
+	bool run_initializers(BSInstance *p_instance) const;
+	void *create_instance_handle(godot::Object *p_owner, const godot::Variant **p_arguments,
+			int p_argument_count) const;
 
 protected:
 	static void _bind_methods();
@@ -127,7 +155,8 @@ public:
 	godot::String get_compile_error() const { return compile_error; }
 	/** The compiled function this script or one of its bases declares, or null. */
 	BSFunction *find_function(const godot::StringName &p_name) const;
-	BaristaScript *get_base_barista_script() const { return base_script.ptr(); }
+	BaristaScript *get_base_barista_script() const;
+	BaristaScript *get_compiled_class(const godot::String &p_fqcn) const;
 	const godot::Vector<godot::StringName> &get_member_names() const { return member_names; }
 	/** The declared carrier of the member at `p_index`, or NIL when it is untyped. */
 	godot::Variant::Type get_member_carrier(int p_index) const {
@@ -136,7 +165,27 @@ public:
 	const BSRuntimeType *get_member_type(int p_index) const {
 		return p_index >= 0 && p_index < member_types.size() ? &member_types[p_index] : nullptr;
 	}
+	const godot::PropertyInfo *get_member_property(int p_index) const {
+		return p_index >= 0 && p_index < member_properties.size() ? &member_properties[p_index] : nullptr;
+	}
+	const godot::StringName &get_member_setter(int p_index) const {
+		static const godot::StringName empty;
+		return p_index >= 0 && p_index < member_setters.size() ? member_setters[p_index] : empty;
+	}
+	const godot::StringName &get_member_getter(int p_index) const {
+		static const godot::StringName empty;
+		return p_index >= 0 && p_index < member_getters.size() ? member_getters[p_index] : empty;
+	}
 	int get_member_index(const godot::StringName &p_name) const;
+	int get_static_index(const godot::StringName &p_name) const;
+	bool get_static_value(int p_index, godot::Variant &r_value) const;
+	bool set_static_value(int p_index, const godot::Variant &p_value, godot::String &r_error);
+	bool get_static_property(const godot::StringName &p_name, godot::Variant &r_value);
+	bool set_static_property(const godot::StringName &p_name, const godot::Variant &p_value, godot::String &r_error);
+	godot::Variant call_static(const godot::StringName &p_method, const godot::Variant **p_arguments,
+			int p_argument_count, GDExtensionCallError &r_error, BaristaScript *p_receiver = nullptr);
+	/** Creates an object owned by this class and runs `_init` with the supplied arguments. */
+	godot::Variant instantiate(const godot::Variant **p_arguments, int p_argument_count, GDExtensionCallError &r_error);
 	/** Appends this script's methods, and its bases', with each one's declared argument count. */
 	void collect_method_signatures(godot::Vector<godot::StringName> &r_names, godot::Vector<int> &r_argument_counts) const;
 	/** Compiles the current source, replacing any previous compiled form. */
@@ -144,6 +193,7 @@ public:
 	void notify_instance_freed(BSInstance *p_instance) { instances.erase(p_instance); }
 	/** How many instances this script still lists. Zero once every owner has been freed. */
 	int get_instance_count() const { return instances.size(); }
+	int get_placeholder_count() const { return placeholders.size(); }
 };
 
 } // namespace barista_script
