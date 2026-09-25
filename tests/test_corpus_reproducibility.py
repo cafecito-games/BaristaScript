@@ -429,12 +429,13 @@ class TriageWorkflowContract(unittest.TestCase):
 
 
 class LinuxVerificationWorkflowContract(unittest.TestCase):
-    """Negative coverage for the named Linux debug verification steps.
+    """Negative coverage for the parallel named Linux verification steps.
 
-    The steps run in separate shells and consume one another's build trees, so a step that
+    Each job's steps run in separate shells and consume one another's build trees, so a step that
     lost a command or its name, stopped propagating a failure, stopped re-deriving the Godot
-    binary, or moved relative to its neighbours would still leave every general runner audit
-    satisfied. Each mutation below must be refused by check_linux_verification_wiring.
+    binary, moved relative to its neighbours, or moved back onto the matrix critical path would
+    still leave every general runner audit satisfied. Each mutation below must be refused by
+    check_linux_verification_wiring.
     """
 
     def setUp(self):
@@ -443,6 +444,8 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
         self.audit = getattr(validate_ci, "check_linux_verification_wiring", None)
         self.assertIsNotNone(self.audit, "Linux verification step audit missing")
         self.step_count = len(validate_ci.LINUX_VERIFICATION_STEPS)
+        self.cmake_step_count = len(validate_ci.CMAKE_VERIFICATION_PREFIX) + len(
+            validate_ci.CMAKE_VERIFICATION_STEPS)
         self.yaml = yaml
         self.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.document = yaml.load(self.workflow, Loader=yaml.BaseLoader)
@@ -467,6 +470,39 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
         names = [steps[index].get("name", "") for index in self.verification_indices(self.document)]
         self.assertTrue(all(names), names)
         self.assertEqual(len(set(names)), len(names), names)
+        cmake_steps = self.document["jobs"]["native-cmake-verification"]["steps"]
+        cmake_names = [step.get("name", "") for step in cmake_steps]
+        self.assertTrue(all(cmake_names), cmake_names)
+        self.assertEqual(len(set(cmake_names)), len(cmake_names), cmake_names)
+
+    def test_cmake_job_and_every_step_are_pinned(self):
+        job = self.document["jobs"]["native-cmake-verification"]
+        self.assertEqual(len(job["steps"]), self.cmake_step_count)
+        self.assertNotIn("needs", job, "the CMake chain must start alongside the matrix")
+        mutations = {
+            "move behind the matrix": lambda document: document["jobs"][
+                "native-cmake-verification"].update({"needs": "build"}),
+            "change runner": lambda document: document["jobs"][
+                "native-cmake-verification"].update({"runs-on": "ubuntu-latest"}),
+            "disable job": lambda document: document["jobs"][
+                "native-cmake-verification"].update({"if": "false"}),
+        }
+        for index, step in enumerate(job["steps"]):
+            mutations[f"drop step {index}"] = lambda document, index=index: document["jobs"][
+                "native-cmake-verification"]["steps"].pop(index)
+            mutations[f"rename step {index}"] = lambda document, index=index: document["jobs"][
+                "native-cmake-verification"]["steps"][index].update({"name": "Changed"})
+            if "run" in step:
+                mutations[f"suppress step {index}"] = lambda document, index=index: document["jobs"][
+                    "native-cmake-verification"]["steps"][index].update(
+                        {"run": document["jobs"]["native-cmake-verification"]["steps"][index][
+                            "run"].rstrip() + " || true\n"})
+        for name, mutate in mutations.items():
+            document = copy.deepcopy(self.document)
+            mutate(document)
+            self.assertNotEqual(document, self.document, name)
+            with self.subTest(mutation=name):
+                self.assertIsNotNone(self.audit(self.yaml.safe_dump(document)), name)
 
     def test_a_weakened_step_is_refused(self):
         indices = self.verification_indices(self.document)
@@ -547,9 +583,6 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
         scope = [index for index in indices if steps[index].get("id") == "transition_scope"]
         self.assertEqual([steps[index]["name"] for index in gated], [
             "Verify the SCons native test off/on transition",
-            "Build and run the native suites with CMake",
-            "Verify incremental native CMake rebuilds",
-            "Verify the CMake native test off/on transition",
         ])
         self.assertEqual([steps[index]["name"] for index in unconditional], [
             "Verify editor recognition and GDScript suites",
@@ -559,11 +592,27 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
         ])
         self.assertEqual(len(scope), 1)
         self.assertLess(scope[0], gated[0])
+        cmake_steps = self.document["jobs"]["native-cmake-verification"]["steps"]
+        cmake_scope = [index for index, step in enumerate(cmake_steps)
+                       if step.get("id") == "transition_scope"]
+        cmake_gated = [index for index, step in enumerate(cmake_steps)
+                       if step.get("if") == validate_ci.CMAKE_TRANSITION_CONDITION]
+        self.assertEqual(len(cmake_scope), 1)
+        self.assertTrue(cmake_gated)
+        self.assertLess(cmake_scope[0], cmake_gated[0])
 
         def rewrite_gates(old, new):
             def mutate(document):
                 for index in gated:
                     step = document["jobs"]["build"]["steps"][index]
+                    self.assertIn(old, step["if"])
+                    step["if"] = step["if"].replace(old, new)
+            return mutate
+
+        def rewrite_cmake_gates(old, new):
+            def mutate(document):
+                for index in cmake_gated:
+                    step = document["jobs"]["native-cmake-verification"]["steps"][index]
                     self.assertIn(old, step["if"])
                     step["if"] = step["if"].replace(old, new)
             return mutate
@@ -576,6 +625,17 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
             "the event exemption narrowed so push and merge_group are gated": rewrite_gates(
                 "github.event_name != 'pull_request'", "github.event_name == 'workflow_dispatch'"),
             "a gate reading another step": rewrite_gates("steps.transition_scope.", "steps.versions."),
+            "a CMake gate that is always false": rewrite_cmake_gates(
+                "steps.transition_scope.outputs.required != 'false'",
+                "steps.transition_scope.outputs.required == 'never'"),
+            "a CMake gate that fails closed on a missing decision": rewrite_cmake_gates(
+                "!= 'false'", "== 'true'"),
+            "the CMake gate applied to every event": rewrite_cmake_gates(
+                "github.event_name != 'pull_request' || ", ""),
+            "the CMake event exemption narrowed so push and merge_group are gated": rewrite_cmake_gates(
+                "github.event_name != 'pull_request'", "github.event_name == 'workflow_dispatch'"),
+            "a CMake gate reading another step": rewrite_cmake_gates(
+                "steps.transition_scope.", "steps.versions."),
             "the gate applied to the SCons test build": lambda document: document["jobs"]["build"]["steps"][
                 unconditional[2]].update({"if": validate_ci.LINUX_TRANSITION_CONDITION}),
             "the gate applied to the runtime fixture": lambda document: document["jobs"]["build"]["steps"][
@@ -605,14 +665,15 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
     def test_unbounded_or_reduced_cmake_parallelism_is_refused(self):
         """A bare --parallel is an unbounded make -j with the Makefiles generator, and the rebuild
         script's own --jobs default is lower than the runner provides, so both counts are pinned."""
-        steps = self.document["jobs"]["build"]["steps"]
+        steps = self.document["jobs"]["native-cmake-verification"]["steps"]
         bounded = "cmake --build build/native-cmake --parallel 4"
         rebuild = "python3 tests/test_native_cmake_rebuild.py"
-        indices = self.verification_indices(self.document)
+        indices = range(len(steps))
         builds = [(index, number) for index in indices
-                  for number, line in enumerate(steps[index]["run"].splitlines()) if line.strip() == bounded]
+                  for number, line in enumerate(steps[index].get("run", "").splitlines())
+                  if line.strip() == bounded]
         rebuilds = [(index, number, line) for index in indices
-                    for number, line in enumerate(steps[index]["run"].splitlines())
+                    for number, line in enumerate(steps[index].get("run", "").splitlines())
                     if line.strip().startswith(rebuild)]
         self.assertEqual(len(builds), 3, "every CMake native test build uses four jobs")
         self.assertEqual(len(rebuilds), 1, "one incremental rebuild verification")
@@ -620,7 +681,7 @@ class LinuxVerificationWorkflowContract(unittest.TestCase):
 
         def rewrite(index, number, old, new):
             def mutate(document):
-                step = document["jobs"]["build"]["steps"][index]
+                step = document["jobs"]["native-cmake-verification"]["steps"][index]
                 lines = step["run"].splitlines()
                 self.assertIn(old, lines[number])
                 lines[number] = lines[number].replace(old, new)
