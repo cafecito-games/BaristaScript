@@ -1629,7 +1629,12 @@ bool BSAnalyzer::resolve_class_member(BSParser::ClassNode *p_class, int p_index,
 			}
 			member.enum_value.identifier->set_datatype(make_class_enum_type("<anonymous enum>", p_class, parser->script_path, false));
 		} break;
-		case BSParser::ClassNode::Member::GROUP:
+		case BSParser::ClassNode::Member::GROUP: {
+			if (member.annotation != nullptr) {
+				resolve_annotation(member.annotation, BSParser::AnnotationDeclarationNode::TARGET_NONE);
+				member.annotation->apply(parser, nullptr, p_class);
+			}
+		} break;
 		case BSParser::ClassNode::Member::UNDEFINED:
 			break;
 		case BSParser::ClassNode::Member::TYPE_ALIAS: {

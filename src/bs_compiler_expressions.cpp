@@ -27,8 +27,32 @@ BSCodeGenerator::Address BSCompiler::parse_identifier(CodeGen &p_codegen, Error 
 	if (p_codegen.locals.has(name)) {
 		return p_codegen.locals[name];
 	}
+	if (p_identifier->source == BSParser::IdentifierNode::STATIC_VARIABLE) {
+		int static_index = -1;
+		BaristaScript *owner = find_static_owner(p_identifier->variable_source, static_index);
+		if (owner == nullptr || static_index < 0) {
+			set_error(vformat(R"(The runtime cannot resolve the static variable "%s".)", String(name)), p_identifier);
+			r_error = ERR_COMPILATION_FAILED;
+			return BSCodeGenerator::Address();
+		}
+		const BSCodeGenerator::Address target = p_codegen.add_temporary(member_slot_type(p_identifier->get_datatype()));
+		const BSCodeGenerator::Address class_address = p_codegen.add_constant((int64_t)owner->get_instance_id());
+		const StringName &getter = owner->static_getters[static_index];
+		if (getter != StringName() && getter != p_codegen.function_name) {
+			p_codegen.generator->write_call(target, class_address, getter, Vector<BSCodeGenerator::Address>());
+		} else {
+			p_codegen.generator->write_get_static_variable(target, class_address, static_index);
+		}
+		return target;
+	}
 	const int member_index = p_codegen.script != nullptr ? p_codegen.script->get_member_index(name) : -1;
 	if (member_index >= 0) {
+		const StringName &getter = p_codegen.script->get_member_getter(member_index);
+		if (getter != StringName() && getter != p_codegen.function_name) {
+			const BSCodeGenerator::Address target = p_codegen.add_temporary(member_slot_type(p_identifier->get_datatype()));
+			p_codegen.generator->write_call_self(target, getter, Vector<BSCodeGenerator::Address>());
+			return target;
+		}
 		return BSCodeGenerator::Address(BSCodeGenerator::Address::MEMBER, member_index,
 				member_slot_type(p_identifier->get_datatype()));
 	}
@@ -56,8 +80,13 @@ BSCodeGenerator::Address BSCompiler::parse_identifier(CodeGen &p_codegen, Error 
 	}
 	if (p_identifier->get_datatype().is_meta_type &&
 			p_identifier->get_datatype().kind == BSParser::DataType::CLASS &&
-			p_identifier->get_datatype().class_type == p_codegen.class_node && p_codegen.script != nullptr) {
-		return p_codegen.add_constant((int64_t)p_codegen.script->get_instance_id());
+			p_identifier->get_datatype().class_type != nullptr) {
+		if (const Ref<BaristaScript> *class_script = class_scripts.getptr(p_identifier->get_datatype().class_type)) {
+			return p_codegen.add_constant((int64_t)(*class_script)->get_instance_id());
+		}
+		if (p_identifier->get_datatype().class_type == p_codegen.class_node && p_codegen.script != nullptr) {
+			return p_codegen.add_constant((int64_t)p_codegen.script->get_instance_id());
+		}
 	}
 	if (p_identifier->get_datatype().is_meta_type &&
 			p_identifier->get_datatype().kind == BSParser::DataType::SCRIPT &&
@@ -347,6 +376,12 @@ BSCodeGenerator::Address BSCompiler::parse_expression(CodeGen &p_codegen, Error 
 			if (node->is_attribute && node->base->type == BSParser::Node::SELF && p_codegen.script != nullptr) {
 				const int member_index = p_codegen.script->get_member_index(node->attribute->name);
 				if (member_index >= 0) {
+					const StringName &getter = p_codegen.script->get_member_getter(member_index);
+					if (getter != StringName() && getter != p_codegen.function_name) {
+						const BSCodeGenerator::Address result = p_codegen.add_temporary(member_slot_type(node->get_datatype()));
+						generator->write_call_self(result, getter, Vector<BSCodeGenerator::Address>());
+						return result;
+					}
 					return BSCodeGenerator::Address(BSCodeGenerator::Address::MEMBER, member_index,
 							member_slot_type(node->get_datatype()));
 				}
@@ -513,7 +548,11 @@ BSCodeGenerator::Address BSCompiler::parse_call(CodeGen &p_codegen, Error &r_err
 		const Variant::Type builtin_type = BSParser::get_builtin_type(function_name);
 		MethodInfo utility_info;
 		if (names_own_function) {
-			generator->write_call_self(result, function_name, arguments);
+			if (p_call->is_static) {
+				generator->write_call(result, BSCodeGenerator::Address(BSCodeGenerator::Address::CLASS), function_name, arguments);
+			} else {
+				generator->write_call_self(result, function_name, arguments);
+			}
 		} else if (builtin_type < Variant::VARIANT_MAX) {
 			generator->write_construct(result, builtin_type, arguments);
 		} else if (BSUtilityFunctions::get_function_info(function_name, utility_info)) {
@@ -546,6 +585,102 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 	BSCodeGenerator *generator = p_codegen.generator;
 	const BSParser::ExpressionNode *assignee = p_assignment->assignee;
 	const bool has_operation = p_assignment->operation != BSParser::AssignmentNode::OP_NONE;
+	if (assignee->type == BSParser::Node::IDENTIFIER) {
+		const BSParser::IdentifierNode *identifier = static_cast<const BSParser::IdentifierNode *>(assignee);
+		if (identifier->source == BSParser::IdentifierNode::STATIC_VARIABLE) {
+			int static_index = -1;
+			BaristaScript *owner = find_static_owner(identifier->variable_source, static_index);
+			if (owner == nullptr || static_index < 0) {
+				set_error(vformat(R"(The runtime cannot resolve the static variable "%s".)", String(identifier->name)), assignee);
+				r_error = ERR_COMPILATION_FAILED;
+				return BSCodeGenerator::Address();
+			}
+			const BSCodeGenerator::Address class_address = p_codegen.add_constant((int64_t)owner->get_instance_id());
+			const BSCodeGenerator::Address value = parse_expression(p_codegen, r_error, p_assignment->assigned_value);
+			if (r_error != OK) {
+				return BSCodeGenerator::Address();
+			}
+			BSCodeGenerator::Address stored = value;
+			BSCodeGenerator::Address current;
+			if (has_operation) {
+				current = p_codegen.add_temporary(member_slot_type(assignee->get_datatype()));
+				const StringName &getter = owner->static_getters[static_index];
+				if (getter != StringName() && getter != p_codegen.function_name) {
+					generator->write_call(current, class_address, getter, Vector<BSCodeGenerator::Address>());
+				} else {
+					generator->write_get_static_variable(current, class_address, static_index);
+				}
+				const BSCodeGenerator::Address combined = p_codegen.add_temporary(member_slot_type(p_assignment->get_datatype()));
+				generator->write_binary_operator(combined, p_assignment->variant_op, current, value);
+				stored = combined;
+			}
+			const StringName &setter = owner->static_setters[static_index];
+			if (setter != StringName() && setter != p_codegen.function_name) {
+				Vector<BSCodeGenerator::Address> arguments;
+				arguments.push_back(stored);
+				generator->write_call(BSCodeGenerator::Address(), class_address, setter, arguments);
+			} else {
+				generator->write_set_static_variable(stored, class_address, static_index);
+			}
+			if (stored.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			if (current.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			if (has_operation && value.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			return BSCodeGenerator::Address();
+		}
+	}
+	int accessor_member_index = -1;
+	if (assignee->type == BSParser::Node::IDENTIFIER && p_codegen.script != nullptr) {
+		const StringName &name = static_cast<const BSParser::IdentifierNode *>(assignee)->name;
+		if (!is_local_or_parameter(p_codegen, name)) {
+			accessor_member_index = p_codegen.script->get_member_index(name);
+		}
+	} else if (assignee->type == BSParser::Node::SUBSCRIPT && p_codegen.script != nullptr) {
+		const BSParser::SubscriptNode *subscript = static_cast<const BSParser::SubscriptNode *>(assignee);
+		if (subscript->is_attribute && subscript->base != nullptr && subscript->base->type == BSParser::Node::SELF) {
+			accessor_member_index = p_codegen.script->get_member_index(subscript->attribute->name);
+		}
+	}
+	if (accessor_member_index >= 0) {
+		const StringName &setter = p_codegen.script->get_member_setter(accessor_member_index);
+		if (setter != StringName() && setter != p_codegen.function_name) {
+			BSCodeGenerator::Address current;
+			if (has_operation) {
+				current = parse_expression(p_codegen, r_error, assignee);
+				if (r_error != OK) {
+					return BSCodeGenerator::Address();
+				}
+			}
+			const BSCodeGenerator::Address value = parse_expression(p_codegen, r_error, p_assignment->assigned_value);
+			if (r_error != OK) {
+				return BSCodeGenerator::Address();
+			}
+			BSCodeGenerator::Address stored = value;
+			if (has_operation) {
+				const BSCodeGenerator::Address combined = p_codegen.add_temporary(member_slot_type(p_assignment->get_datatype()));
+				generator->write_binary_operator(combined, p_assignment->variant_op, current, value);
+				stored = combined;
+			}
+			Vector<BSCodeGenerator::Address> arguments;
+			arguments.push_back(stored);
+			generator->write_call_self(BSCodeGenerator::Address(), setter, arguments);
+			if (stored.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			if (has_operation && value.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			if (current.mode == BSCodeGenerator::Address::TEMPORARY) {
+				generator->pop_temporary();
+			}
+			return BSCodeGenerator::Address();
+		}
+	}
 
 	// A property of the owner object, reached either bare or through `self`, is written through the
 	// object rather than into a compiled slot.
@@ -696,9 +831,17 @@ BSCodeGenerator::Address BSCompiler::parse_assignment(CodeGen &p_codegen, Error 
 		target = BSCodeGenerator::Address(BSCodeGenerator::Address::MEMBER,
 				p_codegen.script->get_member_index(subscript->attribute->name), member_slot_type(assignee->get_datatype()));
 	} else if (assignee->type == BSParser::Node::IDENTIFIER) {
-		target = parse_identifier(p_codegen, r_error, static_cast<const BSParser::IdentifierNode *>(assignee));
-		if (r_error != OK) {
-			return BSCodeGenerator::Address();
+		if (accessor_member_index >= 0) {
+			// Reaching here for an accessor means this is its own setter. A write inside the setter
+			// targets the backing slot directly; resolving the identifier as a read would call the
+			// getter and assign into the temporary it returned instead.
+			target = BSCodeGenerator::Address(BSCodeGenerator::Address::MEMBER, accessor_member_index,
+					member_slot_type(assignee->get_datatype()));
+		} else {
+			target = parse_identifier(p_codegen, r_error, static_cast<const BSParser::IdentifierNode *>(assignee));
+			if (r_error != OK) {
+				return BSCodeGenerator::Address();
+			}
 		}
 	} else {
 		set_error("The runtime cannot compile this assignment target.", assignee);

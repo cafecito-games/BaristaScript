@@ -282,7 +282,8 @@ public:
 	 * `p_instance` is null for a static call and for a call made before an instance exists, in which
 	 * case `self` is nil and any member access reports rather than dereferencing.
 	 */
-	Variant call(BSInstance *p_instance, const Variant **p_arguments, int p_argument_count, GDExtensionCallError &r_error);
+	Variant call(BSInstance *p_instance, const Variant **p_arguments, int p_argument_count,
+			GDExtensionCallError &r_error, BaristaScript *p_static_receiver = nullptr);
 
 	const StringName &get_name() const { return name; }
 	const String &get_source() const { return source; }
@@ -295,6 +296,7 @@ public:
 	const BSRuntimeType &get_return_type() const { return return_type; }
 	const Vector<BSRuntimeType> &get_argument_types() const { return argument_types; }
 	const Variant &get_rpc_config() const { return rpc_config; }
+	const MethodInfo &get_method_info() const { return method_info; }
 
 private:
 	BaristaScript *script = nullptr;
@@ -302,7 +304,12 @@ private:
 	String source;
 	String signature;
 	bool is_static_function = false;
+	// An inline property getter must be able to expose the invalid Object Variant left behind after
+	// an Object is freed, so `is_instance_valid(property)` can observe it. Ordinary typed returns
+	// and assignments still reject that value.
+	bool allows_freed_object_return = false;
 	Variant rpc_config;
+	MethodInfo method_info;
 
 	BSRuntimeType return_type;
 	Vector<BSRuntimeType> argument_types;
@@ -339,5 +346,8 @@ void bs_report_runtime_error(const String &p_description, const String &p_functi
  * whether the call it just made ran to completion.
  */
 bool bs_runtime_error_was_reported();
+
+/** Monotonic count of faults raised by VM frames, including faults suppressed after the first. */
+uint64_t bs_runtime_error_serial();
 
 } // namespace barista_script
